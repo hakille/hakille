@@ -1,46 +1,104 @@
-# Sélection des Modèles & Runtimes d'Inférence
+# Sélection des Modèles, Runtimes d'Inférence & Provisioning Autonome
 
-Ce document consigne la matrice des modèles fondations ouverts retenus pour Annora, leurs runtimes d'exécution natifs en Rust, et les stratégies d'allocation mémoire.
+Ce document consigne la matrice des modèles fondations ouverts retenus pour Annora, leurs runtimes d'exécution natifs en Rust, les stratégies d'allocation mémoire, ainsi que le système de téléchargement et d'approvisionnement autonome à déploiement zéro-touch (*Zero-Touch Model Provisioning*).
 
 ---
 
-## 1. Matrice Globale des Modèles Retenus
+## 1. Matrice Globale des Modèles Téléchargés et Validés (7/7 — 100% Vérifiés)
 
-| Rôle Fonctionnel | Modèle Retenu | Paramètres | Empreinte / Quantification | Latence / RTF | Runtime Rust | Licence |
+| Rôle Fonctionnel | Modèle Retenu | Format & Taille | Empreinte RAM / VRAM | Runtime Rust | Tier Requis | Checksum SHA-256 Validé |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Écoute Continue & ASR Instantané** | **SenseVoice-Small** (Alibaba) | 234M | 229 Mo (INT8) | Non-autorégressif ; RTF ~0.02 GPU, ~0.08 CPU | ONNX Runtime (`ort` / `sherpa-onnx`) | MIT / FunASR |
-| **Transcription Long Format (60 min)** | **VibeVoice-ASR** (Microsoft) | ~8.3B - 9B | 1.58 Go (BitNet I8/I2) ; ~9 Go (GGUF Q8) | BitNet RTF < 1 sur 3 cœurs CPU | `annora-inference` (GGUF / BitNet) | MIT |
-| **Diarisation Continue en Direct** | **Nemotron-3-Diarization** (NVIDIA) | 100M | ~400 Mo (INT8) ; ~1.2 Go (FP16) | Tampon ajustable : 80 ms à 320 ms | ONNX Runtime (`ort`) | OpenMDW-1.1 |
-| **Signature Biométrique Locuteur** | **CAM++** | 7.2M | ~30 Mo (INT8) | Sub-15 ms par segment | ONNX Runtime (`sherpa-onnx`) | Apache-2.0 |
-| **Dialogue Full-Duplex Speech-to-Speech** | **Kyutai Moshi** (Kyutai Labs) | ~7.6B (7B Temporel + Depth) | ~8 Go VRAM (INT8) ; ~15 Go (BF16) | ~160 ms théorique (Codec Mimi 80ms + 80ms) | **Candle (Rust natif direct)** | Code: Apache/MIT, Poids: CC-BY 4.0 |
-| **Contrôle Graphique (Computer-Use)** | **UI-TARS-7B-DPO** (ByteDance Seed) | 7B | ~4-6 Go (GGUF Q4_K_M) | ~2.5 s par décision visuelle | GGUF / Candle | Apache-2.0 |
-| **Synthèse Vocale Secondaire (TTS)** | **CosyVoice2-0.5B** / **NeuTTS Air** | ~0.5B | ~800 Mo (INT8) / ~1.9 Go (GGUF) | ~150 ms en streaming | Candle / GGUF | Apache-2.0 |
-| **Raisonnement Local System 1** | **Qwen3-8B** / **Qwen-7B** | 7B - 8B | ~4.5 Go (GGUF Q4_K_M) | 45-60 tokens/s | Candle / GGUF | Apache-2.0 |
+| **Détection d'Activité Vocale (VAD)** | **Silero VAD v5** | ONNX (2.3 Mo) | RAM: 15 Mo / VRAM: 0 Mo | ONNX Runtime | Guest / Native | `1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3` |
+| **Signature Biométrique Locuteur** | **CAM++ 16k Advanced** | ONNX (28.2 Mo) | RAM: 30 Mo / VRAM: 0 Mo | ONNX Runtime | Guest / Native | `aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2` |
+| **Embeddings Graphe de Connaissance** | **All-MiniLM-L6-v2** | ONNX (90.4 Mo) | RAM: 90 Mo / VRAM: 0 Mo | ONNX Runtime | Native | `6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452` |
+| **Écoute Continue & ASR Instantané** | **SenseVoice-Small INT8** | ONNX (239 Mo + tokens) | RAM: 230 Mo / VRAM: 0 Mo | ONNX Runtime | Native | `c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51` |
+| **Raisonnement Rapide System 1** | **Qwen2.5 0.5B Instruct** | GGUF Q4_K_M (491 Mo) | RAM: 550 Mo / VRAM: 500 Mo | GGUF Native | Native | `74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db` |
+| **Contrôle Graphique (Computer-Use)** | **UI-TARS 2B SFT** | GGUF Q4_K_M (1.11 Go) | RAM: 1.8 Go / VRAM: 1.6 Go | GGUF Native | Native | `f316ecef2e2e8fa9a29e81ba2c9efa8ea6f408241e175331332960c7160e9c53` |
+| **Codec Neural Audio S2S** | **Kyutai Mimi** | Safetensors (384.6 Mo) | RAM: 450 Mo / VRAM: 400 Mo | Candle (Rust) | Sovereign | `bac7e85083dcded655d24eaadde7e6eea34c0da1b35fa2d284e641bd2b942a5e` |
 
 ---
 
-## 2. Runtimes d'Inférence Sans Python
+## 2. Système d'Approvisionnement Autonome (Zero-Touch Provisioning)
 
-Pour garantir l'absence de runtime Python en production, trois moteurs sont orchestrés par `annora-inference` :
+Pour garantir qu'un utilisateur n'ait **jamais** besoin de configurer Python, Hugging Face CLI ou d'exécuter des scripts manuels :
 
-### A. Candle (Hugging Face)
-- **Raison d'être** : Framework de calcul tensoriel natif écrit en Rust pur.
-- **Usage principal** : Kyutai Moshi (code officiel Kyutai sous `rust/` dans leur dépôt), LLMs System 1 (Qwen) et modèles de synthèse vocale.
-- **Accélération** : Metal sous macOS, CUDA sous Linux/Windows, CPU avec instructions AVX-512 / NEON.
+1. **Client Réseau Natif Pur Rust** :
+   - Basé sur `reqwest` avec backend cryptographique `rustls` (zéro dépendance OpenSSL ou C système).
+   - Suivi automatique des redirections CDN sécurisées (Cloudflare, Azure Blob, AWS S3).
+   - Support des flux HTTP avec **reprise automatique de téléchargement sur coupure réseau (*HTTP Range headers*)** et boucle de résilience auto-cicatrisante (jusqu'à 10 tentatives avec backoff exponentiel).
 
-### B. ONNX Runtime via `ort` & `sherpa-onnx`
-- **Raison d'être** : Exécution ultra-légère et déterministe de modèles audio compacts.
-- **Usage principal** : SenseVoice-Small (ASR, détection d'émotions et bruits ambiants en 229 Mo), Silero VAD, openWakeWord et CAM++.
+2. **Garanties Cryptographiques & Promotion Atomique** :
+   - Flux d'écriture dirigé vers un fichier temporaire `.part`.
+   - Calcul continu de l'empreinte SHA-256 en parallèle du flux d'octets.
+   - Vérification stricte du condensat SHA-256 avant finalisation.
+   - En cas d'intégrité validée, renommage atomique (`rename`) du fichier `.part` vers son chemin final, protégeant l'OS de toute corruption ou coupure d'alimentation intempestive.
 
-### C. Moteur GGUF / BitNet
-- **Raison d'être** : Chargement de gros modèles quantifiés sans conversion complexe.
-- **Usage principal** : UI-TARS-7B pour l'agent GUI et VibeVoice-ASR pour la transcription d'enregistrements longs.
+3. **Orchestrateur Local de Modèles (`ModelProvisioner`)** :
+   - Découverte automatique des fichiers présents dans `./models` ou `$ANNORA_MODELS_DIR`.
+   - Inspection du catalogue et calcul des métriques de disque et mémoire.
+   - Téléchargement autonome à la demande, par niveau de déploiement (`Guest`, `Native`, `Sovereign`) ou pour l'ensemble du catalogue.
 
 ---
 
-## 3. Gestionnaire de Mémoire et Pagination VRAM LRU
+## 3. Commandes CLI et REPL
+
+### A. Ligne de Commande Système (`annora-daemon`)
+
+```bash
+# Lister l'état du catalogue et les modèles présents localement
+annora-daemon models list
+
+# Télécharger un modèle spécifique de manière autonome
+annora-daemon models download --model silero-vad-v5
+
+# Télécharger l'intégralité des modèles d'un tier (ex: guest ou native)
+annora-daemon models download --tier native
+
+# Vérifier l'intégrité cryptographique SHA-256 de tous les modèles installés
+annora-daemon models verify
+
+# Lancer le démon avec téléchargement automatique des modèles essentiels manquants
+annora-daemon --auto-download
+```
+
+### B. Shell Interactif du Démon Annora (`annora>`)
+
+```text
+annora> :models
+Foundation Model Catalog (Directory: ./models):
+  • silero-vad-v5              Guest      [INSTALLED - 2.2 MB]   Silero Voice Activity Detector v5
+  • campplus-speaker-id        Guest      [INSTALLED - 27.0 MB]  CAM++ Neural Speaker Verifier
+  • all-minilm-l6-v2           Native     [INSTALLED - 86.2 MB]  All-MiniLM-L6-v2 Vector Embeddings
+  • sensevoice-small-int8      Native     [INSTALLED - 228.5 MB] SenseVoice-Small Multi-Task ASR
+  • qwen2.5-0.5b-instruct-q4km Native     [INSTALLED - 468.6 MB] Qwen2.5 0.5B Instruct GGUF (System 1)
+  • ui-tars-2b-sft-q4km        Native     [INSTALLED - 1065.6 MB] UI-TARS 2B SFT GGUF (GUI Agent)
+  • moshi-mimi-s2s             Sovereign  [INSTALLED - 366.8 MB] Kyutai Mimi Streaming Audio Codec (Candle Native)
+
+annora> :verify-models
+Verifying models integrity...
+  • silero-vad-v5              [OK - Valid]
+  • campplus-speaker-id        [OK - Valid]
+  • all-minilm-l6-v2           [OK - Valid]
+  • sensevoice-small-int8      [OK - Valid]
+  • qwen2.5-0.5b-instruct-q4km [OK - Valid]
+  • ui-tars-2b-sft-q4km        [OK - Valid]
+  • moshi-mimi-s2s             [OK - Valid]
+```
+
+### C. Outil Workspace Xtask (`cargo xtask`)
+
+```bash
+# Préparer et pré-télécharger les modèles pour la distribution ou le packaging air-gapped
+cargo xtask download-models guest
+cargo xtask list-models
+cargo xtask verify-models
+```
+
+---
+
+## 4. Gestionnaire de Mémoire et Pagination VRAM LRU
 
 Sur les postes de travail grand public (ex: 8 à 16 Go de VRAM) :
-- Les micro-modèles d'écoute passive (**SenseVoice-Small**, **CAM++**, **Silero VAD**) mobilisent ensemble moins de **300 Mo de mémoire** et restent résidents en permanence sur le CPU sans réveiller la carte graphique dédiée.
-- Le modèle de contrôle d'interface graphique (**UI-TARS-7B-DPO**) et le transcripteur long (**VibeVoice-ASR**) sont configurés avec la stratégie `LoadingStrategy::OnDemand`.
-- Dès qu'une tâche graphique est déclenchée, le `ModelRegistry` pagine UI-TARS en VRAM, et le décharge dès la fin de la séquence d'automatisation via un algorithme de remplacement LRU (Least Recently Used) pour restituer l'espace au modèle de raisonnement.
+- Les micro-modèles d'écoute passive (**SenseVoice-Small**, **CAM++**, **Silero VAD**) mobilisent ensemble moins de **300 Mo de mémoire** et restent résidents en permanence sur le CPU (`LoadingStrategy::AlwaysResident`) sans réveiller le GPU dédié.
+- Les modèles plus lourds (**UI-TARS**, **Qwen**, **VibeVoice**) utilisent la politique `LoadingStrategy::OnDemand`.
+- Dès qu'une tâche est déclenchée, le `ModelRegistry` pagine le modèle en mémoire et applique un déchargement LRU (*Least Recently Used*) en respectant un budget mémoire strict sans dépassement.

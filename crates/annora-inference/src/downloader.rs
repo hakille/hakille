@@ -48,7 +48,7 @@ impl ModelDownloader {
     ///
     /// - If the destination file already exists and valid, skips download.
     /// - Writes to `{destination}.part` during transit.
-    /// - Resumes partial downloads if supported by upstream server.
+    /// - Resumes partial downloads if supported by upstream server with up to 10 automatic retries.
     /// - Computes incremental SHA-256 and verifies against expected checksum.
     /// - Atomically renames `{destination}.part` to `destination` upon success.
     pub async fn download_file(
@@ -98,185 +98,259 @@ impl ModelDownloader {
                 .map_err(|e| AnnoraError::StorageError(format!("Failed to create directory {}: {}", parent.display(), e)))?;
         }
 
-        let part_path = destination.with_extension("part");
+        // Check for existing partial file either as .part extension or appended .part
+        let part_path = if destination.with_extension("part").exists() {
+            destination.with_extension("part")
+        } else {
+            PathBuf::from(format!("{}.part", destination.display()))
+        };
 
-        // 2. Check if a partial file exists for resume
-        let mut existing_bytes: u64 = 0;
-        let mut hasher = Sha256::new();
+        let max_retries = 10;
+        let mut attempt = 0;
 
-        if part_path.exists() {
-            if let Ok(metadata) = std::fs::metadata(&part_path) {
-                let size = metadata.len();
-                // If partial file exists and not empty, hash the existing portion to allow SHA256 continuity
-                if size > 0 && expected_size.map(|exp| size < exp).unwrap_or(true) {
-                    tracing::info!(file = %filename, bytes = size, "Resuming partial model artifact download");
-                    match Self::hash_file_partial(&part_path, size) {
-                        Ok((bytes_read, pre_hasher)) if bytes_read == size => {
+        loop {
+            attempt += 1;
+
+            // 2. Check partial file size and calculate partial hash for resume
+            let mut existing_bytes: u64 = 0;
+            let mut hasher = Sha256::new();
+
+            if part_path.exists() {
+                if let Ok(metadata) = std::fs::metadata(&part_path) {
+                    let size = metadata.len();
+                    if let Some(exp) = expected_size {
+                        if size == exp {
+                            // File already finished downloading in previous attempts
                             existing_bytes = size;
-                            hasher = pre_hasher;
+                            if let Ok((bytes_read, pre_hasher)) = Self::hash_file_partial(&part_path, size) {
+                                if bytes_read == size {
+                                    hasher = pre_hasher;
+                                    let computed_hash = format!("{:x}", hasher.finalize());
+                                    if let Some(expected_hash) = expected_sha256 {
+                                        if !computed_hash.eq_ignore_ascii_case(expected_hash) {
+                                            let _ = tokio::fs::remove_file(&part_path).await;
+                                            return Err(AnnoraError::CryptoError(format!(
+                                                "SHA-256 verification failed for {}. Expected {}, got {}",
+                                                filename, expected_hash, computed_hash
+                                            )));
+                                        }
+                                    }
+                                    tokio::fs::rename(&part_path, destination).await
+                                        .map_err(|e| AnnoraError::StorageError(format!("Failed to promote part file: {}", e)))?;
+                                    return Ok(destination.to_path_buf());
+                                }
+                            }
                         }
-                        _ => {
-                            // If partial read failed, start fresh
-                            let _ = tokio::fs::remove_file(&part_path).await;
-                            existing_bytes = 0;
-                            hasher = Sha256::new();
+                    }
+
+                    if size > 0 && expected_size.map(|exp| size < exp).unwrap_or(true) {
+                        tracing::info!(file = %filename, bytes = size, attempt = attempt, "Resuming partial model artifact download");
+                        match Self::hash_file_partial(&part_path, size) {
+                            Ok((bytes_read, pre_hasher)) if bytes_read == size => {
+                                existing_bytes = size;
+                                hasher = pre_hasher;
+                            }
+                            _ => {
+                                let _ = tokio::fs::remove_file(&part_path).await;
+                                existing_bytes = 0;
+                                hasher = Sha256::new();
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // 3. Initiate HTTP Request
-        let mut request = self.client.get(url);
-        if existing_bytes > 0 {
-            request = request.header(RANGE, format!("bytes={}-", existing_bytes));
-        }
-
-        let response = request
-            .send()
-            .await
-            .map_err(|e| AnnoraError::InferenceError(format!("Network download request failed for {}: {}", url, e)))?;
-
-        let status = response.status();
-        let (mut file, mut downloaded_so_far, total_bytes) = if existing_bytes > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT {
-            // Resume accepted
-            let content_len = response.headers().get(CONTENT_LENGTH)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok());
-            let total = content_len.map(|cl| cl + existing_bytes).or(expected_size);
-
-            let f = tokio::fs::OpenOptions::new()
-                .write(true)
-                .append(true)
-                .open(&part_path)
-                .await
-                .map_err(|e| AnnoraError::StorageError(format!("Failed to open .part file for append: {}", e)))?;
-
-            (f, existing_bytes, total)
-        } else {
-            // Fresh download or server does not support Range
-            if !status.is_success() {
-                return Err(AnnoraError::InferenceError(format!(
-                    "HTTP request failed with status code {} for URL: {}",
-                    status, url
-                )));
+            // 3. Initiate HTTP Request
+            let mut request = self.client.get(url);
+            if existing_bytes > 0 {
+                request = request.header(RANGE, format!("bytes={}-", existing_bytes));
             }
 
-            hasher = Sha256::new();
-            let total = response.headers().get(CONTENT_LENGTH)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .or(expected_size);
+            let response = match request.send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    if attempt >= max_retries {
+                        return Err(AnnoraError::InferenceError(format!(
+                            "Network download failed after {} attempts for {}: {}",
+                            attempt, url, e
+                        )));
+                    }
+                    tracing::warn!(attempt = attempt, error = %e, "Download connection error, retrying in 3s...");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                    continue;
+                }
+            };
 
-            let f = tokio::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&part_path)
-                .await
-                .map_err(|e| AnnoraError::StorageError(format!("Failed to create .part file: {}", e)))?;
+            let status = response.status();
+            let (mut file, mut downloaded_so_far, total_bytes) = if existing_bytes > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT {
+                // Resume accepted
+                let content_len = response.headers().get(CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok());
+                let total = content_len.map(|cl| cl + existing_bytes).or(expected_size);
 
-            (f, 0u64, total)
-        };
+                let f = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .append(true)
+                    .open(&part_path)
+                    .await
+                    .map_err(|e| AnnoraError::StorageError(format!("Failed to open .part file for append: {}", e)))?;
 
-        // 4. Stream response body
-        let mut stream = response.bytes_stream();
-        let start_time = Instant::now();
-        let mut last_progress_time = Instant::now();
+                (f, existing_bytes, total)
+            } else {
+                // Fresh download or server does not support Range
+                if !status.is_success() {
+                    if attempt >= max_retries {
+                        return Err(AnnoraError::InferenceError(format!(
+                            "HTTP request failed with status code {} for URL: {}",
+                            status, url
+                        )));
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                    continue;
+                }
 
-        while let Some(chunk_res) = stream.next().await {
-            let chunk = chunk_res.map_err(|e| {
-                AnnoraError::InferenceError(format!("Error streaming chunk for {}: {}", filename, e))
-            })?;
+                hasher = Sha256::new();
+                let total = response.headers().get(CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .or(expected_size);
 
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| AnnoraError::StorageError(format!("Failed to write chunk to disk: {}", e)))?;
+                let f = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&part_path)
+                    .await
+                    .map_err(|e| AnnoraError::StorageError(format!("Failed to create .part file: {}", e)))?;
 
-            hasher.update(&chunk);
-            downloaded_so_far += chunk.len() as u64;
+                (f, 0u64, total)
+            };
 
-            // Notify progress throttled to 100ms
-            if let Some(ref cb) = progress {
-                if last_progress_time.elapsed().as_millis() >= 100 {
-                    let elapsed = start_time.elapsed().as_secs_f64().max(0.001);
-                    let speed = (downloaded_so_far - existing_bytes) as f64 / elapsed;
-                    let percentage = total_bytes.map(|t| (downloaded_so_far as f64 / t as f64) * 100.0);
+            // 4. Stream response body
+            let mut stream = response.bytes_stream();
+            let start_time = Instant::now();
+            let mut last_progress_time = Instant::now();
+            let mut stream_interrupted = false;
 
-                    cb(&DownloadProgress {
-                        filename: filename.clone(),
-                        bytes_downloaded: downloaded_so_far,
-                        total_bytes,
-                        speed_bytes_per_sec: speed,
-                        percentage,
-                    });
-                    last_progress_time = Instant::now();
+            while let Some(chunk_res) = stream.next().await {
+                match chunk_res {
+                    Ok(chunk) => {
+                        if let Err(e) = file.write_all(&chunk).await {
+                            return Err(AnnoraError::StorageError(format!("Failed to write chunk to disk: {}", e)));
+                        }
+                        hasher.update(&chunk);
+                        downloaded_so_far += chunk.len() as u64;
+
+                        // Notify progress throttled to 100ms
+                        if let Some(ref cb) = progress {
+                            if last_progress_time.elapsed().as_millis() >= 100 {
+                                let elapsed = start_time.elapsed().as_secs_f64().max(0.001);
+                                let speed = (downloaded_so_far - existing_bytes) as f64 / elapsed;
+                                let percentage = total_bytes.map(|t| (downloaded_so_far as f64 / t as f64) * 100.0);
+
+                                cb(&DownloadProgress {
+                                    filename: filename.clone(),
+                                    bytes_downloaded: downloaded_so_far,
+                                    total_bytes,
+                                    speed_bytes_per_sec: speed,
+                                    percentage,
+                                });
+                                last_progress_time = Instant::now();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            attempt = attempt,
+                            downloaded = downloaded_so_far,
+                            error = %e,
+                            "Stream chunk read interrupted, will auto-resume"
+                        );
+                        stream_interrupted = true;
+                        break;
+                    }
                 }
             }
-        }
 
-        // Flush and close file
-        file.flush()
-            .await
-            .map_err(|e| AnnoraError::StorageError(format!("Failed to flush .part file: {}", e)))?;
-        drop(file);
+            // Flush and close file
+            let _ = file.flush().await;
+            drop(file);
 
-        // 5. Final progress report (100%)
-        if let Some(ref cb) = progress {
-            let elapsed = start_time.elapsed().as_secs_f64().max(0.001);
-            let speed = (downloaded_so_far - existing_bytes) as f64 / elapsed;
-            cb(&DownloadProgress {
-                filename: filename.clone(),
-                bytes_downloaded: downloaded_so_far,
-                total_bytes: Some(downloaded_so_far),
-                speed_bytes_per_sec: speed,
-                percentage: Some(100.0),
-            });
-        }
-
-        // 6. Cryptographic integrity check
-        let computed_hash = format!("{:x}", hasher.finalize());
-        if let Some(expected_hash) = expected_sha256 {
-            if !computed_hash.eq_ignore_ascii_case(expected_hash) {
-                // Remove corrupted file
-                let _ = tokio::fs::remove_file(&part_path).await;
-                return Err(AnnoraError::CryptoError(format!(
-                    "SHA-256 verification failed for {}. Expected {}, got {}",
-                    filename, expected_hash, computed_hash
-                )));
+            if stream_interrupted {
+                if attempt >= max_retries {
+                    return Err(AnnoraError::InferenceError(format!(
+                        "Download stream for {} failed after {} attempts",
+                        filename, attempt
+                    )));
+                }
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                continue;
             }
-        }
 
-        // Check file size if specified
-        if let Some(exp_size) = expected_size {
-            if downloaded_so_far != exp_size {
-                tracing::warn!(
-                    file = %filename,
-                    expected = exp_size,
-                    actual = downloaded_so_far,
-                    "Downloaded size differs from catalog specification"
-                );
+            // If expected size is known and not reached, loop to resume
+            if let Some(exp_size) = expected_size {
+                if downloaded_so_far < exp_size {
+                    tracing::warn!(
+                        downloaded = downloaded_so_far,
+                        expected = exp_size,
+                        "Connection closed before reaching expected size, resuming..."
+                    );
+                    if attempt >= max_retries {
+                        return Err(AnnoraError::InferenceError(format!(
+                            "Incomplete download for {}: expected {} bytes, got {}",
+                            filename, exp_size, downloaded_so_far
+                        )));
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    continue;
+                }
             }
+
+            // 5. Final progress report (100%)
+            if let Some(ref cb) = progress {
+                let elapsed = start_time.elapsed().as_secs_f64().max(0.001);
+                let speed = (downloaded_so_far - existing_bytes) as f64 / elapsed;
+                cb(&DownloadProgress {
+                    filename: filename.clone(),
+                    bytes_downloaded: downloaded_so_far,
+                    total_bytes: Some(downloaded_so_far),
+                    speed_bytes_per_sec: speed,
+                    percentage: Some(100.0),
+                });
+            }
+
+            // 6. Cryptographic integrity check
+            let computed_hash = format!("{:x}", hasher.finalize());
+            if let Some(expected_hash) = expected_sha256 {
+                if !computed_hash.eq_ignore_ascii_case(expected_hash) {
+                    let _ = tokio::fs::remove_file(&part_path).await;
+                    return Err(AnnoraError::CryptoError(format!(
+                        "SHA-256 verification failed for {}. Expected {}, got {}",
+                        filename, expected_hash, computed_hash
+                    )));
+                }
+            }
+
+            // 7. Atomic rename from .part to final destination
+            tokio::fs::rename(&part_path, destination)
+                .await
+                .map_err(|e| AnnoraError::StorageError(format!(
+                    "Failed to rename {} to {}: {}",
+                    part_path.display(),
+                    destination.display(),
+                    e
+                )))?;
+
+            tracing::info!(
+                file = %filename,
+                size_bytes = downloaded_so_far,
+                sha256 = %computed_hash,
+                "Model artifact successfully downloaded, verified, and promoted to final path"
+            );
+
+            return Ok(destination.to_path_buf());
         }
-
-        // 7. Atomic rename from .part to final destination
-        tokio::fs::rename(&part_path, destination)
-            .await
-            .map_err(|e| AnnoraError::StorageError(format!(
-                "Failed to rename {} to {}: {}",
-                part_path.display(),
-                destination.display(),
-                e
-            )))?;
-
-        tracing::info!(
-            file = %filename,
-            size_bytes = downloaded_so_far,
-            sha256 = %computed_hash,
-            "Model artifact successfully downloaded, verified, and promoted to final path"
-        );
-
-        Ok(destination.to_path_buf())
     }
 
     /// Read an existing file and verify its SHA-256 checksum.
