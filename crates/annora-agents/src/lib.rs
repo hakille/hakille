@@ -69,4 +69,29 @@ mod tests {
             _ => panic!("Expected Type intent"),
         }
     }
+
+    #[test]
+    fn test_inter_agent_signed_message_protocol() {
+        let sender_keys = annora_core::KeyPair::generate();
+        let other_keys = annora_core::KeyPair::generate();
+
+        let msg = InterAgentMessage::sign_and_create(
+            "agent-mail",
+            "agent-calendar",
+            "ScheduleMeeting",
+            serde_json::json!({ "title": "Architecture Review", "time": "14:00" }),
+            &sender_keys,
+        );
+
+        // Verification with sender's key succeeds
+        assert!(msg.verify_signature(&sender_keys));
+
+        // Verification with another agent's key fails
+        assert!(!msg.verify_signature(&other_keys));
+
+        // Tampering with payload fails
+        let mut tampered_msg = msg.clone();
+        tampered_msg.payload = serde_json::json!({ "title": "Malicious Meeting", "time": "14:00" });
+        assert!(!tampered_msg.verify_signature(&sender_keys));
+    }
 }

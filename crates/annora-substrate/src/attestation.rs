@@ -97,7 +97,7 @@ pub struct ThermalState {
     pub throttled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ComputeBackend {
     Cpu,
     Cuda,

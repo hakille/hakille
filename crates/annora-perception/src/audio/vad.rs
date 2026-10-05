@@ -36,14 +36,17 @@ impl VoiceActivityDetector {
             };
         }
 
-        let sum_sq: f32 = chunk.samples.iter().map(|&s| s * s).sum();
+        let sum_sq: f32 = chunk.samples.iter().map(|&s| if s.is_finite() { s * s } else { 0.0 }).sum();
         let rms = (sum_sq / chunk.samples.len() as f32).sqrt();
+        let rms = if rms.is_finite() { rms } else { 0.0 };
 
         // Calculate zero-crossing rate
         let mut zero_crossings = 0;
         for i in 1..chunk.samples.len() {
-            if (chunk.samples[i] >= 0.0 && chunk.samples[i - 1] < 0.0)
-                || (chunk.samples[i] < 0.0 && chunk.samples[i - 1] >= 0.0)
+            let prev = if chunk.samples[i - 1].is_finite() { chunk.samples[i - 1] } else { 0.0 };
+            let curr = if chunk.samples[i].is_finite() { chunk.samples[i] } else { 0.0 };
+            if (curr >= 0.0 && prev < 0.0)
+                || (curr < 0.0 && prev >= 0.0)
             {
                 zero_crossings += 1;
             }

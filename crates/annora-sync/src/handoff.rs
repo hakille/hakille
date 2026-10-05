@@ -58,3 +58,39 @@ impl HandoffCoordinator {
         self.active_handoff.as_ref()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_device_handoff_lifecycle() {
+        let mut desktop = HandoffCoordinator::new("desktop-node-01");
+        let mut mobile = HandoffCoordinator::new("mobile-node-02");
+        let mut rogue_device = HandoffCoordinator::new("unauthorized-node-03");
+
+        let handoff_state = desktop.prepare_handoff(
+            "mobile-node-02",
+            "Peux-tu resumer ce document ?",
+            Some("SummarizeDocument".to_string()),
+            Some("DocumentViewer".to_string()),
+        );
+
+        assert_eq!(handoff_state.source_device_id, "desktop-node-01");
+        assert_eq!(handoff_state.target_device_id, "mobile-node-02");
+        assert!(!handoff_state.handoff_token.is_empty());
+
+        // Unauthorized node cannot receive handoff
+        let intercepted = rogue_device.receive_handoff(handoff_state.clone());
+        assert!(!intercepted);
+        assert!(rogue_device.current_state().is_none());
+
+        // Legitimate target successfully receives handoff and resumes context
+        let received = mobile.receive_handoff(handoff_state);
+        assert!(received);
+        let active = mobile.current_state().expect("State should be active");
+        assert_eq!(active.last_utterance, "Peux-tu resumer ce document ?");
+        assert_eq!(active.interaction_focus, Some("DocumentViewer".to_string()));
+    }
+}
+

@@ -75,4 +75,21 @@ mod tests {
         let follow_up = detector.process(&energetic_chunk);
         assert!(!follow_up.detected, "Cooldown must prevent consecutive wake word triggers");
     }
+
+    #[test]
+    fn test_vad_nan_and_inf_resilience() {
+        let mut vad = VoiceActivityDetector::default_silero_profile();
+
+        let corrupted_chunk = AudioChunk {
+            samples: vec![f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.2, 0.3],
+            sample_rate: 16_000,
+            channels: 1,
+            timestamp: annora_core::Timestamp::now(),
+        };
+
+        let res = vad.process(&corrupted_chunk);
+        assert!(!res.energy_rms.is_nan(), "RMS must never be NaN");
+        assert!(!res.speech_probability.is_nan(), "Speech probability must never be NaN");
+        assert!(res.speech_probability >= 0.0 && res.speech_probability <= 1.0);
+    }
 }

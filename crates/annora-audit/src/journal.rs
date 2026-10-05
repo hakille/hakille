@@ -353,5 +353,41 @@ mod tests {
         // Cleanup temp file
         let _ = std::fs::remove_file(db_path);
     }
+
+    #[test]
+    fn test_audit_journal_tampering_detection() {
+        let db_path = std::env::temp_dir().join(format!("test_journal_tamper_{}.redb", uuid::Uuid::now_v7()));
+        let db_str = db_path.to_str().unwrap();
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+        let journal = AuditJournal::new(db_str, signing_key).expect("journal creation failed");
+
+        let e1 = make_test_entry(true);
+        let _id1 = journal.append(e1).unwrap();
+        let e2 = make_test_entry(true);
+        let id2 = journal.append(e2).unwrap();
+
+        // Chain is valid initially
+        let ver = journal.verify_chain().unwrap();
+        assert_eq!(ver.valid_entries, 2);
+        assert_eq!(ver.broken_at, None);
+
+        // Tamper directly with entry 2 in the database
+        let write_txn = journal.db.begin_write().unwrap();
+        {
+            let mut entries_table = write_txn.open_table(ENTRIES_TABLE).unwrap();
+            let mut tampered_entry = journal.get(&id2).unwrap().unwrap();
+            tampered_entry.action.description = "MALICIOUS MODIFICATION".to_string();
+            let tampered_bytes = serde_json::to_vec(&tampered_entry).unwrap();
+            entries_table.insert(id2.0.as_bytes().as_slice(), tampered_bytes.as_slice()).unwrap();
+        }
+        write_txn.commit().unwrap();
+
+        // Verification must now detect tampering and report broken_at == Some(id2)
+        let ver_tampered = journal.verify_chain().unwrap();
+        assert_eq!(ver_tampered.valid_entries, 1);
+        assert_eq!(ver_tampered.broken_at, Some(id2));
+
+        let _ = std::fs::remove_file(db_path);
+    }
 }
 
