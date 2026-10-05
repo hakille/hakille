@@ -1,0 +1,59 @@
+# Manifeste Cognitive Fabric — Tier Souverain
+# Station de travail dédiée ou hub domestique (Redox OS / Linux Souverain)
+
+tier = "Sovereign"
+
+[capabilities.listen]
+model_ref = "SenseVoice-Small"
+runtime = "OnnxRuntime"
+quantization = "INT8"
+max_memory_mb = 250
+loading_strategy = "AlwaysResident"
+
+[capabilities.listen_long]
+model_ref = "VibeVoice-ASR"
+runtime = "Gguf"
+quantization = "BitNet"
+max_memory_mb = 1600
+loading_strategy = "OnDemand"
+
+[capabilities.diarize]
+model_ref = "Nemotron-3-Diarization"
+runtime = "OnnxRuntime"
+quantization = "INT8"
+max_memory_mb = 400
+loading_strategy = "AlwaysResident"
+
+[capabilities.identify]
+model_ref = "CAM++"
+runtime = "OnnxRuntime"
+quantization = "INT8"
+max_memory_mb = 35
+loading_strategy = "AlwaysResident"
+
+[capabilities.speak]
+model_ref = "Kyutai-Moshi"
+runtime = "Candle"
+quantization = "INT8"
+max_memory_mb = 8192
+loading_strategy = "AlwaysResident"
+
+[capabilities.act_gui]
+model_ref = "UI-TARS-7B-DPO"
+runtime = "Gguf"
+quantization = "Q4_K_M"
+max_memory_mb = 5500
+loading_strategy = "OnDemand"
+
+[capabilities.reason]
+model_ref = "Qwen3-8B"
+runtime = "Candle"
+quantization = "Q4_K_M"
+max_memory_mb = 5000
+loading_strategy = "AlwaysResident"
+
+[capabilities.reason_heavy]
+model_ref = "BYOM-Cluster-System2"
+runtime = "Candle"
+max_memory_mb = 16384
+loading_strategy = "OnDemand"

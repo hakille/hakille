@@ -1,0 +1,6 @@
+id = "agent-mail"
+name = "Mail Agent"
+version = "0.1.0"
+description = "Scoped email retrieval and drafting assistant"
+required_capabilities = ["Network", "Filesystem"]
+isolated = true

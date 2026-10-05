@@ -1,0 +1,6 @@
+id = "agent-code"
+name = "Code Agent"
+version = "0.1.0"
+description = "Scoped software engineering, code generation and inspection agent"
+required_capabilities = ["Filesystem"]
+isolated = true

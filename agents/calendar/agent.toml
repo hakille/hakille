@@ -1,0 +1,6 @@
+id = "agent-calendar"
+name = "Calendar Agent"
+version = "0.1.0"
+description = "Scoped event planning and scheduling agent"
+required_capabilities = ["Filesystem"]
+isolated = true

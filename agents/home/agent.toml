@@ -1,0 +1,6 @@
+id = "agent-home"
+name = "Smart Home Agent"
+version = "0.1.0"
+description = "Scoped home automation, temperature, and lighting controller"
+required_capabilities = ["Network", "Sensor"]
+isolated = true

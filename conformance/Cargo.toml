@@ -1,0 +1,36 @@
+[package]
+name = "conformance"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+annora-core = { path = "../crates/annora-core" }
+annora-substrate = { path = "../crates/annora-substrate" }
+annora-substrate-windows = { path = "../crates/annora-substrate-windows" }
+annora-substrate-linux = { path = "../crates/annora-substrate-linux" }
+annora-substrate-macos = { path = "../crates/annora-substrate-macos" }
+annora-substrate-redox = { path = "../crates/annora-substrate-redox" }
+annora-substrate-mobile = { path = "../crates/annora-substrate-mobile" }
+annora-substrate-web = { path = "../crates/annora-substrate-web" }
+annora-kernel = { path = "../crates/annora-kernel" }
+annora-memory = { path = "../crates/annora-memory" }
+annora-constitution = { path = "../crates/annora-constitution" }
+annora-audit = { path = "../crates/annora-audit" }
+annora-agents = { path = "../crates/annora-agents" }
+annora-voice = { path = "../crates/annora-voice" }
+annora-sync = { path = "../crates/annora-sync" }
+annora-ui = { path = "../crates/annora-ui" }
+annora-metrics = { path = "../crates/annora-metrics" }
+annora-auth = { path = "../crates/annora-auth" }
+annora-perception = { path = "../crates/annora-perception" }
+annora-inference = { path = "../crates/annora-inference" }
+tempfile = "3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+proptest = { workspace = true }
+async-trait = { workspace = true }

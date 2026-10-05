@@ -1,0 +1,26 @@
+# Manifeste Cognitive Fabric — Tier Invité
+# Mobile (Android/iOS) et Web WASM
+
+tier = "Guest"
+
+[capabilities.listen]
+model_ref = "Moonshine-Mobile"
+runtime = "OnnxRuntime"
+quantization = "INT8"
+max_memory_mb = 120
+loading_strategy = "AlwaysResident"
+
+[capabilities.speak]
+model_ref = "NeuTTS-Air"
+runtime = "Gguf"
+quantization = "Q4"
+max_memory_mb = 350
+loading_strategy = "AlwaysResident"
+
+[capabilities.identify]
+model_ref = "CAM++-Edge"
+runtime = "OnnxRuntime"
+max_memory_mb = 35
+loading_strategy = "AlwaysResident"
+
+# Les actions lourdes et le raisonnement sont déportés vers le Hub via CRDT / ombre distante

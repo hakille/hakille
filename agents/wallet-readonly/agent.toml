@@ -1,0 +1,7 @@
+id = "agent-wallet-readonly"
+name = "Wallet Read-Only Agent"
+version = "0.1.0"
+description = "Financial balance reader without fund transfer capabilities"
+required_capabilities = ["Wallet"]
+isolated = true
+read_only = true

@@ -1,0 +1,39 @@
+# Manifeste Cognitive Fabric — Tier Natif
+# Laptop et stations sous Windows, Linux standard, macOS
+
+tier = "Native"
+
+[capabilities.listen]
+model_ref = "SenseVoice-Small"
+runtime = "OnnxRuntime"
+quantization = "INT8"
+max_memory_mb = 250
+loading_strategy = "AlwaysResident"
+
+[capabilities.identify]
+model_ref = "CAM++"
+runtime = "OnnxRuntime"
+quantization = "INT8"
+max_memory_mb = 35
+loading_strategy = "AlwaysResident"
+
+[capabilities.speak]
+model_ref = "CosyVoice2-0.5B"
+runtime = "Candle"
+quantization = "INT8"
+max_memory_mb = 800
+loading_strategy = "AlwaysResident"
+
+[capabilities.act_gui]
+model_ref = "UI-TARS-7B-DPO"
+runtime = "Gguf"
+quantization = "Q4_K_M"
+max_memory_mb = 5500
+loading_strategy = "OnDemand"
+
+[capabilities.reason]
+model_ref = "Qwen-7B-Q4"
+runtime = "Candle"
+quantization = "Q4_K_M"
+max_memory_mb = 4200
+loading_strategy = "AlwaysResident"
