@@ -6,6 +6,9 @@ use annora_core::{
     ActorId, CapabilityAuthority, CapabilityScope, EntryId, KeyPair,
     Timestamp, TrustLevel, UserId,
 };
+use annora_inference::{
+    ModelCatalog, ModelProvisioner, ModelTier,
+};
 use annora_kernel::{
     fabric::{CognitiveFabric, CognitiveManifest},
     orchestrator::CognitiveOrchestrator,
@@ -21,7 +24,28 @@ use annora_sync::{CrdtSync, HandoffCoordinator};
 use annora_ui::{CostCounter, OnboardingManager, PresenceIndicator, PresenceState};
 use annora_voice::{BargeInDetector, CosyVoice2Engine, MoshiEngine};
 use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
 use uuid::Uuid;
+
+fn make_cli_progress_callback() -> annora_inference::ProgressCallback {
+    Arc::new(|p: &annora_inference::DownloadProgress| {
+        let pct_str = match p.percentage {
+            Some(pct) => format!("{:5.1}%", pct),
+            None => "  ?% ".to_string(),
+        };
+        let mb_downloaded = p.bytes_downloaded as f64 / 1_048_576.0;
+        let mb_total = p.total_bytes
+            .map(|t| format!("{:.1} MB", t as f64 / 1_048_576.0))
+            .unwrap_or_else(|| "? MB".to_string());
+        let speed_mb = p.speed_bytes_per_sec / 1_048_576.0;
+        print!(
+            "\r  -> [{}] {:.1} MB / {} ({}) @ {:.2} MB/s      ",
+            p.filename, mb_downloaded, mb_total, pct_str, speed_mb
+        );
+        let _ = io::stdout().flush();
+    })
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,19 +54,161 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let mut eval_prompt: Option<String> = None;
     let mut daily_budget_cents: u64 = 500;
+    let mut models_dir = std::env::var("ANNORA_MODELS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("./models"));
+    let mut auto_download_models = false;
+
+    // Check for CLI subcommands first: `models list`, `models download`, `models verify`
+    if args.len() > 1 && args[1] == "models" {
+        let provisioner = ModelProvisioner::new(models_dir);
+        let subcmd = args.get(2).map(|s| s.as_str()).unwrap_or("list");
+
+        match subcmd {
+            "list" => {
+                println!("============================================================");
+                println!("  Annora Sovereign Model Catalog & Local Cache Status");
+                println!("  Cache Directory: {}", provisioner.cache_dir().display());
+                println!("============================================================");
+
+                let statuses = provisioner.list_all_status();
+                for s in statuses {
+                    let status_badge = if s.is_installed {
+                        format!("[INSTALLED - {:.1} MB]", s.total_disk_bytes as f64 / 1_048_576.0)
+                    } else {
+                        "[NOT DOWNLOADED]".to_string()
+                    };
+                    println!(
+                        "• {:<28} {:<10?} {:<18} {}",
+                        s.entry.id, s.entry.tier, status_badge, s.entry.name
+                    );
+                    println!("    Format: {:?} | Runtime: {:?} | RAM: {}MB | VRAM: {}MB",
+                        s.entry.format, s.entry.runtime, s.entry.expected_ram_mb, s.entry.expected_vram_mb
+                    );
+                    println!("    File: {}", s.entry.primary_artifact.filename);
+                    if !s.missing_artifacts.is_empty() {
+                        println!("    Missing: {}", s.missing_artifacts.join(", "));
+                    }
+                    println!();
+                }
+                return Ok(());
+            }
+            "download" => {
+                let mut target_tier = None;
+                let mut target_model_id = None;
+                let mut idx = 3;
+                while idx < args.len() {
+                    match args[idx].as_str() {
+                        "--tier" => {
+                            if idx + 1 < args.len() {
+                                target_tier = match args[idx + 1].to_lowercase().as_str() {
+                                    "guest" => Some(ModelTier::Guest),
+                                    "native" => Some(ModelTier::Native),
+                                    "sovereign" => Some(ModelTier::Sovereign),
+                                    _ => None,
+                                };
+                                idx += 1;
+                            }
+                        }
+                        "--model" => {
+                            if idx + 1 < args.len() {
+                                target_model_id = Some(args[idx + 1].clone());
+                                idx += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                    idx += 1;
+                }
+
+                println!("============================================================");
+                println!("  Annora Autonomous Model Downloader (Zero-Touch Provisioning)");
+                println!("  Target Directory: {}", provisioner.cache_dir().display());
+                println!("============================================================");
+
+                let progress = Some(make_cli_progress_callback());
+
+                if let Some(model_id) = target_model_id {
+                    println!("\n[Provisioning Model: {}]", model_id);
+                    let res = provisioner.provision_by_id(&model_id, progress).await;
+                    println!();
+                    match res {
+                        Ok(path) => println!("✓ Model '{}' successfully provisioned at: {}", model_id, path.display()),
+                        Err(e) => eprintln!("✗ Failed to provision '{}': {}", model_id, e),
+                    }
+                } else if let Some(tier) = target_tier {
+                    println!("\n[Provisioning Tier: {:?}]", tier);
+                    let models = ModelCatalog::models_for_tier(tier);
+                    for m in models {
+                        println!("\n-> Provisioning: {} ({})", m.name, m.id);
+                        let res = provisioner.provision_model(&m, progress.clone()).await;
+                        println!();
+                        match res {
+                            Ok(path) => println!("✓ Installed: {}", path.display()),
+                            Err(e) => eprintln!("✗ Failed for {}: {}", m.id, e),
+                        }
+                    }
+                } else {
+                    println!("\n[Provisioning All Foundation Models in Catalog]");
+                    for m in provisioner.catalog() {
+                        println!("\n-> Provisioning: {} ({})", m.name, m.id);
+                        let res = provisioner.provision_model(m, progress.clone()).await;
+                        println!();
+                        match res {
+                            Ok(path) => println!("✓ Installed: {}", path.display()),
+                            Err(e) => eprintln!("✗ Failed for {}: {}", m.id, e),
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            "verify" => {
+                println!("============================================================");
+                println!("  Verifying Cryptographic Integrity of Local Model Cache");
+                println!("  Directory: {}", provisioner.cache_dir().display());
+                println!("============================================================");
+
+                let statuses = provisioner.list_all_status();
+                for s in statuses {
+                    if !s.is_installed {
+                        println!("• {:<28} [SKIPPED - Not downloaded]", s.entry.id);
+                        continue;
+                    }
+                    match provisioner.verify_integrity(&s.entry) {
+                        Ok(true) => println!("• {:<28} [INTEGRITY OK - Hash Verified]", s.entry.id),
+                        Ok(false) => println!("• {:<28} [CORRUPTED OR CHECKSUM MISMATCH]", s.entry.id),
+                        Err(e) => println!("• {:<28} [VERIFICATION ERROR: {}]", s.entry.id, e),
+                    }
+                }
+                return Ok(());
+            }
+            _ => {
+                println!("Unknown model subcommand: {}", subcmd);
+                println!("Usage: annora-daemon models [list|download|verify]");
+                return Ok(());
+            }
+        }
+    }
 
     let mut arg_idx = 1;
     while arg_idx < args.len() {
         match args[arg_idx].as_str() {
             "--help" | "-h" => {
                 println!("Annora Sovereign Cognitive OS Daemon");
-                println!("Usage: annora-daemon [OPTIONS]");
+                println!("Usage: annora-daemon [COMMAND] [OPTIONS]");
+                println!();
+                println!("Commands:");
+                println!("  models list                 List catalog models and cache status");
+                println!("  models download [OPTIONS]   Download foundation models");
+                println!("  models verify               Verify SHA-256 integrity of models");
                 println!();
                 println!("Options:");
-                println!("  --eval-prompt <PROMPT>   Execute a single turn headlessly and exit");
-                println!("  --budget <CENTS>         Set daily System 2 budget in cents (default: 500)");
-                println!("  --version, -v            Print version information");
-                println!("  --help, -h               Print this help message");
+                println!("  --eval-prompt <PROMPT>      Execute a single turn headlessly and exit");
+                println!("  --budget <CENTS>            Set daily System 2 budget in cents (default: 500)");
+                println!("  --models-dir <PATH>         Custom models storage directory");
+                println!("  --auto-download             Automatically download missing essential models");
+                println!("  --version, -v               Print version information");
+                println!("  --help, -h                  Print this help message");
                 return Ok(());
             }
             "--version" | "-v" => {
@@ -62,6 +228,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     arg_idx += 1;
                 }
+            }
+            "--models-dir" => {
+                if arg_idx + 1 < args.len() {
+                    models_dir = PathBuf::from(&args[arg_idx + 1]);
+                    arg_idx += 1;
+                }
+            }
+            "--auto-download" => {
+                auto_download_models = true;
             }
             _ => {}
         }
@@ -107,8 +282,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  User Identity: {} (Initialized)", user_id.0);
     println!("  CRDT State: 0 tombstones, vector clock ready");
 
-    // 4. Initialize Perception & Voice Engines
-    println!("\n[4/6] Bootstrapping Perception Pipeline & Moshi Voice Engine...");
+    // 4. Initialize Inference & Perception Pipelines
+    println!("\n[4/6] Bootstrapping Inference Models & Perception Pipeline...");
+    let provisioner = ModelProvisioner::new(models_dir.clone());
+    let model_statuses = provisioner.list_all_status();
+    let installed_count = model_statuses.iter().filter(|s| s.is_installed).count();
+    println!("  Model Cache Directory: {}", models_dir.display());
+    println!("  Foundation Models: {}/{} installed locally on disk", installed_count, model_statuses.len());
+
+    if auto_download_models && installed_count < model_statuses.len() {
+        println!("  [Auto-Download] Provisioning essential models autonomously...");
+        let progress = Some(make_cli_progress_callback());
+        for m in ModelCatalog::models_for_tier(ModelTier::Guest) {
+            let _ = provisioner.provision_model(&m, progress.clone()).await;
+            println!();
+        }
+    }
+
     let mut _vad = VoiceActivityDetector::default_silero_profile();
     let mut _wake_word = WakeWordDetector::default_annora();
     let _asr = SenseVoiceSmall::new();
@@ -176,7 +366,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n============================================================");
-    println!("Annora is running. Type a prompt, or a command (:help, :status, :metrics, :exit)");
+    println!("Annora is running. Type a prompt, or a command (:help, :status, :models, :exit)");
     println!("============================================================\n");
 
     let stdin = io::stdin();
@@ -222,14 +412,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             ":help" => {
                 println!("Available commands:");
-                println!("  :status     Show platform tier, memory, and presence state");
-                println!("  :metrics    Display 3 North-Star metrics and ethics drift status");
-                println!("  :agents     List registered WASM agents");
-                println!("  :cost       Display System 2 inference cost tracking");
-                println!("  :memory     Display all triplets currently stored in knowledge graph");
-                println!("  :remember   Add a fact to knowledge graph (e.g. :remember Alice aime Rust)");
-                println!("  :recall     Search memory graph by keyword (e.g. :recall Rust)");
-                println!("  :exit       Shutdown Annora daemon");
+                println!("  :models           List all AI models and local cache status");
+                println!("  :download <id>    Download and verify a model by ID (e.g. :download silero-vad-v5)");
+                println!("  :verify-models    Verify cryptographic SHA-256 of all installed models");
+                println!("  :status           Show platform tier, memory, and presence state");
+                println!("  :metrics          Display 3 North-Star metrics and ethics drift status");
+                println!("  :agents           List registered WASM agents");
+                println!("  :cost             Display System 2 inference cost tracking");
+                println!("  :memory           Display all triplets currently stored in knowledge graph");
+                println!("  :remember         Add a fact to knowledge graph (e.g. :remember Alice aime Rust)");
+                println!("  :recall           Search memory graph by keyword (e.g. :recall Rust)");
+                println!("  :exit             Shutdown Annora daemon");
+            }
+            ":models" => {
+                println!("Foundation Model Catalog (Directory: {}):", provisioner.cache_dir().display());
+                for s in provisioner.list_all_status() {
+                    let badge = if s.is_installed {
+                        format!("[INSTALLED - {:.1} MB]", s.total_disk_bytes as f64 / 1_048_576.0)
+                    } else {
+                        "[NOT DOWNLOADED]".to_string()
+                    };
+                    println!("  • {:<26} {:<10?} {:<18} {}", s.entry.id, s.entry.tier, badge, s.entry.name);
+                }
+            }
+            s if s.starts_with(":download ") => {
+                let model_id = s.trim_start_matches(":download ").trim();
+                println!("Downloading model '{}'...", model_id);
+                let progress = Some(make_cli_progress_callback());
+                match provisioner.provision_by_id(model_id, progress).await {
+                    Ok(path) => println!("\n✓ Model '{}' successfully provisioned at: {}", model_id, path.display()),
+                    Err(e) => eprintln!("\n✗ Failed to download '{}': {}", model_id, e),
+                }
+            }
+            ":verify-models" => {
+                println!("Verifying models integrity...");
+                for s in provisioner.list_all_status() {
+                    if !s.is_installed { continue; }
+                    match provisioner.verify_integrity(&s.entry) {
+                        Ok(true) => println!("  • {:<26} [OK - Valid]", s.entry.id),
+                        Ok(false) => println!("  • {:<26} [CORRUPTED/CHECKSUM MISMATCH]", s.entry.id),
+                        Err(e) => println!("  • {:<26} [ERROR: {}]", s.entry.id, e),
+                    }
+                }
             }
             ":memory" => {
                 println!("Sovereign Knowledge Graph ({} triplets):", orchestrator.memory_graph.len());

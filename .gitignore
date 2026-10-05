@@ -4,3 +4,7 @@
 *.exe
 .DS_Store
 Thumbs.db
+models/*.onnx
+models/*.gguf
+models/*.safetensors
+models/*.part
