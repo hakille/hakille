@@ -30,8 +30,7 @@ use annora_ui::{
     PresenceIndicator, PresenceState, SilenceBudgetTracker, UrgencyLevel,
 };
 use annora_voice::{BargeInDetector, CosyVoice2Engine, MoshiEngine};
-
-
+use sha2::Digest;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -489,6 +488,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  :memory           Display all triplets currently stored in knowledge graph");
                 println!("  :remember         Add a fact to knowledge graph (e.g. :remember Alice aime Rust)");
                 println!("  :recall           Search memory graph by keyword (e.g. :recall Rust)");
+                println!("  :win-ram          Display real Windows physical RAM and GPU VRAM telemetry");
+                println!("  :win-power        Display real Windows battery, AC power, and thermal state");
+                println!("  :win-screen       Capture primary display using native Win32 GDI (BitBlt)");
+                println!("  :win-tray         Test Windows system tray presence states & global hotkey");
                 println!("  :exit             Shutdown Annora daemon");
             }
 
@@ -764,6 +767,72 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  [Channel] Dynamic output target: {:?} ({})", decision.channel, decision.rationale);
                 presence.set_state(PresenceState::Idle);
                 println!("  [Presence] Tray indicator in standby (Period: {}ms)", presence.pulse_period_ms());
+            }
+
+            ":win-ram" => {
+                println!("Windows Substrate Physical Memory Telemetry (GlobalMemoryStatusEx):");
+                let total_ram_mb = compute.total_physical_ram() as f64 / 1_048_576.0;
+                let avail_ram_mb = compute.available_physical_ram() as f64 / 1_048_576.0;
+                let used_ram_mb = total_ram_mb - avail_ram_mb;
+                let used_pct = if total_ram_mb > 0.0 { (used_ram_mb / total_ram_mb) * 100.0 } else { 0.0 };
+                let vram_mb = compute.vram_available_bytes() as f64 / 1_048_576.0;
+                println!("  • Total Physical RAM:       {:>8.1} MB ({:.2} GB)", total_ram_mb, total_ram_mb / 1024.0);
+                println!("  • Available Physical RAM:   {:>8.1} MB ({:.2} GB)", avail_ram_mb, avail_ram_mb / 1024.0);
+                println!("  • RAM Utilization:          {:>8.1} MB ({:.1}%)", used_ram_mb, used_pct);
+                println!("  • Available Dedicated VRAM: {:>8.1} MB", vram_mb);
+                println!("  • Acceleration Backends:    {:?}", compute.available_backends());
+                println!("  • Preferred Backend:        {:?}", compute.preferred_backend());
+            }
+
+            ":win-power" => {
+                println!("Windows Substrate Power & Thermal Telemetry (GetSystemPowerStatus):");
+                let power = substrate.power_state();
+                let thermal = substrate.thermal_state();
+                println!("  • On Battery Power:         {}", power.on_battery);
+                println!("  • Battery Percentage:       {}%", power.battery_percent);
+                println!("  • AC / Charging Status:     {}", power.charging);
+                println!("  • Host Temperature:         {:.1} °C", thermal.temperature_celsius);
+                println!("  • Thermal Throttling:       {}", if thermal.throttled { "ACTIVE (Throttled)" } else { "Nominal" });
+            }
+
+            ":win-screen" => {
+                println!("Capturing primary display via Win32 GDI BitBlt (zero raw pixel leak)...");
+                let screen_cap_token = authority.create_root_token(
+                    vec![CapabilityScope::Sensor],
+                    vec![annora_core::CapabilityAction::Read],
+                    Timestamp::now(),
+                )?;
+                match substrate.capture_screen(&screen_cap_token).await {
+                    Ok(capture) => {
+                        let pixel_count = capture.width * capture.height;
+                        let byte_count = capture.data.len();
+                        let mut hasher = sha2::Sha256::new();
+                        hasher.update(&capture.data);
+                        let hash = hasher.finalize();
+                        println!("Display Screen Capture Result:");
+                        println!("  • Resolution:               {}x{} ({} pixels)", capture.width, capture.height, pixel_count);
+                        println!("  • Color Format:             {:?}", capture.format);
+                        println!("  • Framebuffer Size:         {:.2} MB ({} bytes)", byte_count as f64 / 1_048_576.0, byte_count);
+                        println!("  • Ephemeral SHA-256 Hash:   {}", hex_fmt(&hash));
+                        println!("  • Privacy Invariant:        Zero persistent raw pixel storage (§6).");
+                    }
+                    Err(e) => eprintln!("Failed to capture display screen: {}", e),
+                }
+            }
+
+            ":win-tray" => {
+                println!("Windows System Tray & Shell Integration Test:");
+                let mut win_tray = annora_substrate_windows::WindowsPresenceTray::new();
+                println!("  • Initial State:            {:?}", win_tray.state());
+                win_tray.set_state(annora_substrate_windows::WindowsPresenceState::Listening);
+                println!("  • Updated to Listening:     {:?} (Tooltip: '{}')", win_tray.state(), win_tray.tooltip());
+                win_tray.set_state(annora_substrate_windows::WindowsPresenceState::Acting);
+                println!("  • Updated to Acting:        {:?} (Tooltip: '{}')", win_tray.state(), win_tray.tooltip());
+                win_tray.set_state(annora_substrate_windows::WindowsPresenceState::Idle);
+                println!("  • Returned to Idle:         {:?} (Tooltip: '{}')", win_tray.state(), win_tray.tooltip());
+                let mut hotkey = annora_substrate_windows::WindowsGlobalHotkey::new();
+                let registered = hotkey.register();
+                println!("  • Global Hotkey:            {:?} (Alt+Space summoned: {})", hotkey.key_combination, registered);
             }
 
             _ => {

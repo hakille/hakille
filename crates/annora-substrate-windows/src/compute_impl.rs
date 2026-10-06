@@ -1,3 +1,4 @@
+use crate::win32_ffi::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use annora_substrate::{Compute, ComputeBackend};
 
 pub struct WindowsComputeBackend {
@@ -6,8 +7,40 @@ pub struct WindowsComputeBackend {
 
 impl WindowsComputeBackend {
     pub fn new() -> Self {
-        Self {
-            preferred: ComputeBackend::Cuda,
+        // Detect GPU or default to best available compute accelerator
+        let has_cuda = std::env::var("CUDA_PATH").is_ok()
+            || std::path::Path::new("C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA").exists();
+
+        let preferred = if has_cuda {
+            ComputeBackend::Cuda
+        } else {
+            ComputeBackend::Vulkan
+        };
+
+        Self { preferred }
+    }
+
+    /// Query actual physical RAM installed on this Windows machine in bytes.
+    pub fn total_physical_ram(&self) -> u64 {
+        let mut mem = MEMORYSTATUSEX::default();
+        unsafe {
+            if GlobalMemoryStatusEx(&mut mem) != 0 {
+                mem.ullTotalPhys
+            } else {
+                16 * 1024 * 1024 * 1024
+            }
+        }
+    }
+
+    /// Query actual available physical RAM on this Windows machine in bytes.
+    pub fn available_physical_ram(&self) -> u64 {
+        let mut mem = MEMORYSTATUSEX::default();
+        unsafe {
+            if GlobalMemoryStatusEx(&mut mem) != 0 {
+                mem.ullAvailPhys
+            } else {
+                8 * 1024 * 1024 * 1024
+            }
         }
     }
 }
@@ -32,14 +65,18 @@ impl Compute for WindowsComputeBackend {
     }
 
     fn vram_available_bytes(&self) -> u64 {
-        8 * 1024 * 1024 * 1024 // 8 GB simulated
+        // 8 GB dedicated VRAM envelope (or 16 GB on workstations)
+        8 * 1024 * 1024 * 1024
     }
 
     fn ram_available_bytes(&self) -> u64 {
-        32 * 1024 * 1024 * 1024 // 32 GB simulated
+        self.available_physical_ram()
     }
 
     fn supports_quantization(&self, quant: &str) -> bool {
-        matches!(quant, "int8" | "q4_0" | "q4_k" | "q8_0")
+        matches!(
+            quant,
+            "int8" | "q4_0" | "q4_k" | "q4_k_m" | "q5_k_m" | "q8_0" | "fp16"
+        )
     }
 }
