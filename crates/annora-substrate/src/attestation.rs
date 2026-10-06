@@ -106,3 +106,31 @@ pub enum ComputeBackend {
     WebGpu,
     Vulkan,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CameraFacing {
+    Front,
+    Back,
+    External,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CameraConfig {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub facing: CameraFacing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CameraStreamHandle(pub u64);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CameraFrame {
+    pub width: u32,
+    pub height: u32,
+    pub data: Vec<u8>,
+    pub format: ImageFormat,
+    pub timestamp_ms: u64,
+}
+

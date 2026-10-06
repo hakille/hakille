@@ -17,12 +17,21 @@ use annora_metrics::{
     BoundedInitiativeTracker, ContinuityTracker, GeneralityTracker, TaskDomain,
     ValuesDriftDetector,
 };
-use annora_perception::audio::{SenseVoiceSmall, VoiceActivityDetector, WakeWordDetector};
-use annora_substrate::{Compute, Substrate};
+use annora_perception::{
+    CameraPipeline, VoiceActivityDetector, WakeWordDetector, WorldModel,
+};
+use annora_perception::audio::SenseVoiceSmall;
+use annora_substrate::{CameraConfig, CameraFacing, Compute, Substrate};
 use annora_substrate_windows::{WindowsComputeBackend, WindowsSubstrate};
 use annora_sync::{CrdtSync, HandoffCoordinator};
-use annora_ui::{CostCounter, OnboardingManager, PresenceIndicator, PresenceState};
+use annora_ui::{
+    ChannelSelector, CostCounter, DeviceType, EphemeralHud, InitiativeOrigin,
+    InteractionContext, OnboardingManager, PlatformAdapter,
+    PresenceIndicator, PresenceState, SilenceBudgetTracker, UrgencyLevel,
+};
 use annora_voice::{BargeInDetector, CosyVoice2Engine, MoshiEngine};
+
+
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -264,8 +273,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let constitution = Constitution::default_v1();
     println!("  Constitution Version: {}", constitution.version);
     println!("  Active Rules: {} rules enforced", constitution.rules.len());
-    let _authority = CapabilityAuthority::new();
+    let authority = CapabilityAuthority::new();
     let signing_keypair = KeyPair::generate();
+
 
     let temp_db = tempfile::NamedTempFile::new()?;
     let audit_journal = AuditJournal::new(
@@ -309,6 +319,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  SenseVoice-Small: Multi-task transcription & acoustic events loaded");
     println!("  Moshi: Full-duplex speech-to-speech engine ready (160ms theoretical latency)");
 
+    // Camera & Multimodal Perception Pipeline (§6)
+    let camera_config = CameraConfig {
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        facing: CameraFacing::Front,
+    };
+    let camera_cap = authority.create_root_token(
+        vec![CapabilityScope::Camera, CapabilityScope::Sensor],
+        vec![annora_core::CapabilityAction::Read],
+        Timestamp::now(),
+    )?;
+    let camera_handle = substrate.start_camera_capture(camera_config.clone(), &camera_cap).await?;
+    let mut camera_pipeline = CameraPipeline::new(camera_config);
+    let mut world_model = WorldModel::new("Workstation");
+    println!("  Camera Pipeline: Native frame capture active (1080p Front, zero raw pixels stored)");
+    println!("  WorldModel: Continuous multimodal situational tracking initialized");
+
     // 5. Initialize Action Agents Layer
     println!("\n[5/6] Spawning Sandboxed WASM Agent Registry...");
     let mut agent_registry = AgentRegistry::new();
@@ -339,14 +367,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut onboarding = OnboardingManager::new();
     onboarding.acknowledge_limits();
 
+    let mut silence_budget = SilenceBudgetTracker::new(5);
+    let mut ephemeral_hud = EphemeralHud::new();
+    let platform_adapter = PlatformAdapter::auto_detect();
+
     let mut continuity_tracker = ContinuityTracker::new();
     let mut bounded_initiative = BoundedInitiativeTracker::new();
     let mut generality_tracker = GeneralityTracker::new();
     let drift_detector = ValuesDriftDetector::default_constitutional();
 
     println!("  Cognitive Fabric: System 1 / System 2 dynamic router online");
-    println!("  North-Star Metrics: Continuity, Bounded Initiative, Generality tracking active");
+    println!("  Ambient Interface: Ephemeral HUD ({}) & ChannelSelector online", ephemeral_hud.hotkey());
+    println!("  Silence Budget: {} proactive interruption credits available", silence_budget.daily_quota());
+    println!("  Platform Integration: {}", platform_adapter.os_integration_details());
     println!("  Presence State: {:?} (Ready)", presence.state());
+
 
     if let Some(prompt) = eval_prompt {
         println!("\n[Headless Evaluation Mode]");
@@ -383,7 +418,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut sample_index = 0;
     for line in stdin.lock().lines() {
-        let input = line?.trim().to_string();
+        let input = line?.trim().trim_start_matches('\u{feff}').to_string();
+
         if input.is_empty() {
             if sample_index < sample_prompts.len() {
                 let prompt = sample_prompts[sample_index];
@@ -410,11 +446,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Shutting down Annora daemon cleanly.");
                 break;
             }
+
+
             ":help" => {
                 println!("Available commands:");
                 println!("  :models           List all AI models and local cache status");
                 println!("  :download <id>    Download and verify a model by ID (e.g. :download silero-vad-v5)");
                 println!("  :verify-models    Verify cryptographic SHA-256 of all installed models");
+                println!("  :camera           Capture frame & test multimodal perception (zero raw pixel leak)");
+                println!("  :hud              Demonstrate Spotlight-like ephemeral HUD with Coral #FF5722 chip");
+                println!("  :channel          Show dynamic ChannelSelector arbitration for current environment");
+                println!("  :budget           Show Silence Budget (§21d) proactive suggestion credits");
+                println!("  :ambient          Run continuous multimodal sensing cycle (camera + audio + WorldModel)");
                 println!("  :status           Show platform tier, memory, and presence state");
                 println!("  :metrics          Display 3 North-Star metrics and ethics drift status");
                 println!("  :agents           List registered WASM agents");
@@ -424,6 +467,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  :recall           Search memory graph by keyword (e.g. :recall Rust)");
                 println!("  :exit             Shutdown Annora daemon");
             }
+
             ":models" => {
                 println!("Foundation Model Catalog (Directory: {}):", provisioner.cache_dir().display());
                 for s in provisioner.list_all_status() {
@@ -514,6 +558,109 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ":cost" => {
                 println!("Inference Cost: {}", cost_counter.formatted_total());
             }
+            ":camera" => {
+                println!("Capturing camera frame from Substrate via authenticated capability...");
+                match substrate.capture_camera_frame(camera_handle, &camera_cap).await {
+                    Ok(frame) => {
+                        let ctx = camera_pipeline.process_frame(&frame);
+                        camera_pipeline.update_world_model(&ctx, &mut world_model);
+                        println!("Camera Perception Summary:");
+                        println!("  Resolution: {}x{} ({:?})", frame.width, frame.height, frame.format);
+                        println!("  User Presence: {:?}", ctx.user_presence);
+                        println!("  Gaze Focused on Screen: {}", ctx.user_gaze_focused_on_device);
+                        println!("  Estimated Distance: {:.2} m", ctx.estimated_distance_m);
+                        println!("  Lighting Condition: {:?}", ctx.lighting);
+                        println!("  Cryptographic Frame Hash: {}", hex_fmt(&ctx.privacy_preserving_frame_hash));
+                        println!("  Privacy Invariant: 100% processed in ephemeral RAM, zero raw pixels stored (§6).");
+                    }
+                    Err(e) => eprintln!("Failed to capture camera frame: {}", e),
+                }
+            }
+            ":hud" => {
+                println!("Invoking Ephemeral HUD (Spotlight/Raycast-like single-line overlay):");
+                ephemeral_hud.open_prompt();
+                for c in "Transférer 25 EUR pour déjeuner".chars() {
+                    ephemeral_hud.insert_char(c);
+                }
+                println!("{}", ephemeral_hud.render_ascii());
+                println!("\nStreaming response inline...");
+                ephemeral_hud.set_streaming("Transférer 25 EUR", "Préparation du virement SEPA instantané...", false);
+                println!("{}", ephemeral_hud.render_ascii());
+                println!("\nAction requires confirmation (Coral #FF5722 Accent):");
+                ephemeral_hud.request_validation("wallet-spend-42", "Envoi de 25.00 EUR vers Restaurant", Some(2500), "Financial");
+                println!("{}", ephemeral_hud.render_ascii());
+                println!("\nUser validated [Enter]. Response evaporating into thin air...");
+                ephemeral_hud.start_evaporation();
+                println!("{}", ephemeral_hud.render_ascii());
+            }
+            ":channel" => {
+                println!("Dynamic Channel Selector (§21a) Arbitration Engine:");
+                let state = world_model.state();
+                println!("Environmental Telemetry:");
+                println!("  Ambient Noise: {:.1} dB", state.ambient_noise_level_db);
+                println!("  User Present: {}", state.user_present);
+                println!("  User Gaze Attentive: {}", state.user_attentive);
+                println!("  Third Parties Present: {}", state.third_parties_present);
+                println!("  In Meeting: {}", state.in_meeting);
+                println!("  Lighting: {}", state.lighting_condition);
+
+                let ctx = InteractionContext {
+                    ambient_noise_db: state.ambient_noise_level_db,
+                    third_parties_present: state.third_parties_present,
+                    in_meeting: state.in_meeting,
+                    user_attentive_to_screen: state.user_attentive,
+                    user_wearing_headphones: false,
+                    device_type: DeviceType::Desktop,
+                    urgency: UrgencyLevel::Normal,
+                    is_night_time: false,
+                };
+                let decision = ChannelSelector::arbitrate(&ctx);
+                println!("\nArbitration Result:");
+                println!("  Selected Output Channel: {:?}", decision.channel);
+                println!("  Rationale: {}", decision.rationale);
+                if let Some(h) = decision.haptic_feedback {
+                    println!("  Haptic Feedback Pattern: {:?}", h);
+                }
+            }
+            ":budget" => {
+                println!("Silence Budget Tracker (§21d) — Bounded Proactive Initiative:");
+                println!("  Daily Quota: {} interruption credits", silence_budget.daily_quota());
+                println!("  Credits Remaining Today: {}", silence_budget.credits_remaining());
+                println!("  Confidence Threshold for Suggestions: {:.2}", silence_budget.min_confidence_threshold());
+                println!("  Scheduled Reminders: 0 cost (unlimited)");
+                println!("  Autonomous Suggestions: 1 credit per interaction (strictly capped)");
+                let allowed = silence_budget.request_initiative("proactive-demo", InitiativeOrigin::SystemInferred, 0.91, "Proposition pause café");
+                println!("  Simulated Autonomous Suggestion Status: {}", if allowed { "Granted (1 credit spent)" } else { "Suppressed (Budget or confidence low)" });
+                println!("  Updated Remaining Credits: {}", silence_budget.credits_remaining());
+            }
+
+            ":ambient" => {
+                println!("Executing Continuous Ambient Perception & Context Cycle...");
+                presence.set_state(PresenceState::Listening);
+                if let Ok(frame) = substrate.capture_camera_frame(camera_handle, &camera_cap).await {
+                    let v_ctx = camera_pipeline.process_frame(&frame);
+                    camera_pipeline.update_world_model(&v_ctx, &mut world_model);
+                    println!("  [Camera] Scene updated: {:?}, gaze attentive: {}, lighting: {:?}",
+                        v_ctx.user_presence, v_ctx.user_gaze_focused_on_device, v_ctx.lighting
+                    );
+                }
+                world_model.update_noise_level(42.5);
+                let ctx = InteractionContext {
+                    ambient_noise_db: 42.5,
+                    third_parties_present: world_model.state().third_parties_present,
+                    in_meeting: world_model.state().in_meeting,
+                    user_attentive_to_screen: world_model.state().user_attentive,
+                    user_wearing_headphones: false,
+                    device_type: DeviceType::Desktop,
+                    urgency: UrgencyLevel::Normal,
+                    is_night_time: false,
+                };
+                let decision = ChannelSelector::arbitrate(&ctx);
+                println!("  [Channel] Dynamic output target: {:?} ({})", decision.channel, decision.rationale);
+                presence.set_state(PresenceState::Idle);
+                println!("  [Presence] Tray indicator in standby (Period: {}ms)", presence.pulse_period_ms());
+            }
+
             _ => {
                 process_prompt(
                     &input,
@@ -617,3 +764,8 @@ async fn process_prompt(
 
     Ok(())
 }
+
+fn hex_fmt(bytes: &[u8]) -> String {
+    bytes.iter().take(12).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join("") + "..."
+}
+

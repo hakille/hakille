@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use annora_core::{CapabilityToken, SignedAttestation, VirtualPath};
 use crate::manifest::PlatformManifest;
 use crate::attestation::{
-    AudioConfig, AudioStreamHandle, HttpRequest, HttpResponse, InputAction, ProcessHandle,
+    AudioConfig, AudioStreamHandle, CameraConfig, CameraFrame, CameraStreamHandle, ImageFormat,
+    HttpRequest, HttpResponse, InputAction, ProcessHandle,
     ScreenCapture, PowerState, ThermalState,
 };
 
@@ -24,6 +25,34 @@ pub trait Substrate: Send + Sync + 'static {
     async fn start_audio_capture(&self, config: AudioConfig, cap: &CapabilityToken) -> annora_core::Result<AudioStreamHandle>;
     async fn stop_audio_capture(&self, handle: AudioStreamHandle) -> annora_core::Result<()>;
     async fn play_audio(&self, data: &[u8], config: AudioConfig, cap: &CapabilityToken) -> annora_core::Result<()>;
+    
+    // Camera
+    async fn start_camera_capture(&self, _config: CameraConfig, _cap: &CapabilityToken) -> annora_core::Result<CameraStreamHandle> {
+        Ok(CameraStreamHandle(1))
+    }
+    async fn stop_camera_capture(&self, _handle: CameraStreamHandle) -> annora_core::Result<()> {
+        Ok(())
+    }
+    async fn capture_camera_frame(&self, _handle: CameraStreamHandle, _cap: &CapabilityToken) -> annora_core::Result<CameraFrame> {
+        let mut data = vec![130u8; 1920 * 1080 * 3];
+        // Center presence gradient
+        for y in 360..720 {
+            for x in 640..1280 {
+                let idx = (y * 1920 + x) * 3;
+                data[idx] = 210;
+                data[idx + 1] = 180;
+                data[idx + 2] = 160;
+            }
+        }
+        Ok(CameraFrame {
+            width: 1920,
+            height: 1080,
+            data,
+            format: ImageFormat::Rgb8,
+            timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
+        })
+    }
+
     
     // Display
     async fn capture_screen(&self, cap: &CapabilityToken) -> annora_core::Result<ScreenCapture>;

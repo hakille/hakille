@@ -6,4 +6,7 @@ pub mod cognitive_tests;
 pub mod substrate_tests;
 #[cfg(test)]
 pub mod end_to_end_integration;
+#[cfg(test)]
+pub mod ambient_multimodal_tests;
+
 

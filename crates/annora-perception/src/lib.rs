@@ -6,10 +6,9 @@ pub use audio::{
     asr::*, capture::AudioChunk, capture::ContinuousAudioRingBuffer, diarization::*, speaker_id::*,
     vad::*, wake_word::*,
 };
-pub use vision::{
-    capture::FrameFormat, capture::VideoFrame, grounding::*, scene::*,
-};
+pub use vision::*;
 pub use world_model::*;
+
 
 #[cfg(test)]
 mod tests {
@@ -92,4 +91,79 @@ mod tests {
         assert!(!res.speech_probability.is_nan(), "Speech probability must never be NaN");
         assert!(res.speech_probability >= 0.0 && res.speech_probability <= 1.0);
     }
+
+    #[test]
+    fn test_camera_pipeline_and_world_model() {
+        let config = annora_substrate::CameraConfig {
+            width: 640,
+            height: 480,
+            fps: 30,
+            facing: annora_substrate::CameraFacing::Front,
+        };
+        let mut pipeline = CameraPipeline::new(config.clone());
+        assert_eq!(pipeline.frames_processed(), 0);
+
+        // 1. Process dark empty frame
+        let dark_frame = annora_substrate::CameraFrame {
+            width: 640,
+            height: 480,
+            data: vec![5u8; 640 * 480 * 3],
+            format: annora_substrate::ImageFormat::Rgb8,
+            timestamp_ms: 1000,
+        };
+        let ctx_dark = pipeline.process_frame(&dark_frame);
+        assert_eq!(ctx_dark.lighting, LightingCondition::Dark);
+        assert_eq!(ctx_dark.user_presence, UserPresence::Absent);
+        assert_eq!(pipeline.frames_processed(), 1);
+
+        // 2. Process daylight frame with centered subject
+        let mut bright_data = vec![140u8; 640 * 480 * 3];
+        // Inject high center contrast (representing a face/silhouette)
+        for y in 160..320 {
+            for x in 200..440 {
+                let idx = (y * 640 + x) * 3;
+                bright_data[idx] = 230;
+                bright_data[idx + 1] = 190;
+                bright_data[idx + 2] = 170;
+            }
+        }
+        let bright_frame = annora_substrate::CameraFrame {
+            width: 640,
+            height: 480,
+            data: bright_data,
+            format: annora_substrate::ImageFormat::Rgb8,
+            timestamp_ms: 2000,
+        };
+        let ctx_bright = pipeline.process_frame(&bright_frame);
+        assert_eq!(ctx_bright.lighting, LightingCondition::IndoorAdequate);
+        assert_eq!(ctx_bright.user_presence, UserPresence::Present);
+        assert!(ctx_bright.user_gaze_focused_on_device);
+        assert_eq!(pipeline.frames_processed(), 2);
+
+        // 3. Update WorldModel with camera perception
+        let mut world_model = WorldModel::new("HomeOffice");
+        pipeline.update_world_model(&ctx_bright, &mut world_model);
+
+        assert!(world_model.state().user_present);
+        assert!(world_model.state().user_attentive);
+        assert!(!world_model.state().third_parties_present);
+        assert!(world_model.is_private_environment());
+    }
+
+    #[test]
+    fn test_environmental_privacy_arbitration() {
+        let mut world_model = WorldModel::new("ConferenceRoom");
+        assert!(world_model.is_private_environment());
+
+        // Introduce multiple people in room
+        world_model.update_visual_presence(true, false, 3, 2.5, "Daylight");
+        assert!(world_model.state().third_parties_present);
+        assert!(!world_model.is_private_environment());
+        assert!(world_model.should_suppress_loud_audio());
+
+        // In meeting
+        world_model.set_meeting_status(true);
+        assert!(world_model.should_suppress_loud_audio());
+    }
 }
+

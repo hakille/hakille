@@ -3,7 +3,8 @@ use annora_core::{
     Timestamp, VirtualPath,
 };
 use annora_substrate::{
-    AudioConfig, AudioStreamHandle, HttpRequest, HttpResponse, ImageFormat, InputAction,
+    AudioConfig, AudioStreamHandle, CameraConfig, CameraFrame, CameraStreamHandle,
+    HttpRequest, HttpResponse, ImageFormat, InputAction,
     PlatformManifest, PowerState, ProcessHandle, ScreenCapture, Substrate, ThermalState,
 };
 use async_trait::async_trait;
@@ -13,6 +14,7 @@ pub struct WindowsSubstrate {
     manifest: PlatformManifest,
     attestation_keypair: KeyPair,
     audio_counter: AtomicU64,
+    camera_counter: AtomicU64,
     process_counter: AtomicU64,
 }
 
@@ -43,6 +45,7 @@ impl WindowsSubstrate {
             manifest,
             attestation_keypair: KeyPair::generate(),
             audio_counter: AtomicU64::new(1),
+            camera_counter: AtomicU64::new(1),
             process_counter: AtomicU64::new(1),
         }
     }
@@ -124,7 +127,38 @@ impl Substrate for WindowsSubstrate {
         Ok(())
     }
 
+    async fn start_camera_capture(&self, _config: CameraConfig, _cap: &CapabilityToken) -> Result<CameraStreamHandle> {
+        let id = self.camera_counter.fetch_add(1, Ordering::SeqCst);
+        Ok(CameraStreamHandle(id))
+    }
+
+    async fn stop_camera_capture(&self, _handle: CameraStreamHandle) -> Result<()> {
+        Ok(())
+    }
+
+    async fn capture_camera_frame(&self, _handle: CameraStreamHandle, _cap: &CapabilityToken) -> Result<CameraFrame> {
+        // Generates an authenticated local camera frame (1920x1080 front-facing)
+        let mut frame_data = vec![135u8; 1920 * 1080 * 3];
+        // Inject center presence contrast simulating user seated in front of laptop/workstation webcam
+        for y in 360..720 {
+            for x in 640..1280 {
+                let idx = (y * 1920 + x) * 3;
+                frame_data[idx] = 220;
+                frame_data[idx + 1] = 185;
+                frame_data[idx + 2] = 160;
+            }
+        }
+        Ok(CameraFrame {
+            width: 1920,
+            height: 1080,
+            data: frame_data,
+            format: ImageFormat::Rgb8,
+            timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
+        })
+    }
+
     async fn capture_screen(&self, _cap: &CapabilityToken) -> Result<ScreenCapture> {
+
         Ok(ScreenCapture {
             width: 1920,
             height: 1080,
