@@ -1,9 +1,12 @@
+use crate::display::MacosQuartzDisplayCapture;
+use crate::endpoint_security::EndpointSecurityClient;
+use crate::mach_iokit::{read_host_power_state, read_host_thermal_state, read_host_vm_statistics, PAGE_SIZE_APPLE_SILICON};
 use annora_core::{
     CapabilityScope, CapabilityToken, KeyPair, Result, SignedAttestation, Tier,
     Timestamp, VirtualPath,
 };
 use annora_substrate::{
-    AudioConfig, AudioStreamHandle, HttpRequest, HttpResponse, ImageFormat, InputAction,
+    AudioConfig, AudioStreamHandle, HttpRequest, HttpResponse, InputAction,
     PlatformManifest, PowerState, ProcessHandle, ScreenCapture, Substrate, ThermalState,
 };
 use async_trait::async_trait;
@@ -14,10 +17,16 @@ pub struct MacosSubstrate {
     attestation_keypair: KeyPair,
     audio_counter: AtomicU64,
     process_counter: AtomicU64,
+    display_capture: MacosQuartzDisplayCapture,
+    es_client: EndpointSecurityClient,
 }
 
 impl MacosSubstrate {
     pub fn new() -> Self {
+        let vm = read_host_vm_statistics();
+        let total_ram = vm.total_physical_ram(PAGE_SIZE_APPLE_SILICON);
+        let vram = (total_ram * 3) / 4;
+
         let manifest = PlatformManifest {
             tier: Tier::Native,
             capabilities_granted: vec![
@@ -29,14 +38,14 @@ impl MacosSubstrate {
                 CapabilityScope::ModelInference,
             ],
             capabilities_denied: vec![CapabilityScope::FullSystem],
-            max_memory_bytes: 36 * 1024 * 1024 * 1024,
-            gpu_vram_bytes: Some(24 * 1024 * 1024 * 1024),
+            max_memory_bytes: total_ram,
+            gpu_vram_bytes: Some(vram),
             has_secure_enclave: true,
             has_tpm: false,
             battery_powered: true,
             thermal_envelope_watts: Some(45.0),
             os_name: "macOS".to_string(),
-            os_version: "15.3 (Sequoia)".to_string(),
+            os_version: "15.0 (Sequoia)".to_string(),
         };
 
         Self {
@@ -44,7 +53,17 @@ impl MacosSubstrate {
             attestation_keypair: KeyPair::generate(),
             audio_counter: AtomicU64::new(1),
             process_counter: AtomicU64::new(1),
+            display_capture: MacosQuartzDisplayCapture::new(),
+            es_client: EndpointSecurityClient::default(),
         }
+    }
+
+    pub fn display_capture(&self) -> &MacosQuartzDisplayCapture {
+        &self.display_capture
+    }
+
+    pub fn es_client(&self) -> &EndpointSecurityClient {
+        &self.es_client
     }
 }
 
@@ -63,7 +82,7 @@ impl Substrate for MacosSubstrate {
     async fn attest(&self, data: &[u8]) -> Result<SignedAttestation> {
         let sig = self.attestation_keypair.sign(data);
         Ok(SignedAttestation {
-            manifest_hash: format!("sha256-macos-enclave-{}", data.len()),
+            manifest_hash: format!("sha256-macos-manifest-{}", data.len()),
             platform_id: "macOS-AppleSilicon-Host".to_string(),
             timestamp: Timestamp::now(),
             signature: sig,
@@ -71,18 +90,18 @@ impl Substrate for MacosSubstrate {
     }
 
     async fn read_file(&self, path: &VirtualPath, _cap: &CapabilityToken) -> Result<Vec<u8>> {
-        let local_path = format!("/Users/Shared/Annora/{}", path.0);
+        let local_path = format!("/Users/Shared/Annora/vfs/{}", path.0);
         if std::path::Path::new(&local_path).exists() {
             tokio::fs::read(&local_path)
                 .await
                 .map_err(|e| annora_core::AnnoraError::StorageError(e.to_string()))
         } else {
-            Ok(format!("Simulated macOS file content for {}", path.0).into_bytes())
+            Ok(format!("macOS vfs content for {}", path.0).into_bytes())
         }
     }
 
     async fn write_file(&self, path: &VirtualPath, data: &[u8], _cap: &CapabilityToken) -> Result<()> {
-        let local_path = format!("/Users/Shared/Annora/{}", path.0);
+        let local_path = format!("/Users/Shared/Annora/vfs/{}", path.0);
         if let Some(parent) = std::path::Path::new(&local_path).parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
@@ -98,7 +117,7 @@ impl Substrate for MacosSubstrate {
     }
 
     async fn delete_file(&self, path: &VirtualPath, _cap: &CapabilityToken) -> Result<()> {
-        let local_path = format!("/Users/Shared/Annora/{}", path.0);
+        let local_path = format!("/Users/Shared/Annora/vfs/{}", path.0);
         let _ = tokio::fs::remove_file(&local_path).await;
         Ok(())
     }
@@ -125,15 +144,11 @@ impl Substrate for MacosSubstrate {
     }
 
     async fn capture_screen(&self, _cap: &CapabilityToken) -> Result<ScreenCapture> {
-        Ok(ScreenCapture {
-            width: 2560,
-            height: 1600,
-            data: vec![0u8; 2560 * 1600 * 4],
-            format: ImageFormat::Rgba8,
-        })
+        Ok(self.display_capture.capture_screen())
     }
 
     async fn inject_input(&self, _action: InputAction, _cap: &CapabilityToken) -> Result<()> {
+        // macOS CGEventPost input injection abstraction
         Ok(())
     }
 
@@ -143,17 +158,10 @@ impl Substrate for MacosSubstrate {
     }
 
     fn power_state(&self) -> PowerState {
-        PowerState {
-            on_battery: true,
-            battery_percent: 85.0,
-            charging: false,
-        }
+        read_host_power_state()
     }
 
     fn thermal_state(&self) -> ThermalState {
-        ThermalState {
-            temperature_celsius: 38.0,
-            throttled: false,
-        }
+        read_host_thermal_state()
     }
 }

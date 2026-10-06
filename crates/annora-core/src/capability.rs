@@ -112,12 +112,15 @@ impl CapabilityAuthority {
         
         let op_fact = format!("operation(\"{}\", \"{}\")", s, a);
         authorizer.add_fact(op_fact.as_str()).map_err(|e| AnnoraError::CapabilityDenied(e.to_string()))?;
-
         let check = format!("check if right(\"{}\", \"{}\")", s, a);
         authorizer.add_check(check.as_str()).map_err(|e| AnnoraError::CapabilityDenied(e.to_string()))?;
         authorizer.allow().map_err(|e| AnnoraError::CapabilityDenied(e.to_string()))?;
 
-        authorizer.authorize().map_err(|e| AnnoraError::CapabilityDenied(e.to_string()))?;
+        let limits = biscuit_auth::AuthorizerLimits {
+            max_time: std::time::Duration::from_millis(500),
+            ..Default::default()
+        };
+        authorizer.authorize_with_limits(limits).map_err(|e| AnnoraError::CapabilityDenied(e.to_string()))?;
         Ok(())
     }
 }

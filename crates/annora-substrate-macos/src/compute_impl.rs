@@ -1,3 +1,4 @@
+use crate::mach_iokit::{read_host_vm_statistics, PAGE_SIZE_APPLE_SILICON};
 use annora_substrate::{Compute, ComputeBackend};
 
 pub struct MacosComputeBackend {
@@ -9,6 +10,18 @@ impl MacosComputeBackend {
         Self {
             preferred: ComputeBackend::Metal,
         }
+    }
+
+    pub fn total_physical_ram(&self) -> u64 {
+        read_host_vm_statistics().total_physical_ram(PAGE_SIZE_APPLE_SILICON)
+    }
+
+    pub fn available_physical_ram(&self) -> u64 {
+        read_host_vm_statistics().available_physical_ram(PAGE_SIZE_APPLE_SILICON)
+    }
+
+    pub fn wired_ram(&self) -> u64 {
+        read_host_vm_statistics().wired_ram(PAGE_SIZE_APPLE_SILICON)
     }
 }
 
@@ -31,14 +44,16 @@ impl Compute for MacosComputeBackend {
     }
 
     fn vram_available_bytes(&self) -> u64 {
-        24 * 1024 * 1024 * 1024 // Unified memory 24 GB
+        // Apple Silicon Unified Memory Architecture (UMA)
+        // Up to 75% of physical memory is allocatable as Metal VRAM
+        (self.total_physical_ram() * 3) / 4
     }
 
     fn ram_available_bytes(&self) -> u64 {
-        36 * 1024 * 1024 * 1024 // Unified memory 36 GB
+        self.available_physical_ram()
     }
 
     fn supports_quantization(&self, quant: &str) -> bool {
-        matches!(quant, "int8" | "q4_0" | "q4_k" | "q8_0")
+        matches!(quant, "int8" | "q4_0" | "q4_k" | "q8_0" | "fp16")
     }
 }

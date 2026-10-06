@@ -1,3 +1,4 @@
+use crate::telemetry::read_host_meminfo;
 use annora_substrate::{Compute, ComputeBackend};
 
 pub struct LinuxComputeBackend {
@@ -9,6 +10,14 @@ impl LinuxComputeBackend {
         Self {
             preferred: ComputeBackend::Cuda,
         }
+    }
+
+    pub fn total_physical_ram(&self) -> u64 {
+        read_host_meminfo().mem_total_bytes
+    }
+
+    pub fn available_physical_ram(&self) -> u64 {
+        read_host_meminfo().mem_available_bytes
     }
 }
 
@@ -36,7 +45,7 @@ impl Compute for LinuxComputeBackend {
     }
 
     fn ram_available_bytes(&self) -> u64 {
-        64 * 1024 * 1024 * 1024 // 64 GB RAM
+        self.available_physical_ram()
     }
 
     fn supports_quantization(&self, quant: &str) -> bool {

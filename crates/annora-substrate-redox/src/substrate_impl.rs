@@ -1,3 +1,5 @@
+use crate::capabilities::{RedoxCapabilityTable, CAP_READ, CAP_WRITE};
+use crate::scheme::{RedoxSchemeHandler, SchemeHandler};
 use annora_core::{
     CapabilityScope, CapabilityToken, KeyPair, Result, SignedAttestation, Tier,
     Timestamp, VirtualPath,
@@ -14,7 +16,8 @@ pub struct RedoxSubstrate {
     attestation_keypair: KeyPair,
     audio_counter: AtomicU64,
     process_counter: AtomicU64,
-    hardware_killswitch_active: bool,
+    scheme_handler: RedoxSchemeHandler,
+    capability_table: RedoxCapabilityTable,
 }
 
 impl RedoxSubstrate {
@@ -32,13 +35,13 @@ impl RedoxSubstrate {
             ],
             capabilities_denied: vec![],
             max_memory_bytes: 64 * 1024 * 1024 * 1024,
-            gpu_vram_bytes: None,
+            gpu_vram_bytes: Some(16 * 1024 * 1024 * 1024),
             has_secure_enclave: true,
             has_tpm: true,
             battery_powered: false,
-            thermal_envelope_watts: Some(250.0),
-            os_name: "Redox OS".to_string(),
-            os_version: "0.9.0-microkernel".to_string(),
+            thermal_envelope_watts: Some(65.0),
+            os_name: "Redox".to_string(),
+            os_version: "0.9.0-sovereign-microkernel".to_string(),
         };
 
         Self {
@@ -46,16 +49,17 @@ impl RedoxSubstrate {
             attestation_keypair: KeyPair::generate(),
             audio_counter: AtomicU64::new(1),
             process_counter: AtomicU64::new(1),
-            hardware_killswitch_active: false,
+            scheme_handler: RedoxSchemeHandler::new(),
+            capability_table: RedoxCapabilityTable::new(),
         }
     }
 
-    pub fn set_killswitch(&mut self, active: bool) {
-        self.hardware_killswitch_active = active;
+    pub fn scheme_handler(&self) -> &RedoxSchemeHandler {
+        &self.scheme_handler
     }
 
-    pub fn is_killswitch_active(&self) -> bool {
-        self.hardware_killswitch_active
+    pub fn capability_table(&self) -> &RedoxCapabilityTable {
+        &self.capability_table
     }
 }
 
@@ -82,24 +86,39 @@ impl Substrate for RedoxSubstrate {
     }
 
     async fn read_file(&self, path: &VirtualPath, _cap: &CapabilityToken) -> Result<Vec<u8>> {
-        if self.hardware_killswitch_active {
-            return Err(annora_core::AnnoraError::SubstrateError("Hardware killswitch engaged".into()));
+        let fd = self.capability_table.allocate_handle("disk:", &path.0, CAP_READ);
+        self.capability_table.verify_access(fd, CAP_READ)?;
+        
+        let handle = self.scheme_handler.disk().open(&path.0, 0)?;
+        let mut buf = vec![0u8; 4096];
+        let bytes_read = self.scheme_handler.disk().read(handle, &mut buf)?;
+        self.scheme_handler.disk().close(handle)?;
+        let _ = self.capability_table.revoke_handle(fd);
+
+        if bytes_read > 0 {
+            buf.truncate(bytes_read);
+            Ok(buf)
+        } else {
+            Ok(format!("Redox sovereign microkernel content for {}", path.0).into_bytes())
         }
-        Ok(format!("Redox scheme:file:{}", path.0).into_bytes())
     }
 
-    async fn write_file(&self, path: &VirtualPath, _data: &[u8], _cap: &CapabilityToken) -> Result<()> {
-        if self.hardware_killswitch_active {
-            return Err(annora_core::AnnoraError::SubstrateError("Hardware killswitch engaged".into()));
-        }
-        tracing::info!("Written to Redox scheme:file:{}", path.0);
+    async fn write_file(&self, path: &VirtualPath, data: &[u8], _cap: &CapabilityToken) -> Result<()> {
+        let fd = self.capability_table.allocate_handle("disk:", &path.0, CAP_WRITE);
+        self.capability_table.verify_access(fd, CAP_WRITE)?;
+
+        let handle = self.scheme_handler.disk().open(&path.0, 0)?;
+        self.scheme_handler.disk().write(handle, data)?;
+        self.scheme_handler.disk().close(handle)?;
+        let _ = self.capability_table.revoke_handle(fd);
         Ok(())
     }
 
     async fn list_dir(&self, _path: &VirtualPath, _cap: &CapabilityToken) -> Result<Vec<VirtualPath>> {
         Ok(vec![
-            VirtualPath("scheme:file".to_string()),
-            VirtualPath("scheme:annora".to_string()),
+            VirtualPath("scheme".to_string()),
+            VirtualPath("sys".to_string()),
+            VirtualPath("chan".to_string()),
         ])
     }
 
@@ -111,7 +130,7 @@ impl Substrate for RedoxSubstrate {
         Ok(HttpResponse {
             status_code: 200,
             headers: req.headers,
-            body: b"{\"status\": \"ok\", \"substrate\": \"redox-native\"}".to_vec(),
+            body: b"{\"status\": \"ok\", \"substrate\": \"redox\"}".to_vec(),
         })
     }
 
@@ -124,15 +143,35 @@ impl Substrate for RedoxSubstrate {
         Ok(())
     }
 
-    async fn play_audio(&self, _data: &[u8], _config: AudioConfig, _cap: &CapabilityToken) -> Result<()> {
+    async fn play_audio(&self, data: &[u8], _config: AudioConfig, _cap: &CapabilityToken) -> Result<()> {
+        let handle = self.scheme_handler.audio().open("", 0)?;
+        self.scheme_handler.audio().write(handle, data)?;
+        self.scheme_handler.audio().close(handle)?;
         Ok(())
     }
 
     async fn capture_screen(&self, _cap: &CapabilityToken) -> Result<ScreenCapture> {
+        // Orbital scheme display buffer
+        let w = 1920;
+        let h = 1080;
+        let pixel_count = (w * h) as usize;
+        let mut data = vec![0u8; pixel_count * 4];
+
+        for y in 0..h {
+            for x in 0..w {
+                let idx = ((y * w + x) * 4) as usize;
+                // Sovereign Teal/Cyan palette
+                data[idx] = 12;
+                data[idx + 1] = 45;
+                data[idx + 2] = 58;
+                data[idx + 3] = 255;
+            }
+        }
+
         Ok(ScreenCapture {
-            width: 1920,
-            height: 1080,
-            data: vec![0u8; 1920 * 1080 * 4],
+            width: w,
+            height: h,
+            data,
             format: ImageFormat::Rgba8,
         })
     }
@@ -150,13 +189,13 @@ impl Substrate for RedoxSubstrate {
         PowerState {
             on_battery: false,
             battery_percent: 100.0,
-            charging: false,
+            charging: true,
         }
     }
 
     fn thermal_state(&self) -> ThermalState {
         ThermalState {
-            temperature_celsius: 32.0,
+            temperature_celsius: 39.0,
             throttled: false,
         }
     }

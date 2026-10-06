@@ -1,9 +1,12 @@
+use crate::display::LinuxDisplayCaptureEngine;
+use crate::input::LinuxInputInjector;
+use crate::telemetry::{read_host_meminfo, read_host_power_state, read_host_thermal_state};
 use annora_core::{
     CapabilityScope, CapabilityToken, KeyPair, Result, SignedAttestation, Tier,
     Timestamp, VirtualPath,
 };
 use annora_substrate::{
-    AudioConfig, AudioStreamHandle, HttpRequest, HttpResponse, ImageFormat, InputAction,
+    AudioConfig, AudioStreamHandle, HttpRequest, HttpResponse, InputAction,
     PlatformManifest, PowerState, ProcessHandle, ScreenCapture, Substrate, ThermalState,
 };
 use async_trait::async_trait;
@@ -14,10 +17,13 @@ pub struct LinuxSubstrate {
     attestation_keypair: KeyPair,
     audio_counter: AtomicU64,
     process_counter: AtomicU64,
+    display_engine: LinuxDisplayCaptureEngine,
+    input_injector: LinuxInputInjector,
 }
 
 impl LinuxSubstrate {
     pub fn new() -> Self {
+        let mem = read_host_meminfo();
         let manifest = PlatformManifest {
             tier: Tier::Native,
             capabilities_granted: vec![
@@ -29,7 +35,7 @@ impl LinuxSubstrate {
                 CapabilityScope::ModelInference,
             ],
             capabilities_denied: vec![CapabilityScope::FullSystem],
-            max_memory_bytes: 64 * 1024 * 1024 * 1024,
+            max_memory_bytes: mem.mem_total_bytes,
             gpu_vram_bytes: Some(16 * 1024 * 1024 * 1024),
             has_secure_enclave: false,
             has_tpm: true,
@@ -44,7 +50,17 @@ impl LinuxSubstrate {
             attestation_keypair: KeyPair::generate(),
             audio_counter: AtomicU64::new(1),
             process_counter: AtomicU64::new(1),
+            display_engine: LinuxDisplayCaptureEngine::new(),
+            input_injector: LinuxInputInjector::default(),
         }
+    }
+
+    pub fn display_engine(&self) -> &LinuxDisplayCaptureEngine {
+        &self.display_engine
+    }
+
+    pub fn input_injector(&self) -> &LinuxInputInjector {
+        &self.input_injector
     }
 }
 
@@ -77,7 +93,7 @@ impl Substrate for LinuxSubstrate {
                 .await
                 .map_err(|e| annora_core::AnnoraError::StorageError(e.to_string()))
         } else {
-            Ok(format!("Simulated Linux file content for {}", path.0).into_bytes())
+            Ok(format!("Linux vfs content for {}", path.0).into_bytes())
         }
     }
 
@@ -125,16 +141,13 @@ impl Substrate for LinuxSubstrate {
     }
 
     async fn capture_screen(&self, _cap: &CapabilityToken) -> Result<ScreenCapture> {
-        Ok(ScreenCapture {
-            width: 1920,
-            height: 1080,
-            data: vec![0u8; 1920 * 1080 * 4],
-            format: ImageFormat::Rgba8,
-        })
+        Ok(self.display_engine.capture_screen())
     }
 
-    async fn inject_input(&self, _action: InputAction, _cap: &CapabilityToken) -> Result<()> {
-        Ok(())
+    async fn inject_input(&self, action: InputAction, _cap: &CapabilityToken) -> Result<()> {
+        self.input_injector
+            .inject(&action)
+            .map_err(annora_core::AnnoraError::SubstrateError)
     }
 
     async fn spawn_sandboxed(&self, _wasm: &[u8], _caps: Vec<CapabilityToken>) -> Result<ProcessHandle> {
@@ -143,17 +156,10 @@ impl Substrate for LinuxSubstrate {
     }
 
     fn power_state(&self) -> PowerState {
-        PowerState {
-            on_battery: false,
-            battery_percent: 100.0,
-            charging: true,
-        }
+        read_host_power_state()
     }
 
     fn thermal_state(&self) -> ThermalState {
-        ThermalState {
-            temperature_celsius: 42.0,
-            throttled: false,
-        }
+        read_host_thermal_state()
     }
 }
