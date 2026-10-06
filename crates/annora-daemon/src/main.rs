@@ -124,6 +124,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 idx += 1;
                             }
                         }
+                        arg if !arg.starts_with("--") && target_model_id.is_none() => {
+                            target_model_id = Some(arg.to_string());
+                        }
                         _ => {}
                     }
                     idx += 1;
@@ -136,7 +139,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let progress = Some(make_cli_progress_callback());
 
-                if let Some(model_id) = target_model_id {
+                if let Some(mut model_id) = target_model_id {
+                    // Match exact id or fuzzy/prefix against catalog
+                    if provisioner.catalog().iter().all(|m| m.id != model_id) {
+                        if let Some(matched) = provisioner.catalog().iter().find(|m| m.id.starts_with(&model_id) || m.id.contains(&model_id)) {
+                            model_id = matched.id.clone();
+                        }
+                    }
                     println!("\n[Provisioning Model: {}]", model_id);
                     let res = provisioner.provision_by_id(&model_id, progress).await;
                     println!();
@@ -211,7 +220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  models verify               Verify SHA-256 integrity of models");
                 println!();
                 println!("Options:");
-                println!("  --eval-prompt <PROMPT>      Execute a single turn headlessly and exit");
+                println!("  --prompt, --eval-prompt <PROMPT>  Execute a single turn headlessly and exit");
                 println!("  --budget <CENTS>            Set daily System 2 budget in cents (default: 500)");
                 println!("  --models-dir <PATH>         Custom models storage directory");
                 println!("  --auto-download             Automatically download missing essential models");
@@ -223,7 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("annora-daemon v0.1.0 (Rust 2024)");
                 return Ok(());
             }
-            "--eval-prompt" => {
+            "--eval-prompt" | "--prompt" => {
                 if arg_idx + 1 < args.len() {
                     eval_prompt = Some(args[arg_idx + 1].clone());
                     arg_idx += 1;
