@@ -8,6 +8,7 @@ annora-core = { path = "../annora-core" }
 annora-memory = { path = "../annora-memory" }
 annora-substrate = { path = "../annora-substrate" }
 annora-constitution = { path = "../annora-constitution" }
+annora-inference = { path = "../annora-inference" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -8,5 +8,5 @@ pub mod substrate_tests;
 pub mod end_to_end_integration;
 #[cfg(test)]
 pub mod ambient_multimodal_tests;
-
-
+#[cfg(test)]
+pub mod model_connection_tests;

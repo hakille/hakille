@@ -82,4 +82,41 @@ mod tests {
 
         let _ = std::fs::remove_file(test_file);
     }
+
+    #[test]
+    fn test_connect_all_models_real_binaries() {
+        let models_dir = if std::path::Path::new("./models").exists() {
+            std::path::PathBuf::from("./models")
+        } else if std::path::Path::new("../../models").exists() {
+            std::path::PathBuf::from("../../models")
+        } else {
+            return; // Skip if models not present in environment
+        };
+
+        let provisioner = ModelProvisioner::new(models_dir);
+        let connected = provisioner.connect_all_models().expect("All 7 models should connect and parse cleanly");
+        
+        // 1. Verify Qwen2.5 GGUF parsing
+        assert_eq!(connected.qwen2.architecture(), Some("qwen2"));
+        assert!(connected.qwen2.tensor_count() >= 280, "Expected ~291 tensors for Qwen2.5 0.5B, got {}", connected.qwen2.tensor_count());
+        assert!(connected.qwen2.context_length().unwrap_or(0) >= 4096);
+
+        // 2. Verify UI-TARS 2B GGUF parsing
+        assert!(connected.ui_tars.tensor_count() >= 300, "Expected ~339 tensors for UI-TARS 2B, got {}", connected.ui_tars.tensor_count());
+
+        // 3. Verify Mimi Safetensors parsing
+        assert!(connected.mimi.tensor_count() >= 50, "Expected Mimi multi-layer tensors, got {}", connected.mimi.tensor_count());
+        assert!(connected.mimi.codebook_count() >= 1);
+
+        // 4. Verify SenseVoice Tokenizer
+        assert_eq!(connected.sensevoice_tokenizer.vocab_size(), 25055, "SenseVoice vocabulary must contain 25,055 tokens");
+        let decoded = connected.sensevoice_tokenizer.decode(&[3, 5, 8]);
+        assert!(!decoded.is_empty(), "Tokenizer should decode token ids");
+
+        // 5. Verify System Summary
+        let summary = connected.system_summary();
+        assert_eq!(summary.total_models_connected, 7);
+        assert!(summary.ready_for_cognition);
+        assert!(summary.total_disk_bytes > 2_000_000_000, "Total size should be ~2.4GB");
+    }
 }

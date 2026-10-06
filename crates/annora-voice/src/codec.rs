@@ -1,5 +1,7 @@
 use annora_core::Result;
+use annora_inference::SafetensorsModel;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 pub const MIMI_FRAME_RATE_HZ: f32 = 12.5;
 pub const MIMI_FRAME_DURATION_MS: u32 = 80;
@@ -22,11 +24,35 @@ impl Default for MimiFrameTokens {
 
 pub struct MimiCodec {
     frame_counter: u64,
+    safetensors_metadata: Option<SafetensorsModel>,
 }
 
 impl MimiCodec {
     pub fn new() -> Self {
-        Self { frame_counter: 0 }
+        Self {
+            frame_counter: 0,
+            safetensors_metadata: None,
+        }
+    }
+
+    pub fn with_safetensors_file(path: impl AsRef<Path>) -> Result<Self> {
+        let model = SafetensorsModel::read_from_file(path)?;
+        Ok(Self::with_safetensors(model))
+    }
+
+    pub fn with_safetensors(model: SafetensorsModel) -> Self {
+        Self {
+            frame_counter: 0,
+            safetensors_metadata: Some(model),
+        }
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.safetensors_metadata.is_some()
+    }
+
+    pub fn safetensors_info(&self) -> Option<&SafetensorsModel> {
+        self.safetensors_metadata.as_ref()
     }
 
     pub fn encode_frame(&mut self, samples: &[f32]) -> Result<MimiFrameTokens> {

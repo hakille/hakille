@@ -12,6 +12,7 @@ pub struct VoiceActivityDetector {
     threshold: f32,
     hangover_frames: usize,
     active_hangover: usize,
+    model_path: Option<std::path::PathBuf>,
 }
 
 impl VoiceActivityDetector {
@@ -20,7 +21,21 @@ impl VoiceActivityDetector {
             threshold,
             hangover_frames,
             active_hangover: 0,
+            model_path: None,
         }
+    }
+
+    pub fn with_onnx_model(path: impl AsRef<std::path::Path>) -> Self {
+        Self {
+            threshold: 0.5,
+            hangover_frames: 3,
+            active_hangover: 0,
+            model_path: Some(path.as_ref().to_path_buf()),
+        }
+    }
+
+    pub fn model_path(&self) -> Option<&std::path::Path> {
+        self.model_path.as_deref()
     }
 
     pub fn default_silero_profile() -> Self {

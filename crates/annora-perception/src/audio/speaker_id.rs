@@ -2,6 +2,7 @@ use crate::audio::capture::AudioChunk;
 use annora_core::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoiceBiometricEmbedding {
@@ -38,15 +39,33 @@ pub trait SpeakerIdentifier: Send + Sync {
     async fn extract_embedding(&self, chunk: &AudioChunk) -> Result<VoiceBiometricEmbedding>;
 }
 
+/// CAM++ neural speaker verification engine (192-dim biometric embeddings).
 pub struct CamPlusPlusIdentifier {
     embedding_dim: usize,
+    model_path: Option<PathBuf>,
 }
 
 impl CamPlusPlusIdentifier {
     pub fn new() -> Self {
         Self {
             embedding_dim: 192,
+            model_path: None,
         }
+    }
+
+    pub fn with_model_path(path: impl AsRef<Path>) -> Self {
+        Self {
+            embedding_dim: 192,
+            model_path: Some(path.as_ref().to_path_buf()),
+        }
+    }
+
+    pub fn model_name(&self) -> &str {
+        "CAM++ (zh-en 16k advanced)"
+    }
+
+    pub fn model_path(&self) -> Option<&Path> {
+        self.model_path.as_deref()
     }
 }
 

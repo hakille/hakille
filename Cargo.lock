@@ -107,6 +107,7 @@ name = "annora-agents"
 version = "0.1.0"
 dependencies = [
  "annora-core",
+ "annora-inference",
  "annora-substrate",
  "async-trait",
  "bytes",
@@ -252,6 +253,7 @@ version = "0.1.0"
 dependencies = [
  "annora-constitution",
  "annora-core",
+ "annora-inference",
  "annora-memory",
  "annora-substrate",
  "async-trait",
@@ -304,6 +306,7 @@ name = "annora-perception"
 version = "0.1.0"
 dependencies = [
  "annora-core",
+ "annora-inference",
  "annora-substrate",
  "async-trait",
  "bytes",
