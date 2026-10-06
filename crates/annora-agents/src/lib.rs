@@ -94,4 +94,30 @@ mod tests {
         tampered_msg.payload = serde_json::json!({ "title": "Malicious Meeting", "time": "14:00" });
         assert!(!tampered_msg.verify_signature(&sender_keys));
     }
+
+    #[test]
+    fn test_capability_quota_enforcement_and_auto_revocation() {
+        let quota = CapabilityQuota {
+            max_invocations_per_minute: 3,
+            max_total_invocations: 5,
+            max_payload_bytes_per_call: 1024,
+            policy_on_breach: QuotaBreachPolicy::AutoRevoke,
+        };
+        let mut tracker = AgentQuotaTracker::new(quota);
+
+        // 3 calls within 1 minute succeed
+        assert!(tracker.record_invocation(256).is_ok());
+        assert!(tracker.record_invocation(256).is_ok());
+        assert!(tracker.record_invocation(256).is_ok());
+        assert_eq!(tracker.total_calls(), 3);
+
+        // 4th call within the same minute violates rate-limit and triggers AutoRevoke (§31c)
+        let rate_breach = tracker.record_invocation(256);
+        assert!(rate_breach.is_err());
+        assert!(tracker.is_revoked());
+
+        // Subsequent call is blocked due to automatic revocation
+        let subsequent = tracker.record_invocation(256);
+        assert!(subsequent.is_err());
+    }
 }
