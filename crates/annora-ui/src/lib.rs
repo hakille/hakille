@@ -113,7 +113,18 @@ mod tests {
         hud.insert_char('i');
         assert_eq!(*hud.state(), HudState::Prompting { query: "Hi".to_string(), cursor_pos: 2 });
 
-        // Stream response
+        // Cursor movement & deletion
+        hud.move_cursor_left();
+        assert_eq!(*hud.state(), HudState::Prompting { query: "Hi".to_string(), cursor_pos: 1 });
+        hud.insert_char('a');
+        assert_eq!(*hud.state(), HudState::Prompting { query: "Hai".to_string(), cursor_pos: 2 });
+        hud.delete(); // deletes 'i'
+        assert_eq!(*hud.state(), HudState::Prompting { query: "Ha".to_string(), cursor_pos: 2 });
+        hud.clear();
+        assert_eq!(*hud.state(), HudState::Prompting { query: "".to_string(), cursor_pos: 0 });
+
+        // Re-type and stream response
+        hud.insert_text("Hi");
         hud.set_streaming("Hi", "Bonjour ! Comment puis-je vous aider ?", true);
         let ascii = hud.render_ascii();
         assert!(ascii.contains("Bonjour !"));

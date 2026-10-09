@@ -119,4 +119,33 @@ mod tests {
         assert!(summary.ready_for_cognition);
         assert!(summary.total_disk_bytes > 2_000_000_000, "Total size should be ~2.4GB");
     }
+
+    #[test]
+    fn test_tensor_buffer_math_and_argmax() {
+        let t1 = TensorBuffer::new(vec![4], vec![10.0, 50.0, 30.0, 5.0]);
+        assert_eq!(t1.argmax(), 1, "argmax must return index 1 for highest value 50.0");
+
+        let t2 = TensorBuffer::new(vec![3], vec![100.0, 0.0, 1.0]);
+        assert_eq!(t2.argmax(), 0, "argmax must return index 0 for highest value 100.0");
+
+        let t3 = TensorBuffer::new(vec![3], vec![1.0, 2.0, 300.0]);
+        assert_eq!(t3.argmax(), 2, "argmax must return index 2 for highest value 300.0");
+
+        let empty = TensorBuffer::new(vec![0], vec![]);
+        assert_eq!(empty.argmax(), 0);
+
+        // Vector math: dot, l2_norm, normalize, cosine_similarity
+        let a = TensorBuffer::new(vec![2], vec![3.0, 4.0]);
+        assert_eq!(a.l2_norm(), 5.0);
+        let an = a.normalize();
+        assert!((an.l2_norm() - 1.0).abs() < 1e-6);
+
+        let b = TensorBuffer::new(vec![2], vec![6.0, 8.0]);
+        let sim = a.cosine_similarity(&b).unwrap();
+        assert!((sim - 1.0).abs() < 1e-5, "Collinear vectors should have cosine similarity 1.0");
+
+        // Greedy sampler
+        assert_eq!(NeuralSampler::sample_greedy(&t1), 1);
+    }
 }
+

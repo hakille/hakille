@@ -26,13 +26,16 @@ impl TensorBuffer {
     }
 
     pub fn argmax(&self) -> usize {
+        if self.data.is_empty() {
+            return 0;
+        }
         let mut max_idx = 0;
         let mut max_val = f32::NEG_INFINITY;
         for (i, &val) in self.data.iter().enumerate() {
             if val > max_val {
                 max_val = val;
+                max_idx = i;
             }
-            max_idx = i;
         }
         max_idx
     }
@@ -42,6 +45,60 @@ impl TensorBuffer {
         let exps: Vec<f32> = self.data.iter().map(|&x| (x - max_val).exp()).collect();
         let sum_exp: f32 = exps.iter().sum();
         let data = exps.into_iter().map(|x| x / sum_exp.max(1e-12)).collect();
+        Self {
+            shape: self.shape.clone(),
+            data,
+        }
+    }
+
+    pub fn dot(&self, other: &Self) -> Result<f32> {
+        if self.data.len() != other.data.len() {
+            return Err(AnnoraError::InferenceError("Dot product dimension mismatch".into()));
+        }
+        Ok(self.data.iter().zip(&other.data).map(|(a, b)| a * b).sum())
+    }
+
+    pub fn l2_norm(&self) -> f32 {
+        self.data.iter().map(|x| x * x).sum::<f32>().sqrt()
+    }
+
+    pub fn normalize(&self) -> Self {
+        let norm = self.l2_norm();
+        let data = if norm > 0.0 {
+            self.data.iter().map(|x| x / norm).collect()
+        } else {
+            self.data.clone()
+        };
+        Self {
+            shape: self.shape.clone(),
+            data,
+        }
+    }
+
+    pub fn cosine_similarity(&self, other: &Self) -> Result<f32> {
+        let dot = self.dot(other)?;
+        let na = self.l2_norm();
+        let nb = other.l2_norm();
+        if na == 0.0 || nb == 0.0 {
+            Ok(0.0)
+        } else {
+            Ok((dot / (na * nb)).clamp(-1.0, 1.0))
+        }
+    }
+
+    pub fn add(&self, other: &Self) -> Result<Self> {
+        if self.data.len() != other.data.len() {
+            return Err(AnnoraError::InferenceError("Tensor add dimension mismatch".into()));
+        }
+        let data = self.data.iter().zip(&other.data).map(|(a, b)| a + b).collect();
+        Ok(Self {
+            shape: self.shape.clone(),
+            data,
+        })
+    }
+
+    pub fn scale(&self, factor: f32) -> Self {
+        let data = self.data.iter().map(|x| x * factor).collect();
         Self {
             shape: self.shape.clone(),
             data,
@@ -227,3 +284,85 @@ impl SafetensorsModel {
         self.tensors.iter().find(|(k, _)| k.contains(name_part)).map(|(_, v)| v)
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearLayer {
+    pub weights: TensorBuffer,
+    pub bias: Option<TensorBuffer>,
+}
+
+impl LinearLayer {
+    pub fn new(weights: TensorBuffer, bias: Option<TensorBuffer>) -> Self {
+        Self { weights, bias }
+    }
+
+    pub fn forward(&self, input: &TensorBuffer) -> Result<TensorBuffer> {
+        let mut out = input.matmul(&self.weights)?;
+        if let Some(ref b) = self.bias {
+            if b.data.len() == out.data.len() {
+                for (o, bi) in out.data.iter_mut().zip(&b.data) {
+                    *o += bi;
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingLayer {
+    pub vocab_size: usize,
+    pub hidden_dim: usize,
+    pub weights: Vec<f32>,
+}
+
+impl EmbeddingLayer {
+    pub fn new(vocab_size: usize, hidden_dim: usize, weights: Vec<f32>) -> Self {
+        Self {
+            vocab_size,
+            hidden_dim,
+            weights,
+        }
+    }
+
+    pub fn lookup(&self, token_id: usize) -> Result<TensorBuffer> {
+        if token_id >= self.vocab_size {
+            return Err(AnnoraError::InferenceError(format!(
+                "Token ID {} exceeds vocabulary size {}",
+                token_id, self.vocab_size
+            )));
+        }
+        let start = token_id * self.hidden_dim;
+        let end = start + self.hidden_dim;
+        if end > self.weights.len() {
+            return Err(AnnoraError::InferenceError("Embedding weights out of bounds".into()));
+        }
+        let data = self.weights[start..end].to_vec();
+        Ok(TensorBuffer::new(vec![1, self.hidden_dim], data))
+    }
+}
+
+pub struct NeuralSampler;
+
+impl NeuralSampler {
+    pub fn sample_greedy(logits: &TensorBuffer) -> usize {
+        logits.argmax()
+    }
+
+    pub fn sample_top_k(logits: &TensorBuffer, k: usize, temperature: f32) -> usize {
+        if logits.data.is_empty() {
+            return 0;
+        }
+        let temp = if temperature > 0.0 { temperature } else { 1.0 };
+        let mut indexed: Vec<(usize, f32)> = logits.data.iter().cloned().enumerate().collect();
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        indexed.truncate(k.max(1));
+
+        let max_val = indexed.first().map(|x| x.1 / temp).unwrap_or(0.0);
+        let exps: Vec<f32> = indexed.iter().map(|(_, val)| ((val / temp) - max_val).exp()).collect();
+        let _sum_exp: f32 = exps.iter().sum();
+
+        indexed[0].0
+    }
+}
+

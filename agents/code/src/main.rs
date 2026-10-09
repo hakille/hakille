@@ -1,21 +1,16 @@
-use annora_core::{CapabilityAction, CapabilityScope};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CodePatch {
-    pub file_path: String,
-    pub original_content: String,
-    pub modified_content: String,
-    pub explanation: String,
-}
+use agent_code::{CodePatchEngine, WorkspaceCodeIndexer};
 
 fn main() {
     println!("Annora Code Agent initialized for workspace refactoring.");
-}
-
-pub fn check_code_capabilities() -> Vec<(CapabilityScope, CapabilityAction)> {
-    vec![
-        (CapabilityScope::Filesystem, CapabilityAction::Read),
-        (CapabilityScope::Filesystem, CapabilityAction::Write),
-    ]
+    let mut indexer = WorkspaceCodeIndexer::new();
+    let file = indexer.index_file("src/main.rs", "fn main() {\n    println!(\"Hello World\");\n}\n");
+    println!("  -> Fichier indexé: {} ({} symboles)", file.file_path, file.symbols.len());
+    
+    let patch = CodePatchEngine::create_patch(
+        "src/main.rs",
+        "fn main() {\n    println!(\"Hello World\");\n}\n",
+        "fn main() {\n    println!(\"Hello Annora!\");\n}\n",
+        "Salutation personnalisée Annora",
+    );
+    println!("  -> Patch généré:\n{}", patch.unified_diff);
 }

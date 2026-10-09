@@ -1,4 +1,5 @@
 use annora_core::{Cost, Result, TrustLevel};
+use annora_inference::GgufInferenceEngine;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,6 +14,7 @@ pub struct System2Plan {
 pub struct System2Engine {
     provider_name: String,
     cost_per_1k_tokens_cents: u64,
+    inference_engine: Option<GgufInferenceEngine>,
 }
 
 impl System2Engine {
@@ -20,7 +22,24 @@ impl System2Engine {
         Self {
             provider_name: provider_name.into(),
             cost_per_1k_tokens_cents,
+            inference_engine: None,
         }
+    }
+
+    pub fn with_inference_engine(
+        provider_name: impl Into<String>,
+        cost_per_1k_tokens_cents: u64,
+        inference_engine: GgufInferenceEngine,
+    ) -> Self {
+        Self {
+            provider_name: provider_name.into(),
+            cost_per_1k_tokens_cents,
+            inference_engine: Some(inference_engine),
+        }
+    }
+
+    pub fn set_inference_engine(&mut self, engine: GgufInferenceEngine) {
+        self.inference_engine = Some(engine);
     }
 
     pub async fn reason(
@@ -42,11 +61,24 @@ impl System2Engine {
         steps.push("2. Verify safety and constitutional constraints".to_string());
         steps.push("3. Formulate bounded response or action plan".to_string());
 
-        let answer = format!(
-            "System 2 synthesized output for task: '{}' (Grounded with {} facts)",
-            prompt,
-            context_triplets.len()
-        );
+        let answer = if let Some(ref engine) = self.inference_engine {
+            let deep_prompt = if context_triplets.is_empty() {
+                prompt.to_string()
+            } else {
+                format!("Contexte mémorisé : {}\nQuestion/Tâche : {}", context_triplets.join(" ; "), prompt)
+            };
+            engine.generate_instruct(&deep_prompt, Some("System 2 Deliberate Reasoner"), 256)
+                .unwrap_or_else(|_| format!(
+                    "System 2 synthesized output for task: '{}' (Grounded with {} facts)",
+                    prompt, context_triplets.len()
+                ))
+        } else {
+            format!(
+                "System 2 synthesized output for task: '{}' (Grounded with {} facts)",
+                prompt,
+                context_triplets.len()
+            )
+        };
 
         let approx_tokens = prompt.len() / 4 + 200;
         let cost_cents = ((approx_tokens as u64 * self.cost_per_1k_tokens_cents) / 1000).max(1);
@@ -64,3 +96,4 @@ impl System2Engine {
         })
     }
 }
+

@@ -1,5 +1,6 @@
 use crate::audio::capture::AudioChunk;
 use annora_core::Result;
+use annora_inference::CampplusSpeakerEngine;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -67,6 +68,14 @@ impl CamPlusPlusIdentifier {
     pub fn model_path(&self) -> Option<&Path> {
         self.model_path.as_deref()
     }
+
+    pub fn speaker_engine(&self) -> CampplusSpeakerEngine {
+        if let Some(ref p) = self.model_path {
+            CampplusSpeakerEngine::with_model(p)
+        } else {
+            CampplusSpeakerEngine::new()
+        }
+    }
 }
 
 impl Default for CamPlusPlusIdentifier {
@@ -78,19 +87,8 @@ impl Default for CamPlusPlusIdentifier {
 #[async_trait]
 impl SpeakerIdentifier for CamPlusPlusIdentifier {
     async fn extract_embedding(&self, chunk: &AudioChunk) -> Result<VoiceBiometricEmbedding> {
-        let mut vector = vec![0.0f32; self.embedding_dim];
-        if !chunk.samples.is_empty() {
-            for (i, &sample) in chunk.samples.iter().enumerate() {
-                vector[i % self.embedding_dim] += sample;
-            }
-            // Normalize L2
-            let norm: f32 = vector.iter().map(|&x| x * x).sum::<f32>().sqrt();
-            if norm > 0.0 {
-                for x in &mut vector {
-                    *x /= norm;
-                }
-            }
-        }
+        let engine = self.speaker_engine();
+        let vector = engine.extract_speaker_embedding(&chunk.samples);
 
         Ok(VoiceBiometricEmbedding {
             vector,

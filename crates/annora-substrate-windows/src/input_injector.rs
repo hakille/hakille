@@ -84,14 +84,21 @@ impl WindowsInputInjector {
             }
 
             InputAction::Scroll { direction, amount } => {
-                let delta = match direction {
-                    ScrollDirection::Up => (*amount).max(1) * 120,
-                    ScrollDirection::Down => -((*amount).max(1) * 120),
-                    _ => 0,
-                };
-                if delta != 0 {
-                    unsafe {
-                        mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta as u32, 0);
+                let ticks = (*amount).max(1) * 120;
+                unsafe {
+                    match direction {
+                        ScrollDirection::Up => {
+                            mouse_event(MOUSEEVENTF_WHEEL, 0, 0, ticks as u32, 0);
+                        }
+                        ScrollDirection::Down => {
+                            mouse_event(MOUSEEVENTF_WHEEL, 0, 0, (-ticks) as u32, 0);
+                        }
+                        ScrollDirection::Right => {
+                            mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, ticks as u32, 0);
+                        }
+                        ScrollDirection::Left => {
+                            mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, (-ticks) as u32, 0);
+                        }
                     }
                 }
             }

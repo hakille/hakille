@@ -19,7 +19,7 @@ pub use tray_and_hotkey::*;
 mod tests {
     use super::*;
     use annora_core::{CapabilityScope, Tier, VirtualPath};
-    use annora_substrate::{Compute, InputAction, MouseButton, Substrate};
+    use annora_substrate::{Compute, InputAction, MouseButton, ScrollDirection, Substrate};
 
     #[tokio::test]
     async fn test_windows_substrate_manifest_and_attestation() {
@@ -89,6 +89,16 @@ mod tests {
         };
         let res = WindowsInputInjector::inject(&click);
         assert!(res.is_ok(), "Input injection should succeed");
+
+        // Test vertical and horizontal scroll injection
+        let scroll_up = InputAction::Scroll { direction: ScrollDirection::Up, amount: 2 };
+        assert!(WindowsInputInjector::inject(&scroll_up).is_ok());
+
+        let scroll_right = InputAction::Scroll { direction: ScrollDirection::Right, amount: 2 };
+        assert!(WindowsInputInjector::inject(&scroll_right).is_ok());
+
+        let scroll_left = InputAction::Scroll { direction: ScrollDirection::Left, amount: 2 };
+        assert!(WindowsInputInjector::inject(&scroll_left).is_ok());
     }
 
     #[tokio::test]

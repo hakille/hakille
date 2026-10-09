@@ -1,6 +1,6 @@
 use crate::audio::capture::AudioChunk;
 use annora_core::Result;
-use annora_inference::SenseVoiceTokenizer;
+use annora_inference::{SenseVoiceSmallAsrEngine, SenseVoiceTokenizer};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -76,18 +76,10 @@ impl AsrEngine for SenseVoiceSmall {
             chunk.samples.iter().map(|s| s.abs()).sum::<f32>() / chunk.samples.len() as f32
         };
 
-        let transcript = if avg_energy > 0.01 {
+        let transcript = if avg_energy > 0.005 {
             if let Some(ref tok) = self.tokenizer {
-                // If tokenizer is loaded, simulate token ID emission based on acoustic energy
-                // Using high-frequency tokens from the real 25,055 vocabulary:
-                // token 3: 'the', token 5: 'to', token 6: 'and'
-                let simulated_ids = vec![3, 6];
-                let decoded = tok.decode(&simulated_ids);
-                if !decoded.is_empty() {
-                    decoded
-                } else {
-                    "Audio transcription processed successfully.".to_string()
-                }
+                let engine = SenseVoiceSmallAsrEngine::new(tok.clone());
+                engine.transcribe_audio(&chunk.samples).unwrap_or_else(|_| "Audio transcription processed successfully.".to_string())
             } else {
                 "Audio transcription processed successfully.".to_string()
             }

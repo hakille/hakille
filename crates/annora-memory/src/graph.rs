@@ -100,4 +100,13 @@ impl KnowledgeGraph {
             t.metadata.weight = (t.metadata.weight * 1.1).min(1.0);
         }
     }
+
+    pub fn remove(&mut self, id: &TripletId) -> bool {
+        self.triplets.remove(id).is_some()
+    }
+
+    pub fn contains(&self, id: &TripletId) -> bool {
+        self.triplets.contains_key(id)
+    }
 }
+

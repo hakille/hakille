@@ -53,6 +53,11 @@ impl CognitiveOrchestrator {
         }
     }
 
+    pub fn set_inference_engine(&mut self, engine: annora_inference::GgufInferenceEngine) {
+        self.system1.set_inference_engine(engine.clone());
+        self.system2.set_inference_engine(engine);
+    }
+
     pub fn remember(&mut self, subject: &str, predicate: &str, object: &str) -> annora_core::TripletId {
         let triplet = annora_memory::Triplet {
             id: annora_core::TripletId(uuid::Uuid::now_v7()),

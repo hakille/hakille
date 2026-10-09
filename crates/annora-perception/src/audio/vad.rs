@@ -1,4 +1,5 @@
 use crate::audio::capture::AudioChunk;
+use annora_inference::SileroVadEngine;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +43,14 @@ impl VoiceActivityDetector {
         Self::new(0.5, 3)
     }
 
+    pub fn silero_engine(&self) -> SileroVadEngine {
+        if let Some(ref p) = self.model_path {
+            SileroVadEngine::with_model(p, self.threshold)
+        } else {
+            SileroVadEngine::new(self.threshold)
+        }
+    }
+
     pub fn process(&mut self, chunk: &AudioChunk) -> VadResult {
         if chunk.samples.is_empty() {
             return VadResult {
@@ -55,23 +64,8 @@ impl VoiceActivityDetector {
         let rms = (sum_sq / chunk.samples.len() as f32).sqrt();
         let rms = if rms.is_finite() { rms } else { 0.0 };
 
-        // Calculate zero-crossing rate
-        let mut zero_crossings = 0;
-        for i in 1..chunk.samples.len() {
-            let prev = if chunk.samples[i - 1].is_finite() { chunk.samples[i - 1] } else { 0.0 };
-            let curr = if chunk.samples[i].is_finite() { chunk.samples[i] } else { 0.0 };
-            if (curr >= 0.0 && prev < 0.0)
-                || (curr < 0.0 && prev >= 0.0)
-            {
-                zero_crossings += 1;
-            }
-        }
-        let zcr = zero_crossings as f32 / chunk.samples.len() as f32;
-
-        // Speech probability model (combines RMS energy and voice-band ZCR)
-        let energy_score = (rms * 25.0).clamp(0.0, 1.0);
-        let zcr_score = if (0.02..0.35).contains(&zcr) { 1.0 } else { 0.2 };
-        let probability = (energy_score * 0.7 + zcr_score * 0.3).clamp(0.0, 1.0);
+        let engine = self.silero_engine();
+        let probability = engine.evaluate_speech_probability(&chunk.samples);
 
         let instantaneous_speech = probability >= self.threshold;
 

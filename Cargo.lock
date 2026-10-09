@@ -26,8 +26,11 @@ name = "agent-calendar"
 version = "0.1.0"
 dependencies = [
  "annora-core",
+ "annora-memory",
+ "chrono",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -53,8 +56,10 @@ name = "agent-mail"
 version = "0.1.0"
 dependencies = [
  "annora-core",
+ "chrono",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -460,6 +465,7 @@ version = "0.1.0"
 dependencies = [
  "annora-audit",
  "annora-core",
+ "annora-memory",
  "async-trait",
  "chrono",
  "serde",

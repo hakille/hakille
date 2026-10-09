@@ -5,8 +5,11 @@ use serde::{Deserialize, Serialize};
 use crate::candle_runtime::SafetensorsModel;
 use crate::catalog::{ModelCatalog, ModelEntry, ModelTier};
 use crate::downloader::{ModelDownloader, ProgressCallback};
-use crate::gguf_runtime::GgufModel;
-use crate::onnx_runtime::{OnnxModelInfo, OnnxModelInspector, SenseVoiceTokenizer};
+use crate::gguf_runtime::{GgufInferenceEngine, GgufModel};
+use crate::onnx_runtime::{
+    CampplusSpeakerEngine, MiniLmEmbeddingEngine, OnnxModelInfo, OnnxModelInspector,
+    SenseVoiceSmallAsrEngine, SenseVoiceTokenizer, SileroVadEngine,
+};
 
 /// High-level provision status of a model in the local system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +59,30 @@ pub struct ConnectedModels {
 }
 
 impl ConnectedModels {
+    pub fn qwen_engine(&self) -> GgufInferenceEngine {
+        GgufInferenceEngine::new(self.qwen2.clone())
+    }
+
+    pub fn ui_tars_engine(&self) -> GgufInferenceEngine {
+        GgufInferenceEngine::new(self.ui_tars.clone())
+    }
+
+    pub fn vad_engine(&self) -> SileroVadEngine {
+        SileroVadEngine::with_model(&self.silero_vad_info.path, 0.5)
+    }
+
+    pub fn asr_engine(&self) -> SenseVoiceSmallAsrEngine {
+        SenseVoiceSmallAsrEngine::with_model(self.sensevoice_tokenizer.clone(), &self.sensevoice_info.path)
+    }
+
+    pub fn speaker_engine(&self) -> CampplusSpeakerEngine {
+        CampplusSpeakerEngine::with_model(&self.campplus_info.path)
+    }
+
+    pub fn embedding_engine(&self) -> MiniLmEmbeddingEngine {
+        MiniLmEmbeddingEngine::with_model(&self.minilm_info.path)
+    }
+
     pub fn system_summary(&self) -> ConnectedSystemSummary {
         let mut models = Vec::new();
 

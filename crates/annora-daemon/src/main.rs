@@ -1,4 +1,4 @@
-use annora_agents::{AgentManifest, AgentRegistry};
+use annora_agents::{AgentManifest, AgentRegistry, UiTarsAgent};
 use annora_audit::entry::{ActionRecord, AuditEntry, ReasoningStep, ReasoningTrace};
 use annora_audit::journal::AuditJournal;
 use annora_constitution::rules::Constitution;
@@ -10,7 +10,7 @@ use annora_inference::{
     ModelCatalog, ModelProvisioner, ModelTier,
 };
 use annora_kernel::{
-    fabric::{CognitiveFabric, CognitiveManifest},
+    fabric::CognitiveFabric,
     orchestrator::CognitiveOrchestrator,
 };
 use annora_metrics::{
@@ -25,9 +25,9 @@ use annora_substrate::{CameraConfig, CameraFacing, Compute, Substrate};
 use annora_substrate_windows::{WindowsComputeBackend, WindowsSubstrate};
 use annora_sync::{CrdtSync, HandoffCoordinator};
 use annora_ui::{
-    ChannelSelector, CostCounter, DeviceType, EphemeralHud, InitiativeOrigin,
-    InteractionContext, OnboardingManager, PlatformAdapter,
-    PresenceIndicator, PresenceState, SilenceBudgetTracker, UrgencyLevel,
+    AcrylicOverlayWindowSpec, ChannelSelector, CostCounter, DeviceType, EphemeralHud, InitiativeOrigin,
+    InteractionContext, MemoryViewerPanel, OnboardingManager, PlatformAdapter,
+    PresenceIndicator, PresenceState, SilenceBudgetTracker, UrgencyLevel, VisualAuditViewer,
 };
 use annora_voice::{BargeInDetector, CosyVoice2Engine, MoshiEngine};
 use sha2::Digest;
@@ -232,7 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("annora-daemon v0.1.0 (Rust 2024)");
                 return Ok(());
             }
-            "--eval-prompt" | "--prompt" => {
+            "--eval-prompt" | "--prompt" | "--eval" => {
                 if arg_idx + 1 < args.len() {
                     eval_prompt = Some(args[arg_idx + 1].clone());
                     arg_idx += 1;
@@ -318,7 +318,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let maybe_connected = provisioner.connect_all_models();
-    let (mut _vad, _asr, mut _moshi, _fabric) = match maybe_connected {
+    let (mut _vad, _asr, mut _moshi, fabric, qwen_engine_opt, gui_agent) = match maybe_connected {
         Ok(ref conn) => {
             let summary = conn.system_summary();
             println!("  ⚡ Connected Neural Fabric: 7/7 Foundation Models Online & Operational ({:.2} GB)", conn.total_disk_bytes as f64 / 1_000_000_000.0);
@@ -329,7 +329,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let asr = SenseVoiceSmall::with_tokenizer(conn.sensevoice_tokenizer.clone());
             let moshi = MoshiEngine::new();
             let fabric = CognitiveFabric::from_connected_models(conn);
-            (vad, asr, moshi, fabric)
+            let qwen = conn.qwen_engine();
+            let ui_tars = UiTarsAgent::with_gguf_model(conn.ui_tars.clone());
+            (vad, asr, moshi, fabric, Some(qwen), ui_tars)
         }
         Err(ref e) => {
             println!("  ⚠ Model Connection Info: {}", e);
@@ -337,7 +339,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let asr = SenseVoiceSmall::new();
             let moshi = MoshiEngine::new();
             let fabric = CognitiveFabric::new(annora_kernel::fabric::CognitiveManifest::default());
-            (vad, asr, moshi, fabric)
+            let ui_tars = UiTarsAgent::new();
+            (vad, asr, moshi, fabric, None, ui_tars)
         }
     };
     let mut _wake_word = WakeWordDetector::default_annora();
@@ -357,6 +360,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let camera_cap = authority.create_root_token(
         vec![CapabilityScope::Camera, CapabilityScope::Sensor],
         vec![annora_core::CapabilityAction::Read],
+        Timestamp::now(),
+    )?;
+    let gui_input_cap = authority.create_root_token(
+        vec![CapabilityScope::GuiInput],
+        vec![annora_core::CapabilityAction::Execute, annora_core::CapabilityAction::Write],
         Timestamp::now(),
     )?;
     let camera_handle = substrate.start_camera_capture(camera_config.clone(), &camera_cap).await?;
@@ -388,8 +396,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 6. Initialize Cognitive Kernel, UI & North-Star Metrics
     println!("\n[6/6] Linking Cognitive Fabric & Orchestrator...");
-    let fabric = CognitiveFabric::new(CognitiveManifest::default());
     let mut orchestrator = CognitiveOrchestrator::new(fabric, user_id.clone(), constitution.clone());
+    if let Some(engine) = qwen_engine_opt {
+        orchestrator.set_inference_engine(engine);
+        println!("  Neural Engine: Qwen 2.5 0.5B wired to System 1 & System 2 cognitive processing");
+    }
     let mut presence = PresenceIndicator::new();
     let mut cost_counter = CostCounter::new(daily_budget_cents, "EUR");
     let mut onboarding = OnboardingManager::new();
@@ -495,8 +506,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  :agents           List registered WASM agents");
                 println!("  :cost             Display System 2 inference cost tracking");
                 println!("  :memory           Display all triplets currently stored in knowledge graph");
+                println!("  :memory-view      Inspect rich memory triplets with weights, confidence & partitions");
+                println!("  :forget <id>      Exercise 'Droit à l'oubli' (consent revocation with crypto receipt)");
+                println!("  :audit-view       Inspect cryptographically signed tamper-evident audit journal");
                 println!("  :remember         Add a fact to knowledge graph (e.g. :remember Alice aime Rust)");
                 println!("  :recall           Search memory graph by keyword (e.g. :recall Rust)");
+                println!("  :gui-action <cmd> Plan and execute native Windows GUI desktop actions via UI-TARS");
                 println!("  :win-ram          Display real Windows physical RAM and GPU VRAM telemetry");
                 println!("  :win-power        Display real Windows battery, AC power, and thermal state");
                 println!("  :win-screen       Capture primary display using native Win32 GDI (BitBlt)");
@@ -629,6 +644,86 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            ":memory-view" => {
+                let items = MemoryViewerPanel::list_all_items(&orchestrator.memory_graph);
+                println!("Sovereign Knowledge Graph Visual Inspection ({} triplets):", items.len());
+                if items.is_empty() {
+                    println!("  (No triplets stored yet. Use :remember to add facts)");
+                } else {
+                    for (i, item) in items.iter().enumerate() {
+                        println!(
+                            "  [{}] ID: {} | Poids: {:.2} | Conf: {}% | Source: {} | Part: {}\n      -> {}",
+                            i + 1, item.id.0, item.weight, item.confidence_pct, item.source, item.partition, item.text_representation
+                        );
+                    }
+                }
+            }
+            s if s.starts_with(":forget ") => {
+                let id_str = s.trim_start_matches(":forget ").trim();
+                match uuid::Uuid::parse_str(id_str) {
+                    Ok(uuid_val) => {
+                        let triplet_id = annora_core::TripletId(uuid_val);
+                        match MemoryViewerPanel::revoke_triplet_consent(
+                            &mut orchestrator.memory_graph,
+                            &triplet_id,
+                            "User explicit consent revocation ('Droit à l'oubli')",
+                        ) {
+                            Some(receipt) => {
+                                println!("✓ Droit à l'oubli appliqué avec succès !");
+                                println!("  • ID Révoqué:           {}", receipt.revoked_id);
+                                println!("  • Horodatage:           {}", receipt.timestamp_str);
+                                println!("  • Motif:                {}", receipt.reason);
+                                println!("  • Jeton de Révocation:  {}", receipt.verification_token);
+                            }
+                            None => {
+                                eprintln!("✗ Triplet avec ID '{}' introuvable dans le graphe de mémoire.", id_str);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("✗ Format d'UUID invalide '{}': {}", id_str, e);
+                    }
+                }
+            }
+            ":audit-view" => {
+                match audit_journal.all_entries() {
+                    Ok(entries) => {
+                        let view_items = VisualAuditViewer::format_entries(&entries);
+                        println!("Tamper-Evident Audit Journal ({} entries):", view_items.len());
+                        for (i, item) in view_items.iter().enumerate() {
+                            println!(
+                                "  [{}] {} | Acteur: {} | Conf: {}% | Reversible: {}\n      Action:    {}\n      Raison:    {}",
+                                i + 1,
+                                item.timestamp_str,
+                                item.actor_name,
+                                item.confidence_percentage,
+                                item.can_revert,
+                                item.action_summary,
+                                item.reasoning_summary
+                            );
+                        }
+                        if let Ok(verif) = audit_journal.verify_chain() {
+                            println!("\n  Cryptographic Chain Integrity: {}/{} valid entries (Broken: {:?})",
+                                verif.valid_entries, verif.total_entries, verif.broken_at
+                            );
+                        }
+                    }
+                    Err(e) => eprintln!("✗ Failed to read audit journal: {}", e),
+                }
+            }
+            s if s.starts_with(":gui-action ") => {
+                let task = s.trim_start_matches(":gui-action ").trim();
+                println!("UI-TARS GUI Agent: Planning actions for task: '{}'...", task);
+                let intentions = gui_agent.predict_intentions_neural(task, 1920, 1080);
+                println!("  Predicted {} GUI intentions:", intentions.len());
+                for (i, intent) in intentions.iter().enumerate() {
+                    println!("    {}. {:?}", i + 1, intent);
+                    match gui_agent.execute_intention(&substrate, intent, &gui_input_cap, 1920, 1080).await {
+                        Ok(msg) => println!("       -> Succès: {}", msg),
+                        Err(e) => eprintln!("       -> Échec: {}", e),
+                    }
+                }
+            }
             s if s.starts_with(":remember ") => {
                 let text = s.trim_start_matches(":remember ").trim();
                 let parts: Vec<&str> = text.splitn(3, ' ').collect();
@@ -695,6 +790,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             ":hud" => {
                 println!("Invoking Ephemeral HUD (Spotlight/Raycast-like single-line overlay):");
+                let hud_spec = AcrylicOverlayWindowSpec::centered_default();
+                println!("  DirectComposition Acrylic Spec: {}x{} @ (top-offset: {}px) | Accent: {}",
+                    hud_spec.width, hud_spec.height, hud_spec.pos_y_offset, hud_spec.coral_accent_hex
+                );
                 ephemeral_hud.open_prompt();
                 for c in "Transférer 25 EUR pour déjeuner".chars() {
                     ephemeral_hud.insert_char(c);

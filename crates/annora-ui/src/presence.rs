@@ -67,6 +67,36 @@ impl PresenceIndicator {
     pub fn theme(&self) -> &UiTheme {
         &self.theme
     }
+
+    /// Computes the exact sinusoidal animation factor (0.0 to 1.0) for the tray icon or HUD aura
+    pub fn pulse_factor(&self, timestamp_ms: u64) -> f32 {
+        let period = self.pulse_period_ms();
+        if period == 0 {
+            0.0 // Static
+        } else {
+            let phase = (timestamp_ms % period as u64) as f32 / period as f32;
+            let sin_val = (phase * 2.0 * std::f32::consts::PI).sin();
+            0.5 + 0.5 * sin_val
+        }
+    }
+
+    pub fn color_for_state(&self) -> Color {
+        match self.state {
+            PresenceState::Idle => Color { r: 120, g: 120, b: 120 }, // Muted grey
+            PresenceState::Listening => Color { r: 64, g: 196, b: 255 }, // Electric blue
+            PresenceState::Acting => Color { r: 255, g: 87, b: 34 }, // Coral #FF5722
+        }
+    }
+
+    pub fn context_menu_items(&self) -> Vec<&'static str> {
+        vec![
+            "Ouvrir Annora HUD (Alt+Space)",
+            "Visualiseur de Mémoire Continue",
+            "Journal d'Audit et Sécurité",
+            "Gérer les Consentements & Révocations",
+            "Quitter Annora",
+        ]
+    }
 }
 
 impl Default for PresenceIndicator {
@@ -74,3 +104,4 @@ impl Default for PresenceIndicator {
         Self::new()
     }
 }
+

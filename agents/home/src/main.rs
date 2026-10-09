@@ -1,22 +1,19 @@
-use annora_core::{CapabilityAction, CapabilityScope};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SmartHomeCommand {
-    pub room: String,
-    pub device: String,
-    pub command: String,
-    pub value: serde_json::Value,
-}
+use agent_home::{HomeCommand, SmartHomeHub};
 
 fn main() {
-    println!("Annora Home Automation Agent initialized.");
-}
+    println!("Annora Home Automation Agent initialized with physical safety safeguards.");
+    let mut hub = SmartHomeHub::new();
+    let devices = hub.discover_devices();
+    println!("  -> {} appareils domotiques découverts sur le réseau local.", devices.len());
 
-pub fn check_home_capabilities() -> Vec<(CapabilityScope, CapabilityAction)> {
-    vec![
-        (CapabilityScope::Network, CapabilityAction::Read),
-        (CapabilityScope::Network, CapabilityAction::Write),
-        (CapabilityScope::Sensor, CapabilityAction::Read),
-    ]
+    let cmd = HomeCommand {
+        device_id: "light-living-01".to_string(),
+        action: "turn_on".to_string(),
+        params: serde_json::Value::Null,
+        user_confirmed: false,
+    };
+    match hub.execute_command(&cmd) {
+        Ok(msg) => println!("  -> Exécution: {}", msg),
+        Err(e) => eprintln!("  -> Erreur: {}", e),
+    }
 }

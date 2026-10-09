@@ -160,6 +160,24 @@ impl AuditJournal {
         Ok(results)
     }
 
+    pub fn all_entries(&self) -> Result<Vec<AuditEntry>> {
+        let read_txn = self.db.begin_read().map_err(JournalError::Transaction)?;
+        let entries_table = read_txn.open_table(ENTRIES_TABLE).map_err(JournalError::Table)?;
+        let order_table = read_txn.open_table(ENTRY_ORDER_TABLE).map_err(JournalError::Table)?;
+
+        let seq = *self.seq.lock().unwrap();
+        let mut results = Vec::new();
+        for i in 0..seq {
+            if let Some(id_data) = order_table.get(i).map_err(JournalError::Storage)? {
+                if let Some(entry_data) = entries_table.get(id_data.value()).map_err(JournalError::Storage)? {
+                    let entry: AuditEntry = serde_json::from_slice(entry_data.value()).map_err(JournalError::Serialization)?;
+                    results.push(entry);
+                }
+            }
+        }
+        Ok(results)
+    }
+
     pub fn verify_chain(&self) -> Result<ChainVerification> {
         use ed25519_dalek::{Verifier, Signature as DalekSignature};
 

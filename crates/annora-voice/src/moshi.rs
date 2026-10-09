@@ -25,6 +25,22 @@ impl MoshiEngine {
         }
     }
 
+    pub fn with_codec(codec: MimiCodec) -> Self {
+        Self {
+            codec,
+            rag_context: None,
+            dialogue_turn: 0,
+        }
+    }
+
+    pub fn codec(&self) -> &MimiCodec {
+        &self.codec
+    }
+
+    pub fn codec_mut(&mut self) -> &mut MimiCodec {
+        &mut self.codec
+    }
+
     pub fn inject_context(&mut self, rag_context: impl Into<String>) {
         self.rag_context = Some(rag_context.into());
     }

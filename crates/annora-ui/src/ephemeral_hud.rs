@@ -89,6 +89,47 @@ impl EphemeralHud {
         }
     }
 
+    pub fn move_cursor_left(&mut self) {
+        if let HudState::Prompting { ref query, ref mut cursor_pos } = self.state {
+            if *cursor_pos > 0 {
+                let prev_boundary = query[..*cursor_pos]
+                    .char_indices()
+                    .last()
+                    .map(|(idx, _)| idx)
+                    .unwrap_or(0);
+                *cursor_pos = prev_boundary;
+            }
+        }
+    }
+
+    pub fn move_cursor_right(&mut self) {
+        if let HudState::Prompting { ref query, ref mut cursor_pos } = self.state {
+            if *cursor_pos < query.len() {
+                let next_boundary = query[*cursor_pos..]
+                    .char_indices()
+                    .nth(1)
+                    .map(|(idx, _)| *cursor_pos + idx)
+                    .unwrap_or(query.len());
+                *cursor_pos = next_boundary;
+            }
+        }
+    }
+
+    pub fn delete(&mut self) {
+        if let HudState::Prompting { ref mut query, ref cursor_pos } = self.state {
+            if *cursor_pos < query.len() {
+                query.remove(*cursor_pos);
+            }
+        }
+    }
+
+    pub fn clear(&mut self) {
+        if let HudState::Prompting { ref mut query, ref mut cursor_pos } = self.state {
+            query.clear();
+            *cursor_pos = 0;
+        }
+    }
+
 
     pub fn set_streaming(&mut self, query: impl Into<String>, partial: impl Into<String>, is_final: bool) {
         self.state = HudState::StreamingResponse {
@@ -155,18 +196,131 @@ impl EphemeralHud {
         }
     }
 
+    /// Computes the exact acrylic overlay window specification for the current HUD state
+    pub fn overlay_spec(&self) -> AcrylicOverlayWindowSpec {
+        let (height, opacity) = match &self.state {
+            HudState::Hidden => (0, 0.0),
+            HudState::Prompting { .. } => (64, 0.88),
+            HudState::StreamingResponse { .. } => (240, 0.92),
+            HudState::ValidationRequired { .. } => (280, 0.95),
+            HudState::Evaporating { remaining_ms, .. } => {
+                let frac = (*remaining_ms as f32 / self.auto_evaporate_delay_ms as f32).clamp(0.0, 1.0);
+                ((240.0 * frac) as u32, 0.85 * frac)
+            }
+        };
+
+        AcrylicOverlayWindowSpec {
+            width: 720,
+            height,
+            pos_y_offset: 120,
+            acrylic_tint_hex: "#121212".to_string(),
+            acrylic_opacity: opacity,
+            blur_radius: 30,
+            corner_radius: 12,
+            border_hex: "#2D2D2D".to_string(),
+            coral_accent_hex: "#FF5722".to_string(),
+            is_topmost: true,
+            is_visible: self.state != HudState::Hidden,
+        }
+    }
+
+    pub fn insert_text(&mut self, text: &str) {
+        for c in text.chars() {
+            self.insert_char(c);
+        }
+    }
+
+    pub fn submit_prompt(&mut self) -> Option<String> {
+        if let HudState::Prompting { ref query, .. } = self.state {
+            let q = query.trim().to_string();
+            if !q.is_empty() {
+                self.state = HudState::StreamingResponse {
+                    query: q.clone(),
+                    response_text: "En attente de réponse neuronale...".to_string(),
+                    is_final: false,
+                };
+                return Some(q);
+            }
+        }
+        None
+    }
+
+    pub fn confirm_validation(&mut self, expected_action_id: &str) -> bool {
+        if let HudState::ValidationRequired { ref action_id, .. } = self.state {
+            if action_id == expected_action_id {
+                self.start_evaporation();
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn cancel_validation(&mut self) {
+        self.dismiss();
+    }
+
     /// JSON payload for OS compositors (Windows DWM overlay, macOS NSPanel, Wayland wlr-layer-shell)
     pub fn to_compositor_payload(&self) -> serde_json::Value {
+        let spec = self.overlay_spec();
         serde_json::json!({
             "state": format!("{:?}", self.state),
             "theme": {
-                "background_hex": "#121212",
+                "background_hex": spec.acrylic_tint_hex,
                 "text_hex": "#E0E0E0",
-                "validation_accent_coral": "#FF5722",
+                "validation_accent_coral": spec.coral_accent_hex,
+                "opacity": spec.acrylic_opacity,
+                "blur_radius": spec.blur_radius,
+                "corner_radius": spec.corner_radius,
+            },
+            "window": {
+                "width": spec.width,
+                "height": spec.height,
+                "top_offset": spec.pos_y_offset,
+                "is_topmost": spec.is_topmost,
             },
             "hotkey": self.hotkey_binding,
-            "is_visible": self.state != HudState::Hidden,
+            "is_visible": spec.is_visible,
         })
+    }
+}
+
+/// Specifications for Windows DirectComposition / Acrylic translucent overlay window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcrylicOverlayWindowSpec {
+    pub width: u32,
+    pub height: u32,
+    pub pos_y_offset: i32,
+    pub acrylic_tint_hex: String,
+    pub acrylic_opacity: f32,
+    pub blur_radius: u32,
+    pub corner_radius: u32,
+    pub border_hex: String,
+    pub coral_accent_hex: String,
+    pub is_topmost: bool,
+    pub is_visible: bool,
+}
+
+impl AcrylicOverlayWindowSpec {
+    pub fn centered_default() -> Self {
+        Self {
+            width: 720,
+            height: 64,
+            pos_y_offset: 120,
+            acrylic_tint_hex: "#121212".to_string(),
+            acrylic_opacity: 0.88,
+            blur_radius: 30,
+            corner_radius: 12,
+            border_hex: "#2D2D2D".to_string(),
+            coral_accent_hex: "#FF5722".to_string(),
+            is_topmost: true,
+            is_visible: true,
+        }
+    }
+}
+
+impl Default for AcrylicOverlayWindowSpec {
+    fn default() -> Self {
+        Self::centered_default()
     }
 }
 
@@ -175,3 +329,4 @@ impl Default for EphemeralHud {
         Self::new()
     }
 }
+

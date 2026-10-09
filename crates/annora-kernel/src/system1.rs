@@ -1,4 +1,5 @@
 use annora_core::{Result, TrustLevel};
+use annora_inference::GgufInferenceEngine;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,13 +12,29 @@ pub struct System1Output {
 
 pub struct System1Engine {
     max_latency_budget_ms: u64,
+    inference_engine: Option<GgufInferenceEngine>,
 }
 
 impl System1Engine {
     pub fn new(max_latency_budget_ms: u64) -> Self {
         Self {
             max_latency_budget_ms,
+            inference_engine: None,
         }
+    }
+
+    pub fn with_inference_engine(
+        max_latency_budget_ms: u64,
+        inference_engine: GgufInferenceEngine,
+    ) -> Self {
+        Self {
+            max_latency_budget_ms,
+            inference_engine: Some(inference_engine),
+        }
+    }
+
+    pub fn set_inference_engine(&mut self, engine: GgufInferenceEngine) {
+        self.inference_engine = Some(engine);
     }
 
     pub async fn process(
@@ -43,6 +60,9 @@ impl System1Engine {
 
         let response = if *trust_level == TrustLevel::Untrusted {
             "Received external content. Stored without automatic execution.".to_string()
+        } else if let Some(ref engine) = self.inference_engine {
+            engine.generate_instruct(prompt, None, 64)
+                .unwrap_or_else(|_| format!("System 1 fast response to: {}", sanitized_prompt))
         } else {
             format!("System 1 fast response to: {}", sanitized_prompt)
         };
@@ -57,3 +77,4 @@ impl System1Engine {
         })
     }
 }
+

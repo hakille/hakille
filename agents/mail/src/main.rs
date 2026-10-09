@@ -1,21 +1,8 @@
-use annora_core::{CapabilityAction, CapabilityScope};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MailMessage {
-    pub from: String,
-    pub to: String,
-    pub subject: String,
-    pub body: String,
-}
+use agent_mail::MailClient;
 
 fn main() {
     println!("Annora Mail Agent initialized with scoped capabilities.");
-}
-
-pub fn check_mail_capabilities() -> Vec<(CapabilityScope, CapabilityAction)> {
-    vec![
-        (CapabilityScope::Network, CapabilityAction::Read),
-        (CapabilityScope::Filesystem, CapabilityAction::Read),
-    ]
+    let client = MailClient::new();
+    let inbox = client.fetch_folder(&agent_mail::MailFolder::Inbox);
+    println!("  -> {} e-mails disponibles dans la boîte de réception.", inbox.len());
 }
