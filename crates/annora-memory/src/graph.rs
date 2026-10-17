@@ -739,7 +739,10 @@ mod tests {
     fn test_ram_index_insert_query_and_duplicate() {
         let mut graph = KnowledgeGraph::new();
         let (s1, p1) = fresh_ids();
-        let (s2, p2) = (NodeId(uuid::Uuid::now_v7()), p1.clone());
+        let (s2, p2) = (
+            NodeId(uuid::Uuid::now_v7()),
+            PredicateId(uuid::Uuid::now_v7()),
+        );
 
         let t1 = sample_triplet(&s1, &p1, NodeValue::Text("x".into()), 0.5, 0.9);
         let t2 = sample_triplet(&s1, &p2, NodeValue::Text("y".into()), 0.6, 0.9);

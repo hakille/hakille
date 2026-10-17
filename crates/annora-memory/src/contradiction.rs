@@ -22,7 +22,9 @@ pub enum Resolution {
 /// `replace_margin = 0.2`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContradictionPolicy {
-    /// Confiance minimale des deux côtés pour un conflit direct/temporel.
+    /// Confiance minimale de l'entrant pour un conflit direct/temporel :
+    /// un fait sûr peut remplacer un souvenir ancien peu sûr, mais un entrant
+    /// incertain ne crée pas de conflit (bruit).
     pub min_conf: f64,
     /// Écart de confiance déclenchant un conflit de confiance (même S/P/O).
     pub gap: f64,
@@ -50,8 +52,9 @@ impl ContradictionPolicy {
     }
 
     /// Heuristique documentée (spec §8, boîte « contradictions ») :
-    /// - même sujet + même prédicat + objets différents + confiance min ≥
-    ///   `min_conf` → conflit direct (« deux choses ne vont pas ensemble ») ;
+    /// - même sujet + même prédicat + objets différents + confiance de
+    ///   l'entrant ≥ `min_conf` → conflit direct (« deux choses ne vont pas
+    ///   ensemble ») ;
     /// - objets = horodatages différents → conflit temporel ;
     /// - mêmes S/P/O mais écart de confiance > `gap` → conflit de confiance
     ///   (deux sources pas d'accord sur la certitude).
@@ -68,11 +71,7 @@ impl ContradictionPolicy {
                     crate::triplet::NodeValue::Timestamp(_)
                 )
             );
-            let min_conf = existing
-                .metadata
-                .confidence
-                .min(incoming.metadata.confidence);
-            if min_conf < self.min_conf {
+            if incoming.metadata.confidence < self.min_conf {
                 return None;
             }
             return Some(if temporal {
