@@ -1,0 +1,16 @@
+[package]
+name = "annora-spikes"
+version = "0.1.0"
+edition = "2024"
+description = "Spikes Phase 0 (spec Hakille §10) : preuves avant engagement iced/Redox/IME/événementiel"
+
+[dependencies]
+annora-ui = { path = "../annora-ui" }
+annora-ui-shell = { path = "../annora-ui-shell" }
+annora-design = { path = "../annora-design" }
+annora-ui-model = { path = "../annora-ui-model" }
+annora-ui-platform = { path = "../annora-ui-platform" }
+annora-ui-desktop = { path = "../annora-ui-desktop" }
+accesskit = "0.12"
+serde = { workspace = true }
+serde_json = { workspace = true }
