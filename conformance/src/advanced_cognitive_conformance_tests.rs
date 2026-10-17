@@ -90,7 +90,7 @@ fn test_conformance_deliberate_planner_pre_execution_check() {
         .create_root_token(
             vec![CapabilityScope::Filesystem, CapabilityScope::Audio],
             vec![CapabilityAction::Read, CapabilityAction::Write],
-            Timestamp::now(),
+            Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
         )
         .expect("Root token generation");
 

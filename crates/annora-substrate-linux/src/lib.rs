@@ -390,8 +390,11 @@ SwapFree:        4194304 kB
         let x11_screen = x11_engine.capture_screen();
         assert_eq!(x11_screen.width, 1920);
 
-        // Input injection test with uppercase, digits, punctuation, and absolute coordinates
-        substrate
+        // Injection uinput : sur un hôte sans /dev/uinput (CI conteneurisée,
+        // Windows), le refus doit être honnête et nommer le device manquant —
+        // même philosophie que la caméra V4L2 ci-dessus. Avec /dev/uinput,
+        // les événements evdev réels sont générés et enregistrés.
+        let click_result = substrate
             .inject_input(
                 InputAction::Click {
                     x: 500,
@@ -400,42 +403,50 @@ SwapFree:        4194304 kB
                 },
                 &cap_token,
             )
-            .await
-            .unwrap();
+            .await;
+        match click_result {
+            Ok(()) => {
+                substrate
+                    .inject_input(
+                        InputAction::Type {
+                            text: "Hello 100.".to_string(),
+                        },
+                        &cap_token,
+                    )
+                    .await
+                    .expect("injection clavier uinput");
+                substrate
+                    .inject_input(
+                        InputAction::Hotkey {
+                            keys: vec![Key::Ctrl, Key::Alt, Key::Enter],
+                        },
+                        &cap_token,
+                    )
+                    .await
+                    .expect("injection hotkey uinput");
 
-        substrate
-            .inject_input(
-                InputAction::Type {
-                    text: "Hello 100.".to_string(),
-                },
-                &cap_token,
-            )
-            .await
-            .unwrap();
+                let events = substrate.input_injector().recorded_events();
+                assert!(!events.is_empty(), "Recorded events must not be empty");
 
-        substrate
-            .inject_input(
-                InputAction::Hotkey {
-                    keys: vec![Key::Ctrl, Key::Alt, Key::Enter],
-                },
-                &cap_token,
-            )
-            .await
-            .unwrap();
+                // Verify shift key for 'H'
+                let has_shift = events.iter().any(|ev| ev.code == KEY_LEFTSHIFT);
+                assert!(has_shift, "Typing 'H' must generate KEY_LEFTSHIFT");
 
-        let events = substrate.input_injector().recorded_events();
-        assert!(!events.is_empty(), "Recorded events must not be empty");
+                // Verify KEY_0 for '0'
+                let has_zero = events.iter().any(|ev| ev.code == KEY_0);
+                assert!(has_zero, "Typing '0' must generate KEY_0");
 
-        // Verify shift key for 'H'
-        let has_shift = events.iter().any(|ev| ev.code == KEY_LEFTSHIFT);
-        assert!(has_shift, "Typing 'H' must generate KEY_LEFTSHIFT");
-
-        // Verify KEY_0 for '0'
-        let has_zero = events.iter().any(|ev| ev.code == KEY_0);
-        assert!(has_zero, "Typing '0' must generate KEY_0");
-
-        // Verify ABS coordinate events
-        let has_abs = events.iter().any(|ev| ev.type_ == EV_ABS);
-        assert!(has_abs, "Click must generate EV_ABS event");
+                // Verify ABS coordinate events
+                let has_abs = events.iter().any(|ev| ev.type_ == EV_ABS);
+                assert!(has_abs, "Click must generate EV_ABS event");
+            }
+            Err(annora_core::AnnoraError::SubstrateError(msg)) => {
+                assert!(
+                    msg.contains("uinput"),
+                    "refus honnête nommant le device manquant, obtenu : {msg}"
+                );
+            }
+            Err(other) => panic!("erreur injection inattendue : {other:?}"),
+        }
     }
 }

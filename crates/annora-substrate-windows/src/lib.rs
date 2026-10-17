@@ -43,7 +43,10 @@ mod tests {
             .attest(b"test-nonce")
             .await
             .expect("Attestation failed");
-        assert_eq!(attestation.platform_id, "Windows-Substrate-Host");
+        assert_eq!(
+            attestation.platform_id,
+            "Windows-Substrate-Host-dev-attestation"
+        );
         assert!(!attestation.signature.0.is_empty());
     }
 

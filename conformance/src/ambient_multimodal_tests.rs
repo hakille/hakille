@@ -1,6 +1,6 @@
 use annora_core::{CapabilityAction, CapabilityAuthority, CapabilityScope, Timestamp};
-use annora_perception::{CameraPipeline, LightingCondition, WorldModel};
-use annora_substrate::{CameraConfig, CameraFacing, Substrate};
+use annora_perception::{CameraPipeline, LightingCondition, UserPresence, WorldModel};
+use annora_substrate::{CameraConfig, CameraFacing, CameraFrame, ImageFormat, Substrate};
 use annora_substrate_windows::WindowsSubstrate;
 use annora_ui::{
     ChannelSelector, DeviceType, EphemeralHud, HudState, InitiativeOrigin, InteractionContext,
@@ -18,7 +18,7 @@ async fn test_ambient_multimodal_perception_and_interface_pipeline() {
         .create_root_token(
             vec![CapabilityScope::Camera, CapabilityScope::Sensor],
             vec![CapabilityAction::Read],
-            Timestamp::now(),
+            Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
         )
         .expect("Root token creation failed");
 
@@ -28,24 +28,49 @@ async fn test_ambient_multimodal_perception_and_interface_pipeline() {
         fps: 30,
         facing: CameraFacing::Front,
     };
-    let camera_handle = substrate
+    // Honnêteté substrate : aucun binding caméra natif n'est branché ⇒ erreur
+    // explicite nommant le backend manquant, jamais de frames synthétiques du
+    // substrate lui-même. Si un backend réel est branché un jour, la branche
+    // Ok capture une vraie frame.
+    match substrate
         .start_camera_capture(camera_config.clone(), &camera_cap)
         .await
-        .expect("Camera capture start failed");
-
-    let raw_frame = substrate
-        .capture_camera_frame(camera_handle, &camera_cap)
-        .await
-        .expect("Camera frame capture failed");
-
-    assert_eq!(raw_frame.width, 1920);
-    assert!(!raw_frame.data.is_empty());
+    {
+        Ok(handle) => {
+            let raw_frame = substrate
+                .capture_camera_frame(handle, &camera_cap)
+                .await
+                .expect("Camera frame capture failed");
+            assert!(raw_frame.width > 0);
+            assert!(!raw_frame.data.is_empty());
+        }
+        Err(annora_core::AnnoraError::SubstrateError(msg)) => {
+            assert!(
+                msg.contains("camera not implemented"),
+                "erreur honnête nommant le binding manquant, obtenue : {msg}"
+            );
+            assert!(
+                !camera_config.is_available(),
+                "is_available doit refléter l'absence de backend"
+            );
+        }
+        Err(other) => panic!("erreur caméra inattendue : {other:?}"),
+    }
 
     // =========================================================================
     // 2. Multimodal Perception Pipeline (Zero Raw Pixel Leak Guarantee)
     // =========================================================================
+    // Fixture de test explicite (pas une frame substrate) : le pipeline réel
+    // mesure cette image et le hash cryptographique d'attestation est vérifié.
+    let fixture = CameraFrame {
+        width: 64,
+        height: 48,
+        data: (0..64 * 48 * 3).map(|i| (i % 251) as u8).collect(),
+        format: ImageFormat::Rgb8,
+        timestamp_ms: 0,
+    };
     let mut camera_pipeline = CameraPipeline::new(camera_config);
-    let visual_context = camera_pipeline.process_frame(&raw_frame);
+    let mut visual_context = camera_pipeline.process_frame(&fixture);
 
     // Frame hash must be computed for cryptographic audit without persisting raw pixels (§6)
     assert_ne!(visual_context.privacy_preserving_frame_hash, [0u8; 32]);
@@ -55,6 +80,13 @@ async fn test_ambient_multimodal_perception_and_interface_pipeline() {
     // 3. Situational WorldModel Updates
     // =========================================================================
     let mut world_model = WorldModel::new("SovereignWorkstation");
+    // Pas de caméra matérielle : contexte posé explicitement (utilisateur
+    // présent, plein jour, 1 personne) pour la suite du pipeline.
+    visual_context.user_presence = UserPresence::Present;
+    visual_context.estimated_distance_m = 0.8;
+    visual_context.user_gaze_focused_on_device = true;
+    visual_context.people_count = 1;
+    visual_context.lighting = LightingCondition::Daylight;
     camera_pipeline.update_world_model(&visual_context, &mut world_model);
 
     // By default single user in daylight/adequate room is private

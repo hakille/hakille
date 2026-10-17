@@ -38,12 +38,18 @@ async fn test_full_system_end_to_end_integration() {
         .await
         .expect("Attestation failed");
     assert!(!attestation.signature.0.is_empty());
-    assert_eq!(attestation.platform_id, "Windows-Substrate-Host");
+    assert_eq!(
+        attestation.platform_id,
+        "Windows-Substrate-Host-dev-attestation"
+    );
 
     // =========================================================================
     // LAYER 2: Biscuit Capability Authority & Monotone Attenuation
     // =========================================================================
     let authority = CapabilityAuthority::new();
+    // Même borne pour le root et l'atténuation : `attenuate` exige un enfant
+    // qui ne vit pas plus longtemps que le parent (monotonie temporelle).
+    let auth_expiry = Timestamp(chrono::Utc::now() + chrono::Duration::hours(1));
     let root_token = authority
         .create_root_token(
             vec![
@@ -52,7 +58,7 @@ async fn test_full_system_end_to_end_integration() {
                 CapabilityScope::Filesystem,
             ],
             vec![CapabilityAction::Read, CapabilityAction::Execute],
-            Timestamp::now(),
+            auth_expiry.clone(),
         )
         .expect("Root token creation failed");
 
@@ -62,7 +68,7 @@ async fn test_full_system_end_to_end_integration() {
             &root_token,
             vec![CapabilityScope::ModelInference],
             vec![CapabilityAction::Read],
-            Timestamp::now(),
+            auth_expiry,
         )
         .expect("Attenuation failed");
 

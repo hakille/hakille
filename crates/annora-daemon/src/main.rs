@@ -479,7 +479,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let camera_cap = authority.create_root_token(
         vec![CapabilityScope::Camera, CapabilityScope::Sensor],
         vec![annora_core::CapabilityAction::Read],
-        Timestamp::now(),
+        Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
     )?;
     let gui_input_cap = authority.create_root_token(
         vec![CapabilityScope::GuiInput],
@@ -487,7 +487,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             annora_core::CapabilityAction::Execute,
             annora_core::CapabilityAction::Write,
         ],
-        Timestamp::now(),
+        Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
     )?;
     let camera_handle = substrate
         .start_camera_capture(camera_config.clone(), &camera_cap)
@@ -746,7 +746,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "  :hud              Demonstrate Spotlight-like ephemeral HUD (Ctrl+Alt+Space, alias Alt+Space) with Braise #FF7A2F chip"
                 );
                 println!(
-                    "  :shell            Show Slint shell snapshot (presence/HUD/cost/silence payload)"
+                    "  :shell            Show ambient shell snapshot (presence/HUD/cost/silence payload)"
                 );
                 println!(
                     "  :models-honest    Show honest inference statuses (Inspected/Real with cited proof)"
@@ -1705,11 +1705,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     0,
                 );
                 let spec = ephemeral_hud.overlay_spec();
-                println!("Slint Shell Snapshot → {}", snap.to_compositor_json(&spec));
+                println!("Ambient Shell Snapshot → {}", snap.to_compositor_json(&spec));
                 println!("--- Dashboard texte (fallback Redox/Web/clavier) ---");
                 println!("{}", snap.render_text_dashboard());
                 println!(
-                    "  hud visible: {} | host: {} {} | Rendre en Slint: cargo run -p annora-ui-shell --features render (ADR-007, no WebView)",
+                    "  hud visible: {} | host: {} {} | Rendu natif: cargo run -p annora-ui-desktop --bin annora-desktop (ADR-009)",
                     spec.is_visible, manifest.os_name, manifest.os_version,
                 );
             }
@@ -2250,7 +2250,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let screen_cap_token = authority.create_root_token(
                     vec![CapabilityScope::Sensor],
                     vec![annora_core::CapabilityAction::Read],
-                    Timestamp::now(),
+                    Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
                 )?;
                 match substrate.capture_screen(&screen_cap_token).await {
                     Ok(capture) => {
