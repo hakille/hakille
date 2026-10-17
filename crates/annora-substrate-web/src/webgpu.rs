@@ -12,8 +12,8 @@ pub struct WebGpuLimits {
 impl Default for WebGpuLimits {
     fn default() -> Self {
         Self {
-            max_buffer_size: 2 * 1024 * 1024 * 1024,          // 2 GB max buffer
-            max_compute_workgroup_storage_size: 32 * 1024,      // 32 KiB workgroup shared memory
+            max_buffer_size: 2 * 1024 * 1024 * 1024, // 2 GB max buffer
+            max_compute_workgroup_storage_size: 32 * 1024, // 32 KiB workgroup shared memory
             max_storage_buffer_binding_size: 2 * 1024 * 1024 * 1024,
             max_compute_invocations_per_workgroup: 256,
         }
@@ -93,11 +93,23 @@ impl WebGpuDetector {
         Ok(())
     }
 
-    pub fn validate_workgroup_dispatch(&self, invocations: u32, shared_mem_bytes: u32) -> Result<(), String> {
-        if invocations > self.capabilities.limits.max_compute_invocations_per_workgroup {
+    pub fn validate_workgroup_dispatch(
+        &self,
+        invocations: u32,
+        shared_mem_bytes: u32,
+    ) -> Result<(), String> {
+        if invocations
+            > self
+                .capabilities
+                .limits
+                .max_compute_invocations_per_workgroup
+        {
             return Err(format!(
                 "Compute workgroup invocations ({}) exceed limit ({})",
-                invocations, self.capabilities.limits.max_compute_invocations_per_workgroup
+                invocations,
+                self.capabilities
+                    .limits
+                    .max_compute_invocations_per_workgroup
             ));
         }
         if shared_mem_bytes > self.capabilities.limits.max_compute_workgroup_storage_size {

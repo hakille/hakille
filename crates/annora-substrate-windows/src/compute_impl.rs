@@ -9,7 +9,8 @@ impl WindowsComputeBackend {
     pub fn new() -> Self {
         // Detect GPU or default to best available compute accelerator
         let has_cuda = std::env::var("CUDA_PATH").is_ok()
-            || std::path::Path::new("C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA").exists();
+            || std::path::Path::new("C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA")
+                .exists();
 
         let preferred = if has_cuda {
             ComputeBackend::Cuda
@@ -65,8 +66,9 @@ impl Compute for WindowsComputeBackend {
     }
 
     fn vram_available_bytes(&self) -> u64 {
-        // 8 GB dedicated VRAM envelope (or 16 GB on workstations)
-        8 * 1024 * 1024 * 1024
+        // Honest: dedicated VRAM is unknown without a DXGI adapter query
+        // (no DXGI binding linked); 0 means "unknown", never an 8 GiB claim.
+        0
     }
 
     fn ram_available_bytes(&self) -> u64 {

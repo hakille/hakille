@@ -127,10 +127,12 @@ impl SmartHomeHub {
     }
 
     pub fn execute_command(&mut self, cmd: &HomeCommand) -> Result<String, String> {
-        let device = self
-            .devices
-            .get_mut(&cmd.device_id)
-            .ok_or_else(|| format!("Appareil '{}' introuvable dans le réseau domotique.", cmd.device_id))?;
+        let device = self.devices.get_mut(&cmd.device_id).ok_or_else(|| {
+            format!(
+                "Appareil '{}' introuvable dans le réseau domotique.",
+                cmd.device_id
+            )
+        })?;
 
         // Strict Safety Policy: Physical perimeter security actions require explicit confirmation
         let is_security_critical = device.requires_validation_chip
@@ -147,43 +149,66 @@ impl SmartHomeHub {
         match cmd.action.to_lowercase().as_str() {
             "turn_on" => {
                 device.state.power = true;
-                Ok(format!("Appareil '{}' ({}) allumé avec succès.", device.name, device.id))
+                Ok(format!(
+                    "Appareil '{}' ({}) allumé avec succès.",
+                    device.name, device.id
+                ))
             }
             "turn_off" => {
                 device.state.power = false;
-                Ok(format!("Appareil '{}' ({}) éteint avec succès.", device.name, device.id))
+                Ok(format!(
+                    "Appareil '{}' ({}) éteint avec succès.",
+                    device.name, device.id
+                ))
             }
             "set_brightness" => {
                 let brightness = cmd
                     .params
                     .get("brightness")
                     .and_then(|v| v.as_u64())
-                    .ok_or_else(|| "Paramètre 'brightness' (0-100) manquant ou invalide.".to_string())?
-                    as u8;
+                    .ok_or_else(|| {
+                        "Paramètre 'brightness' (0-100) manquant ou invalide.".to_string()
+                    })? as u8;
                 let clamped = brightness.min(100);
                 device.state.brightness = Some(clamped);
                 device.state.power = clamped > 0;
-                Ok(format!("Luminosité de '{}' ajustée à {}%.", device.name, clamped))
+                Ok(format!(
+                    "Luminosité de '{}' ajustée à {}%.",
+                    device.name, clamped
+                ))
             }
             "set_temperature" => {
                 let target = cmd
                     .params
                     .get("target_temperature")
                     .and_then(|v| v.as_f64())
-                    .ok_or_else(|| "Paramètre 'target_temperature' manquant ou invalide.".to_string())?
-                    as f32;
+                    .ok_or_else(|| {
+                        "Paramètre 'target_temperature' manquant ou invalide.".to_string()
+                    })? as f32;
                 device.state.target_temperature_celsius = Some(target);
-                Ok(format!("Consigne de température de '{}' réglée à {:.1}°C.", device.name, target))
+                Ok(format!(
+                    "Consigne de température de '{}' réglée à {:.1}°C.",
+                    device.name, target
+                ))
             }
             "lock" => {
                 device.state.is_locked = Some(true);
-                Ok(format!("Serrure '{}' verrouillée avec succès.", device.name))
+                Ok(format!(
+                    "Serrure '{}' verrouillée avec succès.",
+                    device.name
+                ))
             }
             "unlock" => {
                 device.state.is_locked = Some(false);
-                Ok(format!("Serrure '{}' déverrouillée avec succès avec validation sécurisée.", device.name))
+                Ok(format!(
+                    "Serrure '{}' déverrouillée avec succès avec validation sécurisée.",
+                    device.name
+                ))
             }
-            other => Err(format!("Commande domotique inconnue ou non supportée: '{}'.", other)),
+            other => Err(format!(
+                "Commande domotique inconnue ou non supportée: '{}'.",
+                other
+            )),
         }
     }
 }
@@ -259,7 +284,11 @@ mod tests {
         };
         let res_err = hub.execute_command(&unconfirmed);
         assert!(res_err.is_err());
-        assert!(res_err.unwrap_err().contains("Action critique de sécurité refusée"));
+        assert!(
+            res_err
+                .unwrap_err()
+                .contains("Action critique de sécurité refusée")
+        );
 
         let dev = hub.get_device("lock-front-door").unwrap();
         assert_eq!(dev.state.is_locked, Some(true));

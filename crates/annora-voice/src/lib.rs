@@ -34,7 +34,10 @@ mod tests {
         assert!(event.is_some());
         let ev = event.unwrap();
         assert_eq!(ev.interrupted_turn_id, "turn-1");
-        assert!(!detector.is_system_speaking(), "System speech must be immediately halted");
+        assert!(
+            !detector.is_system_speaking(),
+            "System speech must be immediately halted"
+        );
     }
 
     #[test]
@@ -46,10 +49,14 @@ mod tests {
 
         // Test frame encoding/decoding
         let input_samples = vec![0.1f32; SAMPLES_PER_FRAME];
-        let tokens = codec.encode_frame(&input_samples).expect("Encoding frame should succeed");
+        let tokens = codec
+            .encode_frame(&input_samples)
+            .expect("Encoding frame should succeed");
         assert_eq!(tokens.codebooks.len(), MIMI_NUM_CODEBOOKS);
 
-        let decoded = codec.decode_frame(&tokens).expect("Decoding frame should succeed");
+        let decoded = codec
+            .decode_frame(&tokens)
+            .expect("Decoding frame should succeed");
         assert_eq!(decoded.len(), SAMPLES_PER_FRAME);
     }
 }

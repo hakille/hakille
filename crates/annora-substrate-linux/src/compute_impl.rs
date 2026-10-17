@@ -1,4 +1,4 @@
-use crate::telemetry::read_host_meminfo;
+use crate::telemetry::{detect_linux_vram_bytes, read_host_meminfo};
 use annora_substrate::{Compute, ComputeBackend};
 
 pub struct LinuxComputeBackend {
@@ -41,7 +41,10 @@ impl Compute for LinuxComputeBackend {
     }
 
     fn vram_available_bytes(&self) -> u64 {
-        16 * 1024 * 1024 * 1024 // 16 GB VRAM
+        // Honest: discrete VRAM summed from sysfs DRM when discoverable,
+        // else 0 (unknown — shared-memory iGPUs and headless VMs report
+        // nothing; never an invented envelope).
+        detect_linux_vram_bytes().unwrap_or(0)
     }
 
     fn ram_available_bytes(&self) -> u64 {

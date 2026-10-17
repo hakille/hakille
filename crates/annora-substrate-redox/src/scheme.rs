@@ -76,7 +76,9 @@ impl SchemeHandler for ChanScheme {
 
     fn read(&self, handle: usize, buf: &mut [u8]) -> Result<usize> {
         let hdls = self.handles.lock().unwrap();
-        let path = hdls.get(&handle).ok_or_else(|| AnnoraError::SubstrateError("Invalid handle".to_string()))?;
+        let path = hdls
+            .get(&handle)
+            .ok_or_else(|| AnnoraError::SubstrateError("Invalid handle".to_string()))?;
         let mut chs = self.channels.lock().unwrap();
         if let Some(queue) = chs.get_mut(path) {
             if !queue.is_empty() {
@@ -91,7 +93,9 @@ impl SchemeHandler for ChanScheme {
 
     fn write(&self, handle: usize, buf: &[u8]) -> Result<usize> {
         let hdls = self.handles.lock().unwrap();
-        let path = hdls.get(&handle).ok_or_else(|| AnnoraError::SubstrateError("Invalid handle".to_string()))?;
+        let path = hdls
+            .get(&handle)
+            .ok_or_else(|| AnnoraError::SubstrateError("Invalid handle".to_string()))?;
         let mut chs = self.channels.lock().unwrap();
         let queue = chs.entry(path.clone()).or_default();
         queue.push(buf.to_vec());
@@ -197,7 +201,10 @@ impl SchemeHandler for SysScheme {
             "cpu" => Ok(302),
             "power" => Ok(303),
             "context" => Ok(304),
-            _ => Err(AnnoraError::SubstrateError(format!("Unknown sys: path {}", path))),
+            _ => Err(AnnoraError::SubstrateError(format!(
+                "Unknown sys: path {}",
+                path
+            ))),
         }
     }
 
@@ -293,6 +300,37 @@ impl DiskScheme {
             next_handle: Mutex::new(500),
         }
     }
+
+    /// Remove a stored object by path. Returns `true` if an entry existed.
+    pub fn remove(&self, path: &str) -> bool {
+        self.storage.lock().unwrap().remove(path).is_some()
+    }
+
+    /// List immediate child names under `prefix` ("" = root of the disk scheme).
+    pub fn list_keys(&self, prefix: &str) -> Vec<String> {
+        let norm = prefix.trim_matches('/');
+        let store = self.storage.lock().unwrap();
+        let mut out = Vec::new();
+        for key in store.keys() {
+            let rest = if norm.is_empty() {
+                key.as_str()
+            } else {
+                match key.strip_prefix(norm) {
+                    Some(r) if r.starts_with('/') => &r[1..],
+                    _ => continue,
+                }
+            };
+            if rest.is_empty() {
+                continue;
+            }
+            let child = rest.split('/').next().unwrap_or(rest).to_string();
+            if !child.is_empty() && !out.contains(&child) {
+                out.push(child);
+            }
+        }
+        out.sort();
+        out
+    }
 }
 
 impl Default for DiskScheme {
@@ -314,7 +352,9 @@ impl SchemeHandler for DiskScheme {
 
     fn read(&self, handle: usize, buf: &mut [u8]) -> Result<usize> {
         let hdls = self.handles.lock().unwrap();
-        let path = hdls.get(&handle).ok_or_else(|| AnnoraError::SubstrateError("Invalid handle".to_string()))?;
+        let path = hdls
+            .get(&handle)
+            .ok_or_else(|| AnnoraError::SubstrateError("Invalid handle".to_string()))?;
         let store = self.storage.lock().unwrap();
         if let Some(data) = store.get(path) {
             let len = data.len().min(buf.len());
@@ -326,7 +366,9 @@ impl SchemeHandler for DiskScheme {
 
     fn write(&self, handle: usize, buf: &[u8]) -> Result<usize> {
         let hdls = self.handles.lock().unwrap();
-        let path = hdls.get(&handle).ok_or_else(|| AnnoraError::SubstrateError("Invalid handle".to_string()))?;
+        let path = hdls
+            .get(&handle)
+            .ok_or_else(|| AnnoraError::SubstrateError("Invalid handle".to_string()))?;
         let mut store = self.storage.lock().unwrap();
         store.insert(path.clone(), buf.to_vec());
         Ok(buf.len())
@@ -391,7 +433,10 @@ impl RedoxSchemeHandler {
         } else if let Some(path) = url.strip_prefix("agent:") {
             self.chan.open(path, flags)
         } else {
-            Err(AnnoraError::SubstrateError(format!("Unsupported scheme in URL: {}", url)))
+            Err(AnnoraError::SubstrateError(format!(
+                "Unsupported scheme in URL: {}",
+                url
+            )))
         }
     }
 
@@ -407,7 +452,10 @@ impl RedoxSchemeHandler {
         } else if handle >= 500 {
             self.disk.read(handle, buf)
         } else {
-            Err(AnnoraError::SubstrateError(format!("Invalid Redox handle {}", handle)))
+            Err(AnnoraError::SubstrateError(format!(
+                "Invalid Redox handle {}",
+                handle
+            )))
         }
     }
 
@@ -423,7 +471,10 @@ impl RedoxSchemeHandler {
         } else if handle >= 500 {
             self.disk.write(handle, buf)
         } else {
-            Err(AnnoraError::SubstrateError(format!("Invalid Redox handle {}", handle)))
+            Err(AnnoraError::SubstrateError(format!(
+                "Invalid Redox handle {}",
+                handle
+            )))
         }
     }
 
@@ -439,7 +490,10 @@ impl RedoxSchemeHandler {
         } else if handle >= 500 {
             self.disk.close(handle)
         } else {
-            Err(AnnoraError::SubstrateError(format!("Invalid Redox handle {}", handle)))
+            Err(AnnoraError::SubstrateError(format!(
+                "Invalid Redox handle {}",
+                handle
+            )))
         }
     }
 
@@ -455,7 +509,10 @@ impl RedoxSchemeHandler {
         } else if handle >= 500 {
             self.disk.fpath(handle)
         } else {
-            Err(AnnoraError::SubstrateError(format!("Invalid Redox handle {}", handle)))
+            Err(AnnoraError::SubstrateError(format!(
+                "Invalid Redox handle {}",
+                handle
+            )))
         }
     }
 
@@ -466,11 +523,14 @@ impl RedoxSchemeHandler {
                 let path_start = packet.b;
                 let path_len = packet.c;
                 if path_start + path_len > buffer_pool.len() {
-                    return Err(AnnoraError::SubstrateError("Buffer bounds exceeded for SYS_OPEN".to_string()));
+                    return Err(AnnoraError::SubstrateError(
+                        "Buffer bounds exceeded for SYS_OPEN".to_string(),
+                    ));
                 }
                 let path_bytes = &buffer_pool[path_start..path_start + path_len];
-                let path_str = std::str::from_utf8(path_bytes)
-                    .map_err(|e| AnnoraError::SubstrateError(format!("Invalid UTF-8 path: {}", e)))?;
+                let path_str = std::str::from_utf8(path_bytes).map_err(|e| {
+                    AnnoraError::SubstrateError(format!("Invalid UTF-8 path: {}", e))
+                })?;
                 let handle = self.dispatch_open(path_str, packet.d)?;
                 packet.a = handle;
                 Ok(handle)
@@ -480,7 +540,9 @@ impl RedoxSchemeHandler {
                 let buf_start = packet.b;
                 let buf_len = packet.c;
                 if buf_start + buf_len > buffer_pool.len() {
-                    return Err(AnnoraError::SubstrateError("Buffer bounds exceeded for SYS_READ".to_string()));
+                    return Err(AnnoraError::SubstrateError(
+                        "Buffer bounds exceeded for SYS_READ".to_string(),
+                    ));
                 }
                 let buf = &mut buffer_pool[buf_start..buf_start + buf_len];
                 let bytes_read = self.dispatch_read(handle, buf)?;
@@ -492,7 +554,9 @@ impl RedoxSchemeHandler {
                 let buf_start = packet.b;
                 let buf_len = packet.c;
                 if buf_start + buf_len > buffer_pool.len() {
-                    return Err(AnnoraError::SubstrateError("Buffer bounds exceeded for SYS_WRITE".to_string()));
+                    return Err(AnnoraError::SubstrateError(
+                        "Buffer bounds exceeded for SYS_WRITE".to_string(),
+                    ));
                 }
                 let buf = &buffer_pool[buf_start..buf_start + buf_len];
                 let bytes_written = self.dispatch_write(handle, buf)?;
@@ -513,13 +577,19 @@ impl RedoxSchemeHandler {
                 let max_len = packet.c;
                 let copy_len = path_bytes.len().min(max_len);
                 if buf_start + copy_len > buffer_pool.len() {
-                    return Err(AnnoraError::SubstrateError("Buffer bounds exceeded for SYS_FPATH".to_string()));
+                    return Err(AnnoraError::SubstrateError(
+                        "Buffer bounds exceeded for SYS_FPATH".to_string(),
+                    ));
                 }
-                buffer_pool[buf_start..buf_start + copy_len].copy_from_slice(&path_bytes[..copy_len]);
+                buffer_pool[buf_start..buf_start + copy_len]
+                    .copy_from_slice(&path_bytes[..copy_len]);
                 packet.a = copy_len;
                 Ok(copy_len)
             }
-            _ => Err(AnnoraError::SubstrateError(format!("Unsupported Redox syscall op: {}", packet.op))),
+            _ => Err(AnnoraError::SubstrateError(format!(
+                "Unsupported Redox syscall op: {}",
+                packet.op
+            ))),
         }
     }
 

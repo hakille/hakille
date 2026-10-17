@@ -1,13 +1,21 @@
 use serde::{Deserialize, Serialize};
 
+/// Présence signature Akora (spec Hakille §7) : un point, six états.
+/// Repos = lueur #F4EBDD ; braise #FF7A2F = décision requise, rien d'autre.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PresenceState {
-    /// Ambient standby, passive listening
+    /// Veille : point 6 px, lueur à 40 %, statique, 0 image/s.
     Idle,
-    /// Slow pulse, active listening / voice capture
+    /// Écoute : point 8 px qui respire, 4,0 s, opacité 60→100 %, échelle 1→1,15.
     Listening,
-    /// Fast pulse, executing action (tapping opens the audit journal)
+    /// Action : anneau fin autour du point, pulsation 1,2 s.
     Acting,
+    /// Parole : 21 fils verticaux (7 sous 24 px), amplitude = enveloppe audio.
+    Speaking,
+    /// Décision requise : anneau braise fixe, sans pulsation.
+    DecisionRequired,
+    /// Urgence : double impulsion braise, 0,8 s.
+    Urgent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,17 +29,38 @@ pub struct Color {
 pub struct UiTheme {
     pub background: Color,
     pub text: Color,
-    /// Accent color is STRICTLY RESERVED for actions requiring user validation
+    /// Braise strictement réservée aux actions exigeant validation (spec §3).
     pub validation_accent: Color,
 }
 
 impl Default for UiTheme {
     fn default() -> Self {
         Self {
-            background: Color { r: 18, g: 18, b: 18 },       // Dark #121212
-            text: Color { r: 224, g: 224, b: 224 },           // Light grey #E0E0E0
-            validation_accent: Color { r: 255, g: 87, b: 34 }, // Coral #FF5722 (Only for validation!)
+            background: Color {
+                r: 11,
+                g: 12,
+                b: 15,
+            }, // surface/0 #0B0C0F
+            text: Color {
+                r: 236,
+                g: 238,
+                b: 242,
+            }, // texte/1 #ECEEF2
+            validation_accent: Color {
+                r: 255,
+                g: 122,
+                b: 47,
+            }, // braise #FF7A2F (validation uniquement !)
         }
+    }
+}
+
+/// Lueur #F4EBDD : présence au repos.
+pub fn lueur() -> Color {
+    Color {
+        r: 244,
+        g: 235,
+        b: 221,
     }
 }
 
@@ -56,11 +85,16 @@ impl PresenceIndicator {
         self.state
     }
 
+    /// Période de pulsation (spec §7 + motion tokens).
+    /// Veille et Décision requise : statique (anneau fixe). Parole : 60 i/s.
     pub fn pulse_period_ms(&self) -> u32 {
         match self.state {
-            PresenceState::Idle => 0,        // Static
-            PresenceState::Listening => 2000, // Slow breathing pulse (2s)
-            PresenceState::Acting => 600,     // Quick rhythmic pulse (600ms)
+            PresenceState::Idle => 0,
+            PresenceState::Listening => 4000,
+            PresenceState::Acting => 1200,
+            PresenceState::Speaking => 16,
+            PresenceState::DecisionRequired => 0,
+            PresenceState::Urgent => 800,
         }
     }
 
@@ -80,21 +114,58 @@ impl PresenceIndicator {
         }
     }
 
+    /// Couleur de remplissage du point.
     pub fn color_for_state(&self) -> Color {
         match self.state {
-            PresenceState::Idle => Color { r: 120, g: 120, b: 120 }, // Muted grey
-            PresenceState::Listening => Color { r: 64, g: 196, b: 255 }, // Electric blue
-            PresenceState::Acting => Color { r: 255, g: 87, b: 34 }, // Coral #FF5722
+            PresenceState::Idle => Color {
+                r: 244,
+                g: 235,
+                b: 221,
+            }, // lueur à 40 % (opacité via pulse_factor/période 0 → statique)
+            PresenceState::Listening => lueur(),
+            PresenceState::Acting => lueur(),
+            PresenceState::Speaking => lueur(),
+            PresenceState::DecisionRequired => lueur(),
+            PresenceState::Urgent => Color {
+                r: 255,
+                g: 122,
+                b: 47,
+            }, // double impulsion braise
         }
+    }
+
+    /// Anneau autour du point (Action fin, Décision braise fixe, Urgence braise).
+    /// Retourne la couleur de l'anneau, ou None (pas d'anneau).
+    pub fn ring_color_for_state(&self) -> Option<Color> {
+        match self.state {
+            PresenceState::Acting => Some(Color {
+                r: 236,
+                g: 238,
+                b: 242,
+            }), // anneau fin texte/1
+            PresenceState::DecisionRequired | PresenceState::Urgent => Some(Color {
+                r: 255,
+                g: 122,
+                b: 47,
+            }), // anneau braise
+            _ => None,
+        }
+    }
+
+    /// Amplitude des fils Parole : enveloppe audio 0..1 → 0..24 px.
+    /// Barge-in : retombée < 80 ms gérée par l'appelant (échantillon suivant) ;
+    /// 600 ms de silence → repli en point (retourner 0).
+    pub fn speech_wire_height_px(envelope_01: f32) -> f32 {
+        (envelope_01.clamp(0.0, 1.0) * 24.0).round()
     }
 
     pub fn context_menu_items(&self) -> Vec<&'static str> {
         vec![
-            "Ouvrir Annora HUD (Alt+Space)",
+            "Ouvrir Akora HUD",
             "Visualiseur de Mémoire Continue",
             "Journal d'Audit et Sécurité",
             "Gérer les Consentements & Révocations",
-            "Quitter Annora",
+            "Quitter Akora",
         ]
     }
 }
@@ -104,4 +175,3 @@ impl Default for PresenceIndicator {
         Self::new()
     }
 }
-

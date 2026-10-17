@@ -7,6 +7,14 @@ pub struct TaskContinuityRecord {
     pub turns_count: usize,
 }
 
+/// Snapshot sérialisable de [`ContinuityTracker`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContinuitySnapshot {
+    pub records: Vec<TaskContinuityRecord>,
+    pub continuity_rate: f64,
+    pub total_tasks: usize,
+}
+
 pub struct ContinuityTracker {
     records: Vec<TaskContinuityRecord>,
 }
@@ -18,7 +26,12 @@ impl ContinuityTracker {
         }
     }
 
-    pub fn record_task(&mut self, task_id: impl Into<String>, required_re_explanation: bool, turns_count: usize) {
+    pub fn record_task(
+        &mut self,
+        task_id: impl Into<String>,
+        required_re_explanation: bool,
+        turns_count: usize,
+    ) {
         self.records.push(TaskContinuityRecord {
             task_id: task_id.into(),
             required_re_explanation,
@@ -42,6 +55,31 @@ impl ContinuityTracker {
 
     pub fn total_tasks(&self) -> usize {
         self.records.len()
+    }
+
+    /// Snapshot mémoire simple (sérialisable en JSON).
+    pub fn to_snapshot(&self) -> ContinuitySnapshot {
+        ContinuitySnapshot {
+            records: self.records.clone(),
+            continuity_rate: self.continuity_rate(),
+            total_tasks: self.total_tasks(),
+        }
+    }
+
+    /// Persistance JSON simple via `std::fs`.
+    pub fn save_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(&self.to_snapshot())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(path, json)
+    }
+
+    pub fn load_from_file(path: &std::path::Path) -> std::io::Result<Self> {
+        let content = std::fs::read_to_string(path)?;
+        let snap: ContinuitySnapshot = serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        Ok(Self {
+            records: snap.records,
+        })
     }
 }
 

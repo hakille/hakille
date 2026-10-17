@@ -101,7 +101,8 @@ impl WorkspaceCodeIndexer {
                             .next()
                             .unwrap_or("")
                             .trim();
-                        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                        {
                             let sig = trimmed.split('{').next().unwrap_or(trimmed).trim();
                             symbols.push(CodeSymbol {
                                 name: name.to_string(),
@@ -113,7 +114,9 @@ impl WorkspaceCodeIndexer {
                     }
                 } else if let Some(struct_pos) = trimmed.find("struct ") {
                     let prefix = &trimmed[..struct_pos];
-                    let valid_prefix = prefix.split_whitespace().all(|w| w == "pub" || w.starts_with("pub("));
+                    let valid_prefix = prefix
+                        .split_whitespace()
+                        .all(|w| w == "pub" || w.starts_with("pub("));
                     if prefix.is_empty() || valid_prefix {
                         let after_struct = &trimmed[struct_pos + 7..];
                         let name = after_struct
@@ -126,18 +129,26 @@ impl WorkspaceCodeIndexer {
                             .trim_end_matches('{')
                             .trim_end_matches(';')
                             .trim();
-                        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                        {
                             symbols.push(CodeSymbol {
                                 name: name.to_string(),
                                 kind: CodeSymbolKind::Struct,
                                 line_number: line_num,
-                                signature: trimmed.split('{').next().unwrap_or(trimmed).trim().to_string(),
+                                signature: trimmed
+                                    .split('{')
+                                    .next()
+                                    .unwrap_or(trimmed)
+                                    .trim()
+                                    .to_string(),
                             });
                         }
                     }
                 } else if let Some(enum_pos) = trimmed.find("enum ") {
                     let prefix = &trimmed[..enum_pos];
-                    let valid_prefix = prefix.split_whitespace().all(|w| w == "pub" || w.starts_with("pub("));
+                    let valid_prefix = prefix
+                        .split_whitespace()
+                        .all(|w| w == "pub" || w.starts_with("pub("));
                     if prefix.is_empty() || valid_prefix {
                         let after_enum = &trimmed[enum_pos + 5..];
                         let name = after_enum
@@ -149,18 +160,26 @@ impl WorkspaceCodeIndexer {
                             .unwrap_or("")
                             .trim_end_matches('{')
                             .trim();
-                        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                        {
                             symbols.push(CodeSymbol {
                                 name: name.to_string(),
                                 kind: CodeSymbolKind::Enum,
                                 line_number: line_num,
-                                signature: trimmed.split('{').next().unwrap_or(trimmed).trim().to_string(),
+                                signature: trimmed
+                                    .split('{')
+                                    .next()
+                                    .unwrap_or(trimmed)
+                                    .trim()
+                                    .to_string(),
                             });
                         }
                     }
                 } else if let Some(trait_pos) = trimmed.find("trait ") {
                     let prefix = &trimmed[..trait_pos];
-                    let valid_prefix = prefix.split_whitespace().all(|w| w == "pub" || w.starts_with("pub("));
+                    let valid_prefix = prefix
+                        .split_whitespace()
+                        .all(|w| w == "pub" || w.starts_with("pub("));
                     if prefix.is_empty() || valid_prefix {
                         let after_trait = &trimmed[trait_pos + 6..];
                         let name = after_trait
@@ -172,12 +191,18 @@ impl WorkspaceCodeIndexer {
                             .unwrap_or("")
                             .trim_end_matches('{')
                             .trim();
-                        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                        {
                             symbols.push(CodeSymbol {
                                 name: name.to_string(),
                                 kind: CodeSymbolKind::Trait,
                                 line_number: line_num,
-                                signature: trimmed.split('{').next().unwrap_or(trimmed).trim().to_string(),
+                                signature: trimmed
+                                    .split('{')
+                                    .next()
+                                    .unwrap_or(trimmed)
+                                    .trim()
+                                    .to_string(),
                             });
                         }
                     }
@@ -196,7 +221,12 @@ impl WorkspaceCodeIndexer {
                             name: name.to_string(),
                             kind: CodeSymbolKind::Constant,
                             line_number: line_num,
-                            signature: trimmed.split('=').next().unwrap_or(trimmed).trim().to_string(),
+                            signature: trimmed
+                                .split('=')
+                                .next()
+                                .unwrap_or(trimmed)
+                                .trim()
+                                .to_string(),
                         });
                     }
                 }
@@ -232,7 +262,9 @@ impl WorkspaceCodeIndexer {
             } else if lang == "TypeScript" || lang == "JavaScript" {
                 if let Some(fn_pos) = trimmed.find("function ") {
                     let prefix = &trimmed[..fn_pos];
-                    let valid_prefix = prefix.split_whitespace().all(|w| w == "export" || w == "async" || w == "default");
+                    let valid_prefix = prefix
+                        .split_whitespace()
+                        .all(|w| w == "export" || w == "async" || w == "default");
                     if prefix.is_empty() || valid_prefix {
                         let after_fn = &trimmed[fn_pos + 9..];
                         let name = after_fn
@@ -248,13 +280,20 @@ impl WorkspaceCodeIndexer {
                                 name: name.to_string(),
                                 kind: CodeSymbolKind::Function,
                                 line_number: line_num,
-                                signature: trimmed.split('{').next().unwrap_or(trimmed).trim().to_string(),
+                                signature: trimmed
+                                    .split('{')
+                                    .next()
+                                    .unwrap_or(trimmed)
+                                    .trim()
+                                    .to_string(),
                             });
                         }
                     }
                 } else if let Some(class_pos) = trimmed.find("class ") {
                     let prefix = &trimmed[..class_pos];
-                    let valid_prefix = prefix.split_whitespace().all(|w| w == "export" || w == "default" || w == "abstract");
+                    let valid_prefix = prefix
+                        .split_whitespace()
+                        .all(|w| w == "export" || w == "default" || w == "abstract");
                     if prefix.is_empty() || valid_prefix {
                         let after_class = &trimmed[class_pos + 6..];
                         let name = after_class
@@ -270,7 +309,12 @@ impl WorkspaceCodeIndexer {
                                 name: name.to_string(),
                                 kind: CodeSymbolKind::Struct,
                                 line_number: line_num,
-                                signature: trimmed.split('{').next().unwrap_or(trimmed).trim().to_string(),
+                                signature: trimmed
+                                    .split('{')
+                                    .next()
+                                    .unwrap_or(trimmed)
+                                    .trim()
+                                    .to_string(),
                             });
                         }
                     }
@@ -292,7 +336,12 @@ impl WorkspaceCodeIndexer {
                                 name: name.to_string(),
                                 kind: CodeSymbolKind::Trait,
                                 line_number: line_num,
-                                signature: trimmed.split('{').next().unwrap_or(trimmed).trim().to_string(),
+                                signature: trimmed
+                                    .split('{')
+                                    .next()
+                                    .unwrap_or(trimmed)
+                                    .trim()
+                                    .to_string(),
                             });
                         }
                     }
@@ -342,7 +391,11 @@ impl CodePatchEngine {
         let orig_lines: Vec<&str> = original.lines().collect();
         let mod_lines: Vec<&str> = modified.lines().collect();
 
-        diff_lines.push(format!("@@ -1,{} +1,{} @@", orig_lines.len(), mod_lines.len()));
+        diff_lines.push(format!(
+            "@@ -1,{} +1,{} @@",
+            orig_lines.len(),
+            mod_lines.len()
+        ));
 
         let mut i = 0;
         let mut j = 0;
@@ -374,7 +427,10 @@ impl CodePatchEngine {
 
     pub fn apply_patch(patch: &CodePatch, current_content: &str) -> Result<String, String> {
         if current_content != patch.original_content {
-            return Err("Erreur d'application du patch : Le contenu original a divergé (conflit de merge).".to_string());
+            return Err(
+                "Erreur d'application du patch : Le contenu original a divergé (conflit de merge)."
+                    .to_string(),
+            );
         }
         Ok(patch.modified_content.clone())
     }
@@ -427,7 +483,8 @@ pub fn bootstrap_runtime() -> bool {
         let orig = "fn main() {\n    println!(\"Hello\");\n}\n";
         let modif = "fn main() {\n    println!(\"Hello, Annora!\");\n}\n";
 
-        let patch = CodePatchEngine::create_patch("src/main.rs", orig, modif, "Salutation enrichie");
+        let patch =
+            CodePatchEngine::create_patch("src/main.rs", orig, modif, "Salutation enrichie");
         assert!(patch.unified_diff.contains("--- a/src/main.rs"));
 
         // Applying to matching content succeeds
@@ -486,4 +543,3 @@ pub(crate) struct TokenBuffer {
         assert_eq!(summary_rs.symbols[2].kind, CodeSymbolKind::Struct);
     }
 }
-

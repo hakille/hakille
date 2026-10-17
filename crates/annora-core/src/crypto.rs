@@ -1,12 +1,19 @@
 use crate::error::{AnnoraError, Result};
 use crate::types::Timestamp;
 use chacha20poly1305::{
-    aead::{Aead, KeyInit},
     ChaCha20Poly1305, Key as ChaChaKey, Nonce as ChaChaNonce,
+    aead::{Aead, KeyInit},
 };
 use ed25519_dalek::{Signature as EdSignature, Signer, SigningKey, VerifyingKey};
-use rand::{rngs::OsRng, RngCore};
+use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
+
+// Re-exported Ed25519 verifier types so downstream crates (agents, sync) can
+// verify signatures against a bare public key WITHOUT adding a direct
+// `ed25519-dalek` dependency. Purely additive: no existing signature changes.
+pub use ed25519_dalek::{
+    Signature as Ed25519Signature, Verifier as VerifyEd25519, VerifyingKey as Ed25519VerifyingKey,
+};
 
 #[derive(Clone)]
 pub struct KeyPair {
@@ -47,6 +54,19 @@ impl KeyPair {
             self.verifying_key.verify(data, &sig).is_ok()
         } else {
             false
+        }
+    }
+
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.signing_key.to_bytes()
+    }
+
+    pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+        let signing_key = SigningKey::from_bytes(bytes);
+        let verifying_key = signing_key.verifying_key();
+        Self {
+            signing_key,
+            verifying_key,
         }
     }
 }
@@ -149,4 +169,3 @@ mod tests {
         assert!(encrypt_at_rest(plaintext, &bad_key).is_err());
     }
 }
-

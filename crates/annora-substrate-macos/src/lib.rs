@@ -25,10 +25,21 @@ mod tests {
         assert_eq!(manifest.tier, Tier::Native);
         assert_eq!(manifest.os_name, "macOS");
         assert!(manifest.has_secure_enclave);
-        assert!(manifest.capabilities_granted.contains(&CapabilityScope::Filesystem));
-        assert!(manifest.capabilities_denied.contains(&CapabilityScope::FullSystem));
+        assert!(
+            manifest
+                .capabilities_granted
+                .contains(&CapabilityScope::Filesystem)
+        );
+        assert!(
+            manifest
+                .capabilities_denied
+                .contains(&CapabilityScope::FullSystem)
+        );
 
-        let attestation = substrate.attest(b"macos-nonce").await.expect("Attestation failed");
+        let attestation = substrate
+            .attest(b"macos-nonce")
+            .await
+            .expect("Attestation failed");
         assert_eq!(attestation.platform_id, "macOS-AppleSilicon-Host");
         assert!(!attestation.signature.0.is_empty());
     }
@@ -44,7 +55,8 @@ mod tests {
         assert!(compute.supports_quantization("fp16"));
         assert!(!compute.supports_quantization("unsupported_quant"));
 
-        // Verify Apple Silicon memory calculations
+        // Verify Apple Silicon memory calculations. VRAM is honestly
+        // unknown without a Metal/IORegistry query (0 = unknown).
         let total_ram = compute.total_physical_ram();
         let avail_ram = compute.available_physical_ram();
         let wired_ram = compute.wired_ram();
@@ -53,7 +65,7 @@ mod tests {
         assert!(total_ram > 0);
         assert!(avail_ram > 0);
         assert!(wired_ram > 0);
-        assert!(vram > 0 && vram <= total_ram);
+        assert_eq!(vram, 0);
     }
 
     #[test]
@@ -63,7 +75,11 @@ mod tests {
         assert!(mail_profile.allow_file_write);
         assert!(mail_profile.allow_network_outbound);
         assert!(mail_profile.profile_string.contains("(deny default)"));
-        assert!(mail_profile.profile_string.contains("/Users/alice/Library/Annora/Mail"));
+        assert!(
+            mail_profile
+                .profile_string
+                .contains("/Users/alice/Library/Annora/Mail")
+        );
         assert!(mail_profile.validate_safety().is_ok());
         assert!(mail_profile.apply().is_ok());
 
@@ -86,7 +102,11 @@ mod tests {
         assert!(!wallet_profile.allow_network_outbound);
 
         let inference_profile = MacosSandboxProfile::inference_engine_profile("/opt/annora/models");
-        assert!(inference_profile.profile_string.contains("com.apple.metal.device"));
+        assert!(
+            inference_profile
+                .profile_string
+                .contains("com.apple.metal.device")
+        );
     }
 
     #[test]
@@ -159,7 +179,10 @@ mod tests {
         assert!(total >= avail);
 
         let mut dict = std::collections::HashMap::new();
-        dict.insert("Power Source State".to_string(), "Battery Power".to_string());
+        dict.insert(
+            "Power Source State".to_string(),
+            "Battery Power".to_string(),
+        );
         dict.insert("Is Charging".to_string(), "false".to_string());
         dict.insert("Current Capacity".to_string(), "75".to_string());
         dict.insert("Max Capacity".to_string(), "100".to_string());
@@ -179,11 +202,13 @@ mod tests {
     #[tokio::test]
     async fn test_macos_quartz_display_capture() {
         let substrate = MacosSubstrate::new();
+        // Enforcement: capture_screen exige Sensor/Read (pas GuiInput).
+        // Expiration future : Timestamp::now() expirerait à la seconde suivante.
         let cap = annora_core::CapabilityAuthority::new()
             .create_root_token(
-                vec![CapabilityScope::GuiInput],
+                vec![CapabilityScope::Sensor],
                 vec![annora_core::CapabilityAction::Read],
-                annora_core::Timestamp::now(),
+                annora_core::Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
             )
             .unwrap();
 
@@ -195,5 +220,165 @@ mod tests {
         let quartz = MacosQuartzDisplayCapture::new();
         assert_eq!(quartz.physical_width(), 5120);
         assert_eq!(quartz.physical_height(), 3200);
+    }
+
+    fn future_expiry() -> annora_core::Timestamp {
+        annora_core::Timestamp(chrono::Utc::now() + chrono::Duration::hours(1))
+    }
+
+    fn network_cap(action: annora_core::CapabilityAction) -> annora_core::CapabilityToken {
+        annora_core::CapabilityAuthority::new()
+            .create_root_token(
+                vec![CapabilityScope::Network],
+                vec![action],
+                future_expiry(),
+            )
+            .unwrap()
+    }
+
+    fn get_request(url: String) -> annora_substrate::HttpRequest {
+        annora_substrate::HttpRequest {
+            method: "GET".to_string(),
+            url,
+            headers: std::collections::HashMap::new(),
+            body: Vec::new(),
+        }
+    }
+
+    /// Minimal loopback HTTP server (raw TCP, no extra deps).
+    async fn spawn_local_http_server(body: &'static str) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback for egress test");
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn test_macos_http_egress_refuses_without_network_cap() {
+        let substrate = MacosSubstrate::new();
+        let wrong_cap = annora_core::CapabilityAuthority::new()
+            .create_root_token(
+                vec![CapabilityScope::Filesystem],
+                vec![annora_core::CapabilityAction::Read],
+                future_expiry(),
+            )
+            .unwrap();
+        let err = substrate
+            .http_request(get_request("http://127.0.0.1/".to_string()), &wrong_cap)
+            .await
+            .expect_err("egress without Network cap must be refused");
+        assert!(
+            matches!(
+                err,
+                annora_core::AnnoraError::CapabilityDenied(_)
+                    | annora_core::AnnoraError::CapabilityExpired
+            ),
+            "unexpected error: {err}"
+        );
+
+        let expired_cap = annora_core::CapabilityAuthority::new()
+            .create_root_token(
+                vec![CapabilityScope::Network],
+                vec![annora_core::CapabilityAction::Read],
+                annora_core::Timestamp(chrono::Utc::now() - chrono::Duration::hours(1)),
+            )
+            .unwrap();
+        let err = substrate
+            .http_request(get_request("http://127.0.0.1/".to_string()), &expired_cap)
+            .await
+            .expect_err("egress with expired cap must be refused");
+        assert!(
+            matches!(err, annora_core::AnnoraError::CapabilityExpired),
+            "expired cap must yield CapabilityExpired, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_macos_http_egress_refuses_host_off_allowlist() {
+        let substrate = MacosSubstrate::new().with_egress_policy(
+            annora_substrate::EgressPolicy::with_allowlist(["example.com"]),
+        );
+        let cap = network_cap(annora_core::CapabilityAction::Read);
+        let addr = spawn_local_http_server(r#"{"ok":true}"#).await;
+        let err = substrate
+            .http_request(get_request(format!("http://{addr}/")), &cap)
+            .await
+            .expect_err("host off allowlist must be refused");
+        assert!(
+            err.to_string().contains("not in egress allowlist"),
+            "refusal must name the allowlist, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_macos_http_egress_loopback_success() {
+        let substrate = MacosSubstrate::new();
+        assert!(substrate.egress_policy().is_loopback_only());
+        let cap = network_cap(annora_core::CapabilityAction::Read);
+        let addr = spawn_local_http_server(r#"{"ok":true}"#).await;
+        let response = substrate
+            .http_request(get_request(format!("http://{addr}/status")), &cap)
+            .await
+            .expect("loopback fetch under default policy must succeed");
+        assert_eq!(response.status_code, 200);
+        assert_eq!(response.body, b"{\"ok\":true}");
+    }
+
+    #[tokio::test]
+    async fn test_macos_camera_honest_unimplemented() {
+        let substrate = MacosSubstrate::new();
+        let cap = annora_core::CapabilityAuthority::new()
+            .create_root_token(
+                vec![CapabilityScope::Camera],
+                vec![annora_core::CapabilityAction::Read],
+                future_expiry(),
+            )
+            .unwrap();
+        let config = annora_substrate::CameraConfig {
+            width: 1280,
+            height: 720,
+            fps: 30,
+            facing: annora_substrate::CameraFacing::Front,
+        };
+        assert!(!config.is_available());
+        let err = substrate
+            .start_camera_capture(config, &cap)
+            .await
+            .expect_err("camera without AVFoundation binding must be refused");
+        let msg = err.to_string();
+        assert!(msg.contains("camera not implemented"), "got: {msg}");
+        assert!(
+            msg.contains("AVFoundation"),
+            "must name the missing backend, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_macos_thermal_and_vram_honest() {
+        // No IOKit thermal binding linked: explicit Unknown, never invented.
+        assert!(read_host_thermal_state().is_unknown());
+        assert!(MacosSubstrate::new().thermal_state().is_unknown());
+        // Unified-memory VRAM share unknown without Metal; envelope unknown
+        // without a thermal-pressure source.
+        let manifest = MacosSubstrate::new().manifest().clone();
+        assert!(manifest.gpu_vram_bytes.is_none());
+        assert!(manifest.thermal_envelope_watts.is_none());
+        // The pressure-level mapping itself stays valid for future wiring.
+        let heavy = OSThermalPressureLevel::Heavy.to_thermal_state();
+        assert!(heavy.throttled);
     }
 }

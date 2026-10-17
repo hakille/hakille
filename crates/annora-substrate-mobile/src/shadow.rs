@@ -87,6 +87,37 @@ impl MobileShadowSync {
         })
     }
 
+    /// List immediate child names under `prefix` ("" or "/" = root).
+    /// Deleted (tombstoned) keys are excluded. Used by `list_dir` so a
+    /// directory with no materialized keys is reported absent (honest error).
+    pub fn list_keys(&self, prefix: &str) -> Vec<String> {
+        let norm = prefix.trim_start_matches('/');
+        let mut out = Vec::new();
+        for (key, delta) in &self.edge_state {
+            if delta.is_deleted {
+                continue;
+            }
+            let rest = if norm.is_empty() {
+                key.as_str()
+            } else {
+                let dir = norm.trim_end_matches('/');
+                match key.strip_prefix(dir) {
+                    Some(r) if r.starts_with('/') => &r[1..],
+                    _ => continue,
+                }
+            };
+            if rest.is_empty() {
+                continue;
+            }
+            let child = rest.split('/').next().unwrap_or(rest).to_string();
+            if !child.is_empty() && !out.contains(&child) {
+                out.push(child);
+            }
+        }
+        out.sort();
+        out
+    }
+
     pub fn apply_delta_crdt(&mut self, delta: ShadowDelta) -> bool {
         let key = delta.key.clone();
         if let Some(existing) = self.edge_state.get(&key) {

@@ -20,7 +20,8 @@ impl WindowsScreenCapturer {
                         let old_obj = SelectObject(hdc_mem, hbm);
 
                         // BitBlt from screen to memory DC
-                        let blit_ok = BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, 0, 0, SRCCOPY);
+                        let blit_ok =
+                            BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, 0, 0, SRCCOPY);
 
                         if blit_ok != 0 {
                             let mut bmi = BITMAPINFO::default();

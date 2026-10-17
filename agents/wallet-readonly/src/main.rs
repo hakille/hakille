@@ -1,7 +1,9 @@
 use agent_wallet_readonly::WalletReadOnlyClient;
 
 fn main() {
-    println!("Annora Wallet (Read-Only) Agent initialized. Transaction execution is permanently forbidden.");
+    println!(
+        "Annora Wallet (Read-Only) Agent initialized. Transaction execution is permanently forbidden."
+    );
     let client = WalletReadOnlyClient::new();
     let accounts = client.get_accounts();
     for acc in accounts {

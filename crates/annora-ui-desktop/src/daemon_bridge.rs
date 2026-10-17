@@ -61,7 +61,7 @@ impl RealDaemonBridge {
         id
     }
 
-    fn require_daemon(&self, what: &str) -> Result<(), BridgeError> {
+    fn require_daemon<T>(&self, what: &str) -> Result<T, BridgeError> {
         Err(BridgeError::DaemonRequired(format!("daemon non branché — {what}")))
     }
 }
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn authorized_full_flow_request_simulate_confirm_journal_undo() {
         let mut bridge = KernelBridge::new(RealDaemonBridge::local_authorized());
-        bridge.kernel.kernel.stage_card(7, "Envoi 25.00 EUR à Awa");
+        bridge.kernel.stage_card(7, "Envoi 25.00 EUR à Awa");
         // 1. Demande : le noyau accepte et journalise (id produit côté noyau).
         let reply = bridge.dispatch(UiEvent::CardApprove { card_id: 7 }).unwrap().unwrap();
         match reply {
@@ -177,7 +177,7 @@ mod tests {
         let undo = bridge.dispatch(UiEvent::JournalRevert { index: 1 }).unwrap().unwrap();
         assert!(matches!(undo, annora_ui_model::KernelEvent::JournalAppended { id: 3 }));
         // 4. Trace locale = miroir du journal noyau, ordonnée.
-        let traces = bridge.kernel.kernel.traces();
+        let traces = bridge.kernel.traces();
         assert_eq!(traces.len(), 3);
         assert_eq!(traces[0].1, "approuvé carte #7");
         assert_eq!(traces[2].1, "annulée entrée #1");

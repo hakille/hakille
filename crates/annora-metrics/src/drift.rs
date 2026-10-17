@@ -14,6 +14,13 @@ pub struct ValuesDriftDetector {
     max_drift_threshold: f64,
 }
 
+/// Snapshot sérialisable de [`ValuesDriftDetector`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValuesDriftSnapshot {
+    pub baseline_moral_vector: Vec<f64>,
+    pub max_drift_threshold: f64,
+}
+
 impl ValuesDriftDetector {
     pub fn new(baseline_moral_vector: Vec<f64>, max_drift_threshold: f64) -> Self {
         Self {
@@ -39,7 +46,12 @@ impl ValuesDriftDetector {
             .map(|(&a, &b)| a * b)
             .sum();
 
-        let norm_base: f64 = self.baseline_moral_vector.iter().map(|&x| x * x).sum::<f64>().sqrt();
+        let norm_base: f64 = self
+            .baseline_moral_vector
+            .iter()
+            .map(|&x| x * x)
+            .sum::<f64>()
+            .sqrt();
         let norm_curr: f64 = current_vector.iter().map(|&x| x * x).sum::<f64>().sqrt();
 
         if norm_base == 0.0 || norm_curr == 0.0 {
@@ -62,5 +74,30 @@ impl ValuesDriftDetector {
         } else {
             None
         }
+    }
+
+    /// Snapshot mémoire simple (sérialisable en JSON).
+    pub fn to_snapshot(&self) -> ValuesDriftSnapshot {
+        ValuesDriftSnapshot {
+            baseline_moral_vector: self.baseline_moral_vector.clone(),
+            max_drift_threshold: self.max_drift_threshold,
+        }
+    }
+
+    /// Persistance JSON simple via `std::fs`.
+    pub fn save_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(&self.to_snapshot())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(path, json)
+    }
+
+    pub fn load_from_file(path: &std::path::Path) -> std::io::Result<Self> {
+        let content = std::fs::read_to_string(path)?;
+        let snap: ValuesDriftSnapshot = serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        Ok(Self {
+            baseline_moral_vector: snap.baseline_moral_vector,
+            max_drift_threshold: snap.max_drift_threshold,
+        })
     }
 }

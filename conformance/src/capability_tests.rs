@@ -1,6 +1,4 @@
-use annora_core::{
-    CapabilityAction, CapabilityAuthority, CapabilityScope, Timestamp,
-};
+use annora_core::{CapabilityAction, CapabilityAuthority, CapabilityScope, Timestamp};
 
 #[test]
 fn test_capability_creation_and_verification() {
@@ -17,11 +15,19 @@ fn test_capability_creation_and_verification() {
 
     // Verification of granted rights should succeed
     authority
-        .verify(&root_token, CapabilityScope::Filesystem, CapabilityAction::Read)
+        .verify(
+            &root_token,
+            CapabilityScope::Filesystem,
+            CapabilityAction::Read,
+        )
         .expect("Filesystem Read should be verified");
 
     // Verification of ungranted rights should fail
-    let ungranted = authority.verify(&root_token, CapabilityScope::GuiInput, CapabilityAction::Read);
+    let ungranted = authority.verify(
+        &root_token,
+        CapabilityScope::GuiInput,
+        CapabilityAction::Read,
+    );
     assert!(ungranted.is_err());
 }
 
@@ -50,6 +56,10 @@ fn test_offline_attenuation() {
 
     // Filesystem Read should still be allowed
     authority
-        .verify(&attenuated, CapabilityScope::Filesystem, CapabilityAction::Read)
+        .verify(
+            &attenuated,
+            CapabilityScope::Filesystem,
+            CapabilityAction::Read,
+        )
         .expect("Filesystem Read should pass on attenuated token");
 }

@@ -50,6 +50,12 @@ impl GuestSessionManager {
     }
 
     /// Provision a time-bounded guest session.
+    ///
+    /// Bornes fail-closed :
+    /// - durée max 24 h (`duration_minutes <= 1440`), refus au-delà ;
+    /// - `duration_minutes == 0` refusé ;
+    /// - `guest_id` vide → token UUID unique généré (`guest-<uuidv4>`) ;
+    /// - doublon d'`id` (session existante) refusé.
     pub fn create_guest_session(
         &mut self,
         guest_id: impl Into<String>,
@@ -59,15 +65,35 @@ impl GuestSessionManager {
         duration_minutes: u32,
     ) -> Result<GuestSession, String> {
         // Enforce strict security invariant: Guest can never hold Wallet or FullSystem
-        if allowed_scopes.contains(&CapabilityScope::Wallet) || allowed_scopes.contains(&CapabilityScope::FullSystem) {
+        if allowed_scopes.contains(&CapabilityScope::Wallet)
+            || allowed_scopes.contains(&CapabilityScope::FullSystem)
+        {
             return Err("Un invité ne peut en aucun cas recevoir les capabilities Wallet ou FullSystem (§30e).".to_string());
+        }
+
+        if duration_minutes == 0 {
+            return Err("Durée invité nulle refusée.".to_string());
+        }
+        if duration_minutes > 1440 {
+            return Err("Durée invité bornée à 24 h max (1440 min) — refus au-delà.".to_string());
+        }
+
+        let mut gid = guest_id.into();
+        if gid.trim().is_empty() {
+            gid = format!("guest-{}", uuid::Uuid::new_v4());
+        }
+        if self.sessions.iter().any(|s| s.guest_id == gid) {
+            return Err(format!(
+                "guest_id '{}' déjà utilisé (token unique exigé)",
+                gid
+            ));
         }
 
         let now = chrono::Utc::now();
         let expires_at = now + chrono::Duration::minutes(duration_minutes as i64);
 
         let session = GuestSession {
-            guest_id: guest_id.into(),
+            guest_id: gid,
             host_user_id,
             allowed_scopes,
             purpose: purpose.into(),

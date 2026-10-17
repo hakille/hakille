@@ -1,10 +1,10 @@
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Instant;
 use annora_core::{AnnoraError, Result};
 use futures_util::StreamExt;
 use reqwest::header::{CONTENT_LENGTH, RANGE};
 use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 
 /// Progress statistics emitted periodically during model artifact downloads.
@@ -93,9 +93,13 @@ impl ModelDownloader {
 
         // Ensure parent directory exists
         if let Some(parent) = destination.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| AnnoraError::StorageError(format!("Failed to create directory {}: {}", parent.display(), e)))?;
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                AnnoraError::StorageError(format!(
+                    "Failed to create directory {}: {}",
+                    parent.display(),
+                    e
+                ))
+            })?;
         }
 
         // Check for existing partial file either as .part extension or appended .part
@@ -122,7 +126,9 @@ impl ModelDownloader {
                         if size == exp {
                             // File already finished downloading in previous attempts
                             existing_bytes = size;
-                            if let Ok((bytes_read, pre_hasher)) = Self::hash_file_partial(&part_path, size) {
+                            if let Ok((bytes_read, pre_hasher)) =
+                                Self::hash_file_partial(&part_path, size)
+                            {
                                 if bytes_read == size {
                                     hasher = pre_hasher;
                                     let computed_hash = format!("{:x}", hasher.finalize());
@@ -135,8 +141,14 @@ impl ModelDownloader {
                                             )));
                                         }
                                     }
-                                    tokio::fs::rename(&part_path, destination).await
-                                        .map_err(|e| AnnoraError::StorageError(format!("Failed to promote part file: {}", e)))?;
+                                    tokio::fs::rename(&part_path, destination).await.map_err(
+                                        |e| {
+                                            AnnoraError::StorageError(format!(
+                                                "Failed to promote part file: {}",
+                                                e
+                                            ))
+                                        },
+                                    )?;
                                     return Ok(destination.to_path_buf());
                                 }
                             }
@@ -182,50 +194,62 @@ impl ModelDownloader {
             };
 
             let status = response.status();
-            let (mut file, mut downloaded_so_far, total_bytes) = if existing_bytes > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT {
-                // Resume accepted
-                let content_len = response.headers().get(CONTENT_LENGTH)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok());
-                let total = content_len.map(|cl| cl + existing_bytes).or(expected_size);
+            let (mut file, mut downloaded_so_far, total_bytes) =
+                if existing_bytes > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT {
+                    // Resume accepted
+                    let content_len = response
+                        .headers()
+                        .get(CONTENT_LENGTH)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok());
+                    let total = content_len.map(|cl| cl + existing_bytes).or(expected_size);
 
-                let f = tokio::fs::OpenOptions::new()
-                    .write(true)
-                    .append(true)
-                    .open(&part_path)
-                    .await
-                    .map_err(|e| AnnoraError::StorageError(format!("Failed to open .part file for append: {}", e)))?;
+                    let f = tokio::fs::OpenOptions::new()
+                        .write(true)
+                        .append(true)
+                        .open(&part_path)
+                        .await
+                        .map_err(|e| {
+                            AnnoraError::StorageError(format!(
+                                "Failed to open .part file for append: {}",
+                                e
+                            ))
+                        })?;
 
-                (f, existing_bytes, total)
-            } else {
-                // Fresh download or server does not support Range
-                if !status.is_success() {
-                    if attempt >= max_retries {
-                        return Err(AnnoraError::InferenceError(format!(
-                            "HTTP request failed with status code {} for URL: {}",
-                            status, url
-                        )));
+                    (f, existing_bytes, total)
+                } else {
+                    // Fresh download or server does not support Range
+                    if !status.is_success() {
+                        if attempt >= max_retries {
+                            return Err(AnnoraError::InferenceError(format!(
+                                "HTTP request failed with status code {} for URL: {}",
+                                status, url
+                            )));
+                        }
+                        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                        continue;
                     }
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                    continue;
-                }
 
-                hasher = Sha256::new();
-                let total = response.headers().get(CONTENT_LENGTH)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .or(expected_size);
+                    hasher = Sha256::new();
+                    let total = response
+                        .headers()
+                        .get(CONTENT_LENGTH)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .or(expected_size);
 
-                let f = tokio::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&part_path)
-                    .await
-                    .map_err(|e| AnnoraError::StorageError(format!("Failed to create .part file: {}", e)))?;
+                    let f = tokio::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(&part_path)
+                        .await
+                        .map_err(|e| {
+                            AnnoraError::StorageError(format!("Failed to create .part file: {}", e))
+                        })?;
 
-                (f, 0u64, total)
-            };
+                    (f, 0u64, total)
+                };
 
             // 4. Stream response body
             let mut stream = response.bytes_stream();
@@ -237,7 +261,10 @@ impl ModelDownloader {
                 match chunk_res {
                     Ok(chunk) => {
                         if let Err(e) = file.write_all(&chunk).await {
-                            return Err(AnnoraError::StorageError(format!("Failed to write chunk to disk: {}", e)));
+                            return Err(AnnoraError::StorageError(format!(
+                                "Failed to write chunk to disk: {}",
+                                e
+                            )));
                         }
                         hasher.update(&chunk);
                         downloaded_so_far += chunk.len() as u64;
@@ -247,7 +274,8 @@ impl ModelDownloader {
                             if last_progress_time.elapsed().as_millis() >= 100 {
                                 let elapsed = start_time.elapsed().as_secs_f64().max(0.001);
                                 let speed = (downloaded_so_far - existing_bytes) as f64 / elapsed;
-                                let percentage = total_bytes.map(|t| (downloaded_so_far as f64 / t as f64) * 100.0);
+                                let percentage = total_bytes
+                                    .map(|t| (downloaded_so_far as f64 / t as f64) * 100.0);
 
                                 cb(&DownloadProgress {
                                     filename: filename.clone(),
@@ -335,12 +363,14 @@ impl ModelDownloader {
             // 7. Atomic rename from .part to final destination
             tokio::fs::rename(&part_path, destination)
                 .await
-                .map_err(|e| AnnoraError::StorageError(format!(
-                    "Failed to rename {} to {}: {}",
-                    part_path.display(),
-                    destination.display(),
-                    e
-                )))?;
+                .map_err(|e| {
+                    AnnoraError::StorageError(format!(
+                        "Failed to rename {} to {}: {}",
+                        part_path.display(),
+                        destination.display(),
+                        e
+                    ))
+                })?;
 
             tracing::info!(
                 file = %filename,
@@ -355,15 +385,20 @@ impl ModelDownloader {
 
     /// Read an existing file and verify its SHA-256 checksum.
     pub fn verify_sha256(path: &Path, expected_hex: &str) -> Result<bool> {
-        let mut file = std::fs::File::open(path)
-            .map_err(|e| AnnoraError::StorageError(format!("Failed to open file for SHA-256 verification: {}", e)))?;
+        let mut file = std::fs::File::open(path).map_err(|e| {
+            AnnoraError::StorageError(format!(
+                "Failed to open file for SHA-256 verification: {}",
+                e
+            ))
+        })?;
         let mut hasher = Sha256::new();
         let mut buffer = [0u8; 65536];
 
         use std::io::Read;
         loop {
-            let bytes_read = file.read(&mut buffer)
-                .map_err(|e| AnnoraError::StorageError(format!("Failed reading file during checksum: {}", e)))?;
+            let bytes_read = file.read(&mut buffer).map_err(|e| {
+                AnnoraError::StorageError(format!("Failed reading file during checksum: {}", e))
+            })?;
             if bytes_read == 0 {
                 break;
             }
@@ -376,15 +411,17 @@ impl ModelDownloader {
 
     /// Compute full SHA-256 of any file on disk.
     pub fn compute_sha256(path: &Path) -> Result<String> {
-        let mut file = std::fs::File::open(path)
-            .map_err(|e| AnnoraError::StorageError(format!("Failed to open file for SHA-256: {}", e)))?;
+        let mut file = std::fs::File::open(path).map_err(|e| {
+            AnnoraError::StorageError(format!("Failed to open file for SHA-256: {}", e))
+        })?;
         let mut hasher = Sha256::new();
         let mut buffer = [0u8; 65536];
 
         use std::io::Read;
         loop {
-            let bytes_read = file.read(&mut buffer)
-                .map_err(|e| AnnoraError::StorageError(format!("Failed reading file for SHA-256: {}", e)))?;
+            let bytes_read = file.read(&mut buffer).map_err(|e| {
+                AnnoraError::StorageError(format!("Failed reading file for SHA-256: {}", e))
+            })?;
             if bytes_read == 0 {
                 break;
             }
@@ -395,8 +432,9 @@ impl ModelDownloader {
     }
 
     fn hash_file_partial(path: &Path, max_bytes: u64) -> Result<(u64, Sha256)> {
-        let mut file = std::fs::File::open(path)
-            .map_err(|e| AnnoraError::StorageError(format!("Failed to open file for partial hashing: {}", e)))?;
+        let mut file = std::fs::File::open(path).map_err(|e| {
+            AnnoraError::StorageError(format!("Failed to open file for partial hashing: {}", e))
+        })?;
         let mut hasher = Sha256::new();
         let mut buffer = [0u8; 65536];
         let mut total_read = 0u64;
@@ -404,8 +442,9 @@ impl ModelDownloader {
         use std::io::Read;
         while total_read < max_bytes {
             let to_read = ((max_bytes - total_read) as usize).min(buffer.len());
-            let bytes_read = file.read(&mut buffer[..to_read])
-                .map_err(|e| AnnoraError::StorageError(format!("Failed reading partial file: {}", e)))?;
+            let bytes_read = file.read(&mut buffer[..to_read]).map_err(|e| {
+                AnnoraError::StorageError(format!("Failed reading partial file: {}", e))
+            })?;
             if bytes_read == 0 {
                 break;
             }

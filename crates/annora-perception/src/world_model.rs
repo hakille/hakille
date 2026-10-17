@@ -52,7 +52,9 @@ impl WorldModel {
     }
 
     pub fn record_speaker_presence(&mut self, speaker_id: impl Into<String>) {
-        self.current_state.present_speakers.insert(speaker_id.into());
+        self.current_state
+            .present_speakers
+            .insert(speaker_id.into());
         if self.current_state.present_speakers.len() > 1 {
             self.current_state.third_parties_present = true;
         }
@@ -81,7 +83,8 @@ impl WorldModel {
         self.current_state.user_present = present;
         self.current_state.user_attentive = attentive;
         self.current_state.people_count = people_count;
-        self.current_state.third_parties_present = people_count > 1 || self.current_state.present_speakers.len() > 1;
+        self.current_state.third_parties_present =
+            people_count > 1 || self.current_state.present_speakers.len() > 1;
         self.current_state.user_distance_m = distance_m;
         self.current_state.lighting_condition = lighting.into();
         self.current_state.last_updated = Timestamp::now();
@@ -108,4 +111,3 @@ impl WorldModel {
             || self.current_state.ambient_noise_level_db > 68.0
     }
 }
-

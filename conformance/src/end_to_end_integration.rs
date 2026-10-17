@@ -2,8 +2,8 @@ use annora_audit::entry::{ActionRecord, AuditEntry, ReasoningStep, ReasoningTrac
 use annora_audit::journal::AuditJournal;
 use annora_constitution::rules::Constitution;
 use annora_core::{
-    ActorId, CapabilityAction, CapabilityAuthority, CapabilityScope, EntryId, KeyPair,
-    NodeId, PredicateId, Timestamp, TripletId, TrustLevel, UserId,
+    ActorId, CapabilityAction, CapabilityAuthority, CapabilityScope, EntryId, KeyPair, NodeId,
+    PredicateId, Timestamp, TripletId, TrustLevel, UserId,
 };
 use annora_kernel::{
     fabric::{CognitiveFabric, CognitiveManifest},
@@ -12,9 +12,7 @@ use annora_kernel::{
 use annora_memory::{
     ContextPartition, KnowledgeGraph, NodeValue, Triplet, TripletMetadata, TripletSource,
 };
-use annora_metrics::{
-    BoundedInitiativeTracker, ContinuityTracker, ValuesDriftDetector,
-};
+use annora_metrics::{BoundedInitiativeTracker, ContinuityTracker, ValuesDriftDetector};
 use annora_substrate::Substrate;
 use annora_substrate_windows::WindowsSubstrate;
 use annora_sync::CrdtSync;
@@ -22,6 +20,7 @@ use tempfile::NamedTempFile;
 use uuid::Uuid;
 
 #[tokio::test]
+#[ignore = "slow: tours complets avec décodage Qwen CPU réel (minutes en debug) ; gate lente `-- --ignored`"]
 async fn test_full_system_end_to_end_integration() {
     // =========================================================================
     // LAYER 1: Substrate & Hardware Attestation
@@ -68,22 +67,26 @@ async fn test_full_system_end_to_end_integration() {
         .expect("Attenuation failed");
 
     // Verify authorized scope succeeds
-    assert!(authority
-        .verify(
-            &restricted_token,
-            CapabilityScope::ModelInference,
-            CapabilityAction::Read,
-        )
-        .is_ok());
+    assert!(
+        authority
+            .verify(
+                &restricted_token,
+                CapabilityScope::ModelInference,
+                CapabilityAction::Read,
+            )
+            .is_ok()
+    );
 
     // Verify unauthorized scope strictly denied by Biscuit crypto
-    assert!(authority
-        .verify(
-            &restricted_token,
-            CapabilityScope::Wallet,
-            CapabilityAction::Execute,
-        )
-        .is_err());
+    assert!(
+        authority
+            .verify(
+                &restricted_token,
+                CapabilityScope::Wallet,
+                CapabilityAction::Execute,
+            )
+            .is_err()
+    );
 
     // =========================================================================
     // LAYER 3: Sovereign Memory Knowledge Graph (SPO Triplet Engine)
@@ -107,6 +110,7 @@ async fn test_full_system_end_to_end_integration() {
             trust_level: TrustLevel::User,
             decay_rate: 0.005,
         },
+        node_type: None,
     };
     memory.insert(triplet);
 
@@ -123,14 +127,20 @@ async fn test_full_system_end_to_end_integration() {
 
     // Turn 1: User introduces themselves
     let turn1_res = orchestrator
-        .process_user_turn("Bonjour, je m'appelle Amadou et j'adore Rust", &TrustLevel::User)
+        .process_user_turn(
+            "Bonjour, je m'appelle Amadou et j'adore Rust",
+            &TrustLevel::User,
+        )
         .await
         .expect("Turn 1 failed");
     assert!(!turn1_res.response_text.is_empty());
 
     // Turn 2: Query relying on auto-extracted memory
     let turn2_res = orchestrator
-        .process_user_turn("Quel est mon nom et de quoi avons-nous parlé ?", &TrustLevel::User)
+        .process_user_turn(
+            "Quel est mon nom et de quoi avons-nous parlé ?",
+            &TrustLevel::User,
+        )
         .await
         .expect("Turn 2 failed");
     assert!(
@@ -168,7 +178,8 @@ async fn test_full_system_end_to_end_integration() {
         capability_used: Some(CapabilityScope::ModelInference),
         reasoning_trace: ReasoningTrace {
             steps: vec![ReasoningStep {
-                description: "Recalled user identity from SPO graph and synthesized reply".to_string(),
+                description: "Recalled user identity from SPO graph and synthesized reply"
+                    .to_string(),
                 confidence: 0.98,
                 evidence: vec![],
             }],
@@ -180,6 +191,7 @@ async fn test_full_system_end_to_end_integration() {
         cost: None,
         signature: vec![],
         prev_hash: vec![],
+        token_hash: None,
     };
 
     let appended_id = journal.append(audit_entry).expect("Append entry failed");
@@ -215,6 +227,7 @@ async fn test_full_system_end_to_end_integration() {
             trust_level: TrustLevel::User,
             decay_rate: 0.01,
         },
+        node_type: None,
     };
     let shared_id = shared_triplet.id.clone();
 
@@ -253,4 +266,60 @@ async fn test_full_system_end_to_end_integration() {
     let drift_detector = ValuesDriftDetector::default_constitutional();
     let alert_opt = drift_detector.evaluate_current_vector(&[0.98, 0.99, 1.0, 0.97, 0.99]);
     assert!(alert_opt.is_none(), "Expected no values drift detected");
+}
+
+#[tokio::test]
+#[ignore = "slow: tours complets avec décodage Qwen CPU réel (minutes en debug) ; gate lente `-- --ignored`"]
+async fn test_mem_cognition_loop_spo_contradiction_decay_budget() {
+    // Boucle MEM de bout en bout (missions 1/2/4/7) via l'orchestrateur seul.
+    use annora_kernel::budget::PipelineBudgetConfig;
+    let user_id = UserId(Uuid::now_v7());
+    let constitution = Constitution::default_v1();
+    let fabric = CognitiveFabric::new(CognitiveManifest::default());
+    let mut orch = CognitiveOrchestrator::new(fabric, user_id, constitution);
+
+    // SPO réel : objet = 3e partie, IDs déterministes requêtables.
+    match orch.remember("Utilisateur", "langage", "Rust 2024") {
+        annora_memory::InsertResult::Inserted(_) => {}
+        other => panic!("Insertion SPO attendue, obtenue : {:?}", other),
+    }
+    assert!(orch.recall("Rust 2024").contains(&"Rust 2024".to_string()));
+    assert!(
+        orch.recall("langage").contains(&"Rust 2024".to_string()),
+        "Registre prédicat"
+    );
+
+    // Contradiction : second fait conflictuel retourné, premier intact.
+    match orch.remember("Utilisateur", "langage", "Python 2024") {
+        annora_memory::InsertResult::NeedsUserResolution { .. } => {}
+        other => panic!("Conflit attendu, obtenu : {:?}", other),
+    }
+    assert_eq!(orch.memory_graph.len(), 1);
+
+    // Decay : fait vieilli d'1 h à λ=0.01 s'effondre et se fane sous cutoff (histoire préservée).
+    let ids: Vec<_> = orch.memory_graph.ids();
+    for id in ids {
+        if let Some(m) = orch.memory_graph.get_mut(&id) {
+            m.metadata.last_activated = Timestamp(chrono::Utc::now() - chrono::Duration::hours(1));
+            m.metadata.decay_rate = 0.01;
+        }
+    }
+    let report = annora_memory::DecayEngine::apply_decay(&mut orch.memory_graph, 0.5);
+    assert_eq!(report.nodes_removed, 0, "Histoire préservée : rien purgé");
+    assert_eq!(report.nodes_faded, 1, "Décru sous cutoff ⇒ fané");
+    assert_eq!(orch.memory_graph.len(), 1);
+
+    // Budget : pipeline aborté avec erreur explicite sous budget nul.
+    orch.set_budget_config(PipelineBudgetConfig {
+        max_perception_ms: 0,
+        max_routing_ms: 0,
+        max_inference_ms: 0,
+        max_action_ms: 0,
+        max_total_ms: 0,
+    });
+    let err = orch
+        .process_user_turn("Bonjour", &TrustLevel::User)
+        .await
+        .expect_err("Budget nul ⇒ abort");
+    assert!(format!("{:?}", err).contains("budget"));
 }

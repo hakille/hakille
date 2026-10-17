@@ -32,7 +32,11 @@ pub fn quantize_f32_to_int8(data: &[f32], shape: Vec<usize>) -> QuantizedTensorI
 }
 
 pub fn dequantize_int8_to_f32(tensor: &QuantizedTensorInt8) -> Vec<f32> {
-    tensor.data.iter().map(|&x| x as f32 * tensor.scale).collect()
+    tensor
+        .data
+        .iter()
+        .map(|&x| x as f32 * tensor.scale)
+        .collect()
 }
 
 pub fn quantize_f32_to_q4(data: &[f32], shape: Vec<usize>) -> QuantizedTensorQ4 {

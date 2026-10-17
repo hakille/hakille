@@ -73,14 +73,31 @@ impl SelfModel {
     /// Immediate introspective query: "Qu'est-ce que tu es en train de faire ?" (§28c)
     pub fn query_current_activity(&self) -> String {
         match (&self.current_state, &self.current_task_summary) {
-            (CognitiveState::Standby, _) => "En veille attentive, en attente de sollicitation ou d'événement ambiant.".to_string(),
-            (CognitiveState::Perceiving, _) => "Analyse continue des signaux audio et visuels de l'environnement.".to_string(),
-            (CognitiveState::Reasoning, Some(t)) => format!("Raisonnement actif en cours sur la tâche : '{}'", t),
-            (CognitiveState::Reasoning, None) => "Raisonnement interne sur les données de contexte.".to_string(),
-            (CognitiveState::Simulating, Some(t)) => format!("Simulation locale à blanc avant engagement irréversible : '{}'", t),
-            (CognitiveState::Executing, Some(t)) => format!("Exécution d'une action dans le bac à sable : '{}'", t),
+            (CognitiveState::Standby, _) => {
+                "En veille attentive, en attente de sollicitation ou d'événement ambiant."
+                    .to_string()
+            }
+            (CognitiveState::Perceiving, _) => {
+                "Analyse continue des signaux audio et visuels de l'environnement.".to_string()
+            }
+            (CognitiveState::Reasoning, Some(t)) => {
+                format!("Raisonnement actif en cours sur la tâche : '{}'", t)
+            }
+            (CognitiveState::Reasoning, None) => {
+                "Raisonnement interne sur les données de contexte.".to_string()
+            }
+            (CognitiveState::Simulating, Some(t)) => format!(
+                "Simulation locale à blanc avant engagement irréversible : '{}'",
+                t
+            ),
+            (CognitiveState::Executing, Some(t)) => {
+                format!("Exécution d'une action dans le bac à sable : '{}'", t)
+            }
             (CognitiveState::Hesitating { reason_code }, _) => {
-                let why = self.hesitation_rationale.as_deref().unwrap_or("Incertitude sur les conséquences");
+                let why = self
+                    .hesitation_rationale
+                    .as_deref()
+                    .unwrap_or("Incertitude sur les conséquences");
                 format!("En hésitation (code {}) : {}", reason_code, why)
             }
             _ => "Traitement cognitif en cours.".to_string(),

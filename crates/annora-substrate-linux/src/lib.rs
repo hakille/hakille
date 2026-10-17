@@ -22,7 +22,58 @@ pub use telemetry::*;
 mod tests {
     use super::*;
     use annora_core::{CapabilityScope, Tier};
-    use annora_substrate::{Compute, InputAction, Key, MouseButton, Substrate};
+    use annora_substrate::{
+        Compute, EgressPolicy, HttpRequest, InputAction, Key, MouseButton, Substrate,
+    };
+    use std::collections::HashMap;
+
+    /// Expiry one hour in the future (a bare `Timestamp::now()` would race
+    /// the one-second capability lifetime check).
+    fn future_expiry() -> annora_core::Timestamp {
+        annora_core::Timestamp(chrono::Utc::now() + chrono::Duration::hours(1))
+    }
+
+    fn network_cap(action: annora_core::CapabilityAction) -> annora_core::CapabilityToken {
+        annora_core::CapabilityAuthority::new()
+            .create_root_token(
+                vec![CapabilityScope::Network],
+                vec![action],
+                future_expiry(),
+            )
+            .unwrap()
+    }
+
+    /// Minimal loopback HTTP server (raw TCP, no extra deps): answers one
+    /// request with `body`, then stops. Returns its socket address.
+    async fn spawn_local_http_server(body: &'static str) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback for egress test");
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 4096];
+                let _ = stream.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        addr
+    }
+
+    fn get_request(url: String) -> HttpRequest {
+        HttpRequest {
+            method: "GET".to_string(),
+            url,
+            headers: HashMap::new(),
+            body: Vec::new(),
+        }
+    }
 
     #[tokio::test]
     async fn test_linux_substrate_manifest_and_attestation() {
@@ -31,10 +82,21 @@ mod tests {
         assert_eq!(manifest.tier, Tier::Native);
         assert_eq!(manifest.os_name, "Linux");
         assert!(manifest.has_tpm);
-        assert!(manifest.capabilities_granted.contains(&CapabilityScope::Filesystem));
-        assert!(manifest.capabilities_denied.contains(&CapabilityScope::FullSystem));
+        assert!(
+            manifest
+                .capabilities_granted
+                .contains(&CapabilityScope::Filesystem)
+        );
+        assert!(
+            manifest
+                .capabilities_denied
+                .contains(&CapabilityScope::FullSystem)
+        );
 
-        let attestation = substrate.attest(b"linux-nonce").await.expect("Attestation failed");
+        let attestation = substrate
+            .attest(b"linux-nonce")
+            .await
+            .expect("Attestation failed");
         assert_eq!(attestation.platform_id, "Linux-Substrate-Host");
         assert!(!attestation.signature.0.is_empty());
     }
@@ -79,7 +141,8 @@ mod tests {
         assert_eq!(res_denied, SECCOMP_RET_ERRNO | 1);
 
         // 3. Architecture mismatch -> KILL
-        let res_arch_mismatch = SeccompProfile::simulate_bpf(&x86_instructions, SyscallArch::Aarch64, 9);
+        let res_arch_mismatch =
+            SeccompProfile::simulate_bpf(&x86_instructions, SyscallArch::Aarch64, 9);
         assert_eq!(res_arch_mismatch, SECCOMP_RET_KILL_PROCESS);
 
         let arm_instructions = wasm_profile.compile_bpf(SyscallArch::Aarch64);
@@ -87,12 +150,17 @@ mod tests {
 
         let net_profile = SeccompProfile::agent_network();
         assert!(net_profile.allowed_syscalls.contains(&"socket".to_string()));
-        assert!(net_profile.allowed_syscalls.contains(&"epoll_wait".to_string()));
+        assert!(
+            net_profile
+                .allowed_syscalls
+                .contains(&"epoll_wait".to_string())
+        );
 
         let lockdown = SeccompProfile::strict_lockdown();
         assert_eq!(lockdown.default_action, "kill");
         let lockdown_bpf = lockdown.compile_bpf(SyscallArch::X86_64);
-        let res_lockdown_denied = SeccompProfile::simulate_bpf(&lockdown_bpf, SyscallArch::X86_64, 0); // read -> kill
+        let res_lockdown_denied =
+            SeccompProfile::simulate_bpf(&lockdown_bpf, SyscallArch::X86_64, 0); // read -> kill
         assert_eq!(res_lockdown_denied, SECCOMP_RET_KILL_PROCESS);
     }
 
@@ -160,46 +228,200 @@ SwapFree:        4194304 kB
     }
 
     #[tokio::test]
+    async fn test_linux_http_egress_refuses_without_network_cap() {
+        let substrate = LinuxSubstrate::new();
+        // Wrong scope (Filesystem instead of Network) must be refused.
+        let wrong_cap = annora_core::CapabilityAuthority::new()
+            .create_root_token(
+                vec![CapabilityScope::Filesystem],
+                vec![annora_core::CapabilityAction::Read],
+                future_expiry(),
+            )
+            .unwrap();
+        let err = substrate
+            .http_request(get_request("http://127.0.0.1/".to_string()), &wrong_cap)
+            .await
+            .expect_err("egress without Network cap must be refused");
+        assert!(
+            matches!(
+                err,
+                annora_core::AnnoraError::CapabilityDenied(_)
+                    | annora_core::AnnoraError::CapabilityExpired
+            ),
+            "unexpected error: {err}"
+        );
+
+        // Expired Network cap must be refused explicitly as expired.
+        let expired_cap = annora_core::CapabilityAuthority::new()
+            .create_root_token(
+                vec![CapabilityScope::Network],
+                vec![annora_core::CapabilityAction::Read],
+                annora_core::Timestamp(chrono::Utc::now() - chrono::Duration::hours(1)),
+            )
+            .unwrap();
+        let err = substrate
+            .http_request(get_request("http://127.0.0.1/".to_string()), &expired_cap)
+            .await
+            .expect_err("egress with expired cap must be refused");
+        assert!(
+            matches!(err, annora_core::AnnoraError::CapabilityExpired),
+            "expired cap must yield CapabilityExpired, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_linux_http_egress_refuses_host_off_allowlist() {
+        // Allowlist without loopback: even loopback must be refused.
+        let substrate =
+            LinuxSubstrate::new().with_egress_policy(EgressPolicy::with_allowlist(["example.com"]));
+        let cap = network_cap(annora_core::CapabilityAction::Read);
+        let addr = spawn_local_http_server(r#"{"ok":true}"#).await;
+        let err = substrate
+            .http_request(get_request(format!("http://{addr}/")), &cap)
+            .await
+            .expect_err("host off allowlist must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not in egress allowlist"),
+            "refusal must name the allowlist, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_linux_http_egress_loopback_success() {
+        // Default policy is loopback-only: local fetch succeeds for real.
+        let substrate = LinuxSubstrate::new();
+        assert!(substrate.egress_policy().is_loopback_only());
+        let cap = network_cap(annora_core::CapabilityAction::Read);
+        let addr = spawn_local_http_server(r#"{"ok":true}"#).await;
+        let response = substrate
+            .http_request(get_request(format!("http://{addr}/status")), &cap)
+            .await
+            .expect("loopback fetch under default policy must succeed");
+        assert_eq!(response.status_code, 200);
+        assert_eq!(response.body, b"{\"ok\":true}");
+    }
+
+    #[tokio::test]
+    async fn test_linux_camera_honest_unimplemented() {
+        let substrate = LinuxSubstrate::new();
+        let cap = annora_core::CapabilityAuthority::new()
+            .create_root_token(
+                vec![CapabilityScope::Camera],
+                vec![annora_core::CapabilityAction::Read],
+                future_expiry(),
+            )
+            .unwrap();
+        let config = annora_substrate::CameraConfig {
+            width: 1280,
+            height: 720,
+            fps: 30,
+            facing: annora_substrate::CameraFacing::Front,
+        };
+        assert!(!config.is_available());
+        let err = substrate
+            .start_camera_capture(config, &cap)
+            .await
+            .expect_err("camera without V4L2 binding must be refused");
+        let msg = err.to_string();
+        assert!(msg.contains("camera not implemented"), "got: {msg}");
+        assert!(
+            msg.contains("V4L2"),
+            "must name the missing backend, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_linux_thermal_honest() {
+        // Real sysfs reading when present, explicit Unknown otherwise —
+        // never an invented temperature.
+        let state = read_host_thermal_state();
+        assert!(
+            state.is_unknown() || (-50.0..150.0).contains(&state.temperature_celsius),
+            "thermal state must be Unknown or a plausible reading"
+        );
+        assert!(annora_substrate::ThermalState::Unknown.is_unknown());
+        // VRAM detection is host-dependent; it must simply never panic and
+        // the manifest must mirror it (None when undiscoverable).
+        let substrate = LinuxSubstrate::new();
+        assert_eq!(
+            substrate.manifest().gpu_vram_bytes,
+            detect_linux_vram_bytes()
+        );
+        assert!(substrate.manifest().thermal_envelope_watts.is_none());
+    }
+
+    #[tokio::test]
     async fn test_linux_display_and_input_injection() {
         let substrate = LinuxSubstrate::new();
+        // Expiration future : Timestamp::now() expirerait à la seconde suivante
+        // maintenant que l'enforcement vérifie réellement l'expiration.
+        let expiry = annora_core::Timestamp(chrono::Utc::now() + chrono::Duration::hours(1));
+        // Enforcement: capture_screen exige Sensor/Read, inject_input exige GuiInput/Execute.
+        let screen_cap = annora_core::CapabilityAuthority::new()
+            .create_root_token(
+                vec![CapabilityScope::Sensor],
+                vec![annora_core::CapabilityAction::Read],
+                expiry.clone(),
+            )
+            .unwrap();
         let cap_token = annora_core::CapabilityAuthority::new()
             .create_root_token(
                 vec![CapabilityScope::GuiInput],
                 vec![annora_core::CapabilityAction::Execute],
-                annora_core::Timestamp::now(),
+                expiry,
             )
             .unwrap();
 
         // Display capture test
-        let screen = substrate.capture_screen(&cap_token).await.unwrap();
+        let screen = substrate.capture_screen(&screen_cap).await.unwrap();
         assert_eq!(screen.width, 1920);
         assert_eq!(screen.height, 1080);
         assert_eq!(screen.data.len(), 1920 * 1080 * 4);
 
         // Test Wayland and X11 screencopy engines directly
-        let wayland_engine = LinuxDisplayCaptureEngine::with_geometry(LinuxDisplayServer::Wayland, 1920, 1080);
+        let wayland_engine =
+            LinuxDisplayCaptureEngine::with_geometry(LinuxDisplayServer::Wayland, 1920, 1080);
         let wl_screen = wayland_engine.capture_screen();
         assert_eq!(wl_screen.width, 1920);
 
-        let x11_engine = LinuxDisplayCaptureEngine::with_geometry(LinuxDisplayServer::X11, 1920, 1080);
+        let x11_engine =
+            LinuxDisplayCaptureEngine::with_geometry(LinuxDisplayServer::X11, 1920, 1080);
         let x11_screen = x11_engine.capture_screen();
         assert_eq!(x11_screen.width, 1920);
 
         // Input injection test with uppercase, digits, punctuation, and absolute coordinates
-        substrate.inject_input(
-            InputAction::Click { x: 500, y: 300, button: MouseButton::Left },
-            &cap_token,
-        ).await.unwrap();
+        substrate
+            .inject_input(
+                InputAction::Click {
+                    x: 500,
+                    y: 300,
+                    button: MouseButton::Left,
+                },
+                &cap_token,
+            )
+            .await
+            .unwrap();
 
-        substrate.inject_input(
-            InputAction::Type { text: "Hello 100.".to_string() },
-            &cap_token,
-        ).await.unwrap();
+        substrate
+            .inject_input(
+                InputAction::Type {
+                    text: "Hello 100.".to_string(),
+                },
+                &cap_token,
+            )
+            .await
+            .unwrap();
 
-        substrate.inject_input(
-            InputAction::Hotkey { keys: vec![Key::Ctrl, Key::Alt, Key::Enter] },
-            &cap_token,
-        ).await.unwrap();
+        substrate
+            .inject_input(
+                InputAction::Hotkey {
+                    keys: vec![Key::Ctrl, Key::Alt, Key::Enter],
+                },
+                &cap_token,
+            )
+            .await
+            .unwrap();
 
         let events = substrate.input_injector().recorded_events();
         assert!(!events.is_empty(), "Recorded events must not be empty");

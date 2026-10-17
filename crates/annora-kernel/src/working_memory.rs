@@ -64,7 +64,12 @@ impl WorkingMemory {
         self.last_updated = Timestamp::now();
     }
 
-    pub fn record_observation(&mut self, step_index: u32, action: impl Into<String>, summary: impl Into<String>) {
+    pub fn record_observation(
+        &mut self,
+        step_index: u32,
+        action: impl Into<String>,
+        summary: impl Into<String>,
+    ) {
         self.observations.push(IntermediateObservation {
             step_index,
             action_type: action.into(),
@@ -83,7 +88,12 @@ impl WorkingMemory {
         self.variables.get(key)
     }
 
-    pub fn add_hypothesis(&mut self, id: impl Into<String>, premise: impl Into<String>, confidence: f64) {
+    pub fn add_hypothesis(
+        &mut self,
+        id: impl Into<String>,
+        premise: impl Into<String>,
+        confidence: f64,
+    ) {
         self.hypotheses.push(WorkingHypothesis {
             id: id.into(),
             premise: premise.into(),
@@ -93,7 +103,13 @@ impl WorkingMemory {
         self.last_updated = Timestamp::now();
     }
 
-    pub fn queue_for_distillation(&mut self, subject: impl Into<String>, predicate: impl Into<String>, object: impl Into<String>, confidence: f64) {
+    pub fn queue_for_distillation(
+        &mut self,
+        subject: impl Into<String>,
+        predicate: impl Into<String>,
+        object: impl Into<String>,
+        confidence: f64,
+    ) {
         self.distillation_queue.push(DistilledFact {
             subject: subject.into(),
             predicate: predicate.into(),

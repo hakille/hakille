@@ -128,14 +128,22 @@ impl GgufModel {
     pub fn read_from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let file = File::open(path).map_err(|e| {
-            AnnoraError::InferenceError(format!("Failed to open GGUF file {}: {}", path.display(), e))
+            AnnoraError::InferenceError(format!(
+                "Failed to open GGUF file {}: {}",
+                path.display(),
+                e
+            ))
         })?;
         let mut reader = BufReader::new(file);
 
         // 1. Read header (24 bytes)
         let mut header_buf = [0u8; 24];
         reader.read_exact(&mut header_buf).map_err(|e| {
-            AnnoraError::InferenceError(format!("Failed to read GGUF header from {}: {}", path.display(), e))
+            AnnoraError::InferenceError(format!(
+                "Failed to read GGUF header from {}: {}",
+                path.display(),
+                e
+            ))
         })?;
 
         let header = GgufRuntime::parse_header(&header_buf)?;
@@ -198,7 +206,11 @@ impl GgufModel {
         self.metadata_raw
             .get("general.architecture")
             .and_then(|v| v.as_str())
-            .or_else(|| self.metadata.get("general.architecture").map(|s| s.as_str()))
+            .or_else(|| {
+                self.metadata
+                    .get("general.architecture")
+                    .map(|s| s.as_str())
+            })
     }
 
     pub fn name(&self) -> Option<&str> {
@@ -214,9 +226,7 @@ impl GgufModel {
         self.metadata_raw
             .get(&key)
             .and_then(|v| v.as_u64())
-            .or_else(|| {
-                self.metadata.get(&key).and_then(|s| s.parse::<u64>().ok())
-            })
+            .or_else(|| self.metadata.get(&key).and_then(|s| s.parse::<u64>().ok()))
     }
 
     pub fn embedding_length(&self) -> Option<u64> {
@@ -225,9 +235,7 @@ impl GgufModel {
         self.metadata_raw
             .get(&key)
             .and_then(|v| v.as_u64())
-            .or_else(|| {
-                self.metadata.get(&key).and_then(|s| s.parse::<u64>().ok())
-            })
+            .or_else(|| self.metadata.get(&key).and_then(|s| s.parse::<u64>().ok()))
     }
 
     pub fn block_count(&self) -> Option<u64> {
@@ -236,9 +244,7 @@ impl GgufModel {
         self.metadata_raw
             .get(&key)
             .and_then(|v| v.as_u64())
-            .or_else(|| {
-                self.metadata.get(&key).and_then(|s| s.parse::<u64>().ok())
-            })
+            .or_else(|| self.metadata.get(&key).and_then(|s| s.parse::<u64>().ok()))
     }
 
     pub fn tensor_count(&self) -> usize {
@@ -254,66 +260,91 @@ impl GgufModel {
 
     fn read_u8<R: Read>(reader: &mut R) -> Result<u8> {
         let mut buf = [0u8; 1];
-        reader.read_exact(&mut buf).map_err(|e| AnnoraError::InferenceError(format!("Read u8 error: {}", e)))?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|e| AnnoraError::InferenceError(format!("Read u8 error: {}", e)))?;
         Ok(buf[0])
     }
 
     fn read_u16<R: Read>(reader: &mut R) -> Result<u16> {
         let mut buf = [0u8; 2];
-        reader.read_exact(&mut buf).map_err(|e| AnnoraError::InferenceError(format!("Read u16 error: {}", e)))?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|e| AnnoraError::InferenceError(format!("Read u16 error: {}", e)))?;
         Ok(u16::from_le_bytes(buf))
     }
 
     fn read_i16<R: Read>(reader: &mut R) -> Result<i16> {
         let mut buf = [0u8; 2];
-        reader.read_exact(&mut buf).map_err(|e| AnnoraError::InferenceError(format!("Read i16 error: {}", e)))?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|e| AnnoraError::InferenceError(format!("Read i16 error: {}", e)))?;
         Ok(i16::from_le_bytes(buf))
     }
 
     fn read_u32<R: Read>(reader: &mut R) -> Result<u32> {
         let mut buf = [0u8; 4];
-        reader.read_exact(&mut buf).map_err(|e| AnnoraError::InferenceError(format!("Read u32 error: {}", e)))?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|e| AnnoraError::InferenceError(format!("Read u32 error: {}", e)))?;
         Ok(u32::from_le_bytes(buf))
     }
 
     fn read_i32<R: Read>(reader: &mut R) -> Result<i32> {
         let mut buf = [0u8; 4];
-        reader.read_exact(&mut buf).map_err(|e| AnnoraError::InferenceError(format!("Read i32 error: {}", e)))?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|e| AnnoraError::InferenceError(format!("Read i32 error: {}", e)))?;
         Ok(i32::from_le_bytes(buf))
     }
 
     fn read_f32<R: Read>(reader: &mut R) -> Result<f32> {
         let mut buf = [0u8; 4];
-        reader.read_exact(&mut buf).map_err(|e| AnnoraError::InferenceError(format!("Read f32 error: {}", e)))?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|e| AnnoraError::InferenceError(format!("Read f32 error: {}", e)))?;
         Ok(f32::from_le_bytes(buf))
     }
 
     fn read_u64<R: Read>(reader: &mut R) -> Result<u64> {
         let mut buf = [0u8; 8];
-        reader.read_exact(&mut buf).map_err(|e| AnnoraError::InferenceError(format!("Read u64 error: {}", e)))?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|e| AnnoraError::InferenceError(format!("Read u64 error: {}", e)))?;
         Ok(u64::from_le_bytes(buf))
     }
 
     fn read_i64<R: Read>(reader: &mut R) -> Result<i64> {
         let mut buf = [0u8; 8];
-        reader.read_exact(&mut buf).map_err(|e| AnnoraError::InferenceError(format!("Read i64 error: {}", e)))?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|e| AnnoraError::InferenceError(format!("Read i64 error: {}", e)))?;
         Ok(i64::from_le_bytes(buf))
     }
 
     fn read_f64<R: Read>(reader: &mut R) -> Result<f64> {
         let mut buf = [0u8; 8];
-        reader.read_exact(&mut buf).map_err(|e| AnnoraError::InferenceError(format!("Read f64 error: {}", e)))?;
+        reader
+            .read_exact(&mut buf)
+            .map_err(|e| AnnoraError::InferenceError(format!("Read f64 error: {}", e)))?;
         Ok(f64::from_le_bytes(buf))
     }
 
     fn read_string<R: Read>(reader: &mut R) -> Result<String> {
         let len = Self::read_u64(reader)? as usize;
         if len > 50 * 1024 * 1024 {
-            return Err(AnnoraError::InferenceError(format!("String length {} exceeds safety threshold", len)));
+            return Err(AnnoraError::InferenceError(format!(
+                "String length {} exceeds safety threshold",
+                len
+            )));
         }
         let mut buf = vec![0u8; len];
-        reader.read_exact(&mut buf).map_err(|e| AnnoraError::InferenceError(format!("Read string bytes error: {}", e)))?;
-        String::from_utf8(buf).map_err(|e| AnnoraError::InferenceError(format!("Invalid UTF-8 in GGUF string: {}", e)))
+        reader
+            .read_exact(&mut buf)
+            .map_err(|e| AnnoraError::InferenceError(format!("Read string bytes error: {}", e)))?;
+        String::from_utf8(buf).map_err(|e| {
+            AnnoraError::InferenceError(format!("Invalid UTF-8 in GGUF string: {}", e))
+        })
     }
 
     fn read_value<R: Read + Seek>(reader: &mut R, value_type: u32) -> Result<GgufValue> {
@@ -343,20 +374,38 @@ impl GgufModel {
 
                     if let Some(elem_size) = fixed_elem_size {
                         let total_bytes = elem_size * array_len;
-                        reader.seek(SeekFrom::Current(total_bytes as i64))
-                            .map_err(|e| AnnoraError::InferenceError(format!("Seek error skipping array: {}", e)))?;
+                        reader
+                            .seek(SeekFrom::Current(total_bytes as i64))
+                            .map_err(|e| {
+                                AnnoraError::InferenceError(format!(
+                                    "Seek error skipping array: {}",
+                                    e
+                                ))
+                            })?;
                     } else if elem_type == 8 {
                         // String array: skip each string efficiently
                         for _ in 0..array_len {
                             let str_len = Self::read_u64(reader)?;
-                            reader.seek(SeekFrom::Current(str_len as i64))
-                                .map_err(|e| AnnoraError::InferenceError(format!("Seek error skipping string in array: {}", e)))?;
+                            reader
+                                .seek(SeekFrom::Current(str_len as i64))
+                                .map_err(|e| {
+                                    AnnoraError::InferenceError(format!(
+                                        "Seek error skipping string in array: {}",
+                                        e
+                                    ))
+                                })?;
                         }
                     } else {
-                        return Err(AnnoraError::InferenceError(format!("Unsupported nested large array element type: {}", elem_type)));
+                        return Err(AnnoraError::InferenceError(format!(
+                            "Unsupported nested large array element type: {}",
+                            elem_type
+                        )));
                     }
 
-                    Ok(GgufValue::LargeArray { element_type: elem_type, len: array_len })
+                    Ok(GgufValue::LargeArray {
+                        element_type: elem_type,
+                        len: array_len,
+                    })
                 } else {
                     let mut items = Vec::with_capacity(array_len as usize);
                     for _ in 0..array_len {
@@ -368,7 +417,10 @@ impl GgufModel {
             10 => Ok(GgufValue::Uint64(Self::read_u64(reader)?)),
             11 => Ok(GgufValue::Int64(Self::read_i64(reader)?)),
             12 => Ok(GgufValue::Float64(Self::read_f64(reader)?)),
-            other => Err(AnnoraError::InferenceError(format!("Unknown GGUF value type: {}", other))),
+            other => Err(AnnoraError::InferenceError(format!(
+                "Unknown GGUF value type: {}",
+                other
+            ))),
         }
     }
 }
@@ -378,22 +430,25 @@ pub struct GgufRuntime;
 impl GgufRuntime {
     pub fn parse_header(bytes: &[u8]) -> Result<GgufHeader> {
         if bytes.len() < 24 {
-            return Err(AnnoraError::InferenceError("Buffer too small for GGUF header".into()));
+            return Err(AnnoraError::InferenceError(
+                "Buffer too small for GGUF header".into(),
+            ));
         }
 
         let magic = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         if magic != GGUF_MAGIC {
-            return Err(AnnoraError::InferenceError(format!("Invalid GGUF magic bytes: 0x{:08X}", magic)));
+            return Err(AnnoraError::InferenceError(format!(
+                "Invalid GGUF magic bytes: 0x{:08X}",
+                magic
+            )));
         }
 
         let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
         let tensor_count = u64::from_le_bytes([
-            bytes[8], bytes[9], bytes[10], bytes[11],
-            bytes[12], bytes[13], bytes[14], bytes[15],
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
         ]);
         let metadata_kv_count = u64::from_le_bytes([
-            bytes[16], bytes[17], bytes[18], bytes[19],
-            bytes[20], bytes[21], bytes[22], bytes[23],
+            bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22], bytes[23],
         ]);
 
         Ok(GgufHeader {
@@ -408,9 +463,15 @@ impl GgufRuntime {
         let mut metadata = HashMap::new();
         let mut metadata_raw = HashMap::new();
         metadata.insert("general.architecture".to_string(), "qwen2".to_string());
-        metadata_raw.insert("general.architecture".to_string(), GgufValue::String("qwen2".to_string()));
+        metadata_raw.insert(
+            "general.architecture".to_string(),
+            GgufValue::String("qwen2".to_string()),
+        );
         metadata.insert("general.name".to_string(), model_name.to_string());
-        metadata_raw.insert("general.name".to_string(), GgufValue::String(model_name.to_string()));
+        metadata_raw.insert(
+            "general.name".to_string(),
+            GgufValue::String(model_name.to_string()),
+        );
         metadata.insert("qwen2.context_length".to_string(), "32768".to_string());
         metadata_raw.insert("qwen2.context_length".to_string(), GgufValue::Uint64(32768));
 
@@ -440,7 +501,7 @@ impl GgufRuntime {
     }
 }
 
-/// Operational Neural Inference Engine executing over GGUF v3 models.
+/// Heuristic Template Engine over GGUF v3 metadata (inspection-only, SIMULÉ — gabarits locaux, pas de décodage neural).
 #[derive(Debug, Clone)]
 pub struct GgufInferenceEngine {
     pub model: GgufModel,
@@ -476,48 +537,26 @@ impl GgufInferenceEngine {
         self.model.context_length().unwrap_or(32768) as usize
     }
 
-    /// Generates response adhering to Qwen2.5 ChatML instruction format.
+    /// SUPPRIMÉ (ex-`generate_instruct` simulé par gabarits) : la génération
+    /// réelle est assurée par `llm_engine::QwenEngine` (forward Candle Q4_K_M).
+    /// Cet inspecteur GGUF ne fait que de l'inspection (`read_from_file`).
+    /// Retourne toujours `Err` honnête pour empêcher tout usage simulé.
+    /// Conservé (signature) pour compatibilité d'appelants externes éventuels.
+    #[deprecated(
+        since = "0.1.0",
+        note = "SIMULÉ supprimé — utilisez llm_engine::QwenEngine::generate (forward réel). Inspection seule ici."
+    )]
     pub fn generate_instruct(
         &self,
-        user_prompt: &str,
-        system_prompt: Option<&str>,
-        max_tokens: usize,
+        _user_prompt: &str,
+        _system_prompt: Option<&str>,
+        _max_tokens: usize,
     ) -> Result<String> {
-        let sys = system_prompt.unwrap_or(
-            "Tu es Annora, un système d'exploitation cognitif souverain et local fonctionnant sous Windows. Réponds de façon concise, précise et rigoureuse sans dépendre d'un serveur distant."
-        );
-
-        // Format ChatML prompt
-        let _formatted = format!(
-            "<|im_start|>system\n{}<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
-            sys, user_prompt
-        );
-
-        // Compute simulated forward pass using tensor metadata and token indexing
-        let prompt_lower = user_prompt.to_lowercase();
-        let token_count = (user_prompt.len() / 4).clamp(1, max_tokens);
-
-        let response = if prompt_lower.contains("bonjour") || prompt_lower.contains("salut") || prompt_lower.contains("qui es-tu") {
-            "Bonjour. Je suis Annora, votre Système d'Exploitation Cognitif Souverain. Tous vos modèles et données s'exécutent localement sur votre machine.".to_string()
-        } else if prompt_lower.contains("réunion") || prompt_lower.contains("agenda") || prompt_lower.contains("planifi") {
-            "J'ai pris note de votre demande d'organisation. Vos créneaux ont été analysés et mis en correspondance avec votre graphe de connaissances personnel.".to_string()
-        } else if prompt_lower.contains("contrat") || prompt_lower.contains("document") || prompt_lower.contains("analys") {
-            "Analyse documentaire effectuée localement en mémoire éphémère. Aucune métadonnée n'a quitté cet appareil. Les points clés et engagements sont indexés.".to_string()
-        } else if prompt_lower.contains("code") || prompt_lower.contains("refactor") || prompt_lower.contains("rust") {
-            "Module analysé avec succès. Les invariants de concurrence, de sécurité mémoire et les signatures de types sont validés selon les standards Rust 2024.".to_string()
-        } else if prompt_lower.contains("modèle") || prompt_lower.contains("neural") || prompt_lower.contains("inférence") {
-            format!(
-                "Moteur neural opérationnel. Modèle '{}' ({}, {} tenseurs indexés, contexte {} tokens) actif en mémoire locale.",
-                self.model_name(), self.architecture(), self.model.tensor_count(), self.context_length()
-            )
-        } else {
-            format!(
-                "Requête traitée localement par Annora ({} tokens neuronaux évalués sur {}). Vos intentions ont été enregistrées dans le journal d'audit cryptographique.",
-                token_count, self.model_name()
-            )
-        };
-
-        Ok(response)
+        Err(AnnoraError::InferenceError(format!(
+            "SIMULÉ supprimé — GgufInferenceEngine::generate_instruct n'exécute aucun décodage neural (modèle '{}', {} tenseurs inspectés). Utilisez llm_engine::QwenEngine (forward Candle réel).",
+            self.model_name(),
+            self.model.tensor_count(),
+        )))
     }
 
     /// Structured GUI Action Plan Generator for UI-TARS 2B VLA Agent.
@@ -545,10 +584,16 @@ impl GgufInferenceEngine {
             }
             let px_x = (x_norm * screen_w as f32) as i32;
             let px_y = (y_norm * screen_h as f32) as i32;
-            actions.push(format!("click(x={}, y={}, px_x={}, px_y={})", x_norm, y_norm, px_x, px_y));
+            actions.push(format!(
+                "click(x={}, y={}, px_x={}, px_y={})",
+                x_norm, y_norm, px_x, px_y
+            ));
         }
 
-        if task_lower.contains("tape") || task_lower.contains("type") || task_lower.contains("écris") {
+        if task_lower.contains("tape")
+            || task_lower.contains("type")
+            || task_lower.contains("écris")
+        {
             let text = if let Some(idx) = task_description.find(':') {
                 task_description[idx + 1..].trim()
             } else {
@@ -558,7 +603,11 @@ impl GgufInferenceEngine {
         }
 
         if task_lower.contains("scroll") || task_lower.contains("défile") {
-            let dir = if task_lower.contains("up") || task_lower.contains("haut") { "up" } else { "down" };
+            let dir = if task_lower.contains("up") || task_lower.contains("haut") {
+                "up"
+            } else {
+                "down"
+            };
             actions.push(format!("scroll(direction=\"{}\", amount=3)", dir));
         }
 
@@ -569,4 +618,3 @@ impl GgufInferenceEngine {
         Ok(actions)
     }
 }
-

@@ -33,7 +33,12 @@ impl WebScreenCaptureAdapter {
         &self.config
     }
 
-    pub fn ingest_image_data(&self, width: u32, height: u32, rgba_bytes: &[u8]) -> Result<ScreenCapture, String> {
+    pub fn ingest_image_data(
+        &self,
+        width: u32,
+        height: u32,
+        rgba_bytes: &[u8],
+    ) -> Result<ScreenCapture, String> {
         if width == 0 || height == 0 {
             return Err("Invalid dimensions: width and height must be non-zero".to_string());
         }

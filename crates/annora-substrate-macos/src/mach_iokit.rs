@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub const PAGE_SIZE_APPLE_SILICON: u64 = 16 * 1024; // 16 KiB
-pub const PAGE_SIZE_INTEL: u64 = 4 * 1024;          // 4 KiB
+pub const PAGE_SIZE_INTEL: u64 = 4 * 1024; // 4 KiB
 
 pub const HOST_VM_INFO64: i32 = 4;
 
@@ -40,10 +40,10 @@ impl Default for VmStatistics64 {
     fn default() -> Self {
         // High-end Apple Silicon M-series default values
         Self {
-            free_count: 524_288,        // 8 GB free (at 16 KiB page)
-            active_count: 1_048_576,    // 16 GB active
-            inactive_count: 524_288,    // 8 GB inactive
-            wire_count: 524_288,        // 8 GB wired (macOS kernel + graphics)
+            free_count: 524_288,     // 8 GB free (at 16 KiB page)
+            active_count: 1_048_576, // 16 GB active
+            inactive_count: 524_288, // 8 GB inactive
+            wire_count: 524_288,     // 8 GB wired (macOS kernel + graphics)
             zero_fill_count: 10_000_000,
             reactivations: 100_000,
             pageins: 50_000,
@@ -196,5 +196,10 @@ pub fn read_host_power_state() -> PowerState {
 }
 
 pub fn read_host_thermal_state() -> ThermalState {
-    OSThermalPressureLevel::Nominal.to_thermal_state()
+    // Honest: no IOKit / NSProcessInfo thermal-pressure binding is linked
+    // (this crate performs no Mach/IORegistry calls), so the live pressure
+    // level is unknowable here. Report Unknown explicitly rather than
+    // claiming Nominal. The `OSThermalPressureLevel → ThermalState` mapping
+    // above stays available for when a real pressure source is wired.
+    ThermalState::Unknown
 }

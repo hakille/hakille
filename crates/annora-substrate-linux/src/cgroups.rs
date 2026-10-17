@@ -18,7 +18,7 @@ impl Default for CgroupV2Config {
         Self {
             memory_max_bytes: Some(1024 * 1024 * 1024), // 1 GB limit
             memory_high_bytes: Some(896 * 1024 * 1024), // 896 MB throttle
-            cpu_max_quota_us: Some(100_000),             // 100ms per 100ms (1 full CPU core)
+            cpu_max_quota_us: Some(100_000),            // 100ms per 100ms (1 full CPU core)
             cpu_max_period_us: Some(100_000),
             cpu_weight: Some(100),
             pids_max: Some(64),
@@ -53,7 +53,11 @@ impl CgroupManager {
         }
     }
 
-    pub fn with_base_path(base_path: impl AsRef<Path>, agent_id: impl Into<String>, config: CgroupV2Config) -> Self {
+    pub fn with_base_path(
+        base_path: impl AsRef<Path>,
+        agent_id: impl Into<String>,
+        config: CgroupV2Config,
+    ) -> Self {
         let agent_id = agent_id.into();
         let path = base_path.as_ref().join(&agent_id);
         Self {
@@ -83,8 +87,13 @@ impl CgroupManager {
             if let Some(mem_high) = self.config.memory_high_bytes {
                 let _ = std::fs::write(self.base_path.join("memory.high"), mem_high.to_string());
             }
-            if let (Some(quota), Some(period)) = (self.config.cpu_max_quota_us, self.config.cpu_max_period_us) {
-                let _ = std::fs::write(self.base_path.join("cpu.max"), format!("{} {}", quota, period));
+            if let (Some(quota), Some(period)) =
+                (self.config.cpu_max_quota_us, self.config.cpu_max_period_us)
+            {
+                let _ = std::fs::write(
+                    self.base_path.join("cpu.max"),
+                    format!("{} {}", quota, period),
+                );
             }
             if let Some(pids) = self.config.pids_max {
                 let _ = std::fs::write(self.base_path.join("pids.max"), pids.to_string());

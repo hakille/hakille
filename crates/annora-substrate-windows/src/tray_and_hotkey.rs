@@ -32,7 +32,9 @@ impl WindowsPresenceTray {
         self.tooltip = match state {
             WindowsPresenceState::Idle => "Annora — Idle (Sovereign OS)".to_string(),
             WindowsPresenceState::Listening => "Annora — Listening (Microphone Active)".to_string(),
-            WindowsPresenceState::Acting => "Annora — Acting (Executing Autonomous Intent)".to_string(),
+            WindowsPresenceState::Acting => {
+                "Annora — Acting (Executing Autonomous Intent)".to_string()
+            }
         };
     }
 
@@ -63,7 +65,7 @@ impl WindowsPresenceTray {
         match self.icon_state {
             WindowsPresenceState::Idle => (120, 120, 120),
             WindowsPresenceState::Listening => (64, 196, 255),
-            WindowsPresenceState::Acting => (255, 87, 34), // Coral #FF5722
+            WindowsPresenceState::Acting => (255, 122, 47), // braise #FF7A2F (spec §3)
         }
     }
 
@@ -178,4 +180,3 @@ impl Default for WindowsGlobalHotkey {
         Self::new()
     }
 }
-

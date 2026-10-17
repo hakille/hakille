@@ -9,11 +9,15 @@ pub struct ConfidenceLevel {
 }
 
 impl ConfidenceLevel {
+    /// Formule COGNITION.md : 0.6·modèle + 0.4·corroboration graphe.
+    /// Les entrées sont clampées dans [0,1] pour éviter les scores hors bornes.
     pub fn compute(model: f64, graph: f64) -> Self {
+        let model = model.clamp(0.0, 1.0);
+        let graph = graph.clamp(0.0, 1.0);
         Self {
             model_confidence: model,
             graph_corroboration: graph,
-            combined: model * 0.4 + graph * 0.6,
+            combined: model * 0.6 + graph * 0.4,
         }
     }
 }
@@ -57,6 +61,12 @@ pub fn evaluate_confidence(
     domain: &Domain,
     thresholds: &DomainThresholds,
 ) -> ConfidenceDecision {
+    // Contradiction interne : modèle et graphe tous deux > 0.5 mais en fort
+    // désaccord (écart > 0.4). Ni l'un ni l'autre ne peut être suivi aveuglément.
+    let gap = (confidence.model_confidence - confidence.graph_corroboration).abs();
+    if gap > 0.4 && confidence.model_confidence > 0.5 && confidence.graph_corroboration > 0.5 {
+        return ConfidenceDecision::InternalContradiction;
+    }
     let threshold = thresholds.0.get(domain).unwrap_or(&0.7);
     if confidence.combined >= *threshold {
         ConfidenceDecision::AutoExecute

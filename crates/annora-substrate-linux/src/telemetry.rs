@@ -16,7 +16,8 @@ pub struct MeminfoData {
 
 impl MeminfoData {
     pub fn used_ram_bytes(&self) -> u64 {
-        self.mem_total_bytes.saturating_sub(self.mem_available_bytes)
+        self.mem_total_bytes
+            .saturating_sub(self.mem_available_bytes)
     }
 
     pub fn used_swap_bytes(&self) -> u64 {
@@ -53,7 +54,9 @@ pub fn parse_meminfo(content: &str) -> Result<MeminfoData, String> {
         }
     }
 
-    let mem_total_bytes = *map.get("MemTotal").ok_or("MemTotal not found in /proc/meminfo")?;
+    let mem_total_bytes = *map
+        .get("MemTotal")
+        .ok_or("MemTotal not found in /proc/meminfo")?;
     let mem_free_bytes = *map.get("MemFree").unwrap_or(&0);
     let buffers_bytes = *map.get("Buffers").unwrap_or(&0);
     let cached_bytes = *map.get("Cached").unwrap_or(&0);
@@ -108,9 +111,9 @@ pub fn parse_power_supply_fields(
     online: Option<&str>,
 ) -> LinuxPowerSupplyData {
     let capacity_pct = capacity.trim().parse::<f32>().unwrap_or(100.0);
-    let is_online = online
-        .map(|s| s.trim() == "1")
-        .unwrap_or_else(|| status.trim().eq_ignore_ascii_case("Charging") || status.trim().eq_ignore_ascii_case("Full"));
+    let is_online = online.map(|s| s.trim() == "1").unwrap_or_else(|| {
+        status.trim().eq_ignore_ascii_case("Charging") || status.trim().eq_ignore_ascii_case("Full")
+    });
 
     LinuxPowerSupplyData {
         name: name.to_string(),
@@ -145,9 +148,17 @@ pub fn read_host_power_state() -> PowerState {
                         }
                     }
                 } else if supply_type.trim().eq_ignore_ascii_case("Battery") {
-                    let status = std::fs::read_to_string(&status_path).unwrap_or_else(|_| "Unknown".to_string());
-                    let capacity = std::fs::read_to_string(&capacity_path).unwrap_or_else(|_| "100".to_string());
-                    let data = parse_power_supply_fields(&supply_name, &status, &capacity, &supply_type, None);
+                    let status = std::fs::read_to_string(&status_path)
+                        .unwrap_or_else(|_| "Unknown".to_string());
+                    let capacity = std::fs::read_to_string(&capacity_path)
+                        .unwrap_or_else(|_| "100".to_string());
+                    let data = parse_power_supply_fields(
+                        &supply_name,
+                        &status,
+                        &capacity,
+                        &supply_type,
+                        None,
+                    );
                     found_battery = Some(data);
                 }
             }
@@ -208,7 +219,8 @@ pub fn read_host_thermal_state() -> ThermalState {
                     let type_path = path.join("type");
 
                     if let Ok(temp_str) = std::fs::read_to_string(&temp_path) {
-                        let type_str = std::fs::read_to_string(&type_path).unwrap_or_else(|_| "unknown".to_string());
+                        let type_str = std::fs::read_to_string(&type_path)
+                            .unwrap_or_else(|_| "unknown".to_string());
                         let data = parse_thermal_zone(&temp_str, &type_str, &name);
                         found_any = true;
                         if data.temp_celsius > highest_temp {
@@ -230,8 +242,36 @@ pub fn read_host_thermal_state() -> ThermalState {
         }
     }
 
-    ThermalState {
-        temperature_celsius: 42.0,
-        throttled: false,
+    // Honest fallback: no thermal zone readable (non-Linux host, container
+    // without sysfs, missing permissions) — report Unknown explicitly
+    // rather than fabricating a temperature.
+    ThermalState::Unknown
+}
+
+/// Detect dedicated VRAM by summing `mem_info_vram_total` across DRM render
+/// devices (`/sys/class/drm/cardN/device/…`, amdgpu et al.).
+/// Returns `None` when no discrete VRAM is discoverable (Intel iGPU with
+/// shared memory, VM without GPU passthrough, sysfs unreadable) — the
+/// honest "unknown" signal, never an invented size. std only, no new deps.
+pub fn detect_linux_vram_bytes() -> Option<u64> {
+    let drm_dir = Path::new("/sys/class/drm");
+    let entries = std::fs::read_dir(drm_dir).ok()?;
+    let mut total: u64 = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Physical cards only (`card0`, `card1` …), not connectors (`card0-DP-1`).
+        if !name.starts_with("card") || !name[4..].bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let device_dir = entry.path().join("device");
+        for candidate in ["mem_info_vram_total", "mem_info_vis_vram_total"] {
+            if let Ok(raw) = std::fs::read_to_string(device_dir.join(candidate)) {
+                if let Ok(bytes) = raw.trim().parse::<u64>() {
+                    total = total.saturating_add(bytes);
+                    break;
+                }
+            }
+        }
     }
+    if total > 0 { Some(total) } else { None }
 }

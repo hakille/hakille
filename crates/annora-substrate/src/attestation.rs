@@ -72,13 +72,35 @@ pub enum Key {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InputAction {
-    Click { x: i32, y: i32, button: MouseButton },
-    DoubleClick { x: i32, y: i32 },
-    RightClick { x: i32, y: i32 },
-    Type { text: String },
-    Hotkey { keys: Vec<Key> },
-    Scroll { direction: ScrollDirection, amount: i32 },
-    Drag { from_x: i32, from_y: i32, to_x: i32, to_y: i32 },
+    Click {
+        x: i32,
+        y: i32,
+        button: MouseButton,
+    },
+    DoubleClick {
+        x: i32,
+        y: i32,
+    },
+    RightClick {
+        x: i32,
+        y: i32,
+    },
+    Type {
+        text: String,
+    },
+    Hotkey {
+        keys: Vec<Key>,
+    },
+    Scroll {
+        direction: ScrollDirection,
+        amount: i32,
+    },
+    Drag {
+        from_x: i32,
+        from_y: i32,
+        to_x: i32,
+        to_y: i32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -93,8 +115,38 @@ pub struct PowerState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThermalState {
+    /// Measured die/package temperature in °C when a native thermal binding
+    /// is available. `NaN` when unknown — see [`ThermalState::Unknown`].
+    /// Use [`ThermalState::is_unknown`] instead of comparing this field
+    /// directly (`NaN != NaN`).
     pub temperature_celsius: f32,
     pub throttled: bool,
+}
+
+impl ThermalState {
+    /// Explicit unknown thermal state: no native thermal binding is linked
+    /// for this substrate (no `/sys/class/thermal`, IOKit, WMI, thermal
+    /// HAL, or Compute Pressure API wiring). This is the honest fallback —
+    /// never a fabricated temperature.
+    ///
+    /// Named `Unknown` (not `UNKNOWN`) to read as the explicit unknown
+    /// variant at call sites: `ThermalState::Unknown`.
+    #[allow(non_upper_case_globals)]
+    pub const Unknown: Self = Self {
+        temperature_celsius: f32::NAN,
+        throttled: false,
+    };
+
+    /// `true` when no thermal measurement is available
+    /// ([`ThermalState::Unknown`]).
+    pub fn is_unknown(&self) -> bool {
+        self.temperature_celsius.is_nan()
+    }
+
+    /// `true` when this carries a real measurement.
+    pub fn is_known(&self) -> bool {
+        !self.is_unknown()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -122,6 +174,22 @@ pub struct CameraConfig {
     pub facing: CameraFacing,
 }
 
+impl CameraConfig {
+    /// Whether camera capture is available in this build.
+    ///
+    /// Always `false`: no substrate currently links a native camera binding
+    /// (MediaFoundation / V4L2 / AVFoundation / orbital scheme / Camera2 /
+    /// `getUserMedia`). Each substrate's `start_camera_capture` /
+    /// `capture_camera_frame` therefore returns an explicit
+    /// `SubstrateError("camera not implemented …")` naming the missing
+    /// backend instead of synthesizing fake frames. Flip this to a real
+    /// probe once a backend is wired.
+    pub fn is_available(&self) -> bool {
+        let _ = (self.width, self.height, self.fps);
+        false
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CameraStreamHandle(pub u64);
 
@@ -133,4 +201,3 @@ pub struct CameraFrame {
     pub format: ImageFormat,
     pub timestamp_ms: u64,
 }
-

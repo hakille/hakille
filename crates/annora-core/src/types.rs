@@ -46,6 +46,57 @@ pub struct ModelReference(pub String);
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VirtualPath(pub String);
 
+impl VirtualPath {
+    /// Validate and normalize a virtual path.
+    ///
+    /// Rejects:
+    /// - NUL bytes (`\0`)
+    /// - Windows separators (`\`)
+    /// - parent traversal (`..` as a path segment)
+    /// - empty segments (`//`)
+    ///
+    /// Returns the normalized path on success.
+    pub fn normalized(&self) -> crate::error::Result<String> {
+        let s = &self.0;
+        if s.contains('\0') {
+            return Err(crate::error::AnnoraError::CapabilityDenied(
+                "NUL byte in virtual path".into(),
+            ));
+        }
+        if s.contains('\\') {
+            return Err(crate::error::AnnoraError::CapabilityDenied(
+                "windows separator in virtual path".into(),
+            ));
+        }
+        if s.contains("//") {
+            return Err(crate::error::AnnoraError::CapabilityDenied(
+                "empty segment (//) in virtual path".into(),
+            ));
+        }
+        // Reject `..` as a full path segment (split on `/`).
+        for seg in s.split('/') {
+            if seg == ".." {
+                return Err(crate::error::AnnoraError::CapabilityDenied(
+                    "parent traversal (..) rejected".into(),
+                ));
+            }
+        }
+        Ok(s.clone())
+    }
+}
+
+impl std::fmt::Display for VirtualPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<str> for VirtualPath {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Represents a financial cost
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Cost {

@@ -49,6 +49,46 @@ impl AccessibilityManager {
     pub fn set_subtitles(&mut self, enabled: bool) {
         self.profile.subtitles_enabled = enabled;
     }
+
+    /// Vision §21g : l'accessibilité est une reconfiguration de capacités,
+    /// pas un mode dégradé. Une modalité non-vocale remplace tout canal voix
+    /// par le canal visuel/haptique équivalent — jamais un produit au rabais.
+    pub fn override_decision(&self, decision: &crate::ChannelDecision) -> crate::ChannelDecision {
+        use crate::{HapticPattern, OutputChannel};
+        let unmodified = decision.clone();
+        match self.profile.primary_modality {
+            PrimaryModality::VoiceFirst => unmodified,
+            PrimaryModality::TextFirst | PrimaryModality::VisualOnly => match decision.channel {
+                OutputChannel::VoiceNormal | OutputChannel::VoiceWhisper => {
+                    crate::ChannelDecision {
+                        channel: OutputChannel::EphemeralHud,
+                        rationale: format!(
+                            "Accessibilité ({:?}) : canal voix remplacé par HUD silencieux — {}",
+                            self.profile.primary_modality, decision.rationale
+                        ),
+                        haptic_feedback: decision.haptic_feedback,
+                    }
+                }
+                _ => unmodified,
+            },
+            PrimaryModality::HapticAssisted => match decision.channel {
+                OutputChannel::VoiceNormal
+                | OutputChannel::VoiceWhisper
+                | OutputChannel::EphemeralHud
+                | OutputChannel::AmbientPulse => crate::ChannelDecision {
+                    channel: OutputChannel::Haptic,
+                    rationale: format!(
+                        "Accessibilité (HapticAssisted) : restitution haptique — {}",
+                        decision.rationale
+                    ),
+                    haptic_feedback: Some(
+                        decision.haptic_feedback.unwrap_or(HapticPattern::DoubleTap),
+                    ),
+                },
+                _ => unmodified,
+            },
+        }
+    }
 }
 
 impl Default for AccessibilityManager {

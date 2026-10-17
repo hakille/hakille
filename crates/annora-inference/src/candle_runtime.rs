@@ -53,7 +53,9 @@ impl TensorBuffer {
 
     pub fn dot(&self, other: &Self) -> Result<f32> {
         if self.data.len() != other.data.len() {
-            return Err(AnnoraError::InferenceError("Dot product dimension mismatch".into()));
+            return Err(AnnoraError::InferenceError(
+                "Dot product dimension mismatch".into(),
+            ));
         }
         Ok(self.data.iter().zip(&other.data).map(|(a, b)| a * b).sum())
     }
@@ -88,9 +90,16 @@ impl TensorBuffer {
 
     pub fn add(&self, other: &Self) -> Result<Self> {
         if self.data.len() != other.data.len() {
-            return Err(AnnoraError::InferenceError("Tensor add dimension mismatch".into()));
+            return Err(AnnoraError::InferenceError(
+                "Tensor add dimension mismatch".into(),
+            ));
         }
-        let data = self.data.iter().zip(&other.data).map(|(a, b)| a + b).collect();
+        let data = self
+            .data
+            .iter()
+            .zip(&other.data)
+            .map(|(a, b)| a + b)
+            .collect();
         Ok(Self {
             shape: self.shape.clone(),
             data,
@@ -107,12 +116,17 @@ impl TensorBuffer {
 
     pub fn matmul(&self, other: &Self) -> Result<Self> {
         if self.shape.len() != 2 || other.shape.len() != 2 {
-            return Err(AnnoraError::InferenceError("Matmul requires 2D tensors".into()));
+            return Err(AnnoraError::InferenceError(
+                "Matmul requires 2D tensors".into(),
+            ));
         }
         let (m, k) = (self.shape[0], self.shape[1]);
         let (k2, n) = (other.shape[0], other.shape[1]);
         if k != k2 {
-            return Err(AnnoraError::InferenceError(format!("Dimension mismatch: {} vs {}", k, k2)));
+            return Err(AnnoraError::InferenceError(format!(
+                "Dimension mismatch: {} vs {}",
+                k, k2
+            )));
         }
 
         let mut out = vec![0.0f32; m * n];
@@ -186,7 +200,11 @@ impl SafetensorsModel {
     pub fn read_from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let mut file = File::open(path).map_err(|e| {
-            AnnoraError::InferenceError(format!("Failed to open safetensors file {}: {}", path.display(), e))
+            AnnoraError::InferenceError(format!(
+                "Failed to open safetensors file {}: {}",
+                path.display(),
+                e
+            ))
         })?;
 
         let mut len_buf = [0u8; 8];
@@ -197,7 +215,8 @@ impl SafetensorsModel {
         let header_size = u64::from_le_bytes(len_buf);
         if header_size > 50 * 1024 * 1024 {
             return Err(AnnoraError::InferenceError(format!(
-                "Safetensors header size {} exceeds maximum threshold", header_size
+                "Safetensors header size {} exceeds maximum threshold",
+                header_size
             )));
         }
 
@@ -231,12 +250,22 @@ impl SafetensorsModel {
                     }
                 }
             } else {
-                let dtype = v.get("dtype").and_then(|d| d.as_str()).unwrap_or("F32").to_string();
-                let shape: Vec<usize> = v.get("shape")
+                let dtype = v
+                    .get("dtype")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("F32")
+                    .to_string();
+                let shape: Vec<usize> = v
+                    .get("shape")
                     .and_then(|s| s.as_array())
-                    .map(|arr| arr.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_u64().map(|n| n as usize))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                let data_offsets = v.get("data_offsets")
+                let data_offsets = v
+                    .get("data_offsets")
                     .and_then(|o| o.as_array())
                     .map(|arr| {
                         let start = arr.get(0).and_then(|x| x.as_u64()).unwrap_or(0);
@@ -245,7 +274,11 @@ impl SafetensorsModel {
                     })
                     .unwrap_or((0, 0));
 
-                let params: usize = if shape.is_empty() { 1 } else { shape.iter().product() };
+                let params: usize = if shape.is_empty() {
+                    1
+                } else {
+                    shape.iter().product()
+                };
                 total_parameters += params;
                 data_size_bytes = data_size_bytes.max(data_offsets.1);
 
@@ -275,13 +308,17 @@ impl SafetensorsModel {
     }
 
     pub fn codebook_count(&self) -> usize {
-        self.tensors.keys()
+        self.tensors
+            .keys()
             .filter(|k| k.contains("quantizer") || k.contains("vq") || k.contains("codebook"))
             .count()
     }
 
     pub fn find_tensor(&self, name_part: &str) -> Option<&SafetensorsTensorInfo> {
-        self.tensors.iter().find(|(k, _)| k.contains(name_part)).map(|(_, v)| v)
+        self.tensors
+            .iter()
+            .find(|(k, _)| k.contains(name_part))
+            .map(|(_, v)| v)
     }
 }
 
@@ -335,7 +372,9 @@ impl EmbeddingLayer {
         let start = token_id * self.hidden_dim;
         let end = start + self.hidden_dim;
         if end > self.weights.len() {
-            return Err(AnnoraError::InferenceError("Embedding weights out of bounds".into()));
+            return Err(AnnoraError::InferenceError(
+                "Embedding weights out of bounds".into(),
+            ));
         }
         let data = self.weights[start..end].to_vec();
         Ok(TensorBuffer::new(vec![1, self.hidden_dim], data))
@@ -359,10 +398,12 @@ impl NeuralSampler {
         indexed.truncate(k.max(1));
 
         let max_val = indexed.first().map(|x| x.1 / temp).unwrap_or(0.0);
-        let exps: Vec<f32> = indexed.iter().map(|(_, val)| ((val / temp) - max_val).exp()).collect();
+        let exps: Vec<f32> = indexed
+            .iter()
+            .map(|(_, val)| ((val / temp) - max_val).exp())
+            .collect();
         let _sum_exp: f32 = exps.iter().sum();
 
         indexed[0].0
     }
 }
-

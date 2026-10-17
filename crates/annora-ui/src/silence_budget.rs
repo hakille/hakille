@@ -29,7 +29,7 @@ pub struct SilenceBudgetTracker {
 }
 
 impl SilenceBudgetTracker {
-    /// Create a new silence budget tracker with a daily credit limit (default 5 suggestions/day)
+    /// Create a new silence budget tracker with a daily credit limit (default 3 suggestions/day, spec §18/§29)
     pub fn new(daily_quota: u32) -> Self {
         let current_day = chrono::Utc::now().timestamp() / 86400;
         Self {
@@ -125,6 +125,6 @@ impl SilenceBudgetTracker {
 
 impl Default for SilenceBudgetTracker {
     fn default() -> Self {
-        Self::new(5)
+        Self::new(3)
     }
 }

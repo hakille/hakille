@@ -143,14 +143,21 @@ impl EndpointSecurityClient {
 
     pub fn evaluate_auth(&self, event: &EsEvent) -> EsAuthResult {
         match event {
-            EsEvent::AuthExec { target_path, process, .. } => {
+            EsEvent::AuthExec {
+                target_path,
+                process,
+                ..
+            } => {
                 if self.is_pid_muted(process.pid) {
                     return EsAuthResult::Allow;
                 }
                 // Deny unauthorized binaries outside known secure prefixes
                 if self.is_path_muted(target_path) {
                     EsAuthResult::Allow
-                } else if target_path.contains("/malicious/") || target_path.ends_with(".trojan") || target_path.contains("..") {
+                } else if target_path.contains("/malicious/")
+                    || target_path.ends_with(".trojan")
+                    || target_path.contains("..")
+                {
                     EsAuthResult::Deny
                 } else {
                     EsAuthResult::Allow

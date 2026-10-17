@@ -147,7 +147,10 @@ impl WalletReadOnlyClient {
         })
     }
 
-    pub fn search_transactions(&self, query: &str) -> Vec<(&AccountStatement, &FinancialTransaction)> {
+    pub fn search_transactions(
+        &self,
+        query: &str,
+    ) -> Vec<(&AccountStatement, &FinancialTransaction)> {
         let q_lower = query.to_lowercase();
         let mut matches = Vec::new();
 
@@ -168,12 +171,23 @@ impl WalletReadOnlyClient {
     // CONSTITUTIONAL HARD INVARIANTS: ABSOLUTE IMMUTABILITY & TRANSFER FORBIDDEN
     // =========================================================================
 
-    pub fn attempt_fund_transfer(&self, _target_iban: &str, _amount_cents: u64) -> Result<(), &'static str> {
-        Err("HARD SECURITY INVARIANT: Wallet agent is strictly Read-Only. Direct transfer or fund mutation operations are permanently forbidden at the architectural level.")
+    pub fn attempt_fund_transfer(
+        &self,
+        _target_iban: &str,
+        _amount_cents: u64,
+    ) -> Result<(), &'static str> {
+        Err(
+            "HARD SECURITY INVARIANT: Wallet agent is strictly Read-Only. Direct transfer or fund mutation operations are permanently forbidden at the architectural level.",
+        )
     }
 
-    pub fn attempt_write_transaction(&mut self, _tx: &FinancialTransaction) -> Result<(), &'static str> {
-        Err("HARD SECURITY INVARIANT: Wallet agent is strictly Read-Only. Transaction injection is prohibited.")
+    pub fn attempt_write_transaction(
+        &mut self,
+        _tx: &FinancialTransaction,
+    ) -> Result<(), &'static str> {
+        Err(
+            "HARD SECURITY INVARIANT: Wallet agent is strictly Read-Only. Transaction injection is prohibited.",
+        )
     }
 }
 
@@ -205,8 +219,14 @@ mod tests {
         let budget = client.calculate_budget_summary("acc-fr-001").unwrap();
         assert_eq!(budget.total_credited_cents, 280_000);
         assert_eq!(budget.total_spent_cents, 8_500 + 4_200 + 3_500);
-        assert_eq!(budget.spending_by_category.get(&BudgetCategory::Groceries), Some(&8_500));
-        assert_eq!(budget.spending_by_category.get(&BudgetCategory::Transport), Some(&4_200));
+        assert_eq!(
+            budget.spending_by_category.get(&BudgetCategory::Groceries),
+            Some(&8_500)
+        );
+        assert_eq!(
+            budget.spending_by_category.get(&BudgetCategory::Transport),
+            Some(&4_200)
+        );
 
         let search = client.search_transactions("biocoop");
         assert_eq!(search.len(), 1);

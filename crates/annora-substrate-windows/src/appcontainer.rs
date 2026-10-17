@@ -17,8 +17,16 @@ impl AppContainerProfile {
     pub fn new(name: &str, capabilities: Vec<CapabilityScope>, base_dir: Option<PathBuf>) -> Self {
         let package_name = format!("Annora.AppContainer.{}", name);
         // Deterministic AppContainer SID generation format: S-1-15-2-<hash1>-<hash2>-<hash3>-<hash4>
-        let hash = name.bytes().fold(0x811c9dc5u32, |acc, b| (acc ^ b as u32).wrapping_mul(0x01000193));
-        let package_sid = format!("S-1-15-2-{}-{}-{}-{}", hash, hash.wrapping_add(1), hash.wrapping_add(2), hash.wrapping_add(3));
+        let hash = name.bytes().fold(0x811c9dc5u32, |acc, b| {
+            (acc ^ b as u32).wrapping_mul(0x01000193)
+        });
+        let package_sid = format!(
+            "S-1-15-2-{}-{}-{}-{}",
+            hash,
+            hash.wrapping_add(1),
+            hash.wrapping_add(2),
+            hash.wrapping_add(3)
+        );
 
         let mut capability_sids = Vec::new();
         for cap in &capabilities {
@@ -90,7 +98,8 @@ impl AppContainerSandbox {
         capabilities: Vec<CapabilityScope>,
         isolated_folder: &str,
     ) -> Result<AppContainerProfile> {
-        let mut profile = AppContainerProfile::new(name, capabilities, Some(PathBuf::from(isolated_folder)));
+        let mut profile =
+            AppContainerProfile::new(name, capabilities, Some(PathBuf::from(isolated_folder)));
         profile.ensure_storage()?;
         profile.is_active = true;
         Ok(profile)

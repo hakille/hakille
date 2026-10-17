@@ -1,17 +1,19 @@
 use annora_agents::{AgentQuotaTracker, CapabilityQuota, QuotaBreachPolicy};
 use annora_audit::consent_registry::ConsentRegistry;
 use annora_auth::{GuestSessionManager, VoiceLivenessDetector};
-use annora_core::{ActorId, CapabilityAction, CapabilityAuthority, CapabilityScope, Timestamp, UserId};
+use annora_core::{
+    ActorId, CapabilityAction, CapabilityAuthority, CapabilityScope, Timestamp, UserId,
+};
 use annora_kernel::{
     CognitiveState, DeliberatePlanner, DryRunSimulator, ExecutionPlan, GraphCuriosityScanner,
     SelfModel, WorkingMemory,
 };
 use annora_memory::{
+    ContextPartition,
     graph::KnowledgeGraph,
     query_lang::GraphQueryBuilder,
     task::{Task, TaskPriority, TaskStatus},
     triplet::{NodeValue, Triplet, TripletMetadata, TripletSource},
-    ContextPartition,
 };
 use uuid::Uuid;
 
@@ -45,6 +47,7 @@ fn test_conformance_working_memory_distillation_and_query_dsl() {
             trust_level: annora_core::TrustLevel::User,
             decay_rate: 0.01,
         },
+        node_type: None,
     };
     graph.insert(triplet);
 
@@ -63,14 +66,21 @@ fn test_conformance_working_memory_distillation_and_query_dsl() {
     }
 
     // Verify Task model integration (§28e)
-    let mut task = Task::new("task-astronomy-gift", "Acheter télescope", "Cadeau pour Emma")
-        .with_priority(TaskPriority::Normal);
+    let mut task = Task::new(
+        "task-astronomy-gift",
+        "Acheter télescope",
+        "Cadeau pour Emma",
+    )
+    .with_priority(TaskPriority::Normal);
     task.add_step("Rechercher modèles", None);
     assert_eq!(task.status, TaskStatus::Pending);
 
     // Verify Graph Curiosity Scanner (§28d)
     let inquiries = GraphCuriosityScanner::scan_for_curiosity_inquiries(&graph);
-    assert!(!inquiries.is_empty(), "Curiosity scanner must detect bootstrap opportunities");
+    assert!(
+        !inquiries.is_empty(),
+        "Curiosity scanner must detect bootstrap opportunities"
+    );
 }
 
 #[test]
@@ -115,7 +125,10 @@ fn test_conformance_self_model_and_simulator() {
 
     let dry_run = DryRunSimulator::simulate_payment("Fournisseur", 15000, "EUR", 20000);
     assert!(dry_run.simulation_successful);
-    assert!(dry_run.warning.is_some(), "Transactions > 100 EUR must raise confirmation alert (§19e)");
+    assert!(
+        dry_run.warning.is_some(),
+        "Transactions > 100 EUR must raise confirmation alert (§19e)"
+    );
 
     self_model.enter_hesitation(101, "Attente validation humaine pour transaction > 100 EUR");
     assert!(self_model.query_hesitation_reason().is_some());
@@ -126,7 +139,10 @@ fn test_conformance_anti_spoofing_and_guest_manager() {
     let detector = VoiceLivenessDetector::default();
     let flat_audio: Vec<f32> = vec![0.3; 3200];
     let check = detector.analyze_pcm_frame(&flat_audio);
-    assert!(!check.is_live_human, "Flat synthetic tone must be rejected as spoofing attack");
+    assert!(
+        !check.is_live_human,
+        "Flat synthetic tone must be rejected as spoofing attack"
+    );
 
     let mut guest_mgr = GuestSessionManager::new();
     let host = UserId(Uuid::new_v4());
@@ -141,7 +157,110 @@ fn test_conformance_anti_spoofing_and_guest_manager() {
         .expect("Guest session");
 
     assert!(session.allows_scope(&CapabilityScope::Sensor));
-    assert!(!session.allows_scope(&CapabilityScope::Wallet), "Wallet can never be granted to guest");
+    assert!(
+        !session.allows_scope(&CapabilityScope::Wallet),
+        "Wallet can never be granted to guest"
+    );
+}
+
+#[test]
+fn test_conformance_spo_query_dsl_weight_confidence_sorting() {
+    // Verrouille mission 3 : GraphQuery typée + tri poids/confiance via recall.
+    use annora_constitution::rules::Constitution;
+    use annora_kernel::{
+        fabric::{CognitiveFabric, CognitiveManifest},
+        orchestrator::CognitiveOrchestrator,
+    };
+    let fabric = CognitiveFabric::new(CognitiveManifest::default());
+    let user_id = UserId(Uuid::new_v4());
+    let mut orch = CognitiveOrchestrator::new(fabric, user_id, Constitution::default());
+    for (subj, pred, obj) in [
+        ("Alice", "parle", "Rust"),
+        ("Bob", "parle", "Python"),
+        ("Alice", "boit", "Café"),
+    ] {
+        match orch.remember(subj, pred, obj) {
+            annora_memory::InsertResult::Inserted(_) => {}
+            other => panic!("Insertion SPO attendue, obtenue : {:?}", other),
+        }
+    }
+    // Requête typée par prédicat « parle » : 2 faits, pas le café.
+    let pid = orch
+        .memory_graph
+        .lookup_predicate("parle")
+        .expect("Prédicat registré");
+    let hits = annora_memory::GraphQueryBuilder::select()
+        .where_predicate(pid)
+        .build()
+        .execute(&orch.memory_graph);
+    assert_eq!(hits.len(), 2, "Deux faits partagent le prédicat 'parle'");
+    // Recall trié : objet exact, sans concaténation du stub.
+    let recalled = orch.recall("parle");
+    assert!(
+        recalled.contains(&"Rust".to_string()),
+        "Objet Rust retrouvé : {:?}",
+        recalled
+    );
+    assert!(
+        recalled.contains(&"Python".to_string()),
+        "Objet Python retrouvé : {:?}",
+        recalled
+    );
+    assert!(
+        !recalled.iter().any(|s| s.contains("Alice parle")),
+        "Jamais de concaténation S/P/O"
+    );
+}
+
+#[tokio::test]
+#[ignore = "slow: reason() avec décodage Qwen CPU réel (~11 min en debug) ; gate lente `-- --ignored`"]
+async fn test_conformance_system2_confidence_formula_and_naive_trace() {
+    // Verrouille mission 6 : confiance 0.6·modèle+0.4·graphe (COGNITION.md §3),
+    // coût depuis tokens réels, trace à vraies étapes (split phrases, ≤5+1).
+    use annora_kernel::system2::System2Engine;
+    let engine = System2Engine::new("TestSlot", 2);
+    let prompt = "Analyse ce contrat. Compare les clauses. Diagnostique le risque ?";
+    let facts = vec![
+        "Fait A".to_string(),
+        "Fait B".to_string(),
+        "Fait C".to_string(),
+    ];
+    let plan = engine
+        .reason(prompt, &facts, &annora_core::TrustLevel::User)
+        .await
+        .expect("System2 reason");
+    // 0.6·0.75 + 0.4·1.0 = 0.85 avec 3 faits.
+    assert!(
+        (plan.confidence_score - 0.85).abs() < 1e-9,
+        "Confiance COGNITION.md, obtenue : {}",
+        plan.confidence_score
+    );
+    let bare = engine
+        .reason("Bonjour", &[], &annora_core::TrustLevel::User)
+        .await
+        .expect("System2 bare");
+    assert!(
+        bare.confidence_score < plan.confidence_score,
+        "Sans faits ⇒ confiance moindre"
+    );
+    assert!(plan.cost_incurred.amount_cents >= 1, "Coût réel ≥ 1c");
+    assert!(
+        plan.cost_incurred.description.contains("tokens"),
+        "Coût documenté en tokens : {}",
+        plan.cost_incurred.description
+    );
+    // 3 phrases ⇒ ≥3 étapes issues de la décomposition + synthèse, ≤6 au total.
+    assert!(
+        plan.proposed_steps.len() >= 3 && plan.proposed_steps.len() <= 6,
+        "Étapes naïves bornées : {:?}",
+        plan.proposed_steps
+    );
+    assert!(
+        plan.reasoning_trace
+            .iter()
+            .any(|l| l.contains("Decomposed step")),
+        "Trace à vraies étapes"
+    );
 }
 
 #[test]
@@ -149,18 +268,28 @@ fn test_conformance_consent_registry_and_quota_enforcement() {
     let mut registry = ConsentRegistry::new();
     let agent_id = ActorId::Agent("calendar-sync".to_string());
 
-    let grant_id = registry.register_grant(
-        "grant-cal-read",
-        agent_id.clone(),
-        vec![CapabilityScope::Filesystem],
-        vec![CapabilityAction::Read],
-        "Lecture calendrier",
-        None,
-    );
-    assert!(registry.has_active_consent(&agent_id, &CapabilityScope::Filesystem));
+    let grant_id = registry
+        .register_grant(
+            "grant-cal-read",
+            agent_id.clone(),
+            vec![CapabilityScope::Filesystem],
+            vec![CapabilityAction::Read],
+            "Lecture calendrier",
+            None,
+        )
+        .expect("grant registration must succeed");
+    assert!(registry.has_active_consent(
+        &agent_id,
+        &CapabilityScope::Filesystem,
+        &CapabilityAction::Read
+    ));
 
     registry.revoke_grant(&grant_id, "Session terminée");
-    assert!(!registry.has_active_consent(&agent_id, &CapabilityScope::Filesystem));
+    assert!(!registry.has_active_consent(
+        &agent_id,
+        &CapabilityScope::Filesystem,
+        &CapabilityAction::Read
+    ));
 
     // Quota rate limiter
     let quota = CapabilityQuota {
@@ -172,6 +301,9 @@ fn test_conformance_consent_registry_and_quota_enforcement() {
     let mut tracker = AgentQuotaTracker::new(quota);
     assert!(tracker.record_invocation(512).is_ok());
     assert!(tracker.record_invocation(512).is_ok());
-    assert!(tracker.record_invocation(512).is_err(), "Third call in 60s must trigger breach");
+    assert!(
+        tracker.record_invocation(512).is_err(),
+        "Third call in 60s must trigger breach"
+    );
     assert!(tracker.is_revoked());
 }

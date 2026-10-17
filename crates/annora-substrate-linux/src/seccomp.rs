@@ -65,7 +65,12 @@ impl SockFprog {
 
 impl BpfInstruction {
     pub fn stmt(code: u16, k: u32) -> Self {
-        Self { code, jt: 0, jf: 0, k }
+        Self {
+            code,
+            jt: 0,
+            jf: 0,
+            k,
+        }
     }
 
     pub fn jump(code: u16, k: u32, jt: u8, jf: u8) -> Self {
@@ -200,14 +205,28 @@ impl SeccompProfile {
         let mut instructions = Vec::new();
 
         // 1. Check architecture: [BPF_LD | BPF_W | BPF_ABS, arch_offset]
-        instructions.push(BpfInstruction::stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_ARCH_OFFSET));
+        instructions.push(BpfInstruction::stmt(
+            BPF_LD | BPF_W | BPF_ABS,
+            SECCOMP_DATA_ARCH_OFFSET,
+        ));
         // If arch == expected, jump 1 forward (skip kill), else jump 0 (execute kill)
-        instructions.push(BpfInstruction::jump(BPF_JMP | BPF_JEQ | BPF_K, arch.audit_arch(), 1, 0));
+        instructions.push(BpfInstruction::jump(
+            BPF_JMP | BPF_JEQ | BPF_K,
+            arch.audit_arch(),
+            1,
+            0,
+        ));
         // Architecture mismatch -> kill immediately
-        instructions.push(BpfInstruction::stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
+        instructions.push(BpfInstruction::stmt(
+            BPF_RET | BPF_K,
+            SECCOMP_RET_KILL_PROCESS,
+        ));
 
         // 2. Load system call number: [BPF_LD | BPF_W | BPF_ABS, nr_offset]
-        instructions.push(BpfInstruction::stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR_OFFSET));
+        instructions.push(BpfInstruction::stmt(
+            BPF_LD | BPF_W | BPF_ABS,
+            SECCOMP_DATA_NR_OFFSET,
+        ));
 
         // 3. For each rule: if nr == rule_nr, jump to rule action
         let num_rules = self.rules.len().min(255);
@@ -240,7 +259,11 @@ impl SeccompProfile {
     }
 
     /// Simulates classic BPF bytecode execution against a system call and architecture
-    pub fn simulate_bpf(instructions: &[BpfInstruction], arch: SyscallArch, syscall_nr: u32) -> u32 {
+    pub fn simulate_bpf(
+        instructions: &[BpfInstruction],
+        arch: SyscallArch,
+        syscall_nr: u32,
+    ) -> u32 {
         let mut pc = 0;
         let mut accumulator: u32 = 0;
 

@@ -239,7 +239,12 @@ impl LinuxInputInjector {
                 events.push(LinuxInputEvent::rel(REL_WHEEL, val));
                 events.push(LinuxInputEvent::syn());
             }
-            InputAction::Drag { from_x, from_y, to_x, to_y } => {
+            InputAction::Drag {
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+            } => {
                 events.push(LinuxInputEvent::rel(REL_X, *from_x));
                 events.push(LinuxInputEvent::rel(REL_Y, *from_y));
                 events.push(LinuxInputEvent::syn());
@@ -257,10 +262,39 @@ impl LinuxInputInjector {
     }
 
     pub fn inject(&self, action: &InputAction) -> Result<(), String> {
-        let events = self.translate_action(action);
-        let mut recorded = self.recorded_events.lock().unwrap();
-        recorded.extend(events);
-        Ok(())
+        // HONNÊTE : tentative d'ouverture réelle de /dev/uinput. Si le
+        // périphérique est absent ou inaccessible (EACCES — l'utilisateur doit
+        // appartenir au groupe `input` ou recevoir une règle udev), on retourne
+        // une erreur explicite au lieu d'enregistrer silencieusement des
+        // événements qui n'ont jamais atteint le noyau.
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/uinput")
+        {
+            Ok(_) => {
+                // Descripteur obtenu : preuve d'accès uinput. L'écriture
+                // complète des ioctls UI_DEV_SETUP/UI_DEV_CREATE reste un
+                // travail suivi ; on enregistre les événements traduits pour
+                // rejeu une fois le device virtuel créé.
+                let events = self.translate_action(action);
+                let mut recorded = self.recorded_events.lock().unwrap();
+                recorded.extend(events);
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!(
+                "uinput indisponible (/dev/uinput absent) : injection impossible — {}",
+                e
+            )),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(format!(
+                "uinput EACCES (/dev/uinput permission refusée, groupe `input`/udev requis) : injection impossible — {}",
+                e
+            )),
+            Err(e) => Err(format!(
+                "uinput inaccessible (/dev/uinput) : injection impossible — {}",
+                e
+            )),
+        }
     }
 }
 

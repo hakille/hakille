@@ -66,11 +66,18 @@ impl RedoxCapabilityTable {
                 )))
             }
         } else {
-            Err(AnnoraError::SubstrateError(format!("Bad file descriptor fd: {}", fd)))
+            Err(AnnoraError::SubstrateError(format!(
+                "Bad file descriptor fd: {}",
+                fd
+            )))
         }
     }
 
-    pub fn derive_restricted_capability(&self, parent_fd: usize, mask_capabilities: u32) -> Result<usize> {
+    pub fn derive_restricted_capability(
+        &self,
+        parent_fd: usize,
+        mask_capabilities: u32,
+    ) -> Result<usize> {
         let parent = self.verify_access(parent_fd, mask_capabilities)?;
         // Attenuated capabilities can only be a subset of parent capabilities
         let new_caps = parent.capabilities & mask_capabilities;
@@ -84,11 +91,8 @@ impl RedoxCapabilityTable {
 
     pub fn transfer_capability(&self, fd: usize, new_resource_id: &str) -> Result<usize> {
         let parent = self.verify_access(fd, 0)?;
-        let child_fd = self.allocate_handle(
-            parent.scheme_name,
-            new_resource_id,
-            parent.capabilities,
-        );
+        let child_fd =
+            self.allocate_handle(parent.scheme_name, new_resource_id, parent.capabilities);
         Ok(child_fd)
     }
 
@@ -97,7 +101,10 @@ impl RedoxCapabilityTable {
         if map.remove(&fd).is_some() {
             Ok(())
         } else {
-            Err(AnnoraError::SubstrateError(format!("Handle fd {} not found", fd)))
+            Err(AnnoraError::SubstrateError(format!(
+                "Handle fd {} not found",
+                fd
+            )))
         }
     }
 

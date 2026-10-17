@@ -2,6 +2,7 @@
 name = "annora-daemon"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
 
 [dependencies]
 annora-core = { path = "../annora-core" }
@@ -23,9 +24,13 @@ annora-sync = { path = "../annora-sync" }
 annora-auth = { path = "../annora-auth" }
 annora-constitution = { path = "../annora-constitution" }
 annora-ui = { path = "../annora-ui" }
+annora-ui-shell = { path = "../annora-ui-shell" }
+annora-keystore = { path = "../annora-keystore" }
+annora-design = { path = "../annora-design" }
 annora-metrics = { path = "../annora-metrics" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+biscuit-auth = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

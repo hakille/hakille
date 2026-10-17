@@ -27,10 +27,19 @@ pub enum AnnoraError {
     #[error("Internal error: {0}")]
     Internal(String),
     #[error("Contradiction detected: existing '{existing}', incoming '{incoming}'")]
-    ContradictionDetected {
-        existing: String,
-        incoming: String,
-    },
+    ContradictionDetected { existing: String, incoming: String },
+}
+
+impl From<serde_json::Error> for AnnoraError {
+    fn from(e: serde_json::Error) -> Self {
+        AnnoraError::SerializationError(e.to_string())
+    }
+}
+
+impl From<std::io::Error> for AnnoraError {
+    fn from(e: std::io::Error) -> Self {
+        AnnoraError::StorageError(e.to_string())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, AnnoraError>;

@@ -1,4 +1,4 @@
-use annora_core::{NodeId, UserId};
+use annora_core::{AnnoraError, NodeId, Result, UserId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -47,12 +47,28 @@ impl Household {
         }
     }
 
-    pub fn add_member(&mut self, member: HouseholdMember) {
+    pub fn add_member(&mut self, caller: &UserId, member: HouseholdMember) -> Result<()> {
+        self.enforce_owner(caller)?;
         self.members.insert(member.user_id.clone(), member);
+        Ok(())
     }
 
-    pub fn remove_member(&mut self, user_id: &UserId) {
+    pub fn remove_member(&mut self, caller: &UserId, user_id: &UserId) -> Result<()> {
+        self.enforce_owner(caller)?;
         self.members.remove(user_id);
+        Ok(())
+    }
+
+    /// Garde : seul un `Owner` peut ajouter / retirer des membres.
+    /// Fail-closed si `caller` inconnu ou non-Owner.
+    pub fn enforce_owner(&self, caller: &UserId) -> Result<()> {
+        if self.is_owner(caller) {
+            Ok(())
+        } else {
+            Err(AnnoraError::CapabilityDenied(
+                "Seul le Owner du foyer peut ajouter/retirer un membre".to_string(),
+            ))
+        }
     }
 
     pub fn get_member(&self, user_id: &UserId) -> Option<&HouseholdMember> {
@@ -60,10 +76,16 @@ impl Household {
     }
 
     pub fn is_owner(&self, user_id: &UserId) -> bool {
-        self.members.get(user_id).map(|m| m.role == HouseholdRole::Owner).unwrap_or(false)
+        self.members
+            .get(user_id)
+            .map(|m| m.role == HouseholdRole::Owner)
+            .unwrap_or(false)
     }
 
     pub fn get_restrictions(&self, user_id: &UserId) -> Vec<Restriction> {
-        self.members.get(user_id).map(|m| m.restrictions.clone()).unwrap_or_default()
+        self.members
+            .get(user_id)
+            .map(|m| m.restrictions.clone())
+            .unwrap_or_default()
     }
 }

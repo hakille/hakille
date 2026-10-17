@@ -98,7 +98,9 @@ impl WebAudioPcmBuffer {
             return None;
         }
 
-        let chunk: Vec<i16> = (0..chunk_size).filter_map(|_| self.pcm_queue.pop_front()).collect();
+        let chunk: Vec<i16> = (0..chunk_size)
+            .filter_map(|_| self.pcm_queue.pop_front())
+            .collect();
         Some(chunk)
     }
 
@@ -109,7 +111,9 @@ impl WebAudioPcmBuffer {
 
     pub fn pop_playback_audio(&mut self, max_bytes: usize) -> Vec<u8> {
         let count = max_bytes.min(self.playback_queue.len());
-        (0..count).filter_map(|_| self.playback_queue.pop_front()).collect()
+        (0..count)
+            .filter_map(|_| self.playback_queue.pop_front())
+            .collect()
     }
 
     pub fn overrun_count(&self) -> u64 {

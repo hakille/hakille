@@ -42,7 +42,10 @@ impl JournalView {
     }
 
     pub fn explain_action(entry: &AuditEntry) -> String {
-        let mut expl = format!("Action '{}' triggered by {:?}.\n", entry.action.action_type, entry.actor);
+        let mut expl = format!(
+            "Action '{}' triggered by {:?}.\n",
+            entry.action.action_type, entry.actor
+        );
         expl.push_str(&format!("Description: {}\n", entry.action.description));
         if !entry.reasoning_trace.steps.is_empty() {
             expl.push_str("Reasoning steps:\n");
@@ -51,6 +54,32 @@ impl JournalView {
             }
         }
         expl
+    }
+
+    /// Détail complet §19i : toute la trace de raisonnement + nœuds graphe
+    /// ayant motivé l'action. `format_entry` ne garde que steps[0] pour la
+    /// ligne compacte ; le "pourquoi" exige l'intégralité ci-dessous.
+    pub fn full_reasoning(entry: &AuditEntry) -> String {
+        if entry.reasoning_trace.steps.is_empty() {
+            return "No trace recorded".to_string();
+        }
+        entry
+            .reasoning_trace
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| format!("{}. {}", i + 1, s.description))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Libellés des nœuds graphe utilisés (triplets motivant l'action).
+    pub fn graph_node_labels(entry: &AuditEntry) -> Vec<String> {
+        entry
+            .graph_nodes_used
+            .iter()
+            .map(|id| id.0.to_string())
+            .collect()
     }
 }
 
@@ -100,7 +129,11 @@ impl MemoryViewerPanel {
     }
 
     pub fn list_all_items(graph: &KnowledgeGraph) -> Vec<MemoryViewerItem> {
-        graph.all_triplets().into_iter().map(Self::format_triplet).collect()
+        graph
+            .all_triplets()
+            .into_iter()
+            .map(Self::format_triplet)
+            .collect()
     }
 
     pub fn filter_items(graph: &KnowledgeGraph, query: &str) -> Vec<MemoryViewerItem> {
@@ -128,7 +161,11 @@ impl MemoryViewerPanel {
                 target_type: "Triplet".to_string(),
                 reason: reason.to_string(),
                 timestamp_str: chrono::Utc::now().to_rfc3339(),
-                verification_token: format!("REVOKED-TRIPLET-{}-{}", triplet_id.0, uuid::Uuid::now_v7()),
+                verification_token: format!(
+                    "REVOKED-TRIPLET-{}-{}",
+                    triplet_id.0,
+                    uuid::Uuid::now_v7()
+                ),
             };
             Some(receipt)
         } else {
@@ -167,20 +204,33 @@ impl VisualAuditViewer {
         out.push_str("║          ANNORA SOVEREIGN AUDIT LEDGER (SHA-256 HASH CHAIN)          ║\n");
         out.push_str("╠══════════════════════════════════════════════════════════════════════╣\n");
         if entries.is_empty() {
-            out.push_str("║  [Aucune entrée enregistrée pour le moment]                           ║\n");
+            out.push_str(
+                "║  [Aucune entrée enregistrée pour le moment]                           ║\n",
+            );
         } else {
             for (i, entry) in entries.iter().enumerate() {
-                let cost_str = entry.cost.as_ref().map(|c| format!("{:.2} EUR", c.amount_cents as f64 / 100.0)).unwrap_or_else(|| "0.00 EUR".to_string());
+                let cost_str = entry
+                    .cost
+                    .as_ref()
+                    .map(|c| format!("{:.2} EUR", c.amount_cents as f64 / 100.0))
+                    .unwrap_or_else(|| "0.00 EUR".to_string());
                 out.push_str(&format!(
                     "║ #{:<3} [{:<10?}] {:<32} {:>10} ║\n",
-                    i + 1, entry.actor, entry.action.action_type, cost_str
+                    i + 1,
+                    entry.actor,
+                    entry.action.action_type,
+                    cost_str
                 ));
-                out.push_str(&format!("║      Description: {:<50} ║\n", entry.action.description));
-                out.push_str("╟──────────────────────────────────────────────────────────────────────╢\n");
+                out.push_str(&format!(
+                    "║      Description: {:<50} ║\n",
+                    entry.action.description
+                ));
+                out.push_str(
+                    "╟──────────────────────────────────────────────────────────────────────╢\n",
+                );
             }
         }
         out.push_str("╚══════════════════════════════════════════════════════════════════════╝\n");
         out
     }
 }
-

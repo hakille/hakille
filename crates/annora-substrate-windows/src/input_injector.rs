@@ -14,9 +14,14 @@ impl WindowsInputInjector {
             InputAction::Click { x, y, button } => {
                 let px = Self::resolve_coord(*x, screen_w);
                 let py = Self::resolve_coord(*y, screen_h);
+                // HONNÊTE : déplacement absolu SendInput 0..65535 (plus précis
+                // et layout-indépendant que SetCursorPos seul).
+                Self::move_absolute(
+                    Self::to_absolute(px, screen_w),
+                    Self::to_absolute(py, screen_h),
+                );
 
                 unsafe {
-                    SetCursorPos(px, py);
                     match button {
                         MouseButton::Left => {
                             mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
@@ -38,8 +43,11 @@ impl WindowsInputInjector {
                 let px = Self::resolve_coord(*x, screen_w);
                 let py = Self::resolve_coord(*y, screen_h);
 
+                Self::move_absolute(
+                    Self::to_absolute(px, screen_w),
+                    Self::to_absolute(py, screen_h),
+                );
                 unsafe {
-                    SetCursorPos(px, py);
                     mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
                     mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
                     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -52,8 +60,11 @@ impl WindowsInputInjector {
                 let px = Self::resolve_coord(*x, screen_w);
                 let py = Self::resolve_coord(*y, screen_h);
 
+                Self::move_absolute(
+                    Self::to_absolute(px, screen_w),
+                    Self::to_absolute(py, screen_h),
+                );
                 unsafe {
-                    SetCursorPos(px, py);
                     mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0);
                     mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0);
                 }
@@ -70,13 +81,19 @@ impl WindowsInputInjector {
                 let end_x = Self::resolve_coord(*to_x, screen_w);
                 let end_y = Self::resolve_coord(*to_y, screen_h);
 
+                Self::move_absolute(
+                    Self::to_absolute(start_x, screen_w),
+                    Self::to_absolute(start_y, screen_h),
+                );
                 unsafe {
-                    SetCursorPos(start_x, start_y);
                     mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
                     for step in 1..=10 {
                         let cur_x = start_x + ((end_x - start_x) * step) / 10;
                         let cur_y = start_y + ((end_y - start_y) * step) / 10;
-                        SetCursorPos(cur_x, cur_y);
+                        Self::move_absolute(
+                            Self::to_absolute(cur_x, screen_w),
+                            Self::to_absolute(cur_y, screen_h),
+                        );
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                     mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
@@ -104,14 +121,11 @@ impl WindowsInputInjector {
             }
 
             InputAction::Type { text } => {
+                // HONNÊTE : injection Unicode via SendInput (layout-indépendant,
+                // fonctionne en AZERTY + ponctuation FR). Chaque caractère est
+                // envoyé en KEYEVENTF_UNICODE (down+up) ; pas de VK simulé.
                 for ch in text.chars() {
-                    let vk = Self::char_to_virtual_key(ch);
-                    if let Some(code) = vk {
-                        unsafe {
-                            keybd_event(code, 0, 0, 0);
-                            keybd_event(code, 0, KEYEVENTF_KEYUP, 0);
-                        }
-                    }
+                    Self::type_unicode_char(ch);
                 }
             }
 
@@ -143,6 +157,120 @@ impl WindowsInputInjector {
         }
     }
 
+    /// Convertit un pixel écran en coordonnée absolue SendInput 0..65535.
+    /// HONNÊTE : `MOUSEEVENTF_ABSOLUTE` exige cette normalisation ; l'ancien
+    /// code utilisait `SetCursorPos` seul (relatif implicite).
+    pub fn to_absolute(px: i32, screen_max: i32) -> i32 {
+        if screen_max <= 0 {
+            return 0;
+        }
+        let clamped = px.clamp(0, screen_max);
+        ((clamped as i64 * 65535) / screen_max as i64) as i32
+    }
+
+    /// Déplace le curseur en absolu via SendInput (0..65535), avec repli
+    /// honnête sur SetCursorPos si SendInput échoue (session verrouillée…).
+    fn move_absolute(abs_x: i32, abs_y: i32) {
+        unsafe {
+            let mut input = INPUT::default();
+            input.type_ = INPUT_MOUSE;
+            input.u.mi.dx = abs_x;
+            input.u.mi.dy = abs_y;
+            input.u.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+            let sent = SendInput(
+                1,
+                &input as *const INPUT,
+                std::mem::size_of::<INPUT>() as i32,
+            );
+            if sent == 0 {
+                // Repli : position pixel classique.
+                let (sw, sh) = WindowsScreenCapturer::display_dimensions();
+                let px = ((abs_x as i64 * sw as i64) / 65535) as i32;
+                let py = ((abs_y as i64 * sh as i64) / 65535) as i32;
+                SetCursorPos(px, py);
+            }
+        }
+    }
+
+    /// Envoie un clic souris complet en absolu (move + down/up) via SendInput.
+    #[allow(dead_code)]
+    fn click_absolute(abs_x: i32, abs_y: i32, down: u32, up: u32) {
+        Self::move_absolute(abs_x, abs_y);
+        unsafe {
+            for flag in [down, up] {
+                let mut input = INPUT::default();
+                input.type_ = INPUT_MOUSE;
+                input.u.mi.dwFlags = flag;
+                SendInput(
+                    1,
+                    &input as *const INPUT,
+                    std::mem::size_of::<INPUT>() as i32,
+                );
+            }
+        }
+    }
+
+    /// Frappe un caractère Unicode via SendInput (down + up).
+    /// Layout-indépendant : couvre AZERTY + ponctuation FR
+    /// (é è à ç ù â ê î ô û ä ë ï ö ü ÿ œ æ …) sans table VK.
+    fn type_unicode_char(ch: char) {
+        // BMP uniquement pour KEYEVENTF_UNICODE (u16) ; hors-BMP → surrogate pair.
+        let mut buf = [0u16; 2];
+        let encoded = ch.encode_utf16(&mut buf);
+        unsafe {
+            for &unit in encoded.iter() {
+                for up in [false, true] {
+                    let mut input = INPUT::default();
+                    input.type_ = INPUT_KEYBOARD;
+                    input.u.ki.wVk = 0;
+                    input.u.ki.wScan = unit;
+                    input.u.ki.dwFlags = KEYEVENTF_UNICODE | if up { KEYEVENTF_KEYUP } else { 0 };
+                    SendInput(
+                        1,
+                        &input as *const INPUT,
+                        std::mem::size_of::<INPUT>() as i32,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Indique si le caractère exige la touche Shift sur un layout AZERTY-FR.
+    /// Utilisé par les chemins VK legacy (tests) ; le chemin de production
+    /// est Unicode (aucun Shift requis).
+    pub fn char_needs_shift(c: char) -> bool {
+        if c.is_ascii_uppercase() {
+            return true;
+        }
+        matches!(
+            c,
+            'A'..='Z'
+                | 'É'
+                | 'È'
+                | 'À'
+                | 'Ç'
+                | 'Ù'
+                | 'Â'
+                | 'Ê'
+                | 'Î'
+                | 'Ô'
+                | 'Û'
+                | 'Ä'
+                | 'Ë'
+                | 'Ï'
+                | 'Ö'
+                | 'Ü'
+                | '!'
+                | '?'
+                | '.'
+                | '/'
+                | '§'
+                | '%'
+                | 'µ'
+                | '+'
+        )
+    }
+
     fn key_to_vk(key: &Key) -> Option<u8> {
         match key {
             Key::Enter => Some(0x0D),
@@ -157,15 +285,30 @@ impl WindowsInputInjector {
     }
 
     fn char_to_virtual_key(c: char) -> Option<u8> {
+        // AZERTY-FR étendu : lettres, chiffres, ponctuation FR courante.
+        // Le chemin de production privilégie l'Unicode (type_unicode_char) ;
+        // cette table reste pour compatibilité VK + tests.
         let ascii = c.to_ascii_uppercase() as u8;
         if (b'A'..=b'Z').contains(&ascii) || (b'0'..=b'9').contains(&ascii) {
-            Some(ascii)
-        } else if c == ' ' {
-            Some(0x20)
-        } else if c == '\n' || c == '\r' {
-            Some(0x0D)
-        } else {
-            None
+            return Some(ascii);
+        }
+        match c {
+            ' ' => Some(0x20),
+            '\n' | '\r' => Some(0x0D),
+            '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '"' | '(' | ')' | '-' | '_' | '@' | '#'
+            | '$' | '%' | '&' | '*' | '+' | '=' | '/' | '\\' | '<' | '>' | '§' | 'µ' | '€' => {
+                Some((c as u8).max(0x20))
+            }
+            // Lettres accentuées FR → VK de la lettre de base (Shift géré par
+            // char_needs_shift) ; frappe réelle via Unicode de toute façon.
+            'é' | 'É' | 'è' | 'È' | 'ê' | 'Ê' | 'ë' | 'Ë' => Some(b'E'),
+            'à' | 'À' | 'â' | 'Â' | 'ä' | 'Ä' | 'æ' | 'Æ' => Some(b'A'),
+            'ç' | 'Ç' => Some(b'C'),
+            'ù' | 'Ù' | 'û' | 'Û' | 'ü' | 'Ü' => Some(b'U'),
+            'î' | 'Î' | 'ï' | 'Ï' => Some(b'I'),
+            'ô' | 'Ô' | 'ö' | 'Ö' | 'œ' | 'Œ' => Some(b'O'),
+            'ÿ' | 'Ÿ' => Some(b'Y'),
+            _ => None,
         }
     }
 }

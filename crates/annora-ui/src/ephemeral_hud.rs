@@ -1,3 +1,4 @@
+use crate::platform_adapter::PlatformKind;
 use crate::presence::UiTheme;
 use serde::{Deserialize, Serialize};
 
@@ -5,18 +6,15 @@ use serde::{Deserialize, Serialize};
 pub enum HudState {
     /// Completely hidden, zero screen real estate consumed
     Hidden,
-    /// Ephemeral single-line input bar invoked via global hotkey (e.g. Alt+Space)
-    Prompting {
-        query: String,
-        cursor_pos: usize,
-    },
+    /// Ephemeral single-line input bar invoked via global hotkey (spec §8/§29 : Ctrl+Alt+Space, alias Alt+Space)
+    Prompting { query: String, cursor_pos: usize },
     /// Live streaming response appearing inline
     StreamingResponse {
         query: String,
         response_text: String,
         is_final: bool,
     },
-    /// Action requiring user validation chip — rendered with Coral #FF5722 accent!
+    /// Action requiring user validation chip — rendered with Braise #FF7A2F accent!
     ValidationRequired {
         action_id: String,
         description: String,
@@ -36,16 +34,39 @@ pub struct EphemeralHud {
     theme: UiTheme,
     auto_evaporate_delay_ms: u32,
     hotkey_binding: String,
+    custom_hotkey: Option<String>,
 }
 
 impl EphemeralHud {
+    /// Raccourci global par défaut, spec §8/§29 : ⌃⌥Espace modifiable dès
+    /// l'onboarding. macOS → "Cmd+Space", autres → "Ctrl+Alt+Space".
+    /// "Alt+Space" reste accepté comme alias (pas de casse utilisateur).
+    pub fn default_hotkey_for(platform: PlatformKind) -> &'static str {
+        match platform {
+            PlatformKind::MacOS => "Cmd+Space",
+            _ => "Ctrl+Alt+Space",
+        }
+    }
+
+    /// "Alt+Space" est un alias historique accepté partout, jamais le défaut.
+    pub fn is_hotkey_alias_accepted(hotkey: &str) -> bool {
+        matches!(hotkey, "Alt+Space" | "Cmd+Space" | "Ctrl+Alt+Space")
+    }
+
     pub fn new() -> Self {
         Self {
             state: HudState::Hidden,
             theme: UiTheme::default(),
             auto_evaporate_delay_ms: 1500,
-            hotkey_binding: "Alt+Space".to_string(),
+            hotkey_binding: Self::default_hotkey_for(PlatformKind::Windows).to_string(),
+            custom_hotkey: None,
         }
+    }
+
+    pub fn with_platform(platform: PlatformKind) -> Self {
+        let mut hud = Self::new();
+        hud.hotkey_binding = Self::default_hotkey_for(platform).to_string();
+        hud
     }
 
     pub fn state(&self) -> &HudState {
@@ -57,7 +78,22 @@ impl EphemeralHud {
     }
 
     pub fn hotkey(&self) -> &str {
-        &self.hotkey_binding
+        self.custom_hotkey
+            .as_deref()
+            .unwrap_or(&self.hotkey_binding)
+    }
+
+    /// Modifiable dès l'onboarding (spec §8/§29).
+    pub fn set_custom_hotkey(&mut self, hotkey: impl Into<String>) {
+        self.custom_hotkey = Some(hotkey.into());
+    }
+
+    pub fn clear_custom_hotkey(&mut self) {
+        self.custom_hotkey = None;
+    }
+
+    pub fn custom_hotkey(&self) -> Option<&str> {
+        self.custom_hotkey.as_deref()
     }
 
     pub fn open_prompt(&mut self) {
@@ -68,7 +104,11 @@ impl EphemeralHud {
     }
 
     pub fn insert_char(&mut self, c: char) {
-        if let HudState::Prompting { ref mut query, ref mut cursor_pos } = self.state {
+        if let HudState::Prompting {
+            ref mut query,
+            ref mut cursor_pos,
+        } = self.state
+        {
             let byte_len = c.len_utf8();
             query.insert(*cursor_pos, c);
             *cursor_pos += byte_len;
@@ -76,7 +116,11 @@ impl EphemeralHud {
     }
 
     pub fn backspace(&mut self) {
-        if let HudState::Prompting { ref mut query, ref mut cursor_pos } = self.state {
+        if let HudState::Prompting {
+            ref mut query,
+            ref mut cursor_pos,
+        } = self.state
+        {
             if *cursor_pos > 0 {
                 let prev_boundary = query[..*cursor_pos]
                     .char_indices()
@@ -90,7 +134,11 @@ impl EphemeralHud {
     }
 
     pub fn move_cursor_left(&mut self) {
-        if let HudState::Prompting { ref query, ref mut cursor_pos } = self.state {
+        if let HudState::Prompting {
+            ref query,
+            ref mut cursor_pos,
+        } = self.state
+        {
             if *cursor_pos > 0 {
                 let prev_boundary = query[..*cursor_pos]
                     .char_indices()
@@ -103,7 +151,11 @@ impl EphemeralHud {
     }
 
     pub fn move_cursor_right(&mut self) {
-        if let HudState::Prompting { ref query, ref mut cursor_pos } = self.state {
+        if let HudState::Prompting {
+            ref query,
+            ref mut cursor_pos,
+        } = self.state
+        {
             if *cursor_pos < query.len() {
                 let next_boundary = query[*cursor_pos..]
                     .char_indices()
@@ -116,7 +168,11 @@ impl EphemeralHud {
     }
 
     pub fn delete(&mut self) {
-        if let HudState::Prompting { ref mut query, ref cursor_pos } = self.state {
+        if let HudState::Prompting {
+            ref mut query,
+            ref cursor_pos,
+        } = self.state
+        {
             if *cursor_pos < query.len() {
                 query.remove(*cursor_pos);
             }
@@ -124,14 +180,22 @@ impl EphemeralHud {
     }
 
     pub fn clear(&mut self) {
-        if let HudState::Prompting { ref mut query, ref mut cursor_pos } = self.state {
+        if let HudState::Prompting {
+            ref mut query,
+            ref mut cursor_pos,
+        } = self.state
+        {
             query.clear();
             *cursor_pos = 0;
         }
     }
 
-
-    pub fn set_streaming(&mut self, query: impl Into<String>, partial: impl Into<String>, is_final: bool) {
+    pub fn set_streaming(
+        &mut self,
+        query: impl Into<String>,
+        partial: impl Into<String>,
+        is_final: bool,
+    ) {
         self.state = HudState::StreamingResponse {
             query: query.into(),
             response_text: partial.into(),
@@ -165,6 +229,19 @@ impl EphemeralHud {
         };
     }
 
+    /// Fait avancer l'auto-évaporation (1500ms → 0 puis Hidden).
+    /// À appeler chaque frame avec le temps écoulé ; sans tick, le HUD
+    /// resterait figé en `Evaporating` au lieu de disparaître.
+    pub fn tick(&mut self, elapsed_ms: u32) {
+        if let HudState::Evaporating { remaining_ms, .. } = &mut self.state {
+            if elapsed_ms >= *remaining_ms {
+                self.state = HudState::Hidden;
+            } else {
+                *remaining_ms -= elapsed_ms;
+            }
+        }
+    }
+
     pub fn dismiss(&mut self) {
         self.state = HudState::Hidden;
     }
@@ -174,24 +251,49 @@ impl EphemeralHud {
         match &self.state {
             HudState::Hidden => "[HUD: Inactive (Listening in background)]".to_string(),
             HudState::Prompting { query, .. } => {
-                format!("╭─ [Annora HUD • Alt+Space] ──────────────────────────╮\n│ > {}█\n╰─────────────────────────────────────────────────────╯", query)
-            }
-            HudState::StreamingResponse { query, response_text, is_final } => {
-                let badge = if *is_final { "✓ Final" } else { "● Streaming" };
                 format!(
-                    "╭─ [Annora HUD • {}] ──────────────────────────╮\n│ > {}\n│ → {}\n╰─────────────────────────────────────────────────────╯",
+                    "╭─ [Akora HUD • {}] ──────────────────────────╮\n│ > {}█\n╰─────────────────────────────────────────────────────╯",
+                    self.hotkey(),
+                    query
+                )
+            }
+            HudState::StreamingResponse {
+                query,
+                response_text,
+                is_final,
+            } => {
+                let badge = if *is_final {
+                    "✓ Final"
+                } else {
+                    "● Streaming"
+                };
+                format!(
+                    "╭─ [Akora HUD • {}] ──────────────────────────╮\n│ > {}\n│ → {}\n╰─────────────────────────────────────────────────────╯",
                     badge, query, response_text
                 )
             }
-            HudState::ValidationRequired { action_id, description, cost_cents, risk_level } => {
-                let cost_str = cost_cents.map(|c| format!(" | Cost: {:.2} EUR", c as f64 / 100.0)).unwrap_or_default();
+            HudState::ValidationRequired {
+                action_id,
+                description,
+                cost_cents,
+                risk_level,
+            } => {
+                let cost_str = cost_cents
+                    .map(|c| format!(" | Cost: {:.2} EUR", c as f64 / 100.0))
+                    .unwrap_or_default();
                 format!(
-                    "╭─ [Annora VALIDATION REQUIRED #FF5722 CORAL] ─────────╮\n│ Action [{}]: {}\n│ Risk: {}{}\n│ [Enter] Confirmer  |  [Esc] Annuler\n╰─────────────────────────────────────────────────────╯",
+                    "╭─ [Annora VALIDATION REQUIRED #FF7A2F BRAISE] ─────────╮\n│ Action [{}]: {}\n│ Risk: {}{}\n│ [Enter] Confirmer  |  [Esc] Annuler\n╰─────────────────────────────────────────────────────╯",
                     action_id, description, risk_level, cost_str
                 )
             }
-            HudState::Evaporating { last_text, remaining_ms } => {
-                format!("╭─ [Annora HUD • Evaporating in {}ms] ─────────────╮\n│ → {}\n╰─────────────────────────────────────────────────────╯", remaining_ms, last_text)
+            HudState::Evaporating {
+                last_text,
+                remaining_ms,
+            } => {
+                format!(
+                    "╭─ [Akora HUD • Evaporating in {}ms] ─────────────╮\n│ → {}\n╰─────────────────────────────────────────────────────╯",
+                    remaining_ms, last_text
+                )
             }
         }
     }
@@ -204,7 +306,8 @@ impl EphemeralHud {
             HudState::StreamingResponse { .. } => (240, 0.92),
             HudState::ValidationRequired { .. } => (280, 0.95),
             HudState::Evaporating { remaining_ms, .. } => {
-                let frac = (*remaining_ms as f32 / self.auto_evaporate_delay_ms as f32).clamp(0.0, 1.0);
+                let frac =
+                    (*remaining_ms as f32 / self.auto_evaporate_delay_ms as f32).clamp(0.0, 1.0);
                 ((240.0 * frac) as u32, 0.85 * frac)
             }
         };
@@ -213,12 +316,12 @@ impl EphemeralHud {
             width: 720,
             height,
             pos_y_offset: 120,
-            acrylic_tint_hex: "#121212".to_string(),
+            acrylic_tint_hex: "#121419".to_string(),
             acrylic_opacity: opacity,
             blur_radius: 30,
             corner_radius: 12,
             border_hex: "#2D2D2D".to_string(),
-            coral_accent_hex: "#FF5722".to_string(),
+            coral_accent_hex: "#FF7A2F".to_string(),
             is_topmost: true,
             is_visible: self.state != HudState::Hidden,
         }
@@ -266,7 +369,7 @@ impl EphemeralHud {
             "state": format!("{:?}", self.state),
             "theme": {
                 "background_hex": spec.acrylic_tint_hex,
-                "text_hex": "#E0E0E0",
+                "text_hex": "#ECEEF2",
                 "validation_accent_coral": spec.coral_accent_hex,
                 "opacity": spec.acrylic_opacity,
                 "blur_radius": spec.blur_radius,
@@ -278,7 +381,7 @@ impl EphemeralHud {
                 "top_offset": spec.pos_y_offset,
                 "is_topmost": spec.is_topmost,
             },
-            "hotkey": self.hotkey_binding,
+            "hotkey": self.hotkey(),
             "is_visible": spec.is_visible,
         })
     }
@@ -306,12 +409,12 @@ impl AcrylicOverlayWindowSpec {
             width: 720,
             height: 64,
             pos_y_offset: 120,
-            acrylic_tint_hex: "#121212".to_string(),
+            acrylic_tint_hex: "#121419".to_string(),
             acrylic_opacity: 0.88,
             blur_radius: 30,
             corner_radius: 12,
             border_hex: "#2D2D2D".to_string(),
-            coral_accent_hex: "#FF5722".to_string(),
+            coral_accent_hex: "#FF7A2F".to_string(),
             is_topmost: true,
             is_visible: true,
         }
@@ -329,4 +432,3 @@ impl Default for EphemeralHud {
         Self::new()
     }
 }
-

@@ -17,7 +17,7 @@ pub struct MinorProfile {
 
 pub fn default_minor_restrictions(category: &AgeCategory) -> Vec<Restriction> {
     let mut restrictions = vec![Restriction::NoWallet];
-    
+
     match category {
         AgeCategory::Child => {
             restrictions.push(Restriction::ContentFilter(ContentFilterLevel::Strict));
@@ -31,6 +31,6 @@ pub fn default_minor_restrictions(category: &AgeCategory) -> Vec<Restriction> {
             ]));
         }
     }
-    
+
     restrictions
 }

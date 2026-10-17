@@ -1,66 +1,103 @@
-use async_trait::async_trait;
-use annora_core::{CapabilityToken, SignedAttestation, VirtualPath};
-use crate::manifest::PlatformManifest;
 use crate::attestation::{
-    AudioConfig, AudioStreamHandle, CameraConfig, CameraFrame, CameraStreamHandle, ImageFormat,
-    HttpRequest, HttpResponse, InputAction, ProcessHandle,
-    ScreenCapture, PowerState, ThermalState,
+    AudioConfig, AudioStreamHandle, CameraConfig, CameraFrame, CameraStreamHandle, HttpRequest,
+    HttpResponse, InputAction, PowerState, ProcessHandle, ScreenCapture, ThermalState,
 };
+use crate::manifest::PlatformManifest;
+use annora_core::{CapabilityToken, SignedAttestation, VirtualPath};
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait Substrate: Send + Sync + 'static {
     fn manifest(&self) -> &PlatformManifest;
     async fn attest(&self, data: &[u8]) -> annora_core::Result<SignedAttestation>;
-    
+
     // Filesystem
-    async fn read_file(&self, path: &VirtualPath, cap: &CapabilityToken) -> annora_core::Result<Vec<u8>>;
-    async fn write_file(&self, path: &VirtualPath, data: &[u8], cap: &CapabilityToken) -> annora_core::Result<()>;
-    async fn list_dir(&self, path: &VirtualPath, cap: &CapabilityToken) -> annora_core::Result<Vec<VirtualPath>>;
-    async fn delete_file(&self, path: &VirtualPath, cap: &CapabilityToken) -> annora_core::Result<()>;
-    
+    async fn read_file(
+        &self,
+        path: &VirtualPath,
+        cap: &CapabilityToken,
+    ) -> annora_core::Result<Vec<u8>>;
+    async fn write_file(
+        &self,
+        path: &VirtualPath,
+        data: &[u8],
+        cap: &CapabilityToken,
+    ) -> annora_core::Result<()>;
+    async fn list_dir(
+        &self,
+        path: &VirtualPath,
+        cap: &CapabilityToken,
+    ) -> annora_core::Result<Vec<VirtualPath>>;
+    async fn delete_file(
+        &self,
+        path: &VirtualPath,
+        cap: &CapabilityToken,
+    ) -> annora_core::Result<()>;
+
     // Network
-    async fn http_request(&self, req: HttpRequest, cap: &CapabilityToken) -> annora_core::Result<HttpResponse>;
-    
-    // Audio  
-    async fn start_audio_capture(&self, config: AudioConfig, cap: &CapabilityToken) -> annora_core::Result<AudioStreamHandle>;
+    async fn http_request(
+        &self,
+        req: HttpRequest,
+        cap: &CapabilityToken,
+    ) -> annora_core::Result<HttpResponse>;
+
+    // Audio
+    async fn start_audio_capture(
+        &self,
+        config: AudioConfig,
+        cap: &CapabilityToken,
+    ) -> annora_core::Result<AudioStreamHandle>;
     async fn stop_audio_capture(&self, handle: AudioStreamHandle) -> annora_core::Result<()>;
-    async fn play_audio(&self, data: &[u8], config: AudioConfig, cap: &CapabilityToken) -> annora_core::Result<()>;
-    
-    // Camera
-    async fn start_camera_capture(&self, _config: CameraConfig, _cap: &CapabilityToken) -> annora_core::Result<CameraStreamHandle> {
-        Ok(CameraStreamHandle(1))
+    async fn play_audio(
+        &self,
+        data: &[u8],
+        config: AudioConfig,
+        cap: &CapabilityToken,
+    ) -> annora_core::Result<()>;
+
+    // Camera — NO synthetic default. Each OS substrate MUST implement these
+    // honestly (real MediaFoundation/V4L2/Camera2 wiring) or return
+    // `Err(SubstrateError("camera not implemented for this substrate"))`.
+    // Returning Ok(fake frames) here would mask missing implementations.
+    async fn start_camera_capture(
+        &self,
+        _config: CameraConfig,
+        _cap: &CapabilityToken,
+    ) -> annora_core::Result<CameraStreamHandle> {
+        Err(annora_core::AnnoraError::SubstrateError(
+            "camera not implemented for this substrate".into(),
+        ))
     }
     async fn stop_camera_capture(&self, _handle: CameraStreamHandle) -> annora_core::Result<()> {
-        Ok(())
+        Err(annora_core::AnnoraError::SubstrateError(
+            "camera not implemented for this substrate".into(),
+        ))
     }
-    async fn capture_camera_frame(&self, _handle: CameraStreamHandle, _cap: &CapabilityToken) -> annora_core::Result<CameraFrame> {
-        let mut data = vec![130u8; 1920 * 1080 * 3];
-        // Center presence gradient
-        for y in 360..720 {
-            for x in 640..1280 {
-                let idx = (y * 1920 + x) * 3;
-                data[idx] = 210;
-                data[idx + 1] = 180;
-                data[idx + 2] = 160;
-            }
-        }
-        Ok(CameraFrame {
-            width: 1920,
-            height: 1080,
-            data,
-            format: ImageFormat::Rgb8,
-            timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
-        })
+    async fn capture_camera_frame(
+        &self,
+        _handle: CameraStreamHandle,
+        _cap: &CapabilityToken,
+    ) -> annora_core::Result<CameraFrame> {
+        Err(annora_core::AnnoraError::SubstrateError(
+            "camera not implemented for this substrate".into(),
+        ))
     }
 
-    
     // Display
     async fn capture_screen(&self, cap: &CapabilityToken) -> annora_core::Result<ScreenCapture>;
-    async fn inject_input(&self, action: InputAction, cap: &CapabilityToken) -> annora_core::Result<()>;
-    
+    async fn inject_input(
+        &self,
+        action: InputAction,
+        cap: &CapabilityToken,
+    ) -> annora_core::Result<()>;
+
     // Process
-    async fn spawn_sandboxed(&self, wasm: &[u8], caps: Vec<CapabilityToken>) -> annora_core::Result<ProcessHandle>;
-    
+    async fn spawn_sandboxed(
+        &self,
+        wasm: &[u8],
+        caps: Vec<CapabilityToken>,
+    ) -> annora_core::Result<ProcessHandle>;
+
     // Power & Thermal
     fn power_state(&self) -> PowerState;
     fn thermal_state(&self) -> ThermalState;

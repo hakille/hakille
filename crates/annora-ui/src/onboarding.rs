@@ -69,6 +69,57 @@ impl OnboardingManager {
         self.manifest.acknowledged = true;
     }
 
+    /// Injecte le manifeste plateforme réel (§3ter) dans l'écran d'onboarding :
+    /// Tier + OS hôte + capacités accordées/refusées. Sans appel, l'écran reste
+    /// générique — avec, l'utilisateur voit ses limites RÉELLES avant tout.
+    pub fn inject_platform(
+        &mut self,
+        tier_name: &str,
+        os_name: &str,
+        os_version: &str,
+        granted: &[String],
+        denied: &[String],
+    ) {
+        let desc = format!(
+            "Hôte détecté : {} {} — palier {:?}. Accordées : {}. Refusées : {}.",
+            os_name,
+            os_version,
+            tier_name,
+            if granted.is_empty() {
+                "aucune".to_string()
+            } else {
+                granted.join(", ")
+            },
+            if denied.is_empty() {
+                "aucune".to_string()
+            } else {
+                denied.join(", ")
+            },
+        );
+        if let Some(slot) = self
+            .manifest
+            .guaranteed_limits
+            .iter_mut()
+            .find(|l| l.title == "Plateforme hôte détectée")
+        {
+            slot.description = desc;
+        } else {
+            self.manifest.guaranteed_limits.insert(
+                0,
+                LimitationDeclaration {
+                    title: "Plateforme hôte détectée".to_string(),
+                    description: desc,
+                    non_negotiable: false,
+                },
+            );
+        }
+        for cap in granted {
+            if !self.manifest.granted_capabilities.iter().any(|c| c == cap) {
+                self.manifest.granted_capabilities.push(cap.clone());
+            }
+        }
+    }
+
     pub fn is_ready(&self) -> bool {
         self.manifest.acknowledged
     }

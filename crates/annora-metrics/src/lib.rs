@@ -8,6 +8,53 @@ pub use continuity::*;
 pub use drift::*;
 pub use generality::*;
 
+use serde::{Deserialize, Serialize};
+
+/// Snapshot global sérialisable de tous les trackers (persistance mémoire simple).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsSnapshot {
+    pub generality: GeneralitySnapshot,
+    pub continuity: ContinuitySnapshot,
+    pub bounded_initiative: BoundedInitiativeSnapshot,
+    pub values_drift: ValuesDriftSnapshot,
+}
+
+impl MetricsSnapshot {
+    /// Construit un snapshot à partir des trackers vivants.
+    pub fn collect(
+        generality: &GeneralityTracker,
+        continuity: &ContinuityTracker,
+        bounded_initiative: &BoundedInitiativeTracker,
+        values_drift: &ValuesDriftDetector,
+    ) -> Self {
+        Self {
+            generality: generality.to_snapshot(),
+            continuity: continuity.to_snapshot(),
+            bounded_initiative: bounded_initiative.to_snapshot(),
+            values_drift: values_drift.to_snapshot(),
+        }
+    }
+
+    /// Alias `to_snapshot` pour compatibilité avec la convention des trackers.
+    pub fn to_snapshot(&self) -> Self {
+        self.clone()
+    }
+
+    /// Persistance JSON simple via `std::fs`.
+    pub fn save_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(path, json)
+    }
+
+    pub fn load_from_file(path: &std::path::Path) -> std::io::Result<Self> {
+        let content = std::fs::read_to_string(path)?;
+        let snap: Self = serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        Ok(snap)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,10 +108,18 @@ mod tests {
         let detector = ValuesDriftDetector::default_constitutional();
 
         // Identical vector: no drift
-        assert!(detector.evaluate_current_vector(&[1.0, 1.0, 1.0, 1.0, 1.0]).is_none());
+        assert!(
+            detector
+                .evaluate_current_vector(&[1.0, 1.0, 1.0, 1.0, 1.0])
+                .is_none()
+        );
 
         // Mild vector: under 0.15 threshold
-        assert!(detector.evaluate_current_vector(&[0.95, 1.0, 0.98, 1.0, 0.99]).is_none());
+        assert!(
+            detector
+                .evaluate_current_vector(&[0.95, 1.0, 0.98, 1.0, 0.99])
+                .is_none()
+        );
 
         // Strongly drifted vector: should trigger alert
         let drifted = detector.evaluate_current_vector(&[1.0, 0.0, 0.0, 0.0, 0.0]);

@@ -2,7 +2,8 @@
 name = "annora-core"
 version = "0.1.0"
 edition = "2024"
-
+description = "Noyau de types, capabilities Biscuit et confiance Annora"
+repository = "https://github.com/annora/annora"
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -10,11 +11,13 @@ biscuit-auth = { workspace = true }
 ed25519-dalek = { workspace = true }
 chacha20poly1305 = { workspace = true }
 rand = { workspace = true }
+# Source d'aléa sur WASM (Tier invité web) : backend JS crew via getrandom.
+# Inoffensif hors wasm32 (feature cfg interne à getrandom).
+getrandom = { version = "0.2", features = ["js"] }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true }
 bytes = { workspace = true }
 async-trait = { workspace = true }
 

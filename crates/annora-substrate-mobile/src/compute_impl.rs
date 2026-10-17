@@ -24,7 +24,9 @@ impl Compute for MobileComputeBackend {
     }
 
     fn vram_available_bytes(&self) -> u64 {
-        2 * 1024 * 1024 * 1024 // 2 GB shared NPU/GPU
+        // Honest: shared NPU/GPU memory is only knowable via ActivityManager
+        // (Android) / Metal (iOS) queries (not linked); 0 means "unknown".
+        0
     }
 
     fn ram_available_bytes(&self) -> u64 {

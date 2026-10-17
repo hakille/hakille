@@ -66,10 +66,10 @@ impl MacosQuartzDisplayCapture {
                 let idx = ((y * width + x) * 4) as usize;
                 if y < 44 {
                     // macOS Menu bar (translucent glass gray)
-                    data[idx] = 45;     // R
+                    data[idx] = 45; // R
                     data[idx + 1] = 45; // G
                     data[idx + 2] = 50; // B
-                    data[idx + 3] = 255;// A
+                    data[idx + 3] = 255; // A
                 } else if y > height - 80 && x > (width / 4) && x < (width * 3 / 4) {
                     // macOS Floating Dock shelf
                     data[idx] = 60;

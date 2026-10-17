@@ -7,6 +7,10 @@ pub struct SandboxLimits {
     pub max_execution_time_ms: u64,
     pub allow_network: bool,
     pub allow_filesystem: bool,
+    /// Allowlist d'egress (IP ou hôtes exacts) exigée EN PLUS de
+    /// `allow_network` : liste vide = aucun egress autorisé (fail-closed).
+    #[serde(default)]
+    pub egress_allowlist: Vec<String>,
 }
 
 impl Default for SandboxLimits {
@@ -17,7 +21,22 @@ impl Default for SandboxLimits {
             max_execution_time_ms: 5000,
             allow_network: false,
             allow_filesystem: false,
+            egress_allowlist: Vec::new(),
         }
+    }
+}
+
+impl SandboxLimits {
+    /// Egress autorisé seulement si `allow_network` ET adresse présente
+    /// dans l'allowlist (comparaison exacte, fail-closed sinon).
+    pub fn is_egress_allowed(&self, host_or_ip: &str) -> bool {
+        if !self.allow_network {
+            return false;
+        }
+        let needle = host_or_ip.trim().to_lowercase();
+        self.egress_allowlist
+            .iter()
+            .any(|a| a.trim().to_lowercase() == needle)
     }
 }
 

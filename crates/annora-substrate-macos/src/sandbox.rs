@@ -3,8 +3,8 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeatbeltRule {
-    pub action: String, // "allow" or "deny"
-    pub filter: String, // e.g. "file-read*", "network-outbound", "mach-lookup"
+    pub action: String,            // "allow" or "deny"
+    pub filter: String,            // e.g. "file-read*", "network-outbound", "mach-lookup"
     pub predicate: Option<String>, // e.g. "(subpath \"/Users/Shared/Annora\")"
 }
 
@@ -82,7 +82,9 @@ impl MacosSandboxProfile {
 
         // Standard Darwin security minimums: POSIX shm, sysctl-read, /dev/urandom
         dsl.push_str("(allow sysctl-read)\n");
-        dsl.push_str("(allow file-read-data (literal \"/dev/random\") (literal \"/dev/urandom\"))\n");
+        dsl.push_str(
+            "(allow file-read-data (literal \"/dev/random\") (literal \"/dev/urandom\"))\n",
+        );
 
         for rule in &self.rules {
             dsl.push_str(&rule.to_seatbelt_dsl());
@@ -120,19 +122,43 @@ impl MacosSandboxProfile {
 
     pub fn agent_mail(home_dir: &str) -> Self {
         let rules = vec![
-            SeatbeltRule::allow("file-read*", Some(&format!("(subpath \"{}/Library/Annora/Mail\")", home_dir))),
-            SeatbeltRule::allow("file-write*", Some(&format!("(subpath \"{}/Library/Annora/Mail\")", home_dir))),
+            SeatbeltRule::allow(
+                "file-read*",
+                Some(&format!("(subpath \"{}/Library/Annora/Mail\")", home_dir)),
+            ),
+            SeatbeltRule::allow(
+                "file-write*",
+                Some(&format!("(subpath \"{}/Library/Annora/Mail\")", home_dir)),
+            ),
             SeatbeltRule::allow("network-outbound", Some("(remote tcp)")),
-            SeatbeltRule::allow("mach-lookup", Some("(global-name \"com.apple.MailServiceAgent\")")),
+            SeatbeltRule::allow(
+                "mach-lookup",
+                Some("(global-name \"com.apple.MailServiceAgent\")"),
+            ),
         ];
         Self::new(rules)
     }
 
     pub fn agent_calendar(home_dir: &str) -> Self {
         let rules = vec![
-            SeatbeltRule::allow("file-read*", Some(&format!("(subpath \"{}/Library/Annora/Calendar\")", home_dir))),
-            SeatbeltRule::allow("file-write*", Some(&format!("(subpath \"{}/Library/Annora/Calendar\")", home_dir))),
-            SeatbeltRule::allow("mach-lookup", Some("(global-name \"com.apple.CalendarAgent\")")),
+            SeatbeltRule::allow(
+                "file-read*",
+                Some(&format!(
+                    "(subpath \"{}/Library/Annora/Calendar\")",
+                    home_dir
+                )),
+            ),
+            SeatbeltRule::allow(
+                "file-write*",
+                Some(&format!(
+                    "(subpath \"{}/Library/Annora/Calendar\")",
+                    home_dir
+                )),
+            ),
+            SeatbeltRule::allow(
+                "mach-lookup",
+                Some("(global-name \"com.apple.CalendarAgent\")"),
+            ),
             SeatbeltRule::deny("network-outbound", None),
         ];
         Self::new(rules)
@@ -140,8 +166,14 @@ impl MacosSandboxProfile {
 
     pub fn agent_code_sandbox(sandbox_dir: &str) -> Self {
         let rules = vec![
-            SeatbeltRule::allow("file-read*", Some(&format!("(subpath \"{}\")", sandbox_dir))),
-            SeatbeltRule::allow("file-write*", Some(&format!("(subpath \"{}\")", sandbox_dir))),
+            SeatbeltRule::allow(
+                "file-read*",
+                Some(&format!("(subpath \"{}\")", sandbox_dir)),
+            ),
+            SeatbeltRule::allow(
+                "file-write*",
+                Some(&format!("(subpath \"{}\")", sandbox_dir)),
+            ),
             SeatbeltRule::deny("network*", None),
             SeatbeltRule::deny("mach-lookup", None),
             SeatbeltRule::deny("process-fork", None),
@@ -151,7 +183,10 @@ impl MacosSandboxProfile {
 
     pub fn agent_wallet_readonly(storage_path: &str) -> Self {
         let rules = vec![
-            SeatbeltRule::allow("file-read*", Some(&format!("(subpath \"{}\")", storage_path))),
+            SeatbeltRule::allow(
+                "file-read*",
+                Some(&format!("(subpath \"{}\")", storage_path)),
+            ),
             SeatbeltRule::deny("file-write*", None),
             SeatbeltRule::deny("network*", None),
             SeatbeltRule::deny("process-exec*", None),
@@ -161,9 +196,18 @@ impl MacosSandboxProfile {
 
     pub fn inference_engine_profile(models_path: &str) -> Self {
         let rules = vec![
-            SeatbeltRule::allow("file-read*", Some(&format!("(subpath \"{}\")", models_path))),
-            SeatbeltRule::allow("mach-lookup", Some("(global-name \"com.apple.metal.device\")")),
-            SeatbeltRule::allow("iokit-open", Some("(iokit-user-client-class \"AGXCommandQueue\")")),
+            SeatbeltRule::allow(
+                "file-read*",
+                Some(&format!("(subpath \"{}\")", models_path)),
+            ),
+            SeatbeltRule::allow(
+                "mach-lookup",
+                Some("(global-name \"com.apple.metal.device\")"),
+            ),
+            SeatbeltRule::allow(
+                "iokit-open",
+                Some("(iokit-user-client-class \"AGXCommandQueue\")"),
+            ),
             SeatbeltRule::deny("network*", None),
             SeatbeltRule::deny("process-exec*", None),
         ];

@@ -29,7 +29,11 @@ impl ScopedStorageSandbox {
         self.permitted_media_uris.insert(uri.into());
     }
 
-    pub fn resolve_path(&self, scope: StorageScope, relative_path: &VirtualPath) -> Result<PathBuf> {
+    pub fn resolve_path(
+        &self,
+        scope: StorageScope,
+        relative_path: &VirtualPath,
+    ) -> Result<PathBuf> {
         // Enforce sandbox isolation: forbid directory traversal and absolute paths
         let path_str = &relative_path.0;
         let p = Path::new(path_str);

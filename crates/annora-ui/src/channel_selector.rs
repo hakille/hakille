@@ -78,6 +78,13 @@ pub struct ChannelDecision {
 pub struct ChannelSelector;
 
 impl ChannelSelector {
+    /// Seuil doc §21a / INTERFACES_AND_PERCEPTION.md §4 : voix confortable
+    /// sous 45 dB, HUD au-delà de 65 dB (bruit élevé).
+    pub const COMFORT_MAX_DB: f32 = 45.0;
+    /// Au-delà, la voix serait inaudible ou forcerait à crier.
+    pub const NOISY_MIN_DB: f32 = 65.0;
+    /// Environnement ultra-calme : chuchotement de nuit.
+    pub const QUIET_MAX_DB: f32 = 32.0;
     /// Arbitrate the optimal output channel in real-time according to Section 21a
     /// "Le Sélecteur de Canal dynamique — la voix n'est pas toujours la bonne réponse"
     pub fn arbitrate(ctx: &InteractionContext) -> ChannelDecision {
@@ -103,7 +110,8 @@ impl ChannelSelector {
             if ctx.user_wearing_headphones && ctx.urgency >= UrgencyLevel::High {
                 return ChannelDecision {
                     channel: OutputChannel::VoiceWhisper,
-                    rationale: "High urgency delivered softly to private headphones during meeting".to_string(),
+                    rationale: "High urgency delivered softly to private headphones during meeting"
+                        .to_string(),
                     haptic_feedback: Some(HapticPattern::DoubleTap),
                 };
             } else if ctx.device_type == DeviceType::Wearable {
@@ -126,26 +134,31 @@ impl ChannelSelector {
             if ctx.user_wearing_headphones {
                 return ChannelDecision {
                     channel: OutputChannel::VoiceNormal,
-                    rationale: "Third parties present, but private headphones protect audio privacy".to_string(),
+                    rationale:
+                        "Third parties present, but private headphones protect audio privacy"
+                            .to_string(),
                     haptic_feedback: None,
                 };
             } else if ctx.device_type == DeviceType::Wearable {
                 return ChannelDecision {
                     channel: OutputChannel::Haptic,
-                    rationale: "Third parties present: silent haptic delivery on wearable".to_string(),
+                    rationale: "Third parties present: silent haptic delivery on wearable"
+                        .to_string(),
                     haptic_feedback: Some(HapticPattern::DoubleTap),
                 };
             } else {
                 return ChannelDecision {
                     channel: OutputChannel::EphemeralHud,
-                    rationale: "Third parties present: silent ephemeral HUD to preserve confidentiality".to_string(),
+                    rationale:
+                        "Third parties present: silent ephemeral HUD to preserve confidentiality"
+                            .to_string(),
                     haptic_feedback: None,
                 };
             }
         }
 
-        // Rule 4: Ambient noise too high (> 72 dB) -> speech would be unintelligible
-        if ctx.ambient_noise_db > 72.0 {
+        // Rule 4: Ambient noise too high (> 65 dB, doc §21a) -> speech unintelligible
+        if ctx.ambient_noise_db > Self::NOISY_MIN_DB {
             if ctx.user_wearing_headphones {
                 return ChannelDecision {
                     channel: OutputChannel::VoiceNormal,
@@ -155,14 +168,28 @@ impl ChannelSelector {
             } else {
                 return ChannelDecision {
                     channel: OutputChannel::EphemeralHud,
-                    rationale: "High ambient noise (>72dB): switched to visual Ephemeral HUD".to_string(),
+                    rationale: "High ambient noise (>65dB): switched to visual Ephemeral HUD"
+                        .to_string(),
                     haptic_feedback: Some(HapticPattern::DoubleTap),
                 };
             }
         }
 
-        // Rule 5: Low urgency background completion
+        // Rule 5: Low urgency background completion — Defer if user not looking
+        // (vision table §21a : "Urgence faible et utilisateur non attentif → Defer").
         if ctx.urgency == UrgencyLevel::Low {
+            if !ctx.user_attentive_to_screen
+                && ctx.device_type != DeviceType::Wearable
+                && !ctx.in_meeting
+            {
+                return ChannelDecision {
+                    channel: OutputChannel::Defer,
+                    rationale:
+                        "Low urgency + user not attentive: retained until next glance at screen"
+                            .to_string(),
+                    haptic_feedback: None,
+                };
+            }
             if ctx.device_type == DeviceType::Wearable {
                 return ChannelDecision {
                     channel: OutputChannel::Haptic,
@@ -172,14 +199,15 @@ impl ChannelSelector {
             } else {
                 return ChannelDecision {
                     channel: OutputChannel::AmbientPulse,
-                    rationale: "Low-urgency task: gentle pulse on ambient status indicator".to_string(),
+                    rationale: "Low-urgency task: gentle pulse on ambient status indicator"
+                        .to_string(),
                     haptic_feedback: None,
                 };
             }
         }
 
         // Rule 6: Night time or ultra-quiet environment (< 32 dB)
-        if ctx.is_night_time || ctx.ambient_noise_db < 32.0 {
+        if ctx.is_night_time || ctx.ambient_noise_db < Self::QUIET_MAX_DB {
             if !ctx.user_attentive_to_screen && ctx.device_type == DeviceType::SmartSpeaker {
                 return ChannelDecision {
                     channel: OutputChannel::VoiceWhisper,
@@ -196,10 +224,13 @@ impl ChannelSelector {
         }
 
         // Rule 7: User attentively looking at screen on desktop/laptop -> Ephemeral HUD is fastest
-        if ctx.user_attentive_to_screen && (ctx.device_type == DeviceType::Desktop || ctx.device_type == DeviceType::Laptop) {
+        if ctx.user_attentive_to_screen
+            && (ctx.device_type == DeviceType::Desktop || ctx.device_type == DeviceType::Laptop)
+        {
             return ChannelDecision {
                 channel: OutputChannel::EphemeralHud,
-                rationale: "User is actively engaged with screen: Spotlight-like ephemeral HUD".to_string(),
+                rationale: "User is actively engaged with screen: Spotlight-like ephemeral HUD"
+                    .to_string(),
                 haptic_feedback: None,
             };
         }

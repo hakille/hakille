@@ -8,6 +8,7 @@ annora-core = { path = "../annora-core" }
 annora-substrate = { path = "../annora-substrate" }
 annora-inference = { path = "../annora-inference" }
 wasmtime = { workspace = true }
+wasmtime-wasi = "29"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -17,3 +18,6 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 bytes = { workspace = true }
 async-trait = { workspace = true }
+
+[dev-dependencies]
+wat = "1"

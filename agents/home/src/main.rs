@@ -4,7 +4,10 @@ fn main() {
     println!("Annora Home Automation Agent initialized with physical safety safeguards.");
     let mut hub = SmartHomeHub::new();
     let devices = hub.discover_devices();
-    println!("  -> {} appareils domotiques découverts sur le réseau local.", devices.len());
+    println!(
+        "  -> {} appareils domotiques découverts sur le réseau local.",
+        devices.len()
+    );
 
     let cmd = HomeCommand {
         device_id: "light-living-01".to_string(),

@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod capability;
 pub mod config;
 pub mod crypto;
@@ -6,6 +7,7 @@ pub mod message;
 pub mod trust;
 pub mod types;
 
+pub use auth::*;
 pub use capability::*;
 pub use config::*;
 pub use crypto::*;

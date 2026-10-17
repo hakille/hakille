@@ -184,7 +184,11 @@ impl MailClient {
     }
 
     /// Sending an email STRICTLY requires explicit user validation chip!
-    pub fn send_message(&mut self, draft: &MailDraft, user_confirmed: bool) -> Result<SendReceipt, String> {
+    pub fn send_message(
+        &mut self,
+        draft: &MailDraft,
+        user_confirmed: bool,
+    ) -> Result<SendReceipt, String> {
         if !user_confirmed {
             return Err("Émission refusée : L'envoi d'e-mails externes requiert la confirmation explicite de l'utilisateur (Puce #FF5722).".to_string());
         }
@@ -274,12 +278,22 @@ impl MailClient {
 
         let to: Vec<String> = headers
             .get("to")
-            .map(|t| t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            .map(|t| {
+                t.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
             .unwrap_or_default();
 
         let cc: Vec<String> = headers
             .get("cc")
-            .map(|t| t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            .map(|t| {
+                t.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
             .unwrap_or_default();
 
         let subject = headers
@@ -306,7 +320,10 @@ impl MailClient {
             folder: MailFolder::Inbox,
             is_read: false,
             is_flagged: false,
-            has_attachment: headers.get("content-type").map(|c| c.contains("multipart")).unwrap_or(false),
+            has_attachment: headers
+                .get("content-type")
+                .map(|c| c.contains("multipart"))
+                .unwrap_or(false),
         })
     }
 
@@ -354,7 +371,9 @@ mod tests {
     #[test]
     fn test_mail_draft_and_send_with_validation() {
         let mut client = MailClient::new();
-        let draft = client.create_reply("msg-101", "Accord validé pour l'article 8.").unwrap();
+        let draft = client
+            .create_reply("msg-101", "Accord validé pour l'article 8.")
+            .unwrap();
         assert!(draft.requires_validation);
         assert!(draft.subject.starts_with("Re:"));
 
@@ -393,14 +412,23 @@ Voici le compte-rendu d'audit pour le systeme.";
         let mut client = MailClient::new();
         let initial_inbox_count = client.fetch_folder(&MailFolder::Inbox).len();
 
-        let msg_id = client.ingest_incoming_email(raw).expect("Ingestion should succeed");
-        let ingested = client.get_message(&msg_id).expect("Message should be retrievable");
+        let msg_id = client
+            .ingest_incoming_email(raw)
+            .expect("Ingestion should succeed");
+        let ingested = client
+            .get_message(&msg_id)
+            .expect("Message should be retrievable");
 
-        assert_eq!(ingested.subject, "Rapport de gouvernance et souverainete numerique");
+        assert_eq!(
+            ingested.subject,
+            "Rapport de gouvernance et souverainete numerique"
+        );
         assert_eq!(ingested.from, "Charlie <charlie@enterprise.org>");
         assert_eq!(ingested.to, vec!["team@annora.internal"]);
         assert!(ingested.body.contains("Bonjour l'equipe Annora"));
-        assert_eq!(client.fetch_folder(&MailFolder::Inbox).len(), initial_inbox_count + 1);
+        assert_eq!(
+            client.fetch_folder(&MailFolder::Inbox).len(),
+            initial_inbox_count + 1
+        );
     }
 }
-

@@ -1,3 +1,4 @@
+use annora_core::{AnnoraError, Result};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
@@ -41,12 +42,61 @@ impl LatencyTracker {
         self.stage_durations.push((stage, duration));
     }
 
+    /// Budget per-stage (heuristique honnête, pas de mesure kernel réelle) :
+    /// chaque nom d'étape du pipeline est comparé à son `max_*` dédié,
+    /// pas seulement au total. Mapping documenté :
+    /// - perception (`memory_extract`, `recall`, `context_record`) → `max_perception_ms`
+    /// - `routing` → `max_routing_ms`
+    /// - `inference` (S1/S2) → `max_inference_ms`
+    /// - action / enregistrement final (`response_record`, `distill`,
+    ///   `reflection`, `simulation`, `contradiction`, `priority`) → `max_action_ms`
+    /// - inconnu → `max_action_ms` par prudence (pas de passe-droit silencieux).
+    pub fn stage_budget_ms(&self, stage: &str) -> u64 {
+        match stage {
+            "memory_extract" | "recall" | "context_record" => self.config.max_perception_ms,
+            "routing" => self.config.max_routing_ms,
+            "inference" => self.config.max_inference_ms,
+            "response_record" | "distill" | "reflection" | "simulation" | "contradiction"
+            | "priority" | "action" => self.config.max_action_ms,
+            _ => self.config.max_action_ms,
+        }
+    }
+
+    /// Vérifie une étape isolée contre son budget dédié.
+    /// Retourne `Err` si `duration > budget(stage)` — l'appelant doit aborter
+    /// ou dégrader au lieu de continuer silencieusement.
+    pub fn check_stage(&self, stage: &str, duration: Duration) -> Result<()> {
+        let budget = self.stage_budget_ms(stage);
+        if duration > Duration::from_millis(budget) {
+            return Err(AnnoraError::Internal(format!(
+                "Stage budget exceeded for '{}' (elapsed {} ms > max {} ms)",
+                stage,
+                duration.as_millis(),
+                budget,
+            )));
+        }
+        Ok(())
+    }
+
+    /// Étapes enregistrées (nom, durée) — exposé pour les tests de budget.
+    pub fn stages(&self) -> &[(&'static str, Duration)] {
+        &self.stage_durations
+    }
+
+    pub fn config(&self) -> &PipelineBudgetConfig {
+        &self.config
+    }
+
     pub fn total_elapsed(&self) -> Duration {
         self.start_time.elapsed()
     }
 
+    /// Comparaison à la nanoseconde (et non `as_millis` tronqué) : un budget
+    /// `max_total_ms = 0` aborte dès la première étape (utile pour les tests
+    /// de dépassement déterministes), et un pipeline réel n'est plus déclaré
+    /// « dans le budget » à 220.9 ms.
     pub fn is_within_budget(&self) -> bool {
-        self.total_elapsed().as_millis() as u64 <= self.config.max_total_ms
+        self.total_elapsed() <= Duration::from_millis(self.config.max_total_ms)
     }
 
     pub fn remaining_budget_ms(&self) -> i64 {

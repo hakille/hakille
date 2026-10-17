@@ -1,6 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TaskDomain {
     Coding,
     Planning,
@@ -9,6 +10,14 @@ pub enum TaskDomain {
     Communication,
     Analytics,
     Other,
+}
+
+/// Snapshot sérialisable de [`GeneralityTracker`] pour persistance JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneralitySnapshot {
+    pub domain_counts: HashMap<TaskDomain, usize>,
+    pub total_tasks: usize,
+    pub generality_score: f64,
 }
 
 pub struct GeneralityTracker {
@@ -63,6 +72,33 @@ impl GeneralityTracker {
             dist.insert(domain, count as f64 / self.total_tasks as f64);
         }
         dist
+    }
+
+    /// Snapshot mémoire simple (sérialisable en JSON).
+    pub fn to_snapshot(&self) -> GeneralitySnapshot {
+        GeneralitySnapshot {
+            domain_counts: self.domain_counts.clone(),
+            total_tasks: self.total_tasks,
+            generality_score: self.generality_score(),
+        }
+    }
+
+    /// Persistance JSON simple via `std::fs`.
+    pub fn save_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(&self.to_snapshot())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(path, json)
+    }
+
+    /// Recharge depuis un fichier JSON écrit par [`Self::save_to_file`].
+    pub fn load_from_file(path: &std::path::Path) -> std::io::Result<Self> {
+        let content = std::fs::read_to_string(path)?;
+        let snap: GeneralitySnapshot = serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        Ok(Self {
+            domain_counts: snap.domain_counts,
+            total_tasks: snap.total_tasks,
+        })
     }
 }
 

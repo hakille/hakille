@@ -1,18 +1,14 @@
-use annora_core::{CapabilityScope, Tier};
+use annora_core::{CapabilityAction, CapabilityScope, Tier, Timestamp, VirtualPath};
 use annora_substrate::{Compute, Substrate};
-use annora_substrate_linux::{
-    LinuxComputeBackend, LinuxSubstrate, SeccompProfile, SyscallArch,
-};
-use annora_substrate_macos::{
-    MacosComputeBackend, MacosSandboxProfile, MacosSubstrate,
-};
+use annora_substrate_linux::{LinuxComputeBackend, LinuxSubstrate, SeccompProfile, SyscallArch};
+use annora_substrate_macos::{MacosComputeBackend, MacosSandboxProfile, MacosSubstrate};
 use annora_substrate_mobile::{
     BatteryTier, MobileComputeBackend, MobileShadowSync, MobileSubstrate, ScopedStorageSandbox,
     ShadowState, StorageScope,
 };
 use annora_substrate_redox::{
-    RedoxCapabilityTable, RedoxComputeBackend, RedoxSchemeHandler, RedoxSubstrate,
-    SchemeHandler, CAP_READ, CAP_WRITE,
+    CAP_READ, CAP_WRITE, RedoxCapabilityTable, RedoxComputeBackend, RedoxSchemeHandler,
+    RedoxSubstrate, SchemeHandler,
 };
 use annora_substrate_web::{
     WebAudioBridge, WebAudioNodeConfig, WebComputeBackend, WebGpuDetector, WebSubstrate,
@@ -82,11 +78,16 @@ async fn test_all_compute_backends() {
 
 #[tokio::test]
 async fn test_cross_substrate_screen_capture_conformance() {
+    // Token Sensor+GuiInput / Read+Execute : capture_screen exige Sensor/Read
+    // (cohérent Windows). Expiration future pour ne pas expirer mid-test.
     let cap = annora_core::CapabilityAuthority::new()
         .create_root_token(
-            vec![CapabilityScope::GuiInput],
-            vec![annora_core::CapabilityAction::Read],
-            annora_core::Timestamp::now(),
+            vec![CapabilityScope::Sensor, CapabilityScope::GuiInput],
+            vec![
+                annora_core::CapabilityAction::Read,
+                annora_core::CapabilityAction::Execute,
+            ],
+            future_expiry(),
         )
         .unwrap();
 
@@ -121,6 +122,107 @@ async fn test_cross_substrate_screen_capture_conformance() {
     let web_screen = web.capture_screen(&cap).await.unwrap();
     assert_eq!(web_screen.width, 1920);
     assert_eq!(web_screen.height, 1080);
+}
+
+fn future_expiry() -> Timestamp {
+    Timestamp(chrono::Utc::now() + chrono::Duration::hours(1))
+}
+
+fn fs_write_cap(auth: &annora_core::CapabilityAuthority) -> annora_core::CapabilityToken {
+    auth.create_root_token(
+        vec![CapabilityScope::Filesystem],
+        vec![CapabilityAction::Write],
+        future_expiry(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn test_substrate_write_with_wrong_cap_refused() {
+    // Token porte le mauvais scope (Network/Read) : write_file doit refuser partout.
+    let authority = annora_core::CapabilityAuthority::new();
+    let wrong_cap = authority
+        .create_root_token(
+            vec![CapabilityScope::Network],
+            vec![CapabilityAction::Read],
+            future_expiry(),
+        )
+        .unwrap();
+    let path = VirtualPath("should_not_exist.txt".to_string());
+
+    let dir = tempfile::tempdir().unwrap();
+    let lin = LinuxSubstrate::new().with_virtual_fs_root(dir.path().join("vfs"));
+    assert!(lin.write_file(&path, b"nope", &wrong_cap).await.is_err());
+
+    let mac = MacosSubstrate::new();
+    assert!(mac.write_file(&path, b"nope", &wrong_cap).await.is_err());
+
+    let mob = MobileSubstrate::new();
+    assert!(mob.write_file(&path, b"nope", &wrong_cap).await.is_err());
+
+    let web = WebSubstrate::new();
+    assert!(web.write_file(&path, b"nope", &wrong_cap).await.is_err());
+
+    let redox = RedoxSubstrate::new();
+    assert!(redox.write_file(&path, b"nope", &wrong_cap).await.is_err());
+}
+
+#[tokio::test]
+async fn test_substrate_traversal_evil_refused() {
+    // `../evil` doit être rejeté par resolve_path AVANT tout effet.
+    let authority = annora_core::CapabilityAuthority::new();
+    let dir = tempfile::tempdir().unwrap();
+    let evil = VirtualPath("../evil".to_string());
+
+    let lin = LinuxSubstrate::new().with_virtual_fs_root(dir.path().join("lin"));
+    let good = fs_write_cap(&authority);
+    assert!(lin.write_file(&evil, b"evil", &good).await.is_err());
+    assert!(lin.read_file(&evil, &good).await.is_err());
+
+    let mac = MacosSubstrate::new();
+    assert!(mac.write_file(&evil, b"evil", &good).await.is_err());
+
+    let mob = MobileSubstrate::new();
+    assert!(mob.write_file(&evil, b"evil", &good).await.is_err());
+
+    let web = WebSubstrate::new();
+    assert!(web.write_file(&evil, b"evil", &good).await.is_err());
+
+    let redox = RedoxSubstrate::new();
+    assert!(redox.write_file(&evil, b"evil", &good).await.is_err());
+}
+
+#[tokio::test]
+async fn test_substrate_forged_token_refused_when_pinned() {
+    // Substrat pinné sur la racine honnête A : un token auto-signé forgé par
+    // l'attaquant B (bon scope/action) doit être refusé ; le token honnête passe.
+    let honest = annora_core::CapabilityAuthority::new();
+    let attacker = annora_core::CapabilityAuthority::new();
+    let forged = fs_write_cap(&attacker);
+    let legit = fs_write_cap(&honest);
+    let path = VirtualPath("pinned.txt".to_string());
+
+    let dir = tempfile::tempdir().unwrap();
+    let lin = LinuxSubstrate::new()
+        .with_virtual_fs_root(dir.path().join("lin"))
+        .with_trusted_root(honest.root_public_key());
+    assert!(lin.write_file(&path, b"evil", &forged).await.is_err());
+    assert!(lin.write_file(&path, b"legit", &legit).await.is_ok());
+
+    let mac = MacosSubstrate::new().with_trusted_root(honest.root_public_key());
+    assert!(mac.write_file(&path, b"evil", &forged).await.is_err());
+
+    let mob = MobileSubstrate::new().with_trusted_root(honest.root_public_key());
+    assert!(mob.write_file(&path, b"evil", &forged).await.is_err());
+    assert!(mob.write_file(&path, b"legit", &legit).await.is_ok());
+
+    let web = WebSubstrate::new().with_trusted_root(honest.root_public_key());
+    assert!(web.write_file(&path, b"evil", &forged).await.is_err());
+    assert!(web.write_file(&path, b"legit", &legit).await.is_ok());
+
+    let redox = RedoxSubstrate::new().with_trusted_root(honest.root_public_key());
+    assert!(redox.write_file(&path, b"evil", &forged).await.is_err());
+    assert!(redox.write_file(&path, b"legit", &legit).await.is_ok());
 }
 
 #[test]
@@ -185,7 +287,14 @@ fn test_redox_conformance_schemes_and_capabilities() {
     let mut mem_pool = vec![0u8; 512];
     let path = b"chan:conformance/stream";
     mem_pool[..path.len()].copy_from_slice(path);
-    let mut open_pkt = annora_substrate_redox::RedoxPacket::new(10, annora_substrate_redox::SYS_OPEN, 0, 0, path.len(), 0);
+    let mut open_pkt = annora_substrate_redox::RedoxPacket::new(
+        10,
+        annora_substrate_redox::SYS_OPEN,
+        0,
+        0,
+        path.len(),
+        0,
+    );
     let handle = handler.handle_packet(&mut open_pkt, &mut mem_pool).unwrap();
     assert_eq!(open_pkt.a, handle);
 
@@ -195,7 +304,9 @@ fn test_redox_conformance_schemes_and_capabilities() {
     assert!(table.verify_access(fd_test, CAP_WRITE).is_ok());
 
     // Capability attenuation
-    let derived_ro = table.derive_restricted_capability(fd_test, CAP_READ).unwrap();
+    let derived_ro = table
+        .derive_restricted_capability(fd_test, CAP_READ)
+        .unwrap();
     assert!(table.verify_access(derived_ro, CAP_READ).is_ok());
     assert!(table.verify_access(derived_ro, CAP_WRITE).is_err());
 }
@@ -206,7 +317,10 @@ fn test_mobile_conformance_shadow_and_battery() {
     shadow.queue_local_delta("draft.txt", b"secret draft");
     assert!(shadow.connect().is_ok());
     assert_eq!(shadow.state(), ShadowState::ActiveStreaming);
-    assert_eq!(shadow.get_value("draft.txt"), Some(b"secret draft".to_vec()));
+    assert_eq!(
+        shadow.get_value("draft.txt"),
+        Some(b"secret draft".to_vec())
+    );
 
     // CRDT LWW resolution
     let remote_delta = annora_substrate_mobile::ShadowDelta {
@@ -217,17 +331,37 @@ fn test_mobile_conformance_shadow_and_battery() {
         is_deleted: false,
     };
     shadow.push_remote_delta(remote_delta);
-    assert_eq!(shadow.get_value("draft.txt"), Some(b"newer draft from TiKV".to_vec()));
+    assert_eq!(
+        shadow.get_value("draft.txt"),
+        Some(b"newer draft from TiKV".to_vec())
+    );
 
     let sandbox = ScopedStorageSandbox::default();
     let resolved = sandbox
-        .resolve_path(StorageScope::Documents, &annora_core::VirtualPath("db.sqlite".to_string()))
+        .resolve_path(
+            StorageScope::Documents,
+            &annora_core::VirtualPath("db.sqlite".to_string()),
+        )
         .unwrap();
     assert!(resolved.ends_with("Documents/db.sqlite"));
 
     // Drive traversal rejection
-    assert!(sandbox.resolve_path(StorageScope::Documents, &annora_core::VirtualPath("C:\\Windows".to_string())).is_err());
-    assert!(sandbox.resolve_path(StorageScope::Documents, &annora_core::VirtualPath("/etc/shadow".to_string())).is_err());
+    assert!(
+        sandbox
+            .resolve_path(
+                StorageScope::Documents,
+                &annora_core::VirtualPath("C:\\Windows".to_string())
+            )
+            .is_err()
+    );
+    assert!(
+        sandbox
+            .resolve_path(
+                StorageScope::Documents,
+                &annora_core::VirtualPath("/etc/shadow".to_string())
+            )
+            .is_err()
+    );
 
     let bat = annora_substrate_mobile::BatteryConservationEngine::new(20.0, false);
     assert_eq!(bat.current_tier(), BatteryTier::Conserve);
@@ -247,8 +381,16 @@ fn test_web_conformance_audio_and_webgpu() {
     let detector = WebGpuDetector::new();
     assert!(detector.capabilities().is_webgpu_supported);
     assert!(detector.can_run_half_precision_gemm());
-    assert!(detector.validate_tensor_allocation(256 * 1024 * 1024).is_ok());
-    assert!(detector.validate_tensor_allocation(4 * 1024 * 1024 * 1024).is_err());
+    assert!(
+        detector
+            .validate_tensor_allocation(256 * 1024 * 1024)
+            .is_ok()
+    );
+    assert!(
+        detector
+            .validate_tensor_allocation(4 * 1024 * 1024 * 1024)
+            .is_err()
+    );
 
     let adapter = annora_substrate_web::WebScreenCaptureAdapter::default();
     let rgba = vec![200u8; 50 * 50 * 4];

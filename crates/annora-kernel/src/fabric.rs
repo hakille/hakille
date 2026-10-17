@@ -94,7 +94,10 @@ impl CognitiveFabric {
         );
 
         // 3. Reason & ReasonHeavy (Qwen2.5 0.5B GGUF)
-        let qwen_name = connected.qwen2.name().unwrap_or("qwen2.5-0.5b-instruct-q4km");
+        let qwen_name = connected
+            .qwen2
+            .name()
+            .unwrap_or("qwen2.5-0.5b-instruct-q4km");
         capabilities.insert(
             CapabilityName::Reason,
             CapabilityBinding {

@@ -1,4 +1,4 @@
-use crate::presence::{Color, PresenceState};
+use crate::presence::{Color, PresenceState, lueur};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,13 +47,17 @@ impl PlatformAdapter {
         let platform = PlatformKind::Redox;
         #[cfg(target_family = "wasm")]
         let platform = PlatformKind::Web;
-        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos", target_os = "redox", target_family = "wasm")))]
+        #[cfg(not(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "redox",
+            target_family = "wasm"
+        )))]
         let platform = PlatformKind::Mobile;
 
-        let global_hotkey = match platform {
-            PlatformKind::MacOS => "Cmd+Space".to_string(),
-            _ => "Alt+Space".to_string(),
-        };
+        let global_hotkey =
+            crate::ephemeral_hud::EphemeralHud::default_hotkey_for(platform).to_string();
 
         let haptic_supported = matches!(platform, PlatformKind::Mobile);
 
@@ -72,22 +76,45 @@ impl PlatformAdapter {
     }
 
     /// Generates platform-specific system tray status specification
-    pub fn create_tray_spec(&self, state: PresenceState, pending_actions_count: usize) -> TrayIconSpec {
+    pub fn create_tray_spec(
+        &self,
+        state: PresenceState,
+        pending_actions_count: usize,
+    ) -> TrayIconSpec {
         let (color, period, tooltip) = match state {
             PresenceState::Idle => (
-                Color { r: 120, g: 120, b: 120 }, // Muted grey
+                Color {
+                    r: 244,
+                    g: 235,
+                    b: 221,
+                }, // lueur à 40 %, statique
                 0,
-                "Annora — Veille ambiante".to_string(),
+                "Akora — Veille ambiante".to_string(),
             ),
-            PresenceState::Listening => (
-                Color { r: 64, g: 196, b: 255 },  // Soft electric blue breathing
-                2000,
-                "Annora — Écoute active".to_string(),
-            ),
+            PresenceState::Listening => (lueur(), 4000, "Akora — Écoute active".to_string()),
             PresenceState::Acting => (
-                Color { r: 255, g: 87, b: 34 },   // Distinct action pulse (tap opens audit journal)
-                600,
-                "Annora — Action en cours (Cliquer pour journal)".to_string(),
+                lueur(),
+                1200,
+                "Akora — Action en cours (toucher pour le journal)".to_string(),
+            ),
+            PresenceState::Speaking => (lueur(), 16, "Akora — Parole en cours".to_string()),
+            PresenceState::DecisionRequired => (
+                Color {
+                    r: 255,
+                    g: 122,
+                    b: 47,
+                }, // anneau braise fixe
+                0,
+                "Akora — Décision requise (toucher pour voir)".to_string(),
+            ),
+            PresenceState::Urgent => (
+                Color {
+                    r: 255,
+                    g: 122,
+                    b: 47,
+                }, // double impulsion braise 0,8 s
+                800,
+                "Akora — Urgence".to_string(),
             ),
         };
 
@@ -102,11 +129,21 @@ impl PlatformAdapter {
     /// Renders integration dispatch details for the target OS
     pub fn os_integration_details(&self) -> &'static str {
         match self.config.platform {
-            PlatformKind::Windows => "Windows Shell_NotifyIcon + DirectComposition acrylic overlay + RegisterHotKey(Alt+Space)",
-            PlatformKind::Linux => "D-Bus StatusNotifierItem (KStatusNotifier) + wlr-layer-shell / X11 overlay + xdg-desktop-portal",
-            PlatformKind::MacOS => "NSStatusItem MenuBar + NSVisualEffectView acrylic panel + CGEventTap hotkey",
-            PlatformKind::Redox => "Redox orbital scheme ambient dot + scheme-based IPC ephemeral buffer",
-            PlatformKind::Mobile => "Android / iOS Foreground Service persistent pill + Haptic Engine + Edge swipe",
+            PlatformKind::Windows => {
+                "Windows Shell_NotifyIcon + DirectComposition acrylic overlay + RegisterHotKey(Ctrl+Alt+Space, alias Alt+Space)"
+            }
+            PlatformKind::Linux => {
+                "D-Bus StatusNotifierItem (KStatusNotifier) + wlr-layer-shell / X11 overlay + xdg-desktop-portal"
+            }
+            PlatformKind::MacOS => {
+                "NSStatusItem MenuBar + NSVisualEffectView acrylic panel + CGEventTap hotkey"
+            }
+            PlatformKind::Redox => {
+                "Redox orbital scheme ambient dot + scheme-based IPC ephemeral buffer"
+            }
+            PlatformKind::Mobile => {
+                "Android / iOS Foreground Service persistent pill + Haptic Engine + Edge swipe"
+            }
             PlatformKind::Web => "Web Audio + Notification API + HTML5 floating canvas overlay",
         }
     }

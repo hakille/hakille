@@ -2,12 +2,13 @@
 name = "annora-constitution"
 version = "0.1.0"
 edition = "2024"
-
+description = "Constitution et gouvernance Annora"
+repository = "https://github.com/annora/annora"
 [dependencies]
 annora-core = { path = "../annora-core" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "1.0"
-tracing = "0.1"
-chrono = { version = "0.4", features = ["serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
 semver = { workspace = true }

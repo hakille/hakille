@@ -1,6 +1,7 @@
 use annora_core::Timestamp;
 use annora_memory::graph::KnowledgeGraph;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CuriosityInquiry {
@@ -15,9 +16,92 @@ pub struct CuriosityInquiry {
 /// Background Graph Curiosity Scanner (§28d).
 /// Operates during idle/low-carbon windows to analyze knowledge gaps or ambiguities,
 /// staging proactive questions without unprompted interruption.
-pub struct GraphCuriosityScanner;
+/// Heuristique honnête : détection par règles (densité graphe, mot-clé
+/// projet/objectif), PAS un modèle de curiosité — seuils documentés.
+pub struct GraphCuriosityScanner {
+    /// IDs déjà posées (déduplication) — évite de reposer la même question.
+    asked_ids: HashSet<String>,
+    /// File d'attente des questions mises en scène, en attente de fenêtre idle.
+    staged: Vec<CuriosityInquiry>,
+}
+
+impl Default for GraphCuriosityScanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl GraphCuriosityScanner {
+    pub fn new() -> Self {
+        Self {
+            asked_ids: HashSet::new(),
+            staged: Vec::new(),
+        }
+    }
+
+    /// Fenêtre idle : scan autorisé seulement si `idle_secs > 300` (5 min).
+    /// Heuristique anti-interruption, pas de détection d'activité système réelle.
+    pub fn should_scan(idle_secs: u64) -> bool {
+        idle_secs > 300
+    }
+
+    /// Questions déjà posées (déduplication).
+    pub fn asked_ids(&self) -> &HashSet<String> {
+        &self.asked_ids
+    }
+
+    /// File de staging actuelle.
+    pub fn staged(&self) -> &[CuriosityInquiry] {
+        &self.staged
+    }
+
+    /// Marque une question comme posée (alimente la déduplication).
+    pub fn mark_asked(&mut self, inquiry_id: impl Into<String>) {
+        self.asked_ids.insert(inquiry_id.into());
+    }
+
+    /// Scan + déduplication + staging : appelle le scan pur statique, filtre
+    /// les IDs déjà posées, pousse les nouvelles dans `staged` et les retourne.
+    /// Ne pose jamais de question directement (staging uniquement).
+    pub fn scan_and_stage(&mut self, graph: &KnowledgeGraph) -> Vec<CuriosityInquiry> {
+        let fresh: Vec<CuriosityInquiry> = Self::scan_for_curiosity_inquiries(graph)
+            .into_iter()
+            .filter(|inq| !self.asked_ids.contains(&inq.inquiry_id))
+            .collect();
+        for inq in &fresh {
+            // Évite les doublons dans le staging lui-même.
+            if !self.staged.iter().any(|s| s.inquiry_id == inq.inquiry_id) {
+                self.staged.push(inq.clone());
+            }
+            self.asked_ids.insert(inq.inquiry_id.clone());
+        }
+        fresh
+    }
+
+    /// Draine la file de staging (consommation par l'orchestrateur en fenêtre idle).
+    pub fn drain_staged(&mut self) -> Vec<CuriosityInquiry> {
+        std::mem::take(&mut self.staged)
+    }
+
+    /// Draine le staging vers l'initiative bornée : pour chaque question en
+    /// file, appelle `record(proposal_id, within_bounds, user_accepted)`.
+    /// `within_bounds` vaut toujours `true` ici (questions de relance lues
+    /// seules, jamais d'action) ; `user_accepted=false` tant que l'utilisateur
+    /// n'a pas validé. Retourne le nombre de propositions enregistrées.
+    /// Le câblage effectif vers `BoundedInitiativeTracker::record_proposal`
+    /// se fait côté orchestrateur (même signature) sans dépendance croisée.
+    pub fn drain_staged_for_initiative(
+        &mut self,
+        record: &mut dyn FnMut(String, bool, bool),
+    ) -> usize {
+        let staged = self.drain_staged();
+        let n = staged.len();
+        for inq in staged {
+            record(inq.inquiry_id, true, false);
+        }
+        n
+    }
+
     /// Scan knowledge graph and identify missing connections or follow-up opportunities.
     pub fn scan_for_curiosity_inquiries(graph: &KnowledgeGraph) -> Vec<CuriosityInquiry> {
         let mut inquiries = Vec::new();
@@ -27,9 +111,12 @@ impl GraphCuriosityScanner {
         if triplets.len() < 5 {
             inquiries.push(CuriosityInquiry {
                 inquiry_id: "inq-preferences-bootstrap".to_string(),
-                question_prompt: "Quels sont tes principaux projets ou priorités en ce moment ?".to_string(),
+                question_prompt: "Quels sont tes principaux projets ou priorités en ce moment ?"
+                    .to_string(),
                 topic_area: "Projets & Objectifs".to_string(),
-                rationale: "Densité initiale du graphe faible; apprentissage des axes de vie prioritaires".to_string(),
+                rationale:
+                    "Densité initiale du graphe faible; apprentissage des axes de vie prioritaires"
+                        .to_string(),
                 generated_at: Timestamp::now(),
                 priority: 0.9,
             });
@@ -38,7 +125,9 @@ impl GraphCuriosityScanner {
         // 2. Identify isolated topics or entities with only 1 link
         for t in &triplets {
             if let annora_memory::NodeValue::Text(ref text) = t.object {
-                if text.to_lowercase().contains("projet") || text.to_lowercase().contains("objectif") {
+                if text.to_lowercase().contains("projet")
+                    || text.to_lowercase().contains("objectif")
+                {
                     inquiries.push(CuriosityInquiry {
                         inquiry_id: format!("inq-followup-{}", t.id.0),
                         question_prompt: format!("Tu avais mentionné '{}' : y a-t-il une échéance particulière à suivre ?", text),
@@ -52,6 +141,53 @@ impl GraphCuriosityScanner {
             }
         }
 
+        inquiries
+    }
+
+    /// Mode `using_graph_orphans` (§28d) : scanne les sujets du graphe qui
+    /// n'ont fait l'objet d'aucune question récente et propose une relance
+    /// ciblée par sujet orphelin (max 3, triés par libellé pour déterminisme).
+    /// `recent_topics` : libellés ou mots-clés déjà abordés (insensible à la
+    /// casse, sous-chaîne dans les deux sens). Ne modifie pas le graphe.
+    pub fn using_graph_orphans(
+        graph: &KnowledgeGraph,
+        recent_topics: &[String],
+    ) -> Vec<CuriosityInquiry> {
+        let mut labels: Vec<String> = Vec::new();
+        for t in graph.all_triplets() {
+            if let Some(label) = graph.subject_label(&t.subject) {
+                if !labels.iter().any(|l| l == label) {
+                    labels.push(label.to_string());
+                }
+            }
+        }
+        labels.sort();
+        let recent: Vec<String> = recent_topics.iter().map(|s| s.to_lowercase()).collect();
+        let mut inquiries = Vec::new();
+        for label in labels {
+            let lower = label.to_lowercase();
+            let covered = recent
+                .iter()
+                .any(|r| lower.contains(r.as_str()) || r.contains(lower.as_str()));
+            if covered {
+                continue;
+            }
+            inquiries.push(CuriosityInquiry {
+                inquiry_id: format!("inq-orphan-{}", lower.replace(' ', "-")),
+                question_prompt: format!(
+                    "Tu avais mentionné '{}' : veux-tu faire le point dessus ?",
+                    label
+                ),
+                topic_area: "Suivi orphelin".to_string(),
+                rationale: "Sujet du graphe sans question récente ; relance proactive bornée"
+                    .to_string(),
+                generated_at: Timestamp::now(),
+                priority: 0.6,
+            });
+            if inquiries.len() >= 3 {
+                break;
+            }
+        }
         inquiries
     }
 }

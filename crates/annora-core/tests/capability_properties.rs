@@ -1,6 +1,4 @@
-use annora_core::{
-    CapabilityAction, CapabilityAuthority, CapabilityScope, Timestamp,
-};
+use annora_core::{CapabilityAction, CapabilityAuthority, CapabilityScope, Timestamp};
 use proptest::prelude::*;
 
 proptest! {

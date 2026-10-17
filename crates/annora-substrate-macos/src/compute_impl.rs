@@ -1,4 +1,4 @@
-use crate::mach_iokit::{read_host_vm_statistics, PAGE_SIZE_APPLE_SILICON};
+use crate::mach_iokit::{PAGE_SIZE_APPLE_SILICON, read_host_vm_statistics};
 use annora_substrate::{Compute, ComputeBackend};
 
 pub struct MacosComputeBackend {
@@ -33,10 +33,7 @@ impl Default for MacosComputeBackend {
 
 impl Compute for MacosComputeBackend {
     fn available_backends(&self) -> Vec<ComputeBackend> {
-        vec![
-            ComputeBackend::Metal,
-            ComputeBackend::Cpu,
-        ]
+        vec![ComputeBackend::Metal, ComputeBackend::Cpu]
     }
 
     fn preferred_backend(&self) -> ComputeBackend {
@@ -44,9 +41,10 @@ impl Compute for MacosComputeBackend {
     }
 
     fn vram_available_bytes(&self) -> u64 {
-        // Apple Silicon Unified Memory Architecture (UMA)
-        // Up to 75% of physical memory is allocatable as Metal VRAM
-        (self.total_physical_ram() * 3) / 4
+        // Honest: on Apple Silicon the shareable unified-memory fraction is
+        // dynamic and only knowable via a Metal / IORegistry query (not
+        // linked here). 0 means "unknown", never a hard-coded 3/4 share.
+        0
     }
 
     fn ram_available_bytes(&self) -> u64 {

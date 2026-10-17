@@ -1,4 +1,7 @@
-use annora_core::{CapabilityAction, CapabilityAuthority, CapabilityScope, CapabilityToken, Timestamp};
+use annora_core::{
+    AuthorizationContext, CapabilityAction, CapabilityAuthority, CapabilityScope, CapabilityToken,
+    Timestamp,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,7 +55,8 @@ impl ExecutionPlan {
         if is_irreversible {
             self.estimated_risk = RiskLevel::Irreversible;
             self.requires_human_confirmation = true;
-        } else if self.estimated_risk == RiskLevel::Low && required_scope == CapabilityScope::Wallet {
+        } else if self.estimated_risk == RiskLevel::Low && required_scope == CapabilityScope::Wallet
+        {
             self.estimated_risk = RiskLevel::High;
             self.requires_human_confirmation = true;
         }
@@ -77,8 +81,79 @@ impl ExecutionPlan {
     ) -> Result<(), String> {
         for step in &self.steps {
             authority
-                .verify(token, step.required_scope.clone(), step.required_action.clone())
-                .map_err(|e| format!("Plan step {} failed capability check: {}", step.step_id, e))?;
+                .verify(
+                    token,
+                    step.required_scope.clone(),
+                    step.required_action.clone(),
+                )
+                .map_err(|e| {
+                    format!("Plan step {} failed capability check: {}", step.step_id, e)
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Vérification avec token optionnel : si `token` est `None`, forge un
+    /// token atténué court (Network+Execute, 5 min) via `mint_short_network_token`
+    /// au lieu d'un root longue durée, puis vérifie. Le token court ne couvre
+    /// que le réseau : les pas Wallet/Filesystem restent refusés (verrou
+    /// `requires_human_confirmation` inchangé) — on ne décloisonne jamais.
+    pub fn verify_capabilities_or_short_token(
+        &self,
+        token: Option<&CapabilityToken>,
+        authority: &CapabilityAuthority,
+    ) -> Result<(), String> {
+        if let Some(t) = token {
+            return self.verify_capabilities(t, authority);
+        }
+        let short = crate::providers::mint_short_network_token(authority, None)
+            .map_err(|e| format!("mint short token: {e}"))?;
+        self.verify_capabilities(&short, authority)
+    }
+
+    /// Vérification pré-exécution avec [`AuthorizationContext`] : valide le
+    /// contexte (ressource normalisée, expiry, audience, quota, nonce,
+    /// délégation), exige la couverture scope/action du contexte pour chaque
+    /// pas (scope insuffisant = refus explicite), puis vérifie le token
+    /// Biscuit épinglé (`verify_pinned` + expiry). Zéro exécution ici.
+    pub fn verify_capabilities_with_context(
+        &self,
+        token: &CapabilityToken,
+        authority: &CapabilityAuthority,
+        ctx: &AuthorizationContext,
+        expected_audience: &str,
+    ) -> Result<(), String> {
+        ctx.validate()
+            .map_err(|e| format!("contexte d'autorisation invalide: {e}"))?;
+        ctx.check_audience(expected_audience)
+            .map_err(|e| format!("contexte d'autorisation rejeté: {e}"))?;
+        if ctx.is_expired() {
+            return Err("contexte d'autorisation expiré".to_string());
+        }
+        if token.is_expired() {
+            return Err("token de capability expiré".to_string());
+        }
+        for step in &self.steps {
+            if !ctx.covers(&step.required_scope, &step.required_action) {
+                return Err(format!(
+                    "Plan step {} scope insuffisant: contexte {:?}/{:?} ne couvre pas {:?}/{:?} (ressource '{}')",
+                    step.step_id,
+                    ctx.scope,
+                    ctx.action,
+                    step.required_scope,
+                    step.required_action,
+                    ctx.resource
+                ));
+            }
+            authority
+                .verify_pinned(
+                    token,
+                    step.required_scope.clone(),
+                    step.required_action.clone(),
+                )
+                .map_err(|e| {
+                    format!("Plan step {} failed capability check: {}", step.step_id, e)
+                })?;
         }
         Ok(())
     }
@@ -106,9 +181,15 @@ impl DeliberatePlanner {
         let all_succeeded = steps_succeeded == total_steps;
         let delta = if all_succeeded { 0.05 } else { -0.15 };
         let summary = if all_succeeded {
-            format!("Plan '{}' completed all {} steps successfully.", plan.plan_id, total_steps)
+            format!(
+                "Plan '{}' completed all {} steps successfully.",
+                plan.plan_id, total_steps
+            )
         } else {
-            format!("Plan '{}' stalled: {}/{} steps completed.", plan.plan_id, steps_succeeded, total_steps)
+            format!(
+                "Plan '{}' stalled: {}/{} steps completed.",
+                plan.plan_id, steps_succeeded, total_steps
+            )
         };
 
         PlanReflection {

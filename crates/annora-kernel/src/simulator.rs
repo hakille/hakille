@@ -48,7 +48,10 @@ impl DryRunSimulator {
             simulation_successful: true,
             diffs: vec![diff],
             warning: if amount_cents > 10000 {
-                Some("Montant supérieur à 100.00 EUR : validation humaine explicite requise (§19e).".to_string())
+                Some(
+                    "Montant supérieur à 100.00 EUR : validation humaine explicite requise (§19e)."
+                        .to_string(),
+                )
             } else {
                 None
             },
@@ -69,13 +72,25 @@ impl DryRunSimulator {
         let diff = SimulatedDiff {
             target_resource: path.to_string(),
             state_before: format!("{} octets", old_size_bytes),
-            state_after: if is_deletion { "Supprimé (0 octet)".to_string() } else { format!("{} octets", new_size_bytes) },
-            estimated_impact: if is_deletion { "Suppression définitive du fichier".to_string() } else { "Écriture / remplacement du contenu".to_string() },
+            state_after: if is_deletion {
+                "Supprimé (0 octet)".to_string()
+            } else {
+                format!("{} octets", new_size_bytes)
+            },
+            estimated_impact: if is_deletion {
+                "Suppression définitive du fichier".to_string()
+            } else {
+                "Écriture / remplacement du contenu".to_string()
+            },
             is_destructive: is_deletion,
         };
 
         DryRunReport {
-            action_type: if is_deletion { "FileDelete".to_string() } else { "FileWrite".to_string() },
+            action_type: if is_deletion {
+                "FileDelete".to_string()
+            } else {
+                "FileWrite".to_string()
+            },
             simulation_successful: true,
             diffs: vec![diff],
             warning: if is_deletion {
@@ -85,7 +100,12 @@ impl DryRunSimulator {
             },
             human_readable_preview: format!(
                 "Simulation : {} sur '{}'.",
-                if is_deletion { "suppression" } else { "modification" }, path
+                if is_deletion {
+                    "suppression"
+                } else {
+                    "modification"
+                },
+                path
             ),
         }
     }

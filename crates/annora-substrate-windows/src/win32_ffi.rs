@@ -94,6 +94,60 @@ pub const MOUSEEVENTF_WHEEL: u32 = 0x0800;
 pub const MOUSEEVENTF_HWHEEL: u32 = 0x1000;
 
 pub const KEYEVENTF_KEYUP: u32 = 0x0002;
+pub const KEYEVENTF_UNICODE: u32 = 0x0004;
+pub const KEYEVENTF_SCANCODE: u32 = 0x0008;
+
+// ---- SendInput (honnête : absolu 0..65535 + Unicode) ----
+pub const INPUT_MOUSE: u32 = 0;
+pub const INPUT_KEYBOARD: u32 = 1;
+pub const MOUSEEVENTF_MOVE: u32 = 0x0001;
+pub const MOUSEEVENTF_ABSOLUTE: u32 = 0x8000;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MOUSEINPUT {
+    pub dx: i32,
+    pub dy: i32,
+    pub mouseData: u32,
+    pub dwFlags: u32,
+    pub time: u32,
+    pub dwExtraInfo: usize,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KEYBDINPUT {
+    pub wVk: u16,
+    pub wScan: u16,
+    pub dwFlags: u32,
+    pub time: u32,
+    pub dwExtraInfo: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union INPUT_UNION {
+    pub mi: MOUSEINPUT,
+    pub ki: KEYBDINPUT,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct INPUT {
+    pub type_: u32,
+    pub u: INPUT_UNION,
+}
+
+impl Default for INPUT {
+    fn default() -> Self {
+        Self {
+            type_: 0,
+            u: INPUT_UNION {
+                mi: MOUSEINPUT::default(),
+            },
+        }
+    }
+}
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -111,6 +165,8 @@ unsafe extern "system" {
     pub fn SetCursorPos(X: i32, Y: i32) -> i32;
     pub fn mouse_event(dwFlags: u32, dx: u32, dy: u32, dwData: u32, dwExtraInfo: usize);
     pub fn keybd_event(bVk: u8, bScan: u8, dwFlags: u32, dwExtraInfo: usize);
+    pub fn SendInput(cInputs: u32, pInputs: *const INPUT, cbSize: i32) -> u32;
+    pub fn MapVirtualKeyW(uCode: u32, uMapType: u32) -> u32;
 }
 
 #[link(name = "gdi32")]
