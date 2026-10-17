@@ -11,8 +11,8 @@ Ce document constitue la référence exhaustive de la couche de confiance et de 
 Annora intègre ses propres primitives cryptographiques formellement prouvées :
 
 - **Signatures Numériques Ed25519** : Utilisées pour signer chaque entrée d'audit, chaque passeport d'agent WASM et chaque négociation inter-machines. Clé publique 32 octets, signature 64 octets.
-- **Chiffrement au Repos Authentifié ChaCha20-Poly1305 (AEAD)** : La base de données locale `redb`, les gabarits biométriques et les secrets d'authentification sont chiffrés avec des nonces aléatoires de 96 bits et une clé dérivée de l'enclave matérielle.
-- **Attestation Matérielle Distribuée** : À chaque démarrage, le `Substrate` génère une attestation cryptographique signée par le module TPM 2.0 (Windows/Linux) ou l'Apple Secure Enclave (macOS), garantissant au cluster TiKV que le nœud n'a pas été altéré.
+- **Chiffrement au Repos Authentifié ChaCha20-Poly1305 (AEAD)** : Les gabarits biométriques et les secrets d'authentification sont chiffrés avec des nonces aléatoires de 96 bits et une clé dérivée de l'enclave matérielle (nuance : graphe `redb` en clair — `crates/annora-memory/src/storage/edge.rs:89-134` sans chiffrement ; gabarits chiffrés — `crates/annora-auth/src/enrollment.rs:72-75` ; clés éphémères par boot, TPM/DPAPI suivi — `crates/annora-daemon/src/main.rs:315-316`).
+- **Attestation Matérielle Distribuée** : À chaque démarrage, le `Substrate` génère une attestation cryptographique signée par le module TPM 2.0 (Windows/Linux) ou l'Apple Secure Enclave (macOS), garantissant au cluster TiKV que le nœud n'a pas été altéré (état réel : signature dev locale, pas une preuve TPM — `crates/annora-daemon/src/main.rs:300`, tracked ; TiKV non déployé, shadow-sync local seul — `crates/annora-substrate-mobile/src/shadow.rs:153,199-202`).
 
 ---
 
@@ -117,6 +117,9 @@ Chaque système d'exploitation applique un confinement matériel et système imp
 | **Linux** | Seccomp-BPF + Namespaces | Filtres bytecode BPF (`simulate_bpf`), PID/Mount/Net namespaces | Interception immédiate `SECCOMP_RET_KILL_PROCESS` |
 | **macOS** | Sandbox Seatbelt | Profils Scheme `(deny default)`, Endpoint Security muting | Échec syscall avec `EPERM` |
 | **Redox OS** | Schemes Microkernel | Découplage complet d'adresses, table de capacités `CAP_READ/WRITE` | Rejet au niveau micro-noyau |
+| **Mobile / Web** | Shadow-sync local + loopback-only | Stockage scopé, pas d'egress externe (`stub: loopback-only, no egress`) | Réponse stub explicite, pas d'I/O réseau réelle |
+
+> État réel par backend (5 lignes) : **Windows** — profil AppContainer décrit en local (`substrate-windows/src/appcontainer.rs:5-19`), pas d'enforcement OS dur branché, capability vérifiée au point d'effet (`substrate_impl.rs:94-109`) ; **Linux** — Seccomp simulé en userspace (`simulate_bpf`, `substrate-linux/src/seccomp.rs:262`), namespaces décrits, egress loopback TODO (`substrate_impl.rs:334-346`) ; **macOS** — profils Seatbelt générés en DSL (`sandbox.rs:73`) + client Endpoint Security local (`endpoint_security.rs:95-101`), egress loopback TODO (`substrate_impl.rs:308-320`) ; **Redox** — schemes + table de capacités en-process (`scheme.rs:391-437`, `capabilities.rs:6-12`), sys:/orbital: partiellement stub (`substrate_impl.rs:379-404`) ; **Mobile/Web** — shadow-sync local seul, egress loopback-only explicite (`substrate-mobile/src/shadow.rs:199-202`, `substrate_impl.rs:253-265`).
 
 ---
 

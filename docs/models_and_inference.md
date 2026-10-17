@@ -1,20 +1,22 @@
 # Sélection des Modèles, Runtimes d'Inférence & Provisioning Autonome
 
+> **Bandeau d'honnêteté inspection-only (SIMULÉ) : 7/7 inspectés (présence + SHA-256 + headers), pas d'exécution neurale locale. Runtimes = inspection-only. Moteurs locaux = heuristiques (RMS+ZCR, énergie, sine hash, gabarits, mots-clés, sine 440Hz).**
+
 Ce document consigne la matrice des modèles fondations ouverts retenus pour Annora, leurs runtimes d'exécution natifs en Rust, les stratégies d'allocation mémoire, ainsi que le système de téléchargement et d'approvisionnement autonome à déploiement zéro-touch (*Zero-Touch Model Provisioning*).
 
 ---
 
-## 1. Matrice Globale des Modèles Téléchargés et Validés (7/7 — 100% Vérifiés)
+## 1. Matrice Globale des Modèles Téléchargés et Inspectés (7/7 inspectés (présence+SHA, pas d'exécution))
 
-| Rôle Fonctionnel | Modèle Retenu | Format & Taille | Empreinte RAM / VRAM | Runtime Rust | Tier Requis | Checksum SHA-256 Validé |
+| Rôle Fonctionnel | Modèle Retenu | Format & Taille | Empreinte RAM / VRAM | Runtime Rust (inspection-only) | Tier Requis | Checksum SHA-256 Validé |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Détection d'Activité Vocale (VAD)** | **Silero VAD v5** | ONNX (2.3 Mo) | RAM: 15 Mo / VRAM: 0 Mo | ONNX Runtime | Guest / Native | `1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3` |
-| **Signature Biométrique Locuteur** | **CAM++ 16k Advanced** | ONNX (28.2 Mo) | RAM: 30 Mo / VRAM: 0 Mo | ONNX Runtime | Guest / Native | `aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2` |
-| **Embeddings Graphe de Connaissance** | **All-MiniLM-L6-v2** | ONNX (90.4 Mo) | RAM: 90 Mo / VRAM: 0 Mo | ONNX Runtime | Native | `6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452` |
-| **Écoute Continue & ASR Instantané** | **SenseVoice-Small INT8** | ONNX (239 Mo + tokens) | RAM: 230 Mo / VRAM: 0 Mo | ONNX Runtime | Native | `c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51` |
-| **Raisonnement Rapide System 1** | **Qwen2.5 0.5B Instruct** | GGUF Q4_K_M (491 Mo) | RAM: 550 Mo / VRAM: 500 Mo | GGUF Native | Native | `74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db` |
-| **Contrôle Graphique (Computer-Use)** | **UI-TARS 2B SFT** | GGUF Q4_K_M (1.11 Go) | RAM: 1.8 Go / VRAM: 1.6 Go | GGUF Native | Native | `f316ecef2e2e8fa9a29e81ba2c9efa8ea6f408241e175331332960c7160e9c53` |
-| **Codec Neural Audio S2S** | **Kyutai Mimi** | Safetensors (384.6 Mo) | RAM: 450 Mo / VRAM: 400 Mo | Candle (Rust) | Sovereign | `bac7e85083dcded655d24eaadde7e6eea34c0da1b35fa2d284e641bd2b942a5e` |
+| **Détection d'Activité Vocale (VAD)** | **Silero VAD v5** | ONNX (2.3 Mo) | RAM: 15 Mo / VRAM: 0 Mo | ONNX Runtime (inspection-only) | Guest / Native | `1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3` |
+| **Signature Biométrique Locuteur** | **CAM++ 16k Advanced** | ONNX (28.2 Mo) | RAM: 30 Mo / VRAM: 0 Mo | ONNX Runtime (inspection-only) | Guest / Native | `aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2` |
+| **Embeddings Graphe de Connaissance** | **All-MiniLM-L6-v2** | ONNX (90.4 Mo) | RAM: 90 Mo / VRAM: 0 Mo | ONNX Runtime (inspection-only) | Native | `6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452` |
+| **Écoute Continue & ASR Instantané** | **SenseVoice-Small INT8** | ONNX (239 Mo + tokens) | RAM: 230 Mo / VRAM: 0 Mo | ONNX Runtime (inspection-only) | Native | `c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51` |
+| **Raisonnement Rapide System 1** | **Qwen2.5 0.5B Instruct** | GGUF Q4_K_M (491 Mo) | RAM: 550 Mo / VRAM: 500 Mo | GGUF Native (inspection-only) | Native | `74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db` |
+| **Contrôle Graphique (Computer-Use)** | **UI-TARS 2B SFT** | GGUF Q4_K_M (1.11 Go) | RAM: 1.8 Go / VRAM: 1.6 Go | GGUF Native (inspection-only) | Native | `f316ecef2e2e8fa9a29e81ba2c9efa8ea6f408241e175331332960c7160e9c53` |
+| **Codec Neural Audio S2S** | **Kyutai Mimi** | Safetensors (384.6 Mo) | RAM: 450 Mo / VRAM: 400 Mo | Candle (inspection-only, SIMULÉ) | Sovereign | `bac7e85083dcded655d24eaadde7e6eea34c0da1b35fa2d284e641bd2b942a5e` |
 
 ---
 

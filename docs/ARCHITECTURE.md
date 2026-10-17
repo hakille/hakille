@@ -44,7 +44,7 @@ Annora est structuré selon une hiérarchie stricte en 6 couches hermétiques. C
 |                            COUCHE 5 : ACTION (AGENTS WASM)                        |
 |  - Runtime de bac à sable WASI / Wasmtime (annora-agents)                         |
 |  - Vérification & atténuation hors-ligne de capabilities Biscuit                  |
-|  - Quotas stricts d'appels et révocation automatique en cas d'abus                |
+|  - Quotas stricts d'appels et révocation automatique en cas d'abus (état réel : quotas WASM enforced — `crates/annora-agents/src/runtime.rs:53-62` ; egress loopback-only, allowlist TODO — `crates/annora-substrate-linux/src/substrate_impl.rs:334-346`) |
 |  - Agent GUI UI-TARS (intentions d'action abstraites : Click, Type, Drag)         |
 |  - Protocole inter-agents signé Ed25519 (négociation d'agenda et de tâches)       |
 +===================================================================================+
@@ -55,7 +55,7 @@ Annora est structuré selon une hiérarchie stricte en 6 couches hermétiques. C
 |                            COUCHE 4 : MÉMOIRE DISTRIBUÉE                          |
 |  - Triple Store SPO / POS / OSP (annora-memory)                                   |
 |  - Moteur local embarqué ACID redb (Tier Edge - zéro configuration)               |
-|  - Index vectoriel sémantique HNSW instant-distance                               |
+|  - Index vectoriel sémantique HNSW instant-distance (non branché au recall — brute-force documentée, `crates/annora-memory/src/vector/edge.rs:22-34`) |
 |  - Cluster distribué Raft transactionnel TiKV (Tier Cluster)                      |
 |  - Synchronisation CRDT (Grow-only Sets + Tombstones, Vector Clocks) (annora-sync)|
 |  - Décroissance temporelle exponentielle & Résolution de contradictions           |
@@ -98,15 +98,15 @@ Annora est structuré selon une hiérarchie stricte en 6 couches hermétiques. C
 |    * Redox OS (Micro-noyau, Schemes natifs chan:, orbital:, sys:, RedoxPacket)    |
 |    * Mobile (Shadow sync TiKV, Scoped storage, Battery conservation state machine)|
 |    * Web (WebAssembly, Web Audio resampling 48->16kHz, Canvas, WebGPU limits)     |
-|  - Attestation matérielle cryptographique (TPM 2.0 / Apple Secure Enclave)        |
+|  - Attestation matérielle cryptographique (état réel : signature dev locale, pas une preuve TPM — `crates/annora-daemon/src/main.rs:300`, tracked) |
 +===================================================================================+
 ```
 
 ---
 
-## 3. Matrice Complète des 20 Crates du Projet
+## 3. Matrice Complète des 26 Crates du Projet (+ 5 Agents)
 
-Le monorepo Cargo regroupe 20 crates modulaires garantissant un découplage rigoureux :
+Le monorepo Cargo regroupe 26 crates modulaires (+ 5 agents WASM `agents/`) garantissant un découplage rigoureux :
 
 | Crate | Chemin | Rôle & Composants Clés | Couche |
 | :--- | :--- | :--- | :--- |
@@ -122,7 +122,7 @@ Le monorepo Cargo regroupe 20 crates modulaires garantissant un découplage rigo
 | **`annora-voice`** | [`../crates/annora-voice`](../crates/annora-voice) | Moteur vocal : codec neural causal Kyutai Mimi (12.5Hz, 80ms), moteur full-duplex Moshi S2S en Candle Rust, CosyVoice2 streaming TTS, détecteur d'interruption naturelle (Barge-in). | Couche 2 |
 | **`annora-inference`** | [`../crates/annora-inference`](../crates/annora-inference) | Runtimes neuronaux : parseur Candle Safetensors, inspecteur ONNX Runtime (`ort`), parseur binaire streaming GGUF v3, ModelRegistry avec éviction LRU VRAM et provisioner d'artefacts. | Transverse |
 | **`annora-kernel`** | [`../crates/annora-kernel`](../crates/annora-kernel) | Cerveau cognitif : `CognitiveFabric`, routeur System 1/2, `WorkingMemory`, `DeliberatePlanner`, `SelfModel`, `GraphCuriosityScanner`, `DryRunSimulator`, budgets de latence par étage. | Couche 3 |
-| **`annora-memory`** | [`../crates/annora-memory`](../crates/annora-memory) | Mémoire à long terme : graphe de triplets SPO avec triple indexation (SPO, POS, OSP), backend local ACID `redb`, index vectoriel HNSW `instant-distance`, GraphQueryLang DSL, déclin temporel. | Couche 4 |
+| **`annora-memory`** | [`../crates/annora-memory`](../crates/annora-memory) | Mémoire à long terme : graphe de triplets SPO avec triple indexation (SPO, POS, OSP — écriture 3 index, lecture par préfixe O(N) documentée, `crates/annora-memory/src/storage/edge.rs:164-167`), backend local ACID `redb`, index vectoriel HNSW `instant-distance` (non branché au recall, brute-force `vector/edge.rs:22-34`), GraphQueryLang DSL, déclin temporel. | Couche 4 |
 | **`annora-sync`** | [`../crates/annora-sync`](../crates/annora-sync) | Continuité multi-appareils : ensembles CRDT à croissance seule avec tombstones, horloges vectorielles, coordinateur de handoff de tâche et protocole de réplication TiKV. | Couche 4 |
 | **`annora-agents`** | [`../crates/annora-agents`](../crates/annora-agents) | Runtime d'action : bac à sable WASI via Wasmtime, vérification de capabilities Biscuit, quotas d'appels et auto-révocation, agent GUI UI-TARS, protocole inter-agents signé. | Couche 5 |
 | **`annora-audit`** | [`../crates/annora-audit`](../crates/annora-audit) | Journalisation inviolable : journal append-only avec signatures Ed25519, chaînage de hachages SHA-256, registre de consentement explicite, moteur de requêtes et d'explicabilité du "pourquoi". | Couche 6 |
@@ -139,37 +139,42 @@ Le monorepo Cargo regroupe 20 crates modulaires garantissant un découplage rigo
 Le schéma suivant illustre l'arbre d'appels et de compilation entre les briques :
 
 ```
-                                  [ annora-daemon ]
-                                         │
-        ┌────────────────────────────────┼────────────────────────────────┐
-        │                                │                                │
-        ▼                                ▼                                ▼
-  [ annora-ui ]                   [ annora-kernel ]               [ annora-metrics ]
-        │                                │                                │
-        ├────────────────────────────────┼────────────────────────────────┤
-        │                                │                                │
-        ▼                                ▼                                ▼
- [ annora-agents ]               [ annora-voice ]                [ annora-memory ]
-        │                                │                                │
-        ├────────────────────────────────┼────────────────────────────────┤
-        │                                │                                │
-        ▼                                ▼                                ▼
-  [ annora-auth ]               [ annora-perception ]              [ annora-sync ]
-        │                                │                                │
-        ├────────────────────────────────┴────────────────────────────────┤
-        │
-        ▼
- [ annora-audit ] ─────────────► [ annora-constitution ]
-        │
-        ▼
-[ annora-inference ]
-        │
-        ▼
- [ annora-substrate ] ◄─── [ annora-substrate-windows / linux / macos / redox / mobile / web ]
-        │
-        ▼
-   [ annora-core ]
+                                   [ annora-daemon ]
+                                          │
+         ┌────────────────────────────────┼────────────────────────────────┐
+         │                                │                                │
+         ▼                                ▼                                ▼
+   [ annora-ui ]                   [ annora-kernel ]               [ annora-metrics ]
+         │                                │                                │
+         │         ┌──────────────────────┴──────────────────────┐         │
+         │         │              kernel dépend :                │         │
+         │         │  inference + memory + constitution (+core)  │         │
+         │         └──────────────────────┬──────────────────────┘         │
+         ▼                                ▼                                ▼
+  [ annora-agents ]               [ annora-voice ]                [ annora-memory ]──►[ annora-sync ]
+         │                                │                                │
+         ├────────────────────────────────┼────────────────────────────────┤
+         │                                │                                │
+         ▼                                ▼                                ▼
+   [ annora-auth ]               [ annora-perception ]            [ annora-audit ]──►[ annora-constitution ]
+         │                                │                                │
+         └────────────────────────────────┴────────────────────────────────┘
+                                          │
+                                          ▼
+                                [ annora-inference ]  ◄── couche basse (GGUF/Safetensors/ONNX ort,
+                                          │               Candle Qwen, registre LRU VRAM)
+                                          ▼
+  [ annora-substrate ] ◄─── [ annora-substrate-windows / linux / macos / redox / mobile / web ]
+                                          │
+                                          ▼
+                                    [ annora-core ]
 ```
+
+> Écart corrigé : l'ancien arbre plaçait `annora-inference` au-dessus du
+> substrate comme dépendant de l'audit ; en réalité `inference` est bas
+> (ne dépend que de `core` + `substrate`), et `kernel` dépend de
+> `inference` + `memory` + `constitution` (+ `core`/`substrate`), voir
+> `crates/annora-kernel/Cargo.toml` et `crates/annora-inference/Cargo.toml`.
 
 ---
 

@@ -1,13 +1,21 @@
 # Annora — Sovereign Cognitive Operating System (Rust Native)
 
 [![Rust Version](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org)
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
-[![Conformance](https://img.shields.io/badge/conformance-27%2F27%20passing-brightgreen.svg)]()
-[![License](https://img.shields.io/badge/license-Apache--2.0%20%2F%20AGPL--3.0-blue.svg)](LICENSE-APACHE)
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](.github/workflows/ci.yml)
+[![Conformance](https://img.shields.io/badge/conformance-54%20fast%20%2B7%20slow%20ignored-yellow.svg)](.github/workflows/ci.yml)
 [![Security](https://img.shields.io/badge/security-Biscuit%20Capabilities-red.svg)]()
 [![No Python](https://img.shields.io/badge/python-0%25%20(Pure%20Rust)-purple.svg)]()
 
 > *"Un système d'exploitation cognitif souverain, pas un chatbot."*
+
+> **Statut : prototype / pré-alpha.** Voir [SECURITY.md](SECURITY.md) et
+> [l'audit du 2026-10-08](docs/AUDIT_PROJET_2026-10-08.md) : l'inférence est
+> **RÉELLE et golden-testée** (forwards `ort` VAD/ASR/CAM++/MiniLM, Qwen 2.5
+> Candle, RVQ Mimi, TTS formantique, grounding CV) ; seul le VLM UI-TARS
+> reste inspecté sans forward, l'attestation n'est pas matérielle, et le
+> sandboxing WASM est partiel. Ne pas utiliser avec des secrets de
+> production, de la biométrie réelle ou des paiements autonomes.
+> Détail par moteur : [docs/MODELS.md](docs/MODELS.md).
 
 ---
 
@@ -74,14 +82,14 @@ Annora n'est ni une application de chat, ni un wrapper d'API, ni un agent prompt
 
 ---
 
-## 📦 Structure du Workspace (20 Crates + Conformance)
+## 📦 Structure du Workspace (26 Crates + 5 Agents + Conformance)
 
-Le projet est un monorepo Cargo structuré en **20 crates modulaires**, **5 agents WASM de référence**, une suite de conformité exhaustive et des utilitaires `xtask` :
+Le projet est un monorepo Cargo structuré en **26 crates modulaires**, **5 agents WASM de référence**, une suite de conformité exhaustive (61 tests : 54 fast + 7 slow ignorés, voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
 
 ### 1. Fondations & Substrates OS
 - [`annora-core`](crates/annora-core) : Primitives cryptographiques (Ed25519, ChaCha20Poly1305), jetons Biscuit, types temporels, bus de messages typés (`Message`) et niveaux de confiance (`TrustLevel`).
 - [`annora-substrate`](crates/annora-substrate) : Traits d'abstraction OS (`Substrate`) et d'accélération matérielle (`Compute`), attestations TPM/Secure Enclave.
-- [`annora-substrate-windows`](crates/annora-substrate-windows) : Backend Windows Win32 natif (GDI BitBlt display capture, injection `SendInput`, bac à sable AppContainer, surveillance RAM/Batterie, présence Tray et hotkey `Alt+Space`).
+- [`annora-substrate-windows`](crates/annora-substrate-windows) : Backend Windows Win32 natif (GDI BitBlt display capture, injection `SendInput`, bac à sable AppContainer, surveillance RAM/Batterie, présence Tray et hotkey `Ctrl+Alt+Space`, alias `Alt+Space`).
 - [`annora-substrate-linux`](crates/annora-substrate-linux) : Backend Linux natif (compilateur Seccomp-BPF avec simulateur de bytecode, Namespaces PID/Mount/Net, Cgroups v2, télémétrie `/proc` et `/sys`, injection `/dev/uinput`, Wayland/X11).
 - [`annora-substrate-macos`](crates/annora-substrate-macos) : Backend macOS Darwin natif (profils Sandbox Seatbelt `(deny default)`, Endpoint Security muting, Mach `host_statistics64`, IOKit, capture Retina 2x CoreGraphics).
 - [`annora-substrate-redox`](crates/annora-substrate-redox) : Backend micro-noyau souverain Redox OS (schemes natifs `chan:`, `orbital:`, `disk:`, `sys:`, `audio:`, sérialisation `RedoxPacket`, table de capacités microkernel).
@@ -103,7 +111,7 @@ Le projet est un monorepo Cargo structuré en **20 crates modulaires**, **5 agen
 - [`annora-audit`](crates/annora-audit) : Journal append-only signé Ed25519 avec chaînage SHA-256, registre de consentement explicite, moteur de requêtes et d'explicabilité causale.
 - [`annora-auth`](crates/annora-auth) : Authentification multimodale continue, détecteur anti-usurpation vocale (liveness), gestionnaire de sessions invités, profils mineurs et capability Wallet.
 - [`annora-constitution`](crates/annora-constitution) : Les 10 règles constitutionnelles machine-vérifiables, gouvernance d'amendement par quorum et batterie de tests éthiques.
-- [`annora-ui`](crates/annora-ui) : Indicateur de présence ambiant à 3 états, HUD Spotlight éphémère (`Alt+Space`), sélecteur dynamique de canal, budget de silence proactif et compteur financier System 2 en direct.
+- [`annora-ui`](crates/annora-ui) : Indicateur de présence ambiant à 6 états (Idle/Listening/Acting/Speaking/DecisionRequired/Urgent, voir `presence.rs:90-99`), HUD Spotlight éphémère (`Ctrl+Alt+Space`, alias `Alt+Space`), sélecteur dynamique de canal (seuil bruit 65 dB), budget de silence proactif et compteur financier System 2 en direct.
 - [`annora-metrics`](crates/annora-metrics) : Tableau de bord des 3 métriques cardinales (Continuité, Initiative Bornée, Généralité Pratique) et détecteur de dérive des valeurs éthiques.
 - [`annora-daemon`](crates/annora-daemon) : Démon système exécutable orchestrant l'ensemble de la pile avec invite interactive REPL et inspection approfondie.
 
@@ -150,13 +158,33 @@ cargo check --workspace
 # Exécuter l'intégralité des tests unitaires et d'intégration
 cargo test --workspace
 
-# Exécuter la suite de conformité formelle (27/27 tests vérifiés)
+# Exécuter la suite de conformité formelle (61 tests : 54 fast verts + 7 slow ignorés, voir CI)
 cargo xtask conformance
+# Gate lente hebdo (décodage Qwen CPU réel) :
+cargo xtask conformance-slow
 ```
 
 ### Lancement du Démon Annora
 ```bash
 cargo run -p annora-daemon
+```
+
+### Lancement du shell Slint natif (sans WebView, ADR-007)
+```bash
+# Bridge headless (CI rapide, tests) :
+cargo test -p annora-ui-shell
+
+# Fenêtre réelle (tray + Ctrl+Alt+Space + overlay OS) :
+cargo run -p annora-ui-shell --features render --bin shell_demo
+
+# Galerie des composants (tous états × thèmes, base régression visuelle) :
+cargo run -p annora-ui-shell --features render --bin gallery
+
+# Tokens design (source unique TOML → Rust/Swift/Kotlin/CSS, CI) :
+cargo xtask tokens --check
+cargo xtask tokens export-swift   # target/tokens/AkoraTokens.swift
+cargo xtask tokens export-kotlin  # target/tokens/AkoraTokens.kt
+cargo xtask tokens export-css     # target/tokens/akora-tokens.css
 ```
 
 Dans l'invite interactive (`annora>`) :
@@ -166,9 +194,18 @@ annora> :metrics          # Inspecter les 3 métriques North-Star et l'alignemen
 annora> :models           # Lister le catalogue des modèles et l'état du cache
 annora> :connected        # Afficher la connexion vérifiée des 7 modèles fondations
 annora> :inspect-models   # Inspection binaire des tenseurs GGUF, Safetensors et ONNX
-annora> :hud              # Tester le HUD Spotlight éphémère (Alt+Space)
+annora> :hud              # Tester le HUD Spotlight éphémère (Ctrl+Alt+Space, alias Alt+Space)
+annora> :shell            # Snapshot shell Slint (présence/HUD/coût/silence → JSON compositor)
+annora> :models-honest    # Statuts honnêtes Inspected/Simulated (jamais de faux Operational)
+annora> :agents-cards     # 5 agents avec badges DEMO honnêtes + validations Braise
+annora> :powers           # Pouvoirs : périmètre, quota, expiration, interrupteur
+annora> :journal-search EUR  # Recherche journal (plus récent d'abord, 20/page)
+annora> :journal-why 1    # Pourquoi cette action ? (trace complète + nœuds graphe)
+annora> :a11y text        # Modalité voice|text|visual|haptic + override canal live
+annora> :onboarding       # Manifeste limites-avant-capacités + état acknowledgement
 annora> :channel          # Afficher l'arbitrage dynamique du Sélecteur de Canal
-annora> :budget           # Consulter le quota restant du Budget de Silence
+annora> :settings          # Réglages §8 : fournisseurs, voix, canaux, langues, accessibilité, sauvegarde, foyer, simulation
+annora> :budget           # Consulter le quota restant du Budget de Silence (3/jour, spec §18/§29)
 annora> :agents           # Lister les agents WASM sandboxés et leurs capabilities
 annora> :cost             # Suivre la consommation financière en temps réel
 annora> :memory           # Afficher les triplets SPO du graphe de connaissances
@@ -189,12 +226,8 @@ Pour explorer chaque sous-système en profondeur, consultez les guides dédiés 
 - 🤖 [**Modèles Fondations & Runtimes d'Inférence**](docs/MODELS.md) : Spécifications des 7 modèles, parseurs binaires GGUF v3 / Safetensors / ONNX et registre LRU VRAM.
 - 🛡️ [**Sécurité, Capabilities & Gouvernance**](docs/SECURITY_AND_GOVERNANCE.md) : Jetons Biscuit, Registre de Consentement, Journal chaîné Ed25519, Constitution et Anti-Spoofing.
 - 👁️ [**Interfaces Ambiantes & Perception**](docs/INTERFACES_AND_PERCEPTION.md) : Présence discrète, HUD Spotlight éphémère, Sélecteur de Canal, Budget de Silence, World Model et Moshi Full-Duplex.
-- 💻 [**Guide du Développeur & Manuel d'Ingénierie**](docs/DEVELOPER_GUIDE.md) : Guide pas à pas de compilation, suite de conformance 27/27, commandes CLI REPL et création d'agents WASM.
+- 💻 [**Guide du Développeur & Manuel d'Ingénierie**](docs/DEVELOPER_GUIDE.md) : Guide pas à pas de compilation, suite de conformance 56/56, commandes CLI REPL et création d'agents WASM.
 - 📋 [**Index des Décisions d'Architecture (ADRs)**](adr/) : Historique et justifications des choix techniques fondamentaux.
 
 ---
 
-## ⚖️ Licences
-
-- Composants Edge et Client (`annora-core`, `annora-kernel`, `annora-memory`, `annora-substrate-*`, `annora-agents`, `annora-ui`, `annora-inference`) : **Apache License 2.0**.
-- Composants Serveur et Cluster (`annora-sync`, wrappers de réplication TiKV) : **AGPLv3**.

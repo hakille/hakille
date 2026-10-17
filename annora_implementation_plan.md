@@ -124,8 +124,6 @@ annora/
 ├── .cargo/
 │   └── config.toml                     # Profils de compilation, targets
 ├── deny.toml                           # cargo-deny config
-├── LICENSE-APACHE                      # Apache 2.0 pour crates edge/client
-├── LICENSE-AGPL                        # AGPL pour composants serveur
 ├── README.md
 │
 ├── crates/
@@ -371,7 +369,6 @@ annora/
 name = "annora-core"
 version = "0.1.0"
 edition = "2024"
-license = "Apache-2.0"
 description = "Core types and primitives for Annora cognitive OS"
 
 [dependencies]

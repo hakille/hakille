@@ -2,7 +2,7 @@
 
 > *"De la compilation à la conformité formelle : bâtir et étendre un système d'exploitation cognitif en Rust pur."*
 
-Ce document constitue le guide de référence complet pour les développeurs, contributeurs et intégrateurs d'Annora. Il détaille la configuration de l'environnement de développement, la compilation du monorepo, la suite de tests formelle (27/27 tests de conformité), l'utilisation approfondie du CLI interactif (`annora-daemon`), la création d'agents WASM sandboxés, et l'implémentation de nouveaux backends `Substrate`.
+Ce document constitue le guide de référence complet pour les développeurs, contributeurs et intégrateurs d'Annora. Il détaille la configuration de l'environnement de développement, la compilation du monorepo, la suite de tests formelle (61 tests : 54 fast verts + 7 slow ignorés en gate hebdo, voir [CI](../.github/workflows/ci.yml)), l'utilisation approfondie du CLI interactif (`annora-daemon`), la création d'agents WASM sandboxés, et l'implémentation de nouveaux backends `Substrate`.
 
 ---
 
@@ -14,10 +14,12 @@ Ce document constitue le guide de référence complet pour les développeurs, co
   rustup update stable
   rustup default stable
   ```
-- **Cible WebAssembly** (pour la compilation des agents sandboxés) :
+- **Cibles WebAssembly** (agents vs shell-web, voir `xtask shell-web`) :
   ```bash
-  rustup target add wasm32-wasip1
+  rustup target add wasm32-wasip1          # agents WASI sandboxés (Wasmtime)
+  rustup target add wasm32-unknown-unknown # shell-web Slint canvas (wasm-pack)
   ```
+  Écart honnête : `xtask shell-web` vérifie `wasm32-unknown-unknown` + `wasm-pack` ; les agents exigent `wasm32-wasip1` (`cargo xtask build-agents`).
 - **Outils C/C++ et CMake** (pour les liaisons FFI des runtimes Candle et ONNX) :
   - **Windows** : Visual Studio Build Tools 2022 avec la charge de travail *"Développement Desktop en C++"*.
   - **Linux (Debian/Ubuntu)** : `sudo apt install build-essential cmake pkg-config libasound2-dev libssl-dev libudev-dev`
@@ -33,7 +35,7 @@ cd annora
 
 ## 2. Compilation du Projet
 
-Le workspace Cargo est configuré pour compiler les 20 crates de façon unifiée :
+Le workspace Cargo est configuré pour compiler les 26 crates (+ 5 agents) de façon unifiée :
 
 ```bash
 # 1. Vérification statique rapide de l'ensemble des crates
@@ -73,7 +75,7 @@ cargo xtask conformance
 # ou directement :
 cargo test -p conformance
 ```
-La suite `conformance` exécute **27 tests d'intégration stricts** couvrant l'ensemble des 6 couches :
+La suite `conformance` exécute **61 tests (54 fast verts en CI + 7 slow ignorés en gate hebdo `cargo xtask conformance-slow`)** couvrant l'ensemble des 6 couches :
 1. `test_conformance_anti_spoofing_and_guest_manager` : Validation de l'anti-usurpation vocale et expiration des invités.
 2. `test_conformance_consent_registry_and_quota_enforcement` : Vérification du registre de consentement et auto-révocation des quotas.
 3. `test_conformance_self_model_and_simulator` : Introspection du Self-Model et simulation d'action à blanc.
@@ -166,9 +168,18 @@ Le REPL accepte du texte naturel (qui est routé vers le `CognitiveOrchestrator`
 | **`:verify-models`** | Calcule et vérifie les empreintes cryptographiques SHA-256 de tous les modèles installés. |
 | **`:download <id>`** | Télécharge et installe un modèle par son identifiant (ex: `:download silero-vad-v5`). |
 | **`:camera`** | Capture une trame vidéo et évalue la situation visuelle sans fuite de pixels bruts. |
-| **`:hud`** | Démontre l'affichage du HUD Spotlight éphémère avec puce d'action Coral `#FF5722`. |
+| **`:hud`** | Démontre l'affichage du HUD Spotlight éphémère avec puce d'action Braise `#FF7A2F`. |
+| **`:shell`** | Snapshot shell Slint (présence/HUD/coût/silence → JSON compositor) + rappel lancement render. |
+| **`:models-honest`** | Statuts honnêtes Inspected/Simulated des 7 moteurs (jamais de faux Operational). |
+| **`:agents-cards`** | 5 agents avec badges DEMO honnêtes + flags validation Braise. |
+| **`:powers`** | Pouvoirs : périmètre, quota, dernier usage, expiration, interrupteur (+ verrou politique). |
+| **`:journal-search <q> [page]`** | Recherche journal, plus récent d'abord, 20/page, cherche aussi dans la trace complète. |
+| **`:journal-why <n\|id>`** | Pourquoi cette action : trace complète + nœuds graphe + mot de confiance. |
+| **`:a11y [voice\|text\|visual\|haptic]`** | Affiche/change la modalité d'accessibilité + override canal en direct. |
+| **`:onboarding`** | Manifeste limites-avant-capacités + état acknowledgement (bloquant). |
 | **`:channel`** | Affiche l'arbitrage en direct du `ChannelSelector` selon les conditions ambiantes. |
-| **`:budget`** | Inspecte le quota restant du Budget de Silence proactif (§21d). |
+| **`:settings`** | Réglages §8 : fournisseurs (pastille Local/Cloud), voix, canaux, langues, accessibilité, sauvegarde, foyer, simulation. |
+| **`:budget`** | Inspecte le quota restant du Budget de Silence proactif (3/jour, spec §18/§29). |
 | **`:ambient`** | Exécute un cycle complet de perception multimodale (audio + vision + WorldModel). |
 | **`:memory`** | Affiche l'ensemble des triplets SPO actuellement stockés dans le graphe de connaissances. |
 | **`:remember <S P O>`** | Insère un nouveau fait dans le graphe (ex: `:remember Alice aime Rust`). |

@@ -54,10 +54,12 @@ Pour préserver la fluidité de la conversation sans introduire de silences dér
 | **2. Mot d'Activation** | openWakeWord | **< 20 ms** | 30 ms |
 | **3. Transcription (ASR)** | SenseVoice-Small | **< 50 ms** | 80 ms |
 | **4. Diarisation & Biométrie** | Nemotron-3 + CAM++ | **< 25 ms** | 40 ms |
-| **5. Résolution Mémorielle** | redb SPO + instant-distance HNSW | **< 15 ms** | 30 ms |
+| **5. Résolution Mémorielle** | redb SPO + recherche brute-force (HNSW non branché, `vector/edge.rs:22-34`) | **< 15 ms** | 30 ms |
 | **6. Raisonnement Système 1** | Qwen 7B Q4 / Candle | **< 100 ms** | 150 ms |
 | **7. Raisonnement Système 2** | Modèle Distant / BYOM | **< 1200 ms** | 2000 ms |
 | **8. Synthèse Vocale (TTS)** | Moshi (Mimi) / CosyVoice2 | **< 80-150 ms** | 200 ms |
+
+> Écart honnête : cette table vise les étages perceptifs ; le budget pipeline exécutable est `PipelineBudgetConfig` (perception 60 / routing 20 / inférence 100 / action 40 / total 220 ms, mapping `memory_extract|recall|context_record`→perception etc., `crates/annora-kernel/src/budget.rs:14-24,54-68`).
 
 ---
 
@@ -148,7 +150,7 @@ $$\text{Règle Constitutionnelle} > \text{Instruction Humaine Explicite} > \text
 
 ## 5. Mémoire Distribuée : Le Graphe SPO et le DSL de Requête
 
-Annora rejette le simple RAG textuel au profit d'un **graphe de triplets symboliques SPO** (*Sujet, Prédicat, Objet*) enrichi d'un index vectoriel.
+Annora rejette le simple RAG textuel au profit d'un **graphe de triplets symboliques SPO** (*Sujet, Prédicat, Objet*) enrichi d'un index vectoriel. Écriture SPO déterministe (registre nom→UUID FNV-1a, `crates/annora-memory/src/graph.rs:53-67`, `crates/annora-kernel/src/orchestrator.rs:71-135`) ; contradiction ambigüe = AskUser bloquant sans écrasement (`orchestrator.rs:115-134`).
 
 ### Modèle de Données des Triplets
 Chaque fait dans le graphe est une structure typée avec métadonnées associées :
@@ -176,7 +178,7 @@ pub struct Triplet {
 ```
 
 ### Triple Indexation (SPO, POS, OSP)
-Pour garantir des traversées en temps constant ($\mathcal{O}(1)$ ou $\mathcal{O}(\log N)$) sans scan complet :
+Pour garantir des traversées rapides sans scan complet (nuance : EdgeStore écrit SPO/POS/OSP mais la lecture par préfixe est O(N) bornée au tier edge, `crates/annora-memory/src/storage/edge.rs:164-167`) :
 1. **Index SPO** : Permet de trouver instantanément toutes les propriétés d'une entité donnée.
 2. **Index POS** : Permet de trouver tous les sujets partageant un prédicat et une valeur cible.
 3. **Index OSP** : Permet d'effectuer des recherches inversées depuis les objets vers les sujets.
@@ -186,7 +188,7 @@ Pour garantir des traversées en temps constant ($\mathcal{O}(1)$ ou $\mathcal{O
 - **Tier Cluster (`TiKV`)** : Base clé-valeur distribuée à consensus Raft pour la synchronisation multi-machines à grande échelle.
 
 ### Recherche Sémantique Vectorielle HNSW (`instant-distance`)
-Pour les requêtes approximatives où la formulation exacte diffère du prédicat enregistré, un index HNSW (*Hierarchical Navigable Small World*) tourne localement, permettant de retrouver des nœuds voisins en quelques microsecondes par distance cosinus.
+Pour les requêtes approximatives où la formulation exacte diffère du prédicat enregistré, un index HNSW (*Hierarchical Navigable Small World*) tourne localement, permettant de retrouver des nœuds voisins en quelques microsecondes par distance cosinus (nuance : `instant-distance` non branché au recall — brute-force documentée, `crates/annora-memory/src/vector/edge.rs:22-34` ; recall réel 3 étages + cosinus 0.40 dernier recours, `crates/annora-kernel/src/orchestrator.rs:150-248`).
 
 ### Décroissance Temporelle Exponentielle
 Les faits qui ne sont pas réactivés voient leur poids décroître selon la loi exponentielle :

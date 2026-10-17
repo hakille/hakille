@@ -237,7 +237,7 @@ Pas le mot "AGI" dans le marketing — un piège qui invite au scepticisme et à
 
 Cinq capacités distinctes, cinq familles de modèles indépendantes. Un seul critère de sélection commun à toutes : servable en Rust pur — Candle nativement, ou ONNX via le crate `ort` en repli. Pas de runtime Python en production, jamais d'exception à la règle de la section 10.
 
-**Écoute — savoir qu'on lui parle.** openWakeWord (Apache 2.0, ONNX, modèle par mot-clé sous 1 Mo) pour la détection du mot d'activation, en permanence sur CPU, zéro cloud. Silero VAD en amont pour isoler la voix du bruit ambiant avant même d'interroger le mot d'activation. La phrase de réveil n'est jamais le nom seul — "Annora" à trois syllabes reste dans la zone de risque pour un système toujours à l'écoute. Le modèle est entraîné sur la phrase complète ("Dis Annora" ou l'équivalent localisé), même logique que "Hey Siri" ou "OK Google" : un préfixe qui rallonge juste assez la signature acoustique pour fiabiliser la détection, sans alourdir le nom de marque lui-même.
+**Écoute — savoir qu'on lui parle.** openWakeWord (ONNX, modèle par mot-clé sous 1 Mo) pour la détection du mot d'activation, en permanence sur CPU, zéro cloud. Silero VAD en amont pour isoler la voix du bruit ambiant avant même d'interroger le mot d'activation. La phrase de réveil n'est jamais le nom seul — "Annora" à trois syllabes reste dans la zone de risque pour un système toujours à l'écoute. Le modèle est entraîné sur la phrase complète ("Dis Annora" ou l'équivalent localisé), même logique que "Hey Siri" ou "OK Google" : un préfixe qui rallonge juste assez la signature acoustique pour fiabiliser la détection, sans alourdir le nom de marque lui-même.
 
 **Transcription — parole vers texte, routée par tier (section 3bis), pas un seul modèle pour tout.**
 
@@ -257,8 +257,8 @@ Cinq capacités distinctes, cinq familles de modèles indépendantes. Un seul cr
 
 **Contrôle souris/clavier — agir sur une interface.**
 
-- Tier souverain/natif : OpenCUA-32B — meilleur taux de réussite open-source sur OSWorld-Verified, licence ouverte.
-- Tier invité (mobile/embarqué léger) : UI-Mate-9B (Tencent, Apache 2.0) — conçu pour l'interaction desktop longue durée sur matériel contraint.
+- Tier souverain/natif : OpenCUA-32B — meilleur taux de réussite open-source sur OSWorld-Verified.
+- Tier invité (mobile/embarqué léger) : UI-Mate-9B (Tencent) — conçu pour l'interaction desktop longue durée sur matériel contraint.
 
 **Écrire — ce n'est pas un modèle séparé.** Produire du texte (réponse, remplissage de champ) est une sortie du noyau cognitif lui-même, pas une brique à part : Qwen3-8B pour le raisonnement local (section 4), avec bascule native entre mode réflexion et mode rapide, 131K de contexte — un vrai *System 1.5* interne avant même d'escalader vers System 2 dans le cloud.
 
@@ -418,7 +418,6 @@ La roadmap (section 11) dit quoi construire, pas comment le faire atterrir sans 
 
 **b) La mémoire n'a jamais eu de recherche par similarité — seulement par exactitude.** L'encodage en triplets SPO (section 5) retrouve des faits reliés, pas des faits qui *ressemblent* à une idée floue. Sans index vectoriel, une requête comme "quelque chose en lien avec ce dont on parlait la semaine dernière" n'a nulle part où aller. Deux ajouts, même logique edge/cluster que le reste de l'architecture : `instant-distance` (HNSW pur Rust, embarqué) sur le tier edge pour la recherche sémantique locale instantanée ; Qdrant — lui-même écrit en Rust, auto-hébergeable — sur le tier cluster, cohérent avec l'infrastructure fédérée déjà choisie (section 22a). C'est l'équivalent exact de ce que `pgvector` apporterait à Postgres, sans réintroduire de C dans la pile.
 
-**c) La licence du code n'avait jamais été tranchée — et elle conditionne tout le reste.** "Noyau local open-weights, gratuit" (section 12) ne dit rien du code lui-même. Sans licence explicite, l'auto-hébergement fédéré promis en section 22a n'est même pas légalement possible. Deux licences, pas une seule : Apache-2.0 pour les crates edge/client (`annora-kernel`, `annora-memory`, `annora-substrate-*`) — maximise la compatibilité et l'embarquabilité, cohérent avec l'écosystème Rust. AGPL, ou une Business Source License à bascule vers Apache après délai, pour les composants serveur/cluster (`annora-sync`, le wrapper TiKV) — empêche un grand cloud de réhéberger le cluster sans reverser au projet, le même problème qui a poussé MongoDB et Elastic à changer de licence après coup. Trancher ça maintenant évite de le découvrir en Phase 1, trop tard pour que ça coûte rien.
 
 ---
 
@@ -448,7 +447,7 @@ La roadmap (section 11) dit quoi construire, pas comment le faire atterrir sans 
 
 **c) L'accessibilité se conçoit avec, pas pour.** La reconfiguration de capacités (section 21g) règle l'architecture. Ça ne garantit pas qu'elle corresponde à un vrai usage. Des utilisateurs en situation de handicap participent aux tests dès la Phase 1, pas en bêta tardive une fois le design figé — le principe "rien sur nous sans nous", traité comme une exigence de processus, pas seulement de code.
 
-**d) Les contributions externes passent par un DCO, pas un CLA.** Le marketplace de skills (section 20e) et la licence ouverte (section 27c) ouvrent la porte aux contributions tierces. Un Developer Certificate of Origin — chacun certifie avoir le droit de contribuer ce qu'il soumet, rien de plus — plutôt qu'un Contributor License Agreement qui transfère des droits à l'entreprise. Le même standard que le noyau Linux, cohérent avec une gouvernance qui refuse déjà de tout contrôler seule (section 19h).
+**d) Les contributions externes passent par un DCO.** Le marketplace de skills (section 20e) ouvre la porte aux contributions tierces. Un Developer Certificate of Origin — chacun certifie avoir le droit de contribuer ce qu'il soumet, rien de plus — est cohérent avec une gouvernance qui refuse déjà de tout contrôler seule (section 19h).
 
 **e) Les développeurs de skills sont payés directement par l'utilisateur, jamais par une plateforme qui prend sa part dans le noir.** Le wallet capability (section 19e) ne sert pas qu'aux actions de l'utilisateur — un micro-paiement par usage réel va directement du wallet de l'utilisateur au développeur du skill, montant et bénéficiaire visibles dans le registre de consentement (section 20i). Pas de contrat d'exclusivité, pas de commission négociée en privé.
 
@@ -476,7 +475,6 @@ La roadmap (section 11) dit quoi construire, pas comment le faire atterrir sans 
 
 ## 31. Ce qui restait technique et opérationnel
 
-**a) Si l'entreprise meurt, le projet ne meurt pas avec elle.** La licence ouverte (section 27c) protège en théorie — en pratique, ça doit être un engagement explicite, pas un effet de bord accidentel. Les droits de licence des composants cluster/serveur sont détenus par la fondation de gouvernance (section 19h), indépendante de la survie de l'entreprise — pas par l'entreprise elle-même. Si l'entreprise ferme, rien ne change légalement : la communauté peut forker et continuer le jour même, pas après une bataille de liquidation judiciaire.
 
 **b) Le graphe a besoin d'un vrai langage de requête, pas juste un encodage de stockage.** L'encodage SPO (section 5) dit comment c'est stocké, jamais comment un développeur de skill (section 20e) ou le noyau lui-même interroge concrètement le graphe. Un langage de requête déclaratif dédié — traversées de graphe typées, filtres temporels sur la décroissance (section 5), jamais du SQL générique plaqué sur un modèle qui n'est pas relationnel. Sans ça, chaque skill réinvente sa propre façon fragile de parcourir le graphe.
 
