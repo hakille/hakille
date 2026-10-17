@@ -34,7 +34,12 @@ pub struct SoftwareRenderer {
 
 impl SoftwareRenderer {
     pub fn new(width: u32, height: u32, dark: bool) -> Self {
-        Self { width, height, dark, frames: 0 }
+        Self {
+            width,
+            height,
+            dark,
+            frames: 0,
+        }
     }
 
     /// Remplit un frame RGBA8. Déterministe pour golden images.
@@ -43,7 +48,11 @@ impl SoftwareRenderer {
         let w = scene.width.max(1) as usize;
         let h = scene.height.max(1) as usize;
         let mut px = vec![0u8; w * h * 4];
-        let bg = if scene.theme_dark { (0x0B, 0x0C, 0x0F) } else { (0xF6, 0xF4, 0xF0) };
+        let bg = if scene.theme_dark {
+            (0x0B, 0x0C, 0x0F)
+        } else {
+            (0xF6, 0xF4, 0xF0)
+        };
         for chunk in px.chunks_exact_mut(4) {
             chunk[0] = bg.0;
             chunk[1] = bg.1;
@@ -51,7 +60,10 @@ impl SoftwareRenderer {
             chunk[3] = 255;
         }
         // Brave : pastille braise en haut à gauche si un texte contient "Valider".
-        let has_validate = scene.cmds.iter().any(|c| format!("{c:?}").contains("Valider"));
+        let has_validate = scene
+            .cmds
+            .iter()
+            .any(|c| format!("{c:?}").contains("Valider"));
         if has_validate {
             let bw = (w.min(200)) * 4;
             for (i, b) in px.iter_mut().take(bw).enumerate() {
@@ -87,7 +99,11 @@ pub struct WgpuRenderer {
 
 impl WgpuRenderer {
     pub fn new(width: u32, height: u32, dark: bool) -> Self {
-        Self { status: GpuStatus::FallbackSoftware("non initialisé — logiciel".into()), software: SoftwareRenderer::new(width, height, dark), instance: None }
+        Self {
+            status: GpuStatus::FallbackSoftware("non initialisé — logiciel".into()),
+            software: SoftwareRenderer::new(width, height, dark),
+            instance: None,
+        }
     }
 
     /// Tente d'acquérir un adapter. En CI headless : échec explicite attendu.
@@ -97,7 +113,8 @@ impl WgpuRenderer {
         // Pas de surface ici (headless) : on signale le fallback explicite.
         // Le runtime réel appellera `try_init_gpu` avec une surface winit ;
         // sans GPU on ne rend JAMAIS une fenêtre vide silencieuse.
-        self.status = GpuStatus::FallbackSoftware("headless — logiciel, GPU différé au runtime winit".into());
+        self.status =
+            GpuStatus::FallbackSoftware("headless — logiciel, GPU différé au runtime winit".into());
         self.status.clone()
     }
 
@@ -117,14 +134,35 @@ pub type Renderer = WgpuRenderer;
 pub fn hud_scene(snap: &annora_ui_model::StableSnapshot, theme_dark: bool) -> Scene {
     let mut s = Scene::new(720, 64, theme_dark);
     let bg = if theme_dark { 0x0B0C0F } else { 0xF6F4F0 };
-    s.fill(Rect::new(0.0, 0.0, 720.0, 64.0).rounded(12.0), Color::from_hex(bg));
+    s.fill(
+        Rect::new(0.0, 0.0, 720.0, 64.0).rounded(12.0),
+        Color::from_hex(bg),
+    );
     // Anneau présence.
     let pulse = snap.presence_pulse.clamp(0.0, 1.0);
-    s.ring(32.0, 32.0, 10.0 + pulse * 4.0, 2.0, Color::from_hex(0xFF7A2F));
+    s.ring(
+        32.0,
+        32.0,
+        10.0 + pulse * 4.0,
+        2.0,
+        Color::from_hex(0xFF7A2F),
+    );
     if !snap.hud_query.is_empty() {
-        s.text(56.0, 40.0, 16.0, Color::from_hex(if theme_dark { 0xECEEF2 } else { 0x14161B }), snap.hud_query.clone());
+        s.text(
+            56.0,
+            40.0,
+            16.0,
+            Color::from_hex(if theme_dark { 0xECEEF2 } else { 0x14161B }),
+            snap.hud_query.clone(),
+        );
     } else if snap.hud_validation {
-        s.text(56.0, 40.0, 16.0, Color::from_hex(0xFF7A2F), format!("Valider : {}", snap.hud_validation_text));
+        s.text(
+            56.0,
+            40.0,
+            16.0,
+            Color::from_hex(0xFF7A2F),
+            format!("Valider : {}", snap.hud_validation_text),
+        );
     }
     s
 }
@@ -139,7 +177,10 @@ mod tests {
     fn software_paint_deterministic_golden() {
         let mut r = SoftwareRenderer::new(720, 64, true);
         let mut s = Scene::new(720, 64, true);
-        s.fill(Rect::new(0.0, 0.0, 720.0, 64.0).rounded(12.0), Color::from_hex(0x0B0C0F));
+        s.fill(
+            Rect::new(0.0, 0.0, 720.0, 64.0).rounded(12.0),
+            Color::from_hex(0x0B0C0F),
+        );
         let a = r.paint(&s);
         let b = r.paint(&s);
         assert_eq!(a, b);
@@ -164,7 +205,14 @@ mod tests {
         let visible = (viewport / row_h).ceil() as usize + 1;
         assert!(visible < 30);
         assert_eq!(count, 100_000);
-        let snap = StableSnapshot::from_states(&PresenceIndicator::new(), &EphemeralHud::new(), &CostCounter::new(500, "EUR"), &SilenceBudgetTracker::new(3), 0, 0);
+        let snap = StableSnapshot::from_states(
+            &PresenceIndicator::new(),
+            &EphemeralHud::new(),
+            &CostCounter::new(500, "EUR"),
+            &SilenceBudgetTracker::new(3),
+            0,
+            0,
+        );
         let scene = hud_scene(&snap, true);
         assert_eq!(scene.width, 720);
     }

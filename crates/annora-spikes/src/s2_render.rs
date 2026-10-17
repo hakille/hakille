@@ -7,10 +7,10 @@
 //! GPU Windows 11 (runner dédié CI).
 
 use annora_design::ActionCardView;
-use annora_ui_desktop::scene::Scene;
-use annora_ui_desktop::{components, theme::Theme};
 use annora_ui_desktop::components::{Button, PrimitiveCtx, Surface, Text};
 use annora_ui_desktop::scene::Rect;
+use annora_ui_desktop::scene::Scene;
+use annora_ui_desktop::{components, theme::Theme};
 
 /// Nombre de rangs visibles pour un viewport donné — budget mémoire constant.
 pub fn visible_rows(count: usize, row_h: f32, viewport_h: f32) -> usize {
@@ -25,8 +25,16 @@ pub fn visible_rows(count: usize, row_h: f32, viewport_h: f32) -> usize {
 pub fn journal_row_scene(index: usize, time: &str, action: &str, y: f32) -> Scene {
     let mut s = Scene::new(720, 32, true);
     let ctx = PrimitiveCtx::new(Theme::dark());
-    Surface { rect: Rect::new(0.0, 0.0, 720.0, 32.0) }.draw(&mut s, &ctx);
-    Text { content: format!("{time} — {action}"), size: 13.0, mono: false }.draw(&mut s, &ctx, 8.0, y);
+    Surface {
+        rect: Rect::new(0.0, 0.0, 720.0, 32.0),
+    }
+    .draw(&mut s, &ctx);
+    Text {
+        content: format!("{time} — {action}"),
+        size: 13.0,
+        mono: false,
+    }
+    .draw(&mut s, &ctx, 8.0, y);
     let _ = index;
     s
 }
@@ -48,7 +56,11 @@ pub fn action_card_scene(card: &ActionCardView) -> Scene {
         rect: Rect::new(0.0, 0.0, 720.0, 200.0),
     };
     ui_card.draw(&mut s, &ctx);
-    let _ = Button { label: "Valider".into(), braise: true, rect: Rect::new(16.0, 100.0, 200.0, 44.0) };
+    let _ = Button {
+        label: "Valider".into(),
+        braise: true,
+        rect: Rect::new(16.0, 100.0, 200.0, 44.0),
+    };
     s
 }
 
@@ -62,7 +74,10 @@ mod tests {
     fn test_s2_virtualization_100k_constant_window() {
         let count = 100_000usize;
         let visible = visible_rows(count, 32.0, 640.0);
-        assert!(visible < 30, "la fenêtre visible doit rester petite: {visible}");
+        assert!(
+            visible < 30,
+            "la fenêtre visible doit rester petite: {visible}"
+        );
         // Mémoire des rangs visibles ≈ visible × sizeof(row) — indépendante du total.
         let bytes_visible = visible * 128;
         assert!(bytes_visible < 8 * 1024);
@@ -85,9 +100,16 @@ mod tests {
                 if idx >= count {
                     break;
                 }
-                Surface { rect: Rect::new(0.0, i as f32 * row_h, 720.0, row_h) }.draw(&mut scene, &ctx);
-                Text { content: format!("rang {idx}"), size: 13.0, mono: false }
-                    .draw(&mut scene, &ctx, 8.0, i as f32 * row_h + 20.0);
+                Surface {
+                    rect: Rect::new(0.0, i as f32 * row_h, 720.0, row_h),
+                }
+                .draw(&mut scene, &ctx);
+                Text {
+                    content: format!("rang {idx}"),
+                    size: 13.0,
+                    mono: false,
+                }
+                .draw(&mut scene, &ctx, 8.0, i as f32 * row_h + 20.0);
             }
             last_fp = scene.fingerprint();
         }
@@ -120,7 +142,10 @@ mod tests {
     fn test_s2_software_render_frame_pixels() {
         let mut r = SoftwareRenderer::new(720, 64, true);
         let mut s = Scene::new(720, 64, true);
-        s.fill(Rect::new(0.0, 0.0, 720.0, 64.0).rounded(12.0), Color::from_hex(0x0B0C0F));
+        s.fill(
+            Rect::new(0.0, 0.0, 720.0, 64.0).rounded(12.0),
+            Color::from_hex(0x0B0C0F),
+        );
         let px = r.paint(&s);
         assert_eq!(px.len(), 720 * 64 * 4);
         assert_eq!(&px[..4], &[0x0B, 0x0C, 0x0F, 255]);
@@ -135,9 +160,16 @@ mod tests {
             let mut scene = Scene::new(720, 640, true);
             let ctx = PrimitiveCtx::new(Theme::dark());
             for row in 0..20 {
-                Surface { rect: Rect::new(0.0, row as f32 * 32.0, 720.0, 32.0) }.draw(&mut scene, &ctx);
-                Text { content: format!("ligne {} — action", i * 20 + row), size: 13.0, mono: false }
-                    .draw(&mut scene, &ctx, 8.0, row as f32 * 32.0 + 20.0);
+                Surface {
+                    rect: Rect::new(0.0, row as f32 * 32.0, 720.0, 32.0),
+                }
+                .draw(&mut scene, &ctx);
+                Text {
+                    content: format!("ligne {} — action", i * 20 + row),
+                    size: 13.0,
+                    mono: false,
+                }
+                .draw(&mut scene, &ctx, 8.0, row as f32 * 32.0 + 20.0);
             }
             let _ = scene.fingerprint();
             durations.push(t.elapsed());
@@ -145,6 +177,9 @@ mod tests {
         durations.sort();
         let p95 = durations[(durations.len() as f64 * 0.95) as usize];
         // Budget debug : composition CPU seule ; le GPU réel vise ≤8 ms.
-        assert!(p95.as_millis() < 50, "p95 composition CPU trop lent: {p95:?}");
+        assert!(
+            p95.as_millis() < 50,
+            "p95 composition CPU trop lent: {p95:?}"
+        );
     }
 }

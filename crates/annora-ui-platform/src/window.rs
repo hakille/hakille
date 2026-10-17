@@ -22,7 +22,12 @@ impl PlatformKind {
         return Self::Linux;
         #[cfg(target_os = "redox")]
         return Self::Redox;
-        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "redox")))]
+        #[cfg(not(any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "redox"
+        )))]
         return Self::Web;
     }
 
@@ -51,10 +56,26 @@ pub struct WindowHints {
 
 impl WindowHints {
     pub fn hud() -> Self {
-        Self { title: "Akora".into(), width: 720, height: 64, transparent: true, decorations: false, topmost: true, resizable: false }
+        Self {
+            title: "Akora".into(),
+            width: 720,
+            height: 64,
+            transparent: true,
+            decorations: false,
+            topmost: true,
+            resizable: false,
+        }
     }
     pub fn journal() -> Self {
-        Self { title: "Akora — Journal".into(), width: 720, height: 640, transparent: false, decorations: true, topmost: false, resizable: true }
+        Self {
+            title: "Akora — Journal".into(),
+            width: 720,
+            height: 640,
+            transparent: false,
+            decorations: true,
+            topmost: false,
+            resizable: true,
+        }
     }
 }
 

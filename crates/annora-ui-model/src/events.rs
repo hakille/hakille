@@ -36,9 +36,16 @@ pub enum UiEvent {
 pub enum KernelEvent {
     Presence(annora_ui_protocol::PresenceState),
     ShowCard(annora_ui_protocol::ActionCard),
-    JournalAppended { id: u64 },
-    HudReply { response: String, validation: Option<(String, u64)> },
-    Toast { text: String },
+    JournalAppended {
+        id: u64,
+    },
+    HudReply {
+        response: String,
+        validation: Option<(String, u64)>,
+    },
+    Toast {
+        text: String,
+    },
 }
 
 impl From<KernelToUi> for KernelEvent {
@@ -47,7 +54,13 @@ impl From<KernelToUi> for KernelEvent {
             KernelToUi::Presence(p) => Self::Presence(p),
             KernelToUi::ShowCard(c) => Self::ShowCard(c),
             KernelToUi::JournalAppended { id } => Self::JournalAppended { id },
-            KernelToUi::HudReply { response, validation } => Self::HudReply { response, validation },
+            KernelToUi::HudReply {
+                response,
+                validation,
+            } => Self::HudReply {
+                response,
+                validation,
+            },
             KernelToUi::Toast { text } => Self::Toast { text },
         }
     }
@@ -59,7 +72,13 @@ impl From<KernelEvent> for KernelToUi {
             KernelEvent::Presence(p) => Self::Presence(p),
             KernelEvent::ShowCard(c) => Self::ShowCard(c),
             KernelEvent::JournalAppended { id } => Self::JournalAppended { id },
-            KernelEvent::HudReply { response, validation } => Self::HudReply { response, validation },
+            KernelEvent::HudReply {
+                response,
+                validation,
+            } => Self::HudReply {
+                response,
+                validation,
+            },
             KernelEvent::Toast { text } => Self::Toast { text },
         }
     }
@@ -84,9 +103,13 @@ impl UiEvent {
     /// décidés par le noyau après `into_protocol`.
     pub fn validate(&self) -> Result<(), UiEventError> {
         match self {
-            Self::HudSubmitted { query } if query.trim().is_empty() => Err(UiEventError::EmptyQuery),
+            Self::HudSubmitted { query } if query.trim().is_empty() => {
+                Err(UiEventError::EmptyQuery)
+            }
             Self::FactDisputed { fact } if fact.trim().is_empty() => Err(UiEventError::EmptyEntry),
-            Self::DestinationSelected { index } if *index > 3 => Err(UiEventError::InvalidIndex(*index as usize)),
+            Self::DestinationSelected { index } if *index > 3 => {
+                Err(UiEventError::InvalidIndex(*index as usize))
+            }
             _ => Ok(()),
         }
     }
@@ -98,7 +121,9 @@ impl UiEvent {
             Self::CardApprove { card_id } => Some(UiToKernel::Approve { card_id }),
             Self::CardEdit { card_id } => Some(UiToKernel::Edit { card_id }),
             Self::CardReject { card_id } => Some(UiToKernel::Reject { card_id }),
-            Self::JournalRevert { index } => Some(UiToKernel::Undo { journal_id: index as u64 }),
+            Self::JournalRevert { index } => Some(UiToKernel::Undo {
+                journal_id: index as u64,
+            }),
             Self::PowersKillAll => Some(UiToKernel::RevokeAll),
             Self::HudSubmitted { query } => Some(UiToKernel::HudSubmit { query }),
             Self::SettingsToggled { index } => Some(UiToKernel::SettingsToggle { index }),
@@ -174,9 +199,23 @@ mod tests {
 
     #[test]
     fn validation_rejects_empty_and_bad_destination() {
-        assert!(UiEvent::HudSubmitted { query: "  ".into() }.validate().is_err());
-        assert!(UiEvent::DestinationSelected { index: 9 }.validate().is_err());
-        assert!(UiEvent::HudSubmitted { query: "bonjour".into() }.validate().is_ok());
+        assert!(
+            UiEvent::HudSubmitted { query: "  ".into() }
+                .validate()
+                .is_err()
+        );
+        assert!(
+            UiEvent::DestinationSelected { index: 9 }
+                .validate()
+                .is_err()
+        );
+        assert!(
+            UiEvent::HudSubmitted {
+                query: "bonjour".into()
+            }
+            .validate()
+            .is_ok()
+        );
     }
 
     #[test]
@@ -186,6 +225,10 @@ mod tests {
         assert_eq!(m.inner, UiToKernel::Approve { card_id: 3 });
         // Local pur → None (aucun effet système).
         assert!(UiEvent::HudCancelled.into_message().is_none());
-        assert!(UiEvent::DestinationSelected { index: 1 }.into_message().is_none());
+        assert!(
+            UiEvent::DestinationSelected { index: 1 }
+                .into_message()
+                .is_none()
+        );
     }
 }

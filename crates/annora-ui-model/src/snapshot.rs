@@ -1,6 +1,8 @@
 //! Snapshot stable — équivalent canonique de `ShellSnapshot` sans Slint.
 
-use annora_ui::{CostCounter, EphemeralHud, HudState, PresenceIndicator, PresenceState, SilenceBudgetTracker};
+use annora_ui::{
+    CostCounter, EphemeralHud, HudState, PresenceIndicator, PresenceState, SilenceBudgetTracker,
+};
 use serde::{Deserialize, Serialize};
 
 /// Tokens design — source unique `tokens/` (miroir `annora-design::generated`).
@@ -76,26 +78,74 @@ impl StableSnapshot {
             PresenceState::Urgent => (5u8, presence.pulse_factor(now_ms)),
         };
         let (q, r, streaming, v, vt, vc) = match hud.state() {
-            HudState::Hidden => (String::new(), String::new(), false, false, String::new(), String::new()),
-            HudState::Prompting { query, .. } => (query.clone(), String::new(), false, false, String::new(), String::new()),
-            HudState::StreamingResponse { query, response_text, is_final } => {
-                (query.clone(), response_text.clone(), !is_final, false, String::new(), String::new())
-            }
-            HudState::ValidationRequired { description, cost_cents, .. } => (
-                String::new(), String::new(), false, true, description.clone(),
-                cost_cents.map(|c| format!("{:.2} EUR", c as f64 / 100.0)).unwrap_or_default(),
+            HudState::Hidden => (
+                String::new(),
+                String::new(),
+                false,
+                false,
+                String::new(),
+                String::new(),
             ),
-            HudState::Evaporating { last_text, .. } => {
-                (String::new(), last_text.clone(), false, false, String::new(), String::new())
-            }
+            HudState::Prompting { query, .. } => (
+                query.clone(),
+                String::new(),
+                false,
+                false,
+                String::new(),
+                String::new(),
+            ),
+            HudState::StreamingResponse {
+                query,
+                response_text,
+                is_final,
+            } => (
+                query.clone(),
+                response_text.clone(),
+                !is_final,
+                false,
+                String::new(),
+                String::new(),
+            ),
+            HudState::ValidationRequired {
+                description,
+                cost_cents,
+                ..
+            } => (
+                String::new(),
+                String::new(),
+                false,
+                true,
+                description.clone(),
+                cost_cents
+                    .map(|c| format!("{:.2} EUR", c as f64 / 100.0))
+                    .unwrap_or_default(),
+            ),
+            HudState::Evaporating { last_text, .. } => (
+                String::new(),
+                last_text.clone(),
+                false,
+                false,
+                String::new(),
+                String::new(),
+            ),
         };
-        let level = if cost.is_budget_exceeded() { 2 } else if cost.is_near_budget_limit() { 1 } else { 0 };
+        let level = if cost.is_budget_exceeded() {
+            2
+        } else if cost.is_near_budget_limit() {
+            1
+        } else {
+            0
+        };
         let presence_a11y_label = match presence.state() {
             PresenceState::Idle => "Akora : veille ambiante".to_string(),
             PresenceState::Listening => "Akora : écoute active".to_string(),
-            PresenceState::Acting => "Akora : action en cours — activer pour ouvrir le journal".to_string(),
+            PresenceState::Acting => {
+                "Akora : action en cours — activer pour ouvrir le journal".to_string()
+            }
             PresenceState::Speaking => "Akora : parole en cours".to_string(),
-            PresenceState::DecisionRequired => "Akora : décision requise — activer pour voir".to_string(),
+            PresenceState::DecisionRequired => {
+                "Akora : décision requise — activer pour voir".to_string()
+            }
             PresenceState::Urgent => "Akora : urgence".to_string(),
         };
         Self {
@@ -163,14 +213,22 @@ impl StableSnapshot {
             "Akora — {} (pulse {:.0}%){}\n{}\nCoût System2 : {:.2} EUR / {:.2} EUR [{}]\nSilence : {}/{} crédits | Contraste : {}",
             self.presence_label(),
             self.presence_pulse * 100.0,
-            if self.presence_attention { " [● attention]" } else { "" },
+            if self.presence_attention {
+                " [● attention]"
+            } else {
+                ""
+            },
             hud_block,
             self.cost_total_cents as f64 / 100.0,
             self.cost_budget_cents as f64 / 100.0,
             cost_level,
             self.silence_remaining,
             self.silence_quota,
-            if self.high_contrast { "fort" } else { "standard" },
+            if self.high_contrast {
+                "fort"
+            } else {
+                "standard"
+            },
         )
     }
 
@@ -197,7 +255,10 @@ pub struct ShellPrefs {
 
 impl Default for ShellPrefs {
     fn default() -> Self {
-        Self { reduced_motion: false, destination: 0 }
+        Self {
+            reduced_motion: false,
+            destination: 0,
+        }
     }
 }
 
@@ -249,7 +310,10 @@ mod tests {
         assert_eq!(p.quantized_pulse(0.49), 0.0);
         assert_eq!(p.quantized_pulse(0.5), 1.0);
         assert_eq!(ShellPrefs::default().with_destination(9).destination, 3);
-        assert_eq!(ShellPrefs::default().with_destination(2).destination_enum(), Destination::Pouvoirs);
+        assert_eq!(
+            ShellPrefs::default().with_destination(2).destination_enum(),
+            Destination::Pouvoirs
+        );
     }
 
     #[test]
@@ -285,21 +349,39 @@ mod tests {
 
             assert_eq!(ours.presence_state, theirs.presence_state, "{state:?}");
             assert_eq!(ours.presence_pulse, theirs.presence_pulse, "{state:?}");
-            assert_eq!(ours.presence_attention, theirs.presence_attention, "{state:?}");
+            assert_eq!(
+                ours.presence_attention, theirs.presence_attention,
+                "{state:?}"
+            );
             assert_eq!(ours.hud_query, theirs.hud_query, "{state:?}");
             assert_eq!(ours.hud_response, theirs.hud_response, "{state:?}");
             assert_eq!(ours.hud_streaming, theirs.hud_streaming, "{state:?}");
             assert_eq!(ours.hud_validation, theirs.hud_validation, "{state:?}");
-            assert_eq!(ours.hud_validation_text, theirs.hud_validation_text, "{state:?}");
-            assert_eq!(ours.hud_validation_cost, theirs.hud_validation_cost, "{state:?}");
+            assert_eq!(
+                ours.hud_validation_text, theirs.hud_validation_text,
+                "{state:?}"
+            );
+            assert_eq!(
+                ours.hud_validation_cost, theirs.hud_validation_cost,
+                "{state:?}"
+            );
             assert_eq!(ours.cost_total_cents, theirs.cost_total_cents, "{state:?}");
-            assert_eq!(ours.cost_budget_cents, theirs.cost_budget_cents, "{state:?}");
+            assert_eq!(
+                ours.cost_budget_cents, theirs.cost_budget_cents,
+                "{state:?}"
+            );
             assert_eq!(ours.cost_level, theirs.cost_level, "{state:?}");
-            assert_eq!(ours.silence_remaining, theirs.silence_remaining, "{state:?}");
+            assert_eq!(
+                ours.silence_remaining, theirs.silence_remaining,
+                "{state:?}"
+            );
             assert_eq!(ours.silence_quota, theirs.silence_quota, "{state:?}");
             assert_eq!(ours.high_contrast, theirs.high_contrast, "{state:?}");
             assert_eq!(ours.light_mode, theirs.light_mode, "{state:?}");
-            assert_eq!(ours.presence_a11y_label, theirs.presence_a11y_label, "{state:?}");
+            assert_eq!(
+                ours.presence_a11y_label, theirs.presence_a11y_label,
+                "{state:?}"
+            );
             assert_eq!(ours.presence_label(), theirs.presence_label(), "{state:?}");
             assert_eq!(
                 ours.render_text_dashboard(),

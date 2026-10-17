@@ -38,7 +38,15 @@ pub struct OverlayPlacement {
 
 impl OverlayPlacement {
     pub fn hud(backend: OverlayBackend) -> Self {
-        Self { width: 720, height: 64, radius: 12, top_offset: 120, topmost: true, backend, visible: false }
+        Self {
+            width: 720,
+            height: 64,
+            radius: 12,
+            top_offset: 120,
+            topmost: true,
+            backend,
+            visible: false,
+        }
     }
 
     /// Géométrie futuriste : 640×56 rejetée (ADR-007).
@@ -61,7 +69,15 @@ mod tests {
     fn futurist_geometry_accepted() {
         let p = OverlayPlacement::hud(OverlayBackend::WindowsAcrylic);
         assert!(p.is_futurist_geometry());
-        let bad = OverlayPlacement { width: 640, height: 56, radius: 8, top_offset: 120, topmost: true, backend: OverlayBackend::WindowsAcrylic, visible: false };
+        let bad = OverlayPlacement {
+            width: 640,
+            height: 56,
+            radius: 8,
+            top_offset: 120,
+            topmost: true,
+            backend: OverlayBackend::WindowsAcrylic,
+            visible: false,
+        };
         assert!(!bad.is_futurist_geometry());
     }
 

@@ -93,11 +93,15 @@ impl DesktopHost for NoopHost {
     }
     fn copy_text(&mut self, text: &str) -> Result<(), HostError> {
         use crate::clipboard::Clipboard as _;
-        self.clipboard.copy_text(text).map_err(|e| HostError::Clipboard(e.to_string()))
+        self.clipboard
+            .copy_text(text)
+            .map_err(|e| HostError::Clipboard(e.to_string()))
     }
     fn paste_text(&self) -> Result<String, HostError> {
         use crate::clipboard::Clipboard as _;
-        self.clipboard.paste_text().map_err(|e| HostError::Clipboard(e.to_string()))
+        self.clipboard
+            .paste_text()
+            .map_err(|e| HostError::Clipboard(e.to_string()))
     }
     fn window_hints(&self) -> &WindowHints {
         &self.hints

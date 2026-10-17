@@ -29,15 +29,19 @@ pub struct SimpleTextEngine {
 
 impl SimpleTextEngine {
     pub fn new() -> Self {
-        Self { avg_advance_ratio: 0.6 }
+        Self {
+            avg_advance_ratio: 0.6,
+        }
     }
 
     fn detect_rtl(text: &str) -> bool {
-        text.chars().any(|c| matches!(c,
-            '\u{0600}'..='\u{06FF}' | '\u{0750}'..='\u{077F}' |
-            '\u{0590}'..='\u{05FF}' | '\u{FB50}'..='\u{FDFF}' |
-            '\u{FE70}'..='\u{FEFF}'
-        ))
+        text.chars().any(|c| {
+            matches!(c,
+                '\u{0600}'..='\u{06FF}' | '\u{0750}'..='\u{077F}' |
+                '\u{0590}'..='\u{05FF}' | '\u{FB50}'..='\u{FDFF}' |
+                '\u{FE70}'..='\u{FEFF}'
+            )
+        })
     }
 
     fn is_cjk(c: char) -> bool {
@@ -50,7 +54,15 @@ impl TextEngine for SimpleTextEngine {
         let mut w = 0.0f32;
         let mut glyphs = 0usize;
         for c in text.chars() {
-            let adv = if Self::is_cjk(c) { 1.0 } else if c.is_ascii_uppercase() { 0.72 } else if c == ' ' { 0.35 } else { self.avg_advance_ratio };
+            let adv = if Self::is_cjk(c) {
+                1.0
+            } else if c.is_ascii_uppercase() {
+                0.72
+            } else if c == ' ' {
+                0.35
+            } else {
+                self.avg_advance_ratio
+            };
             w += adv * size_px;
             glyphs += 1;
             if let Some(m) = max_width {
@@ -59,7 +71,12 @@ impl TextEngine for SimpleTextEngine {
                 }
             }
         }
-        ShapedRun { text: text.to_string(), width_px: w, is_rtl: Self::detect_rtl(text), glyph_count: glyphs }
+        ShapedRun {
+            text: text.to_string(),
+            width_px: w,
+            is_rtl: Self::detect_rtl(text),
+            glyph_count: glyphs,
+        }
     }
 
     fn line_height(&self, size_px: f32) -> f32 {

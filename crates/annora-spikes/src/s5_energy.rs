@@ -7,9 +7,11 @@
 //! 30 fps en mode batterie. Critère labo restant : mesures ETW/Instruments/
 //! powertop sur matériel réel.
 
+use annora_ui::{
+    CostCounter, EphemeralHud, PresenceIndicator, PresenceState, SilenceBudgetTracker,
+};
 use annora_ui_desktop::{HeadlessRuntime, RuntimeEvent};
 use annora_ui_model::StableSnapshot;
-use annora_ui::{CostCounter, EphemeralHud, PresenceIndicator, PresenceState, SilenceBudgetTracker};
 use std::time::{Duration, Instant};
 
 /// Construit un snapshot pour un état de présence donné.
@@ -64,7 +66,10 @@ mod tests {
         rt.push(RuntimeEvent::ShowHud);
         let _ = rt.tick();
         assert!(rt.visible);
-        assert!(!rt.needs_frame(), "Idle statique ne doit pas planifier de frame");
+        assert!(
+            !rt.needs_frame(),
+            "Idle statique ne doit pas planifier de frame"
+        );
     }
 
     #[test]

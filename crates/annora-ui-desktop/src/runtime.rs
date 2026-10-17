@@ -31,10 +31,18 @@ pub struct FrameBudget {
 
 impl FrameBudget {
     pub fn full() -> Self {
-        Self { min_frame_interval: Duration::from_millis(8), max_fps: 120, last_frame: None }
+        Self {
+            min_frame_interval: Duration::from_millis(8),
+            max_fps: 120,
+            last_frame: None,
+        }
     }
     pub fn battery_saver() -> Self {
-        Self { min_frame_interval: Duration::from_millis(33), max_fps: 30, last_frame: None }
+        Self {
+            min_frame_interval: Duration::from_millis(33),
+            max_fps: 30,
+            last_frame: None,
+        }
     }
     /// `true` ssi un nouveau frame est autorisé maintenant.
     pub fn poll(&mut self, now: Instant, needs_frame: bool) -> bool {
@@ -110,7 +118,11 @@ impl HeadlessRuntime {
             match ev {
                 RuntimeEvent::HotkeyPressed => {
                     self.visible = !self.visible;
-                    out.push(if self.visible { RuntimeEvent::ShowHud } else { RuntimeEvent::HideHud });
+                    out.push(if self.visible {
+                        RuntimeEvent::ShowHud
+                    } else {
+                        RuntimeEvent::HideHud
+                    });
                     // Hotkey → visible doit produire au plus 1 frame (p95 ≤100ms mesuré en intégration).
                     if self.visible {
                         self.wakeups += 1;
@@ -159,7 +171,14 @@ pub struct WinitConfig {
 
 impl Default for WinitConfig {
     fn default() -> Self {
-        Self { width: 720, height: 64, transparent: true, decorations: false, topmost: true, visible: false }
+        Self {
+            width: 720,
+            height: 64,
+            transparent: true,
+            decorations: false,
+            topmost: true,
+            visible: false,
+        }
     }
 }
 
@@ -168,7 +187,10 @@ impl WinitConfig {
         use winit::window::WindowLevel;
         winit::window::Window::default_attributes()
             .with_title("Akora")
-            .with_inner_size(winit::dpi::LogicalSize::new(self.width as f64, self.height as f64))
+            .with_inner_size(winit::dpi::LogicalSize::new(
+                self.width as f64,
+                self.height as f64,
+            ))
             .with_transparent(self.transparent)
             .with_decorations(self.decorations)
             .with_window_level(WindowLevel::AlwaysOnTop)
@@ -179,10 +201,19 @@ impl WinitConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use annora_ui::{CostCounter, EphemeralHud, PresenceIndicator, PresenceState, SilenceBudgetTracker};
+    use annora_ui::{
+        CostCounter, EphemeralHud, PresenceIndicator, PresenceState, SilenceBudgetTracker,
+    };
 
     fn snap_idle() -> StableSnapshot {
-        StableSnapshot::from_states(&PresenceIndicator::new(), &EphemeralHud::new(), &CostCounter::new(500, "EUR"), &SilenceBudgetTracker::new(3), 0, 0)
+        StableSnapshot::from_states(
+            &PresenceIndicator::new(),
+            &EphemeralHud::new(),
+            &CostCounter::new(500, "EUR"),
+            &SilenceBudgetTracker::new(3),
+            0,
+            0,
+        )
     }
 
     #[test]
@@ -223,7 +254,14 @@ mod tests {
         let mut r = HeadlessRuntime::new();
         let mut presence = PresenceIndicator::new();
         presence.set_state(PresenceState::Idle);
-        let snap = StableSnapshot::from_states(&presence, &EphemeralHud::new(), &CostCounter::new(500, "EUR"), &SilenceBudgetTracker::new(3), 0, 0);
+        let snap = StableSnapshot::from_states(
+            &presence,
+            &EphemeralHud::new(),
+            &CostCounter::new(500, "EUR"),
+            &SilenceBudgetTracker::new(3),
+            0,
+            0,
+        );
         r.set_snapshot(snap);
         assert!(!r.needs_frame());
     }

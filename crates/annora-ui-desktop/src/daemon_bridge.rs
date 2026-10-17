@@ -42,11 +42,21 @@ pub struct RealDaemonBridge {
 
 impl RealDaemonBridge {
     pub fn detached() -> Self {
-        Self { policy: AuthorityPolicy::Detached, journal: Vec::new(), next_id: 1, pending_cards: HashMap::new() }
+        Self {
+            policy: AuthorityPolicy::Detached,
+            journal: Vec::new(),
+            next_id: 1,
+            pending_cards: HashMap::new(),
+        }
     }
 
     pub fn local_authorized() -> Self {
-        Self { policy: AuthorityPolicy::LocalAuthorized, journal: Vec::new(), next_id: 1, pending_cards: HashMap::new() }
+        Self {
+            policy: AuthorityPolicy::LocalAuthorized,
+            journal: Vec::new(),
+            next_id: 1,
+            pending_cards: HashMap::new(),
+        }
     }
 
     /// Met une carte en attente (noyau → UI, jamais l'inverse).
@@ -62,7 +72,9 @@ impl RealDaemonBridge {
     }
 
     fn require_daemon<T>(&self, what: &str) -> Result<T, BridgeError> {
-        Err(BridgeError::DaemonRequired(format!("daemon non branché — {what}")))
+        Err(BridgeError::DaemonRequired(format!(
+            "daemon non branché — {what}"
+        )))
     }
 }
 
@@ -71,11 +83,13 @@ impl KernelStub for RealDaemonBridge {
         msg.check().map_err(BridgeError::Protocol)?;
         if self.policy == AuthorityPolicy::Detached {
             return match &msg.inner {
-                UiToKernel::Undo { journal_id } => Ok(KernelToUi::JournalAppended { id: *journal_id }),
-                UiToKernel::RevokeAll => Ok(KernelToUi::JournalAppended { id: 0 }),
-                UiToKernel::Approve { .. } | UiToKernel::Edit { .. } | UiToKernel::Reject { .. } => {
-                    self.require_daemon("carte en attente")
+                UiToKernel::Undo { journal_id } => {
+                    Ok(KernelToUi::JournalAppended { id: *journal_id })
                 }
+                UiToKernel::RevokeAll => Ok(KernelToUi::JournalAppended { id: 0 }),
+                UiToKernel::Approve { .. }
+                | UiToKernel::Edit { .. }
+                | UiToKernel::Reject { .. } => self.require_daemon("carte en attente"),
                 UiToKernel::HudSubmit { .. } => self.require_daemon("requête HUD en attente"),
                 UiToKernel::SettingsToggle { .. } => self.require_daemon("réglage non persisté"),
                 UiToKernel::MemoryForget { .. } => self.require_daemon("reçu crypto requis"),
@@ -87,7 +101,12 @@ impl KernelStub for RealDaemonBridge {
             UiToKernel::Approve { card_id } => {
                 let label = self.pending_cards.remove(card_id);
                 let id = self.commit(format!("approuvé carte #{card_id}"));
-                tracing::info!(card_id, label = label.as_deref().unwrap_or(""), id, "carte approuvée");
+                tracing::info!(
+                    card_id,
+                    label = label.as_deref().unwrap_or(""),
+                    id,
+                    "carte approuvée"
+                );
                 Ok(KernelToUi::JournalAppended { id })
             }
             UiToKernel::Edit { card_id } => {
@@ -142,15 +161,17 @@ impl DaemonKernel for RealDaemonBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use annora_ui_model::UiEvent;
     use crate::kernel_bridge::KernelBridge;
+    use annora_ui_model::UiEvent;
 
     #[test]
     fn detached_refuses_all_sensitive_and_traces_none() {
         let mut b = KernelBridge::new(RealDaemonBridge::detached());
         for ev in [
             UiEvent::CardApprove { card_id: 1 },
-            UiEvent::HudSubmitted { query: "test".into() },
+            UiEvent::HudSubmitted {
+                query: "test".into(),
+            },
             UiEvent::SettingsToggled { index: 0 },
             UiEvent::MemoryForget { row_id: "m".into() },
             UiEvent::OutboxFlush,
@@ -165,17 +186,31 @@ mod tests {
         let mut bridge = KernelBridge::new(RealDaemonBridge::local_authorized());
         bridge.kernel.stage_card(7, "Envoi 25.00 EUR à Awa");
         // 1. Demande : le noyau accepte et journalise (id produit côté noyau).
-        let reply = bridge.dispatch(UiEvent::CardApprove { card_id: 7 }).unwrap().unwrap();
+        let reply = bridge
+            .dispatch(UiEvent::CardApprove { card_id: 7 })
+            .unwrap()
+            .unwrap();
         match reply {
             annora_ui_model::KernelEvent::JournalAppended { id } => assert_eq!(id, 1),
             other => panic!("attendu journal, obtenu {other:?}"),
         }
         // 2. HUD : réponse honnête, pas de validation surprise.
-        let hud = bridge.dispatch(UiEvent::HudSubmitted { query: "résume".into() }).unwrap().unwrap();
+        let hud = bridge
+            .dispatch(UiEvent::HudSubmitted {
+                query: "résume".into(),
+            })
+            .unwrap()
+            .unwrap();
         assert!(matches!(hud, annora_ui_model::KernelEvent::HudReply { .. }));
         // 3. Journal puis annulation : nouvelle entrée signée côté noyau.
-        let undo = bridge.dispatch(UiEvent::JournalRevert { index: 1 }).unwrap().unwrap();
-        assert!(matches!(undo, annora_ui_model::KernelEvent::JournalAppended { id: 3 }));
+        let undo = bridge
+            .dispatch(UiEvent::JournalRevert { index: 1 })
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            undo,
+            annora_ui_model::KernelEvent::JournalAppended { id: 3 }
+        ));
         // 4. Trace locale = miroir du journal noyau, ordonnée.
         let traces = bridge.kernel.traces();
         assert_eq!(traces.len(), 3);
@@ -199,7 +234,12 @@ mod tests {
     fn local_events_stay_local_even_when_authorized() {
         let mut bridge = KernelBridge::new(RealDaemonBridge::local_authorized());
         assert!(bridge.dispatch(UiEvent::PresenceTapped).unwrap().is_none());
-        assert!(bridge.dispatch(UiEvent::OnboardingAcknowledge).unwrap().is_none());
+        assert!(
+            bridge
+                .dispatch(UiEvent::OnboardingAcknowledge)
+                .unwrap()
+                .is_none()
+        );
         assert!(bridge.kernel.traces().is_empty());
     }
 }

@@ -19,7 +19,12 @@ impl Color {
         Self { r, g, b, a: 255 }
     }
     pub fn from_hex(hex: u32) -> Self {
-        Self { r: ((hex >> 16) & 0xFF) as u8, g: ((hex >> 8) & 0xFF) as u8, b: (hex & 0xFF) as u8, a: 255 }
+        Self {
+            r: ((hex >> 16) & 0xFF) as u8,
+            g: ((hex >> 8) & 0xFF) as u8,
+            b: (hex & 0xFF) as u8,
+            a: 255,
+        }
     }
     pub fn with_alpha(self, a: u8) -> Self {
         Self { a, ..self }
@@ -37,7 +42,13 @@ pub struct Rect {
 
 impl Rect {
     pub fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
-        Self { x, y, w, h, radius: 0.0 }
+        Self {
+            x,
+            y,
+            w,
+            h,
+            radius: 0.0,
+        }
     }
     pub fn rounded(mut self, r: f32) -> Self {
         self.radius = r;
@@ -47,10 +58,29 @@ impl Rect {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DrawCmd {
-    FillRect { rect: Rect, color: Color },
-    Ring { cx: f32, cy: f32, radius: f32, width: f32, color: Color },
-    GlyphRun { x: f32, y: f32, size: f32, color: Color, text: String },
-    Shadow { rect: Rect, blur: f32, color: Color },
+    FillRect {
+        rect: Rect,
+        color: Color,
+    },
+    Ring {
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        width: f32,
+        color: Color,
+    },
+    GlyphRun {
+        x: f32,
+        y: f32,
+        size: f32,
+        color: Color,
+        text: String,
+    },
+    Shadow {
+        rect: Rect,
+        blur: f32,
+        color: Color,
+    },
 }
 
 /// Scène immuable — snapshot du frame, snapshotable pour golden tests.
@@ -64,16 +94,33 @@ pub struct Scene {
 
 impl Scene {
     pub fn new(width: u32, height: u32, theme_dark: bool) -> Self {
-        Self { cmds: Vec::new(), width, height, theme_dark }
+        Self {
+            cmds: Vec::new(),
+            width,
+            height,
+            theme_dark,
+        }
     }
     pub fn fill(&mut self, rect: Rect, color: Color) {
         self.cmds.push(DrawCmd::FillRect { rect, color });
     }
     pub fn ring(&mut self, cx: f32, cy: f32, radius: f32, width: f32, color: Color) {
-        self.cmds.push(DrawCmd::Ring { cx, cy, radius, width, color });
+        self.cmds.push(DrawCmd::Ring {
+            cx,
+            cy,
+            radius,
+            width,
+            color,
+        });
     }
     pub fn text(&mut self, x: f32, y: f32, size: f32, color: Color, text: impl Into<String>) {
-        self.cmds.push(DrawCmd::GlyphRun { x, y, size, color, text: text.into() });
+        self.cmds.push(DrawCmd::GlyphRun {
+            x,
+            y,
+            size,
+            color,
+            text: text.into(),
+        });
     }
     /// Hash déterministe pour snapshots golden (taille/DPI/thème fixés).
     pub fn fingerprint(&self) -> u64 {
@@ -127,7 +174,10 @@ mod tests {
     #[test]
     fn scene_fingerprint_stable() {
         let mut s = Scene::new(720, 64, true);
-        s.fill(Rect::new(0.0, 0.0, 720.0, 64.0).rounded(12.0), Color::from_hex(0x0B0C0F));
+        s.fill(
+            Rect::new(0.0, 0.0, 720.0, 64.0).rounded(12.0),
+            Color::from_hex(0x0B0C0F),
+        );
         s.text(16.0, 40.0, 16.0, Color::from_hex(0xECEEF2), "Akora");
         let a = s.fingerprint();
         let mut r = MemSceneRenderer::default();

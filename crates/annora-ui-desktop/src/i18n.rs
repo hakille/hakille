@@ -39,15 +39,45 @@ impl Strings {
 
     pub fn get(&self, key: &str) -> String {
         let (fr, en, ar, ja) = match key {
-            "hud.prompt" => ("Commande Akora — Entrée pour envoyer, Échap pour fermer", "Akora command — Enter to send, Esc to close", "أمر أكورا — إدخال للإرسال، هروب للإغلاق", "Akoraコマンド — Enterで送信、Escで閉じる"),
+            "hud.prompt" => (
+                "Commande Akora — Entrée pour envoyer, Échap pour fermer",
+                "Akora command — Enter to send, Esc to close",
+                "أمر أكورا — إدخال للإرسال، هروب للإغلاق",
+                "Akoraコマンド — Enterで送信、Escで閉じる",
+            ),
             "hud.validate" => ("Valider", "Confirm", "تأكيد", "確定"),
             "hud.modify" => ("Modifier", "Edit", "تعديل", "修正"),
             "hud.refuse" => ("Refuser", "Decline", "رفض", "拒否"),
-            "journal.title" => ("Journal d'audit — frise, annulation en un geste", "Audit journal — timeline, one-gesture undo", "سجل التدقيق — مخطط زمني، تراجع بإيماءة", "監査ジャーナル — タイムライン、ワンジェスチャで取消"),
-            "presence.idle" => ("Akora : veille ambiante", "Akora: ambient idle", "أكورا: خمول محيطي", "Akora: 待機中"),
-            "presence.listening" => ("Akora : écoute active", "Akora: listening", "أكورا: استماع نشط", "Akora: リスニング中"),
-            "presence.decision" => ("Akora : décision requise — activer pour voir", "Akora: decision required — activate to view", "أكورا: مطلوب قرار — فعّل للعرض", "Akora: 決定が必要です — 開いて確認"),
-            "card.hold" => ("Valider — appui long 600 millisecondes (action définitive)", "Confirm — 600 ms long-press (final action)", "تأكيد — ضغط مطوّل 600 مللي ثانية (إجراء نهائي)", "確定 — 600ミリ秒長押し（最終アクション）"),
+            "journal.title" => (
+                "Journal d'audit — frise, annulation en un geste",
+                "Audit journal — timeline, one-gesture undo",
+                "سجل التدقيق — مخطط زمني، تراجع بإيماءة",
+                "監査ジャーナル — タイムライン、ワンジェスチャで取消",
+            ),
+            "presence.idle" => (
+                "Akora : veille ambiante",
+                "Akora: ambient idle",
+                "أكورا: خمول محيطي",
+                "Akora: 待機中",
+            ),
+            "presence.listening" => (
+                "Akora : écoute active",
+                "Akora: listening",
+                "أكورا: استماع نشط",
+                "Akora: リスニング中",
+            ),
+            "presence.decision" => (
+                "Akora : décision requise — activer pour voir",
+                "Akora: decision required — activate to view",
+                "أكورا: مطلوب قرار — فعّل للعرض",
+                "Akora: 決定が必要です — 開いて確認",
+            ),
+            "card.hold" => (
+                "Valider — appui long 600 millisecondes (action définitive)",
+                "Confirm — 600 ms long-press (final action)",
+                "تأكيد — ضغط مطوّل 600 مللي ثانية (إجراء نهائي)",
+                "確定 — 600ミリ秒長押し（最終アクション）",
+            ),
             _ => ("〈manquant〉", "〈missing〉", "〈مفقود〉", "〈不足〉"),
         };
         match self.locale {
@@ -79,7 +109,12 @@ mod tests {
             assert!(!s.get("hud.prompt").is_empty());
             assert!(!s.get("hud.validate").is_empty());
         }
-        assert!(Strings::new(Locale::Ar).get("hud.prompt").chars().any(|c| ('\u{0600}'..='\u{06FF}').contains(&c)));
+        assert!(
+            Strings::new(Locale::Ar)
+                .get("hud.prompt")
+                .chars()
+                .any(|c| ('\u{0600}'..='\u{06FF}').contains(&c))
+        );
     }
     #[test]
     fn rtl_only_arabic() {

@@ -9,7 +9,7 @@
 
 use annora_design::{ActionCardView, DataPastille, Reversibility};
 use annora_ui::{CostCounter, EphemeralHud, PresenceIndicator, SilenceBudgetTracker};
-use annora_ui_desktop::a11y::{audit_interactive_labels, build_shell_tree, ActionCardA11y};
+use annora_ui_desktop::a11y::{ActionCardA11y, audit_interactive_labels, build_shell_tree};
 use annora_ui_model::{JournalRow, PowerRow, StableSnapshot};
 
 /// Snapshot représentatif pour le parcours carte + journal.
@@ -54,8 +54,18 @@ pub fn s3_journal_rows() -> Vec<JournalRow> {
 pub fn s3_keyboard_walkthrough() -> bool {
     let snap = s3_sample_snapshot();
     let powers = vec![
-        PowerRow { group: "Voir".into(), scope: "Camera".into(), enabled: false, policy_locked: true },
-        PowerRow { group: "Agir".into(), scope: "GuiInput".into(), enabled: true, policy_locked: false },
+        PowerRow {
+            group: "Voir".into(),
+            scope: "Camera".into(),
+            enabled: false,
+            policy_locked: true,
+        },
+        PowerRow {
+            group: "Agir".into(),
+            scope: "GuiInput".into(),
+            enabled: true,
+            policy_locked: false,
+        },
     ];
     let update = build_shell_tree(&snap, &s3_journal_rows(), &powers);
     audit_interactive_labels(&update).is_empty()
@@ -70,7 +80,11 @@ pub fn s3_card_a11y(needs_hold: bool, is_external: bool) -> ActionCardA11y {
         why_trace: "Mail cran 1".into(),
         cost_label: "0 €".into(),
         data: DataPastille::Local,
-        reversibility: if needs_hold { Reversibility::Final } else { Reversibility::Undoable { undo_seconds: 30 } },
+        reversibility: if needs_hold {
+            Reversibility::Final
+        } else {
+            Reversibility::Undoable { undo_seconds: 30 }
+        },
         needs_hold,
         provenance_label: "Akora".into(),
         is_external,
@@ -97,7 +111,10 @@ mod tests {
 
     #[test]
     fn test_s3_keyboard_walkthrough_complete() {
-        assert!(s3_keyboard_walkthrough(), "zéro contrôle interactif sans label exigé");
+        assert!(
+            s3_keyboard_walkthrough(),
+            "zéro contrôle interactif sans label exigé"
+        );
     }
 
     #[test]

@@ -73,17 +73,31 @@ pub struct ActionCard {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum UiToKernel {
-    Approve { card_id: u64 },
-    Edit { card_id: u64 },
-    Reject { card_id: u64 },
-    Undo { journal_id: u64 },
+    Approve {
+        card_id: u64,
+    },
+    Edit {
+        card_id: u64,
+    },
+    Reject {
+        card_id: u64,
+    },
+    Undo {
+        journal_id: u64,
+    },
     RevokeAll,
     /// Requête texte libre du HUD → noyau (routage System1/System2).
-    HudSubmit { query: String },
+    HudSubmit {
+        query: String,
+    },
     /// Bascule d'un réglage persisté (le noyau valide et journalise).
-    SettingsToggle { index: usize },
+    SettingsToggle {
+        index: usize,
+    },
     /// Oubli mémoire : reçu cryptographique exigé côté noyau.
-    MemoryForget { row_id: String },
+    MemoryForget {
+        row_id: String,
+    },
     /// Vidage groupé de l'outbox (le noyau applique les quotas).
     OutboxFlush,
 }
@@ -92,14 +106,18 @@ pub enum UiToKernel {
 pub enum KernelToUi {
     Presence(PresenceState),
     ShowCard(ActionCard),
-    JournalAppended { id: u64 },
+    JournalAppended {
+        id: u64,
+    },
     /// Réponse HUD ; `validation` = (description, coût en centimes).
     HudReply {
         response: String,
         validation: Option<(String, u64)>,
     },
     /// Message transitoire honnête (erreur, refus, information).
-    Toast { text: String },
+    Toast {
+        text: String,
+    },
 }
 
 /// Message UI → noyau versionné : champ `version` transporté sur le fil
@@ -197,9 +215,13 @@ mod tests {
     fn test_extended_variants_roundtrip_v1() {
         // Extension additive v1 : HUD, réglages, mémoire, outbox, toast.
         let cases = [
-            UiToKernel::HudSubmit { query: "résume ma journée".into() },
+            UiToKernel::HudSubmit {
+                query: "résume ma journée".into(),
+            },
             UiToKernel::SettingsToggle { index: 2 },
-            UiToKernel::MemoryForget { row_id: "m-42".into() },
+            UiToKernel::MemoryForget {
+                row_id: "m-42".into(),
+            },
             UiToKernel::OutboxFlush,
         ];
         for m in cases {
@@ -211,12 +233,17 @@ mod tests {
             assert!(back.check().is_ok());
         }
         let replies = [
-            KernelToUi::HudReply { response: "Journée calme.".into(), validation: None },
+            KernelToUi::HudReply {
+                response: "Journée calme.".into(),
+                validation: None,
+            },
             KernelToUi::HudReply {
                 response: String::new(),
                 validation: Some(("Envoi 25.00 EUR".into(), 2500)),
             },
-            KernelToUi::Toast { text: "nécessite daemon".into() },
+            KernelToUi::Toast {
+                text: "nécessite daemon".into(),
+            },
             KernelToUi::Presence(PresenceState::DecisionRequired),
         ];
         for r in replies {
@@ -230,7 +257,10 @@ mod tests {
 
     #[test]
     fn test_extended_messages_still_reject_v0() {
-        let stale = UiMessage { version: 0, inner: UiToKernel::HudSubmit { query: "x".into() } };
+        let stale = UiMessage {
+            version: 0,
+            inner: UiToKernel::HudSubmit { query: "x".into() },
+        };
         assert!(stale.check().is_err());
     }
 

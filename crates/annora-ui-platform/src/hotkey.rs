@@ -22,8 +22,14 @@ pub struct HotkeySpec {
 impl HotkeySpec {
     pub fn default_for(platform: &str) -> Self {
         match platform {
-            "macos" => Self { accelerators: vec!["Cmd+Space".into()], id: 1001 },
-            _ => Self { accelerators: vec!["Ctrl+Alt+Space".into(), "Alt+Space".into()], id: 1001 },
+            "macos" => Self {
+                accelerators: vec!["Cmd+Space".into()],
+                id: 1001,
+            },
+            _ => Self {
+                accelerators: vec!["Ctrl+Alt+Space".into(), "Alt+Space".into()],
+                id: 1001,
+            },
         }
     }
 
@@ -35,12 +41,17 @@ impl HotkeySpec {
         if !t.contains('+') && t.len() < 2 {
             return Err(HotkeyError::Invalid(t.into()));
         }
-        Ok(Self { accelerators: vec![t.into()], id: 1001 })
+        Ok(Self {
+            accelerators: vec![t.into()],
+            id: 1001,
+        })
     }
 
     pub fn is_alias_accepted(&self, pressed: &str) -> bool {
         let norm = pressed.to_lowercase().replace(' ', "");
-        self.accelerators.iter().any(|a| a.to_lowercase().replace(' ', "") == norm)
+        self.accelerators
+            .iter()
+            .any(|a| a.to_lowercase().replace(' ', "") == norm)
             || norm == "alt+space"
     }
 }
@@ -51,8 +62,16 @@ mod tests {
 
     #[test]
     fn default_hotkeys_per_os() {
-        assert!(HotkeySpec::default_for("macos").accelerators.contains(&"Cmd+Space".to_string()));
-        assert!(HotkeySpec::default_for("windows").accelerators.contains(&"Ctrl+Alt+Space".to_string()));
+        assert!(
+            HotkeySpec::default_for("macos")
+                .accelerators
+                .contains(&"Cmd+Space".to_string())
+        );
+        assert!(
+            HotkeySpec::default_for("windows")
+                .accelerators
+                .contains(&"Ctrl+Alt+Space".to_string())
+        );
     }
 
     #[test]

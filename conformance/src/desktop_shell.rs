@@ -7,12 +7,14 @@
 
 #[cfg(test)]
 mod tests {
-    use annora_ui::{CostCounter, EphemeralHud, PresenceIndicator, PresenceState, SilenceBudgetTracker};
+    use annora_ui::{
+        CostCounter, EphemeralHud, PresenceIndicator, PresenceState, SilenceBudgetTracker,
+    };
     use annora_ui_desktop::a11y::{audit_interactive_labels, build_shell_tree};
     use annora_ui_desktop::kernel_bridge::{BridgeError, KernelBridge, KernelStub};
-    use annora_ui_desktop::renderer::{hud_scene, SoftwareRenderer, WgpuRenderer};
-    use annora_ui_desktop::scene::SceneRenderer;
+    use annora_ui_desktop::renderer::{SoftwareRenderer, WgpuRenderer, hud_scene};
     use annora_ui_desktop::runtime::RuntimeEvent;
+    use annora_ui_desktop::scene::SceneRenderer;
     use annora_ui_desktop::text::SimpleTextEngine;
     use annora_ui_desktop::text::TextEngine;
     use annora_ui_desktop::theme::Theme;
@@ -55,7 +57,10 @@ mod tests {
         let dark_b = hud_scene(&snap, true).fingerprint();
         let light = hud_scene(&snap, false).fingerprint();
         assert_eq!(dark_a, dark_b, "scène sombre non déterministe");
-        assert_ne!(dark_a, light, "les thèmes doivent produire des scènes distinctes");
+        assert_ne!(
+            dark_a, light,
+            "les thèmes doivent produire des scènes distinctes"
+        );
     }
 
     #[test]
@@ -87,8 +92,18 @@ mod tests {
     fn desktop_a11y_zero_interactive_without_label() {
         let snap = snapshot();
         let powers = vec![
-            PowerRow { group: "Voir".into(), scope: "Camera".into(), enabled: true, policy_locked: false },
-            PowerRow { group: "Agir".into(), scope: "Gui".into(), enabled: true, policy_locked: true },
+            PowerRow {
+                group: "Voir".into(),
+                scope: "Camera".into(),
+                enabled: true,
+                policy_locked: false,
+            },
+            PowerRow {
+                group: "Agir".into(),
+                scope: "Gui".into(),
+                enabled: true,
+                policy_locked: true,
+            },
         ];
         let update = build_shell_tree(&snap, &rows(), &powers);
         assert!(audit_interactive_labels(&update).is_empty());
@@ -131,7 +146,11 @@ mod tests {
         }
         let mut bridge = KernelBridge::new(Refuse);
         // Toute action sensible est refusée ; les événements locaux restent locaux.
-        assert!(bridge.dispatch(UiEvent::CardApprove { card_id: 1 }).is_err());
+        assert!(
+            bridge
+                .dispatch(UiEvent::CardApprove { card_id: 1 })
+                .is_err()
+        );
         assert!(bridge.dispatch(UiEvent::PresenceTapped).unwrap().is_none());
         assert!(bridge.outbox.is_empty());
     }
@@ -141,7 +160,12 @@ mod tests {
         let engine = SimpleTextEngine::new();
         for locale in [Locale::Fr, Locale::En, Locale::Ar, Locale::Ja] {
             let strings = Strings::new(locale);
-            for key in ["hud.prompt", "hud.validate", "journal.title", "presence.decision"] {
+            for key in [
+                "hud.prompt",
+                "hud.validate",
+                "journal.title",
+                "presence.decision",
+            ] {
                 let text = strings.get(key);
                 assert!(!text.is_empty(), "{locale:?}/{key} vide");
                 assert!(!text.contains("〈manquant〉"), "{locale:?}/{key} manquant");
@@ -167,10 +191,22 @@ mod tests {
         use annora_ui_desktop::RealDaemonBridge;
         let mut bridge = KernelBridge::new(RealDaemonBridge::local_authorized());
         bridge.kernel.stage_card(3, "Envoi 25.00 EUR");
-        let approved = bridge.dispatch(UiEvent::CardApprove { card_id: 3 }).unwrap().unwrap();
-        assert!(matches!(approved, annora_ui_model::KernelEvent::JournalAppended { .. }));
-        let undo = bridge.dispatch(UiEvent::JournalRevert { index: 1 }).unwrap().unwrap();
-        assert!(matches!(undo, annora_ui_model::KernelEvent::JournalAppended { .. }));
+        let approved = bridge
+            .dispatch(UiEvent::CardApprove { card_id: 3 })
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            approved,
+            annora_ui_model::KernelEvent::JournalAppended { .. }
+        ));
+        let undo = bridge
+            .dispatch(UiEvent::JournalRevert { index: 1 })
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            undo,
+            annora_ui_model::KernelEvent::JournalAppended { .. }
+        ));
         assert!(bridge.dispatch(UiEvent::HudCancelled).unwrap().is_none());
         assert_eq!(bridge.outbox.len(), 2);
     }

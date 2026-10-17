@@ -29,7 +29,13 @@ pub struct MemoryRow {
 impl MemoryRow {
     pub fn freshness_label(&self) -> &'static str {
         let c = self.confidence_pct as f32 / 100.0;
-        if c >= 0.8 { "frais" } else if c >= 0.4 { "récent" } else { "fané" }
+        if c >= 0.8 {
+            "frais"
+        } else if c >= 0.4 {
+            "récent"
+        } else {
+            "fané"
+        }
     }
 }
 
@@ -58,7 +64,9 @@ impl PowersView {
 
 pub fn filter_journal<'a>(rows: &'a [JournalRow], query: &str) -> Vec<&'a JournalRow> {
     let q = query.to_lowercase();
-    rows.iter().filter(|r| r.action.to_lowercase().contains(&q) || r.reason.to_lowercase().contains(&q)).collect()
+    rows.iter()
+        .filter(|r| r.action.to_lowercase().contains(&q) || r.reason.to_lowercase().contains(&q))
+        .collect()
 }
 
 pub fn page_journal(rows: &[JournalRow], page: usize, per_page: usize) -> &[JournalRow] {
@@ -74,8 +82,28 @@ mod tests {
     #[test]
     fn journal_filter_and_page() {
         let rows = vec![
-            JournalRow { id: "1".into(), time: "10:00".into(), actor: "a".into(), action: "Envoyer mail".into(), reason: "demandé".into(), confidence_pct: 90, cost: "0.00".into(), verified: true, can_revert: true },
-            JournalRow { id: "2".into(), time: "10:01".into(), actor: "a".into(), action: "Payer facture".into(), reason: "auto".into(), confidence_pct: 40, cost: "1.00".into(), verified: false, can_revert: false },
+            JournalRow {
+                id: "1".into(),
+                time: "10:00".into(),
+                actor: "a".into(),
+                action: "Envoyer mail".into(),
+                reason: "demandé".into(),
+                confidence_pct: 90,
+                cost: "0.00".into(),
+                verified: true,
+                can_revert: true,
+            },
+            JournalRow {
+                id: "2".into(),
+                time: "10:01".into(),
+                actor: "a".into(),
+                action: "Payer facture".into(),
+                reason: "auto".into(),
+                confidence_pct: 40,
+                cost: "1.00".into(),
+                verified: false,
+                can_revert: false,
+            },
         ];
         assert_eq!(filter_journal(&rows, "mail").len(), 1);
         assert_eq!(page_journal(&rows, 0, 1).len(), 1);
@@ -84,7 +112,15 @@ mod tests {
 
     #[test]
     fn memory_freshness_thresholds() {
-        let f = |c| MemoryRow { id: "x".into(), text: "t".into(), partition: "p".into(), confidence_pct: c }.freshness_label();
+        let f = |c| {
+            MemoryRow {
+                id: "x".into(),
+                text: "t".into(),
+                partition: "p".into(),
+                confidence_pct: c,
+            }
+            .freshness_label()
+        };
         assert_eq!(f(90), "frais");
         assert_eq!(f(50), "récent");
         assert_eq!(f(10), "fané");
@@ -92,10 +128,22 @@ mod tests {
 
     #[test]
     fn kill_all_respects_lock() {
-        let mut v = PowersView { rows: vec![
-            PowerRow { group: "Voir".into(), scope: "Camera".into(), enabled: true, policy_locked: false },
-            PowerRow { group: "Agir".into(), scope: "Gui".into(), enabled: true, policy_locked: true },
-        ]};
+        let mut v = PowersView {
+            rows: vec![
+                PowerRow {
+                    group: "Voir".into(),
+                    scope: "Camera".into(),
+                    enabled: true,
+                    policy_locked: false,
+                },
+                PowerRow {
+                    group: "Agir".into(),
+                    scope: "Gui".into(),
+                    enabled: true,
+                    policy_locked: true,
+                },
+            ],
+        };
         v.kill_all();
         assert!(!v.rows[0].enabled);
         assert!(v.rows[1].enabled);
@@ -103,11 +151,19 @@ mod tests {
 
     #[test]
     fn journal_100k_filter_budget() {
-        let rows: Vec<JournalRow> = (0..100_000).map(|i| JournalRow {
-            id: i.to_string(), time: "t".into(), actor: "a".into(),
-            action: format!("action {i}"), reason: "r".into(),
-            confidence_pct: 80, cost: "0".into(), verified: true, can_revert: true,
-        }).collect();
+        let rows: Vec<JournalRow> = (0..100_000)
+            .map(|i| JournalRow {
+                id: i.to_string(),
+                time: "t".into(),
+                actor: "a".into(),
+                action: format!("action {i}"),
+                reason: "r".into(),
+                confidence_pct: 80,
+                cost: "0".into(),
+                verified: true,
+                can_revert: true,
+            })
+            .collect();
         let t = std::time::Instant::now();
         let out = filter_journal(&rows, "99999");
         let _ = page_journal(&rows, 0, 50);

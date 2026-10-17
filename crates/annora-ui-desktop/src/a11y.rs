@@ -34,10 +34,18 @@ pub fn build_shell_tree(
     powers: &[PowerRow],
 ) -> TreeUpdate {
     let mut nodes: Vec<(NodeId, Node)> = Vec::new();
-    nodes.push((id(0), node(Role::Window, "Akora", &[], vec![id(1), id(2), id(3), id(4)])));
+    nodes.push((
+        id(0),
+        node(Role::Window, "Akora", &[], vec![id(1), id(2), id(3), id(4)]),
+    ));
     nodes.push((
         id(1),
-        node(Role::Button, &snap.presence_a11y_label, &[Action::Focus, Action::Click], vec![]),
+        node(
+            Role::Button,
+            &snap.presence_a11y_label,
+            &[Action::Focus, Action::Click],
+            vec![],
+        ),
     ));
 
     let mut hud_kids = vec![id(20)];
@@ -57,14 +65,25 @@ pub fn build_shell_tree(
             id(22),
             node(
                 Role::Button,
-                &format!("Valider : {} — {}", snap.hud_validation_text, snap.hud_validation_cost),
+                &format!(
+                    "Valider : {} — {}",
+                    snap.hud_validation_text, snap.hud_validation_cost
+                ),
                 &[Action::Focus, Action::Click],
                 vec![],
             ),
         ));
         hud_kids.push(id(22));
     }
-    nodes.push((id(2), node(Role::GenericContainer, "Ligne de commande Akora", &[], hud_kids)));
+    nodes.push((
+        id(2),
+        node(
+            Role::GenericContainer,
+            "Ligne de commande Akora",
+            &[],
+            hud_kids,
+        ),
+    ));
 
     let mut kids = Vec::new();
     for (i, row) in journal.iter().take(50).enumerate() {
@@ -77,8 +96,16 @@ pub fn build_shell_tree(
                     "{} — {} — {}{}",
                     row.time,
                     row.action,
-                    if row.verified { "signé, " } else { "signature douteuse, " },
-                    if row.can_revert { "annulable" } else { "définitif" }
+                    if row.verified {
+                        "signé, "
+                    } else {
+                        "signature douteuse, "
+                    },
+                    if row.can_revert {
+                        "annulable"
+                    } else {
+                        "définitif"
+                    }
                 ),
                 &[],
                 vec![],
@@ -86,7 +113,15 @@ pub fn build_shell_tree(
         ));
         kids.push(nid);
     }
-    nodes.push((id(3), node(Role::List, "Journal d'audit — frise, annulation en un geste", &[], kids)));
+    nodes.push((
+        id(3),
+        node(
+            Role::List,
+            "Journal d'audit — frise, annulation en un geste",
+            &[],
+            kids,
+        ),
+    ));
 
     let mut pkids = Vec::new();
     for (i, p) in powers.iter().enumerate() {
@@ -104,7 +139,11 @@ pub fn build_shell_tree(
                     p.group,
                     p.scope,
                     if p.enabled { "activé" } else { "coupé" },
-                    if p.policy_locked { "— verrouillé par politique" } else { "" }
+                    if p.policy_locked {
+                        "— verrouillé par politique"
+                    } else {
+                        ""
+                    }
                 ),
                 &acts,
                 vec![],
@@ -160,13 +199,27 @@ pub fn build_action_card_tree(card: &ActionCardA11y) -> TreeUpdate {
     };
     nodes.push((
         id(0),
-        node(Role::GenericContainer, &format!("Carte d'action — {}", card.provenance_label), &[], vec![id(1), id(2), id(3), id(4)]),
+        node(
+            Role::GenericContainer,
+            &format!("Carte d'action — {}", card.provenance_label),
+            &[],
+            vec![id(1), id(2), id(3), id(4)],
+        ),
     ));
     nodes.push((id(1), text(format!("{} {}", card.verb, card.object))));
-    nodes.push((id(2), text(format!("{} — Pourquoi ? (trace : {})", card.reason, card.why_trace))));
+    nodes.push((
+        id(2),
+        text(format!(
+            "{} — Pourquoi ? (trace : {})",
+            card.reason, card.why_trace
+        )),
+    ));
     nodes.push((
         id(3),
-        text(format!("Coût : {} — Données : {} — {}", card.cost_label, card.data_label, card.reversibility_label)),
+        text(format!(
+            "Coût : {} — Données : {} — {}",
+            card.cost_label, card.data_label, card.reversibility_label
+        )),
     ));
     let validate_label = if card.needs_hold {
         "Valider — appui long 600 millisecondes (action définitive)"
@@ -175,14 +228,46 @@ pub fn build_action_card_tree(card: &ActionCardA11y) -> TreeUpdate {
     };
     nodes.push((
         id(4),
-        node(Role::GenericContainer, "Valider, Modifier, Refuser", &[], vec![id(40), id(41), id(42)]),
+        node(
+            Role::GenericContainer,
+            "Valider, Modifier, Refuser",
+            &[],
+            vec![id(40), id(41), id(42)],
+        ),
     ));
-    nodes.push((id(40), node(Role::Button, validate_label, &[Action::Focus, Action::Click], vec![])));
-    nodes.push((id(41), node(Role::Button, "Modifier", &[Action::Focus, Action::Click], vec![])));
-    nodes.push((id(42), node(Role::Button, "Refuser", &[Action::Focus, Action::Click], vec![])));
+    nodes.push((
+        id(40),
+        node(
+            Role::Button,
+            validate_label,
+            &[Action::Focus, Action::Click],
+            vec![],
+        ),
+    ));
+    nodes.push((
+        id(41),
+        node(
+            Role::Button,
+            "Modifier",
+            &[Action::Focus, Action::Click],
+            vec![],
+        ),
+    ));
+    nodes.push((
+        id(42),
+        node(
+            Role::Button,
+            "Refuser",
+            &[Action::Focus, Action::Click],
+            vec![],
+        ),
+    ));
     if card.is_external {
         if let Some((_, v)) = nodes.iter_mut().find(|(i, _)| *i == id(1)) {
-            *v = text(format!("{} {} [externe — filet 2 px]", card.verb, card.object));
+            *v = text(format!(
+                "{} {} [externe — filet 2 px]",
+                card.verb, card.object
+            ));
         }
     }
     TreeUpdate {
@@ -220,11 +305,16 @@ mod tests {
     #[test]
     fn card_tree_pastilles_hold_external() {
         let card = ActionCardA11y {
-            verb: "Envoyer".into(), object: "ce mail à Awa".into(),
-            reason: "Tu as demandé de répondre.".into(), why_trace: "Mail cran 1".into(),
-            cost_label: "0 €".into(), data_label: "Local".into(),
-            reversibility_label: "annulable".into(), needs_hold: false,
-            provenance_label: "Akora".into(), is_external: false,
+            verb: "Envoyer".into(),
+            object: "ce mail à Awa".into(),
+            reason: "Tu as demandé de répondre.".into(),
+            why_trace: "Mail cran 1".into(),
+            cost_label: "0 €".into(),
+            data_label: "Local".into(),
+            reversibility_label: "annulable".into(),
+            needs_hold: false,
+            provenance_label: "Akora".into(),
+            is_external: false,
         };
         let u = build_action_card_tree(&card);
         assert!(audit_interactive_labels(&u).is_empty());
@@ -245,7 +335,12 @@ mod tests {
     #[test]
     fn locked_power_has_no_click() {
         let snap = sample();
-        let powers = vec![PowerRow { group: "Agir".into(), scope: "Gui".into(), enabled: true, policy_locked: true }];
+        let powers = vec![PowerRow {
+            group: "Agir".into(),
+            scope: "Gui".into(),
+            enabled: true,
+            policy_locked: true,
+        }];
         let u = build_shell_tree(&snap, &[], &powers);
         let locked = u.nodes.iter().find(|(i, _)| *i == id(200)).unwrap();
         assert!(!locked.1.supports_action(Action::Click));

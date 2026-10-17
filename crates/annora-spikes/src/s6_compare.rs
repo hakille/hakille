@@ -133,14 +133,22 @@ mod tests {
             Criterion::Energy,
             Criterion::Internationalization,
         ] {
-            assert!(grid.iter().any(|e| e.criterion == c), "critère manquant: {c:?}");
+            assert!(
+                grid.iter().any(|e| e.criterion == c),
+                "critère manquant: {c:?}"
+            );
         }
     }
 
     #[test]
     fn test_s6_no_failed_criterion_on_native() {
         for e in comparison_grid() {
-            assert_ne!(e.native_shell, Verdict::Failed, "{:?} en échec", e.criterion);
+            assert_ne!(
+                e.native_shell,
+                Verdict::Failed,
+                "{:?} en échec",
+                e.criterion
+            );
             assert!(!e.evidence.is_empty());
         }
     }
