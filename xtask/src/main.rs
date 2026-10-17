@@ -1,8 +1,10 @@
 use annora_inference::{ModelCatalog, ModelProvisioner, ModelTier};
 use std::env;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::io::{self, Write};
+
+mod tokens;
 
 fn make_progress_callback() -> annora_inference::ProgressCallback {
     Arc::new(|p: &annora_inference::DownloadProgress| {
@@ -11,7 +13,8 @@ fn make_progress_callback() -> annora_inference::ProgressCallback {
             None => "  ?% ".to_string(),
         };
         let mb_downloaded = p.bytes_downloaded as f64 / 1_048_576.0;
-        let mb_total = p.total_bytes
+        let mb_total = p
+            .total_bytes
             .map(|t| format!("{:.1} MB", t as f64 / 1_048_576.0))
             .unwrap_or_else(|| "? MB".to_string());
         let speed_mb = p.speed_bytes_per_sec / 1_048_576.0;
@@ -34,13 +37,34 @@ async fn main() {
 
     match command {
         "conformance" => {
-            println!("== Running Annora Conformance Suite ==");
+            println!(
+                "== Running Annora Conformance Suite (fast gate, slow real-inference tests excluded) =="
+            );
             let status = std::process::Command::new("cargo")
                 .args(["test", "-p", "conformance"])
                 .status()
                 .expect("Failed to execute cargo test");
             if !status.success() {
                 std::process::exit(1);
+            }
+        }
+        "conformance-slow" => {
+            println!(
+                "== Running Annora SLOW gate (real Qwen CPU decode, MiniLM/VAD ort — tens of minutes in debug) =="
+            );
+            println!("== Fast suite first, then --ignored real-inference tests ==");
+            for args in [
+                vec!["test", "-p", "conformance"],
+                vec!["test", "-p", "conformance", "--", "--ignored"],
+                vec!["test", "-p", "annora-kernel", "--", "--ignored"],
+            ] {
+                let status = std::process::Command::new("cargo")
+                    .args(&args)
+                    .status()
+                    .expect("Failed to execute cargo test");
+                if !status.success() {
+                    std::process::exit(1);
+                }
             }
         }
         "check-all" => {
@@ -64,11 +88,17 @@ async fn main() {
             let provisioner = ModelProvisioner::new(models_dir);
             for s in provisioner.list_all_status() {
                 let badge = if s.is_installed {
-                    format!("[INSTALLED - {:.1} MB]", s.total_disk_bytes as f64 / 1_048_576.0)
+                    format!(
+                        "[INSTALLED - {:.1} MB]",
+                        s.total_disk_bytes as f64 / 1_048_576.0
+                    )
                 } else {
                     "[MISSING]".to_string()
                 };
-                println!("• {:<26} {:<10?} {:<18} {}", s.entry.id, s.entry.tier, badge, s.entry.name);
+                println!(
+                    "• {:<26} {:<10?} {:<18} {}",
+                    s.entry.id, s.entry.tier, badge, s.entry.name
+                );
             }
         }
         "download-models" => {
@@ -115,16 +145,155 @@ async fn main() {
                 }
             }
         }
+        "tokens" => {
+            println!("== Akora design tokens: TOML source unique → Rust/Swift/Kotlin/CSS ==");
+            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+            let export_kind = args.iter().find_map(|a| match a.as_str() {
+                "export-swift" => Some("swift"),
+                "export-kotlin" => Some("kotlin"),
+                "export-css" => Some("css"),
+                _ => None,
+            });
+            if let Some(kind) = export_kind {
+                let color =
+                    tokens::parse_toml(&root.join("tokens/color.toml")).unwrap_or_else(|e| {
+                        eprintln!("✗ {e}");
+                        std::process::exit(1);
+                    });
+                let motion =
+                    tokens::parse_toml(&root.join("tokens/motion.toml")).unwrap_or_else(|e| {
+                        eprintln!("✗ {e}");
+                        std::process::exit(1);
+                    });
+                let ty = tokens::parse_toml(&root.join("tokens/type.toml")).unwrap_or_else(|e| {
+                    eprintln!("✗ {e}");
+                    std::process::exit(1);
+                });
+                let out_dir = root.join("target/tokens");
+                std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| {
+                    eprintln!("✗ mkdir {} : {e}", out_dir.display());
+                    std::process::exit(1);
+                });
+                let (name, content) = match kind {
+                    "swift" => (
+                        "AkoraTokens.swift",
+                        tokens::emit_swift(&color, &motion, &ty),
+                    ),
+                    "kotlin" => ("AkoraTokens.kt", tokens::emit_kotlin(&color, &motion, &ty)),
+                    _ => ("akora-tokens.css", tokens::emit_css(&color, &motion, &ty)),
+                };
+                let target = out_dir.join(name);
+                std::fs::write(&target, content).unwrap_or_else(|e| {
+                    eprintln!("✗ écriture {target:?} : {e}");
+                    std::process::exit(1);
+                });
+                println!("✓ {} généré depuis tokens/*.toml.", target.display());
+                return;
+            }
+            let check_only = args.iter().any(|a| a == "--check");
+            let jobs = [
+                (
+                    "tokens/color.toml",
+                    tokens::emit_color as fn(&tokens::Doc) -> String,
+                ),
+                ("tokens/motion.toml", tokens::emit_motion),
+                ("tokens/type.toml", tokens::emit_type),
+            ];
+            let mut body = String::new();
+            for (rel, emit) in jobs {
+                let doc = tokens::parse_toml(&root.join(rel)).unwrap_or_else(|e| {
+                    eprintln!("✗ {e}");
+                    std::process::exit(1);
+                });
+                body.push_str(&emit(&doc));
+            }
+            let mut out = "//! Constantes générées depuis `tokens/` par `cargo xtask tokens`.\n//! NE JAMAIS ÉDITER À LA MAIN — voir tokens/*.toml (source unique).\n\n".to_string()
+                + &body;
+            // Même normalisation que `cargo fmt` : le fichier reste stable.
+            if let Some(fmted) = tokens::rustfmt_str(&out) {
+                out = fmted;
+            }
+            let target = root.join("crates/annora-design/src/generated.rs");
+            let current = std::fs::read_to_string(&target).unwrap_or_default();
+            if check_only {
+                if current != out {
+                    let n = current
+                        .chars()
+                        .zip(out.chars())
+                        .take_while(|(a, b)| a == b)
+                        .count();
+                    eprintln!(
+                        "✗ generated.rs périmé : lancez `cargo xtask tokens`. (commun: {n} chars, actuel: {} chars, attendu: {} chars)",
+                        current.len(),
+                        out.len()
+                    );
+                    std::process::exit(1);
+                }
+                println!("✓ generated.rs à jour.");
+            } else {
+                std::fs::write(&target, out).unwrap_or_else(|e| {
+                    eprintln!("✗ écriture {target:?} : {e}");
+                    std::process::exit(1);
+                });
+                println!("✓ {} régénéré.", target.display());
+            }
+        }
+        "shell-web" => {
+            println!("== Annora Slint Web Demo (WASM canvas) ==");
+            println!("Prérequis : rustup target add wasm32-unknown-unknown + wasm-pack");
+            let has_target = std::process::Command::new("rustup")
+                .args(["target", "list", "--installed"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).contains("wasm32-unknown-unknown"))
+                .unwrap_or(false);
+            let has_pack = std::process::Command::new("wasm-pack")
+                .arg("--version")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !has_target {
+                println!(
+                    "✗ target wasm32-unknown-unknown manquante : rustup target add wasm32-unknown-unknown"
+                );
+            }
+            if !has_pack {
+                println!("✗ wasm-pack introuvable : cargo install wasm-pack");
+            }
+            if !has_target || !has_pack {
+                println!("Page statique : crates/annora-ui-shell/web/index.html (canvas #canvas).");
+                std::process::exit(2);
+            }
+            println!("→ wasm-pack build --target web crates/annora-ui-shell --features render …");
+            println!("  puis servez crates/annora-ui-shell/web/ en HTTP (pas file://).");
+        }
         _ => {
             println!("Annora xtask workspace tool");
             println!("Usage: cargo xtask <command> [options]");
             println!("Commands:");
-            println!("  conformance                 Run conformance test suite");
+            println!("  conformance                 Run conformance test suite (fast gate)");
+            println!(
+                "  conformance-slow            Run conformance + ignored real-inference tests (tens of minutes)"
+            );
             println!("  check-all                   Verify full workspace compilation");
             println!("  generate-manifests          Generate platform capability manifests");
             println!("  list-models                 List all foundation models and cache status");
             println!("  download-models [tier]      Download models (guest, native, sovereign)");
             println!("  verify-models               Verify SHA-256 integrity of local model cache");
+            println!(
+                "  tokens [--check]            Régénérer/vérifier les tokens design (TOML → Rust)"
+            );
+            println!(
+                "  tokens export-swift       Générer target/tokens/AkoraTokens.swift (Swift struct)"
+            );
+            println!(
+                "  tokens export-kotlin      Générer target/tokens/AkoraTokens.kt (Kotlin object)"
+            );
+            println!(
+                "  tokens export-css         Générer target/tokens/akora-tokens.css (CSS :root)"
+            );
+            println!(
+                "  shell-web                   Check/préparer la démo web WASM du shell Slint"
+            );
         }
     }
 }

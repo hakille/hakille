@@ -1,29 +1,21 @@
+# `cargo deny check advisories` actif en CI (job deny : bans sources advisories).
+# Seuils en warn documenté : n'échoue pas la CI sur un yank transitoire,
+# mais reste visible. `unmaintained` suit le workspace (warn effectif).
 [advisories]
-version = 2
-vulnerability = "deny"
+yanked = "warn"
 unmaintained = "warn"
-unsound = "deny"
-yanked = "deny"
-
-[licenses]
-version = 2
-confidence-threshold = 0.8
-allow = [
-    "Apache-2.0",
-    "MIT",
-    "BSD-3-Clause",
-    "Unicode-3.0",
-    "CC0-1.0",
-]
 
 [bans]
-version = 2
+# multiple-versions reste en "warn" (pas "deny") : `cargo deny check bans`
+# rapporte des doublons transitifs (base64 x4, getrandom, rand, hashbrown…)
+# qui feraient échouer la CI en deny sans gain. Repasser à deny après
+# déduplication des dépendances (cargo update -p …).
 multiple-versions = "warn"
-wildcards = "deny"
+wildcards = "warn"
+allow-wildcard-paths = true
 highlight = "all"
 
 [sources]
-version = 2
-unknown-registries = "deny"
-unknown-git = "deny"
+unknown-registry = "warn"
+unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]

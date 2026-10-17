@@ -14,6 +14,14 @@ members = [
     "crates/annora-auth",
     "crates/annora-constitution",
     "crates/annora-ui",
+    "crates/annora-ui-shell",
+    "crates/annora-ui-protocol",
+    "crates/annora-design",
+    "crates/annora-ui-model",
+    "crates/annora-ui-platform",
+    "crates/annora-ui-desktop",
+    "crates/annora-spikes",
+    "crates/annora-keystore",
     "crates/annora-metrics",
     "crates/annora-substrate-linux",
     "crates/annora-substrate-windows",
@@ -31,6 +39,13 @@ members = [
     "xtask",
 ]
 
+# Socle commun : MSRV 1.95 (édition 2024, aligné CI + rust-toolchain).
+# Les crates gardent leur propre `edition = "2024"` ; pas de [workspace.lints]
+# imposé (risque de casser les ~60 lints pré-existants vus en clippy,
+# traitement incrémental prévu).
+[workspace.package]
+rust-version = "1.95"
+
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -40,7 +55,7 @@ chacha20poly1305 = "0.10"
 rand = "0.8"
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v7", "serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde", "js"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tokio = { version = "1", features = ["full"] }

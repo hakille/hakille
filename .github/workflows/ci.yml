@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+jobs:
+  check-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
+          components: rustfmt, clippy
+      - name: fmt check
+        run: cargo fmt --all -- --check
+      - name: tokens source unique
+        run: cargo run -p xtask -- tokens --check
+      - name: redox compat (S2, crates pures)
+        run: |
+          rustup target add x86_64-unknown-redox
+          cargo check -p annora-design -p annora-ui-protocol -p annora-ui -p annora-core -p annora-ui-shell --target x86_64-unknown-redox
+      - name: check
+        run: cargo check --workspace --all-targets --locked
+      - name: render (windows only)
+        if: matrix.os == 'windows-latest'
+        run: cargo check -p annora-ui-shell --features render --locked
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- --no-deps
+        # TODO: re-enable `-D warnings` once the ~60 pre-existing
+        # `new_without_default` / collapsible-if lints are fixed incrementally.
+      - name: tests
+        run: cargo test --workspace --locked
+      - name: conformance
+        run: cargo run -p xtask -- conformance
+
+  deny:
+    # Job séparé : ne masque pas check/test, échec visible (pas de
+    # continue-on-error). Seuils warn gardés dans deny.toml, explicites ici.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
+      - name: install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: deny bans/sources/advisories
+        run: cargo deny check bans sources advisories
+
+  conformance-slow:
+    # Gate lente hebdo : 7 tests ignorés (décodage Qwen CPU réel, minutes en
+    # debug). Fast gate (54 tests) reste dans check-test via `xtask conformance`.
+    # Tant que les 7 slow ne sont pas verts en nightly, la suite fast est la
+    # référence CI ; voir xtask conformance-slow.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
+      - name: conformance slow (ignored real-inference)
+        run: cargo run -p xtask -- conformance-slow
