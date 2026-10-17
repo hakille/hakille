@@ -11,6 +11,8 @@ pub mod cognitive_tests;
 #[cfg(test)]
 pub mod deliberate_loop_tests;
 #[cfg(test)]
+pub mod desktop_shell;
+#[cfg(test)]
 pub mod end_to_end_integration;
 #[cfg(test)]
 pub mod model_connection_tests;

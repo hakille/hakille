@@ -21,6 +21,10 @@ annora-voice = { path = "../crates/annora-voice" }
 annora-sync = { path = "../crates/annora-sync" }
 annora-ui = { path = "../crates/annora-ui" }
 annora-ui-shell = { path = "../crates/annora-ui-shell" }
+annora-ui-protocol = { path = "../crates/annora-ui-protocol" }
+annora-ui-model = { path = "../crates/annora-ui-model" }
+annora-ui-platform = { path = "../crates/annora-ui-platform" }
+annora-ui-desktop = { path = "../crates/annora-ui-desktop" }
 annora-metrics = { path = "../crates/annora-metrics" }
 annora-auth = { path = "../crates/annora-auth" }
 annora-perception = { path = "../crates/annora-perception" }
