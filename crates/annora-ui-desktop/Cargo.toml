@@ -1,0 +1,33 @@
+[package]
+name = "annora-ui-desktop"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Annora native desktop shell: winit + wgpu + AccessKit behind stable SceneRenderer/TextEngine traits"
+
+[dependencies]
+annora-ui = { path = "../annora-ui" }
+annora-design = { path = "../annora-design" }
+annora-ui-protocol = { path = "../annora-ui-protocol" }
+annora-ui-model = { path = "../annora-ui-model" }
+annora-ui-platform = { path = "../annora-ui-platform" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+winit = "0.30"
+wgpu = "30"
+softbuffer = "0.4"
+accesskit = "0.24"
+accesskit_winit = "0.33"
+
+[features]
+default = []
+gpu = []
+
+[[bin]]
+name = "annora-desktop"
+path = "src/bin/desktop.rs"
+
+[dev-dependencies]
+serde_json = { workspace = true }

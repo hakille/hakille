@@ -1,0 +1,373 @@
+// Akora screens — Slint-native, props primitives + callbacks uniquement.
+// JAMAIS de types Rust ici. Importe components.slint.
+
+import { AkButton, AkPastille, AkSwitch, AkGauge } from "components.slint";
+import { ListView } from "std-widgets.slint";
+
+// Carte d'action (spec §8) : verbe+objet / raison+Pourquoi? / 3 pastilles /
+// Valider braise + Modifier + Refuser. Hold -> jauge braise + appui-long.
+export component ActionCardScreen inherits Rectangle {
+    in property <string> verb;
+    in property <string> object;
+    in property <string> reason;
+    in property <string> why-trace;
+    in property <string> cost;
+    in property <string> data;
+    in property <string> reversibility;
+    in property <string> provenance;
+    in property <bool> external: false;
+    in property <bool> needs-hold: false;
+    in property <float> hold-progress: 0.0;
+    in property <bool> light-mode: false;
+    callback approve();
+    callback edit();
+    callback reject();
+
+    background: root.light-mode ? #F6F4F0 : #0B0C0F;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: root.light-mode ? #DAD6CE : #262A33;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        Text {
+            text: root.verb + " " + root.object;
+            color: root.light-mode ? #14161B : #ECEEF2;
+            font-size: 16px;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.reason;
+            color: root.light-mode ? #14161B : #ECEEF2;
+            font-size: 14px;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Pourquoi ? " + root.why-trace;
+            color: root.light-mode ? #4A5060 : #A3A9B6;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            AkPastille { text: root.cost; icon: "dot"; light-mode: root.light-mode; }
+            AkPastille { text: root.data; icon: "arrow"; light-mode: root.light-mode; }
+            AkPastille { text: root.reversibility; icon: "minus"; light-mode: root.light-mode; }
+        }
+        if root.needs-hold : VerticalLayout {
+            spacing: 4px;
+            AkGauge {
+                ratio: root.hold-progress;
+                label: "Appui long requis — décision définitive";
+                ember: true;
+                light-mode: root.light-mode;
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            AkButton {
+                label: "Valider";
+                kind: 0;
+                light-mode: root.light-mode;
+                horizontal-stretch: 1;
+                clicked => { root.approve(); }
+            }
+            AkButton {
+                label: "Modifier";
+                kind: 1;
+                light-mode: root.light-mode;
+                horizontal-stretch: 1;
+                clicked => { root.edit(); }
+            }
+            AkButton {
+                label: "Refuser";
+                kind: 2;
+                light-mode: root.light-mode;
+                horizontal-stretch: 1;
+                clicked => { root.reject(); }
+            }
+        }
+        Text {
+            text: root.provenance + (root.external ? " — ○ externe (entre filets)" : " — ● Akora");
+            color: root.light-mode ? #4A5060 : #A3A9B6;
+            font-size: 12px;
+        }
+    }
+}
+
+// Feuille Pourquoi a trois niveaux : phrase, faits, plan/pouvoirs/confiance.
+export component WhyScreen inherits Rectangle {
+    in property <string> sentence;
+    in property <[string]> facts;
+    in property <string> plan;
+    in property <[string]> powers;
+    in property <string> confidence;
+    in property <[string]> alternatives;
+    in property <string> model-line;
+    in property <string> cost-line;
+    in property <string> data-line;
+    in property <string> would-change;
+    in property <bool> light-mode: false;
+    callback fact-disputed(string);
+
+    background: transparent;
+    VerticalLayout {
+        spacing: 6px;
+        Text {
+            text: "Pourquoi — " + root.sentence;
+            color: root.light-mode ? #14161B : #ECEEF2;
+            font-size: 14px;
+            wrap: word-wrap;
+        }
+        ListView {
+            height: 88px;
+            accessible-label: "Faits mobilisés";
+            for fact[i] in root.facts: HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: "● " + fact;
+                    color: root.light-mode ? #14161B : #ECEEF2;
+                    font-size: 13px;
+                    horizontal-stretch: 1;
+                    wrap: word-wrap;
+                }
+                AkButton {
+                    label: "Ce fait est faux";
+                    kind: 2;
+                    light-mode: root.light-mode;
+                    clicked => { root.fact-disputed(fact); }
+                }
+            }
+        }
+        Text {
+            text: "Plan : " + root.plan;
+            color: root.light-mode ? #4A5060 : #A3A9B6;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+        ListView {
+            height: 56px;
+            accessible-label: "Pouvoirs mobilisés";
+            for p[i] in root.powers: Text {
+                text: "○ " + p;
+                color: root.light-mode ? #4A5060 : #A3A9B6;
+                font-size: 13px;
+            }
+        }
+        Text {
+            text: "Confiance : " + root.confidence;
+            color: root.light-mode ? #14161B : #ECEEF2;
+            font-size: 13px;
+        }
+        ListView {
+            height: 56px;
+            accessible-label: "Alternatives écartées";
+            for a[i] in root.alternatives: Text {
+                text: "→ " + a;
+                color: root.light-mode ? #4A5060 : #A3A9B6;
+                font-size: 13px;
+            }
+        }
+        Text {
+            text: root.model-line + " · " + root.cost-line + " · " + root.data-line;
+            color: root.light-mode ? #4A5060 : #A3A9B6;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Ce qui changerait ma décision : " + root.would-change;
+            color: root.light-mode ? #4A5060 : #A3A9B6;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// Memoire : bascule pro/perso par partition + oubli explicite.
+export component MemoryScreen inherits Rectangle {
+    in property <[string]> rows;
+    in property <[string]> partitions;
+    // in-out : la bascule tactile repond aussitot (affichage), le Rust
+    // est notifie via select-partition pour le filtrage noyau (TODO).
+    in-out property <int> selected: 0;
+    in property <string> contra-label;
+    in property <bool> light-mode: false;
+    callback select-partition(int);
+    callback forget(string);
+
+    background: transparent;
+    VerticalLayout {
+        spacing: 8px;
+        Text {
+            text: "Mémoire — triplets, jamais de fusion auto";
+            color: root.light-mode ? #4A5060 : #A3A9B6;
+            font-size: 13px;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            for part[i] in root.partitions: AkButton {
+                label: part;
+                kind: i == root.selected ? 0 : 1;
+                light-mode: root.light-mode;
+                clicked => { root.selected = i; root.select-partition(i); }
+            }
+        }
+        ListView {
+            height: 220px;
+            accessible-label: "Souvenirs de la partition";
+            for row[i] in root.rows: HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: row;
+                    color: root.light-mode ? #14161B : #ECEEF2;
+                    font-size: 13px;
+                    horizontal-stretch: 1;
+                    wrap: word-wrap;
+                }
+                AkButton {
+                    label: "Oublier";
+                    kind: 2;
+                    light-mode: root.light-mode;
+                    clicked => { root.forget(row); }
+                }
+            }
+        }
+        Text {
+            text: root.contra-label;
+            color: root.light-mode ? #4A5060 : #A3A9B6;
+            font-size: 12px;
+            wrap: word-wrap;
+            visible: root.contra-label != "";
+        }
+    }
+}
+
+// Reglages : lignes d'affichage + etats d'interrupteurs en parallele.
+// states[i] : 1 active / 0 coupe, meme longueur que rows (voir render.rs).
+export component SettingsScreen inherits Rectangle {
+    in property <[string]> rows;
+    in property <[int]> states;
+    in property <bool> light-mode: false;
+    callback toggled(int);
+
+    background: transparent;
+    VerticalLayout {
+        spacing: 4px;
+        Text {
+            text: "Réglages — fournisseurs, voix, canaux, langues, accès, sauvegarde, foyer, simulation";
+            color: root.light-mode ? #4A5060 : #A3A9B6;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+        ListView {
+            height: 300px;
+            accessible-label: "Réglages";
+            for row[i] in root.rows: AkSwitch {
+                label: row;
+                on: i < root.states.length ? root.states[i] == 1 : false;
+                light-mode: root.light-mode;
+                toggled => { root.toggled(i); }
+            }
+        }
+    }
+}
+
+// Onboarding : limites d'abord, capacites ensuite, pret apres accuse.
+export component OnboardingScreen inherits Rectangle {
+    in property <[string]> limits;
+    in property <[string]> caps;
+    in property <bool> ready: false;
+    in property <bool> light-mode: false;
+    callback acknowledge();
+
+    background: root.light-mode ? #F6F4F0 : #0B0C0F;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: root.light-mode ? #DAD6CE : #262A33;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        Text {
+            text: "D'abord, mes limites";
+            color: root.light-mode ? #14161B : #ECEEF2;
+            font-size: 16px;
+        }
+        ListView {
+            height: 120px;
+            accessible-label: "Limites garanties";
+            for l[i] in root.limits: Text {
+                text: "− " + l;
+                color: root.light-mode ? #14161B : #ECEEF2;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+        }
+        Text {
+            text: "Ensuite, ce que je peux pour toi";
+            color: root.light-mode ? #14161B : #ECEEF2;
+            font-size: 16px;
+        }
+        ListView {
+            height: 80px;
+            accessible-label: "Capacités accordées";
+            for c[i] in root.caps: Text {
+                text: "+ " + c;
+                color: root.light-mode ? #4A5060 : #A3A9B6;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+        }
+        AkButton {
+            label: "J'ai compris — continuer";
+            kind: 0;
+            enabled: !root.ready;
+            light-mode: root.light-mode;
+            clicked => { root.acknowledge(); }
+        }
+    }
+}
+
+// Outbox : brouillons en attente, revalidation unitaire + envoi groupe.
+export component OutboxScreen inherits Rectangle {
+    in property <[string]> rows;
+    in property <bool> light-mode: false;
+    callback revalidate(int);
+    callback flush();
+
+    background: transparent;
+    VerticalLayout {
+        spacing: 8px;
+        Text {
+            text: "Boîte d'envoi — rien ne part sans revalidation";
+            color: root.light-mode ? #4A5060 : #A3A9B6;
+            font-size: 13px;
+        }
+        ListView {
+            height: 120px;
+            accessible-label: "Messages en attente";
+            for row[i] in root.rows: HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: row;
+                    color: root.light-mode ? #14161B : #ECEEF2;
+                    font-size: 13px;
+                    horizontal-stretch: 1;
+                    wrap: word-wrap;
+                }
+                AkButton {
+                    label: "Revalider";
+                    kind: 1;
+                    light-mode: root.light-mode;
+                    clicked => { root.revalidate(i); }
+                }
+            }
+        }
+        AkButton {
+            label: "Tout envoyer";
+            kind: 1;
+            light-mode: root.light-mode;
+            clicked => { root.flush(); }
+        }
+    }
+}

@@ -1,0 +1,26 @@
+{
+  "protocol_version": 1,
+  "action_card": {
+    "id": 7,
+    "verb": "Envoyer",
+    "object": "ce mail à Awa",
+    "reason": "Tu as demandé de répondre.",
+    "cost": {
+      "micros": 0,
+      "currency": "EUR"
+    },
+    "data_exit": "Local",
+    "reversible": true,
+    "provenance": {
+      "VerifiedSkill": {
+        "publisher": "Hakille",
+        "name": "mail"
+      }
+    }
+  },
+  "ui_to_kernel": {
+    "Approve": {
+      "card_id": 3
+    }
+  }
+}

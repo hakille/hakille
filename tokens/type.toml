@@ -1,0 +1,60 @@
+# Akora — tokens typographie/mise en page, SOURCE UNIQUE (spec §4-5).
+# Polices OFL embarquées + chaîne Noto (arabe, devanāgarī, CJK, Adlam, N'Ko).
+
+[font.interface]
+family = "Inter Variable"
+
+[font.mono]
+family = "JetBrains Mono"
+
+[font.fallback]
+chain = ["Noto Sans", "Noto Sans Arabic", "Noto Sans Devanagari", "Noto Sans CJK", "Noto Sans Adlam", "Noto Sans NKo"]
+
+# Styles : taille_px / interligne_px / graisse / usage.
+[type.display]
+size = 40
+line = 44
+weight = 600
+
+[type.title]
+size = 28
+line = 34
+weight = 600
+
+[type.heading]
+size = 20
+line = 26
+weight = 600
+
+[type.body]
+size = 16
+line = 24
+weight = 400
+
+[type.body_strong]
+size = 16
+line = 24
+weight = 500
+
+[type.caption]
+size = 13
+line = 18
+weight = 400
+
+[type.mono]
+size = 13
+line = 20
+weight = 400
+
+[layout.grid_pt]
+base = 4
+spacings = [4, 8, 12, 16, 24, 32, 48, 64]
+
+[layout.radius]
+control = 8
+card = 16
+
+[layout.touch_pt]
+ios = 44
+android = 48
+pointer_min_px = 32

@@ -1,0 +1,27 @@
+# Akora — tokens mouvement/haptique/son, SOURCE UNIQUE (spec §6).
+# Durées ms, easings, ressort carte, haptiques ms, notes Karplus-Strong.
+# Jamais de valeurs en dur dans le code : tout vient d'ici via `xtask tokens`.
+
+[motion.duration_ms]
+t120 = 120
+t200 = 200
+t320 = 320
+t600 = 600
+
+[motion.ease]
+ease_in = "cubic-bezier(0.2, 0, 0, 1)"
+ease_out = "cubic-bezier(0.3, 0, 0.8, 0.15)"
+
+[motion.spring_card]
+stiffness = 380
+damping = 32
+mass = 1
+
+[motion.haptic_ms]
+tick = 10
+
+# Signaux sonores : paires (note MIDI, durée ms), synthèse Karplus-Strong.
+[motion.sound]
+eveil = [[69, 90], [76, 90]]
+fait = [[72, 220]]
+attention = [[67, 160], [67, 160]]

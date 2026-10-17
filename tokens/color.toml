@@ -1,0 +1,45 @@
+# Akora — tokens couleur, SOURCE UNIQUE (spec §3).
+# Généré vers Rust/Swift/Kotlin/CSS par `cargo xtask tokens`. Ne jamais
+# utiliser braise hors de `allowed_in` : un lint (test) refuse.
+# Ratios texte/1 ≈ 17:1 (sombre) / 16:1 (clair), vérifiés en CI.
+
+[color.surface.0]
+dark = "#0B0C0F"
+light = "#F6F4F0"
+
+[color.surface.1]
+dark = "#121419"
+light = "#FFFFFF"
+
+[color.surface.2]
+dark = "#1A1D24"
+light = "#EDEAE4"
+
+[color.ligne]
+dark = "#262A33"
+light = "#DAD6CE"
+
+[color.texte.1]
+dark = "#ECEEF2"
+light = "#14161B"
+
+[color.texte.2]
+dark = "#A3A9B6"
+light = "#4A5060"
+
+[color.texte.3]
+dark = "#7A8190"
+light = "#667085"
+
+[color.lueur]
+dark = "#F4EBDD"
+light = "#14161B"
+
+[color.braise]
+dark = "#FF7A2F"
+light = "#C2410C"
+allowed_in = ["validation", "hold-progress", "decision-ring"]
+
+[color.sur-braise]
+dark = "#0B0C0F"
+light = "#FFFFFF"

@@ -1,0 +1,20 @@
+[package]
+name = "annora-ui-model"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Annora UI model: stable headless frontier (snapshot + viewmodels + UiEvent), no GPU, no Slint"
+
+[dependencies]
+annora-ui = { path = "../annora-ui" }
+annora-design = { path = "../annora-design" }
+annora-ui-protocol = { path = "../annora-ui-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+annora-ui-shell = { path = "../annora-ui-shell" }
