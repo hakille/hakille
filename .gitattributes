@@ -1,0 +1,3 @@
+# Le fichier de jetons est généré en LF par `cargo xtask tokens` ; forcer LF
+# au checkout évite un faux "périmé" sur les runners Windows.
+crates/hakille-design/src/generated.rs text eol=lf

@@ -217,7 +217,12 @@ async fn main() {
                 out = fmted;
             }
             let target = root.join("crates/hakille-design/src/generated.rs");
-            let current = std::fs::read_to_string(&target).unwrap_or_default();
+            // Normalise CRLF : Git peut checkout le fichier en CRLF sur Windows,
+            // alors que l'émetteur produit du LF. La comparaison doit être
+            // indépendante de la plateforme.
+            let current = std::fs::read_to_string(&target)
+                .unwrap_or_default()
+                .replace("\r\n", "\n");
             if check_only {
                 if current != out {
                     let n = current

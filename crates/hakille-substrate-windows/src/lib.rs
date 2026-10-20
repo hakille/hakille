@@ -64,11 +64,17 @@ mod tests {
         assert!(compute.supports_quantization("int8"));
         assert!(!compute.supports_quantization("unsupported_quant"));
 
-        // Verify real physical RAM query
+        // Verify real physical RAM query (Windows only : le fallback
+        // non-Windows renvoie volontairement 0, jamais une valeur inventée).
         let total_ram = compute.total_physical_ram();
         let avail_ram = compute.available_physical_ram();
-        assert!(total_ram > 0, "Total RAM must be greater than 0");
-        assert!(avail_ram > 0, "Available RAM must be greater than 0");
+        if cfg!(windows) {
+            assert!(total_ram > 0, "Total RAM must be greater than 0");
+            assert!(avail_ram > 0, "Available RAM must be greater than 0");
+        } else {
+            assert_eq!(total_ram, 0);
+            assert_eq!(avail_ram, 0);
+        }
     }
 
     #[test]
@@ -94,6 +100,7 @@ mod tests {
         assert!(!profile.is_active);
     }
 
+    #[cfg(windows)]
     #[tokio::test]
     async fn test_windows_real_screen_capture_and_input_injection() {
         let (w, h) = WindowsScreenCapturer::display_dimensions();
@@ -471,7 +478,12 @@ mod tests {
         assert!(substrate.manifest().thermal_envelope_watts.is_none());
         let compute = WindowsComputeBackend::new();
         assert_eq!(compute.vram_available_bytes(), 0);
-        // RAM itself is honestly measured via GlobalMemoryStatusEx.
-        assert!(compute.total_physical_ram() > 0);
+        // RAM itself is honestly measured via GlobalMemoryStatusEx sur Windows ;
+        // hors Windows, le fallback explicite renvoie 0.
+        if cfg!(windows) {
+            assert!(compute.total_physical_ram() > 0);
+        } else {
+            assert_eq!(compute.total_physical_ram(), 0);
+        }
     }
 }

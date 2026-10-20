@@ -149,6 +149,7 @@ impl Default for INPUT {
     }
 }
 
+#[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
     pub fn GetSystemPowerStatus(lpSystemPowerStatus: *mut SYSTEM_POWER_STATUS) -> i32;
@@ -157,6 +158,7 @@ unsafe extern "system" {
     pub fn GetComputerNameW(lpBuffer: *mut u16, nSize: *mut u32) -> i32;
 }
 
+#[cfg(windows)]
 #[link(name = "user32")]
 unsafe extern "system" {
     pub fn GetSystemMetrics(nIndex: i32) -> i32;
@@ -169,6 +171,7 @@ unsafe extern "system" {
     pub fn MapVirtualKeyW(uCode: u32, uMapType: u32) -> u32;
 }
 
+#[cfg(windows)]
 #[link(name = "gdi32")]
 unsafe extern "system" {
     pub fn CreateCompatibleDC(hDC: isize) -> isize;
@@ -197,3 +200,112 @@ unsafe extern "system" {
         usage: u32,
     ) -> i32;
 }
+
+// ---------------------------------------------------------------------------
+// Fallback non-Windows : permet à `cargo test --workspace` de lier le crate
+// sur Linux/macOS pour les tests de manifeste/capabilities. Aucune opération
+// Win32 n'est simulée comme un succès : les appels renvoient 0/échec et les
+// couches appelantes conservent leurs branches d'erreur explicites.
+// ---------------------------------------------------------------------------
+#[cfg(not(windows))]
+#[allow(clippy::missing_safety_doc)]
+mod non_windows {
+    use super::*;
+
+    pub unsafe fn GetSystemPowerStatus(_: *mut SYSTEM_POWER_STATUS) -> i32 {
+        0
+    }
+
+    pub unsafe fn GlobalMemoryStatusEx(_: *mut MEMORYSTATUSEX) -> i32 {
+        0
+    }
+
+    pub unsafe fn GetLastError() -> u32 {
+        0
+    }
+
+    pub unsafe fn GetComputerNameW(_: *mut u16, _: *mut u32) -> i32 {
+        0
+    }
+
+    pub unsafe fn GetSystemMetrics(index: i32) -> i32 {
+        match index {
+            SM_CXSCREEN => 1920,
+            SM_CYSCREEN => 1080,
+            _ => 0,
+        }
+    }
+
+    pub unsafe fn GetDC(_: isize) -> isize {
+        0
+    }
+
+    pub unsafe fn ReleaseDC(_: isize, _: isize) -> i32 {
+        0
+    }
+
+    pub unsafe fn SetCursorPos(_: i32, _: i32) -> i32 {
+        0
+    }
+
+    pub unsafe fn mouse_event(_: u32, _: u32, _: u32, _: u32, _: usize) {}
+
+    pub unsafe fn keybd_event(_: u8, _: u8, _: u32, _: usize) {}
+
+    pub unsafe fn SendInput(_: u32, _: *const INPUT, _: i32) -> u32 {
+        0
+    }
+
+    pub unsafe fn MapVirtualKeyW(_: u32, _: u32) -> u32 {
+        0
+    }
+
+    pub unsafe fn CreateCompatibleDC(_: isize) -> isize {
+        0
+    }
+
+    pub unsafe fn DeleteDC(_: isize) -> i32 {
+        0
+    }
+
+    pub unsafe fn CreateCompatibleBitmap(_: isize, _: i32, _: i32) -> isize {
+        0
+    }
+
+    pub unsafe fn SelectObject(_: isize, _: isize) -> isize {
+        0
+    }
+
+    pub unsafe fn DeleteObject(_: isize) -> i32 {
+        0
+    }
+
+    pub unsafe fn BitBlt(
+        _: isize,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: isize,
+        _: i32,
+        _: i32,
+        _: u32,
+    ) -> i32 {
+        0
+    }
+
+    pub unsafe fn GetDIBits(
+        _: isize,
+        _: isize,
+        _: u32,
+        _: u32,
+        _: *mut u8,
+        _: *mut BITMAPINFO,
+        _: u32,
+    ) -> i32 {
+        0
+    }
+}
+
+#[cfg(not(windows))]
+pub use non_windows::*;

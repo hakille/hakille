@@ -21,6 +21,9 @@ jobs:
         with:
           toolchain: "1.95"
           components: rustfmt, clippy
+      - name: system dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - name: fmt check
         run: cargo fmt --all -- --check
       - name: tokens source unique
@@ -55,6 +58,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.95"
+      - name: system dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
       - name: view-models purs + protocole versionné
         run: cargo test -p hakille-ui-model -p hakille-ui-protocol --locked
       - name: accessibilité (tout contrôle interactif a un nom, rôle, action)
