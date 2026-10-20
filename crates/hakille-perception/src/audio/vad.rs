@@ -281,9 +281,21 @@ mod tests {
         }
     }
 
+    fn real_vad_available(vad: &VoiceActivityDetector) -> bool {
+        if vad.model_path().is_some_and(|path| path.is_file()) {
+            true
+        } else {
+            eprintln!("SKIP: models/silero_vad.onnx absent — test VAD réel ignoré");
+            false
+        }
+    }
+
     #[test]
     fn real_silence_is_negative_and_honest() {
         let mut vad = VoiceActivityDetector::default_silero_profile();
+        if !real_vad_available(&vad) {
+            return;
+        }
         let res = vad.process(&chunk(vec![0.0f32; 1600], 16_000, 1));
         assert!(!res.is_speech);
         assert!(res.speech_probability < 0.3);
@@ -302,6 +314,9 @@ mod tests {
     fn hangover_is_fed_by_real_probs() {
         // Seuil 0.0 : toute prob réelle (même ~0.0005 du silence) arme le hangover.
         let mut vad = VoiceActivityDetector::new(0.0, 2);
+        if !real_vad_available(&vad) {
+            return;
+        }
         let r1 = vad.process(&chunk(vec![0.0f32; 1600], 16_000, 1));
         assert!(r1.is_speech, "hangover armé par prob réelle >= 0.0");
         assert!(vad.last_used_real());

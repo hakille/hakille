@@ -61,6 +61,10 @@ mod tests {
     #[test]
     fn test_vad_silence_vs_speech() {
         let mut vad = VoiceActivityDetector::default_silero_profile();
+        if !vad.model_path().is_some_and(|path| path.is_file()) {
+            eprintln!("SKIP: models/silero_vad.onnx absent — test VAD réel ignoré");
+            return;
+        }
 
         // 1. Silent chunk
         let silent_chunk = AudioChunk {

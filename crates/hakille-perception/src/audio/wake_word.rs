@@ -677,6 +677,15 @@ mod tests {
         }
     }
 
+    fn real_vad_available(det: &WakeWordDetector) -> bool {
+        if det.vad_model_path.as_deref().is_some_and(|p| p.is_file()) {
+            true
+        } else {
+            eprintln!("SKIP: models/silero_vad.onnx absent — test wake-word gaté ignoré");
+            false
+        }
+    }
+
     fn sine(freq_hz: f32, amp: f32, n: usize) -> Vec<f32> {
         (0..n)
             .map(|t| (t as f32 / 16_000.0 * freq_hz * 2.0 * std::f32::consts::PI).sin() * amp)
@@ -810,6 +819,9 @@ mod tests {
     #[test]
     fn gated_path_silence_is_negative_with_real_vad() {
         let mut det = WakeWordDetector::default_hakille();
+        if !real_vad_available(&det) {
+            return;
+        }
         let r = det
             .process_gated(&chunk(vec![0.0f32; 4800]))
             .expect("VAD réel disponible");
@@ -827,6 +839,9 @@ mod tests {
         // isolés — la durée exigée n'est jamais atteinte — mais le VAD réel
         // s'active (preuve mesuree).
         let mut det = WakeWordDetector::new("test", 0.75);
+        if !real_vad_available(&det) {
+            return;
+        }
         let mut fires_default = 0;
         let mut vad_max_all: f32 = 0.0;
         for w in phrase.chunks(4800) {
