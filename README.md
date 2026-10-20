@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo/hakille-logo-dark.png">
+    <img src="logo/hakille-logo.png" alt="Hakille" width="160">
+  </picture>
+</p>
+
 # Hakille — Sovereign Cognitive Operating System (Rust Native)
 
 [![Rust Version](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org)
