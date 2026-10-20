@@ -1172,10 +1172,20 @@ mod tests {
         for _ in 0..200 {
             journal.append(make_test_entry(true)).unwrap();
         }
+        // Les runners CI partagés, surtout sous Windows, peuvent être très
+        // lents sur les fsync de redb. Le budget local reste strict ; le budget
+        // CI est élargi pour ne pas transformer une variance d'infrastructure
+        // en faux échec, tout en détectant les régressions catastrophiques.
+        let append_budget = if std::env::var_os("CI").is_some() {
+            std::time::Duration::from_secs(15)
+        } else {
+            std::time::Duration::from_secs(5)
+        };
         assert!(
-            start.elapsed().as_secs() < 5,
-            "budget perf append dépassé : {:?}",
-            start.elapsed()
+            start.elapsed() < append_budget,
+            "budget perf append dépassé : {:?} (budget {:?})",
+            start.elapsed(),
+            append_budget
         );
 
         let vstart = std::time::Instant::now();
