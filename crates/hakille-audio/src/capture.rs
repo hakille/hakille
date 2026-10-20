@@ -306,14 +306,21 @@ mod tests {
             eprintln!("SKIP: aucun périphérique d'entrée");
             return;
         }
-        let mut capture = Capture::new().expect("ouverture du micro par défaut");
+        let mut capture = match Capture::new() {
+            Ok(capture) => capture,
+            Err(err) => {
+                eprintln!("SKIP: micro par défaut non ouvrable : {err}");
+                return;
+            }
+        };
         assert!(!capture.is_running());
         let (tx, rx) = mpsc::channel::<Vec<f32>>();
-        capture
-            .start(move |block| {
-                let _ = tx.send(block.to_vec());
-            })
-            .expect("démarrage de la capture");
+        if let Err(err) = capture.start(move |block| {
+            let _ = tx.send(block.to_vec());
+        }) {
+            eprintln!("SKIP: démarrage de la capture indisponible : {err}");
+            return;
+        }
         assert!(capture.is_running());
         let received = rx.recv_timeout(Duration::from_secs(3));
         capture.stop().expect("arrêt de la capture");

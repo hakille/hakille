@@ -235,6 +235,31 @@ mod tests {
             return; // Skip if models not present in environment
         };
 
+        // Le dossier `models/` est versionné avec seulement `.gitkeep` : sa
+        // présence ne suffit pas. On ne lance le test que si les 8 artefacts
+        // réels sont là, sinon on l'annonce explicitement et on passe.
+        let required = [
+            "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            "ui-tars-2b-sft-q4_k_m.gguf",
+            "mimi_candle.safetensors",
+            "tokens.txt",
+            "sensevoice_small.int8.onnx",
+            "silero_vad.onnx",
+            "campplus_zh_en_16k_advanced.onnx",
+            "all-minilm-l6-v2.onnx",
+        ];
+        if let Some(missing) = required
+            .iter()
+            .find(|name| !models_dir.join(name).is_file())
+        {
+            eprintln!(
+                "SKIP: artefact de modèle absent : '{}' (dossier '{}')",
+                missing,
+                models_dir.display()
+            );
+            return;
+        }
+
         let provisioner = ModelProvisioner::new(models_dir);
         let connected = provisioner
             .connect_all_models()
