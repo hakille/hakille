@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/hakille/hakille/security/advisories/new
+    about: Report a vulnerability privately; do not open a public issue.
+  - name: Documentation
+    url: https://github.com/hakille/hakille/tree/main/docs
+    about: Guides, architecture, models, substrates, and developer documentation.
