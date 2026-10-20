@@ -7,19 +7,19 @@
 
 #[cfg(test)]
 mod tests {
-    use annora_ui::{
+    use hakille_ui::{
         CostCounter, EphemeralHud, PresenceIndicator, PresenceState, SilenceBudgetTracker,
     };
-    use annora_ui_desktop::a11y::{audit_interactive_labels, build_shell_tree};
-    use annora_ui_desktop::kernel_bridge::{BridgeError, KernelBridge, KernelStub};
-    use annora_ui_desktop::renderer::{SoftwareRenderer, WgpuRenderer, hud_scene};
-    use annora_ui_desktop::runtime::RuntimeEvent;
-    use annora_ui_desktop::scene::SceneRenderer;
-    use annora_ui_desktop::text::SimpleTextEngine;
-    use annora_ui_desktop::text::TextEngine;
-    use annora_ui_desktop::theme::Theme;
-    use annora_ui_desktop::{HeadlessRuntime, Locale, Strings};
-    use annora_ui_model::{JournalRow, PowerRow, StableSnapshot, UiEvent};
+    use hakille_ui_desktop::a11y::{audit_interactive_labels, build_shell_tree};
+    use hakille_ui_desktop::kernel_bridge::{BridgeError, KernelBridge, KernelStub};
+    use hakille_ui_desktop::renderer::{SoftwareRenderer, WgpuRenderer, hud_scene};
+    use hakille_ui_desktop::runtime::RuntimeEvent;
+    use hakille_ui_desktop::scene::SceneRenderer;
+    use hakille_ui_desktop::text::SimpleTextEngine;
+    use hakille_ui_desktop::text::TextEngine;
+    use hakille_ui_desktop::theme::Theme;
+    use hakille_ui_desktop::{HeadlessRuntime, Locale, Strings};
+    use hakille_ui_model::{JournalRow, PowerRow, StableSnapshot, UiEvent};
 
     fn snapshot() -> StableSnapshot {
         let mut presence = PresenceIndicator::new();
@@ -40,7 +40,7 @@ mod tests {
         vec![JournalRow {
             id: "j-1".into(),
             time: "14:32".into(),
-            actor: "Akora".into(),
+            actor: "Hakille".into(),
             action: "Envoi du récapitulatif à Awa".into(),
             reason: "Demandé".into(),
             confidence_pct: 92,
@@ -80,7 +80,7 @@ mod tests {
         let mut w = WgpuRenderer::new(720, 64, true);
         let status = w.try_init_gpu();
         assert!(
-            !matches!(status, annora_ui_desktop::GpuStatus::Failed(_)),
+            !matches!(status, hakille_ui_desktop::GpuStatus::Failed(_)),
             "headless doit dégrader explicitement vers le logiciel"
         );
         let snap = snapshot();
@@ -139,8 +139,8 @@ mod tests {
         impl KernelStub for Refuse {
             fn submit(
                 &mut self,
-                _msg: annora_ui_protocol::UiMessage,
-            ) -> Result<annora_ui_protocol::KernelToUi, BridgeError> {
+                _msg: hakille_ui_protocol::UiMessage,
+            ) -> Result<hakille_ui_protocol::KernelToUi, BridgeError> {
                 Err(BridgeError::DaemonRequired("a11y gate".into()))
             }
         }
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn desktop_e2e_authorized_journey() {
-        use annora_ui_desktop::RealDaemonBridge;
+        use hakille_ui_desktop::RealDaemonBridge;
         let mut bridge = KernelBridge::new(RealDaemonBridge::local_authorized());
         bridge.kernel.stage_card(3, "Envoi 25.00 EUR");
         let approved = bridge
@@ -197,7 +197,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             approved,
-            annora_ui_model::KernelEvent::JournalAppended { .. }
+            hakille_ui_model::KernelEvent::JournalAppended { .. }
         ));
         let undo = bridge
             .dispatch(UiEvent::JournalRevert { index: 1 })
@@ -205,7 +205,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             undo,
-            annora_ui_model::KernelEvent::JournalAppended { .. }
+            hakille_ui_model::KernelEvent::JournalAppended { .. }
         ));
         assert!(bridge.dispatch(UiEvent::HudCancelled).unwrap().is_none());
         assert_eq!(bridge.outbox.len(), 2);

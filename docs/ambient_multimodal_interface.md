@@ -1,18 +1,18 @@
-# Annora — Architecture de l'Interface Ambiante & Perception Multimodale Native
+# Hakille — Architecture de l'Interface Ambiante & Perception Multimodale Native
 
 > *"Le principe : moins l'utilisateur voit d'interface, mieux le produit fonctionne. Une AGI perçue ne s'annonce pas avec un splash screen."* — Document de vision technique (§13)
 
-Ce document décrit l'architecture, les invariants de sécurité et l'implémentation de la couche d'interface ambiante et de perception multimodale native dans Annora.
+Ce document décrit l'architecture, les invariants de sécurité et l'implémentation de la couche d'interface ambiante et de perception multimodale native dans Hakille.
 
 ---
 
 ## 1. Vision Fondatrice : L'Interface qui n'existe presque pas (§13)
 
-Annora rompt fondamentalement avec le paradigme des assistants conversationnels actuels (boîtes de dialogue web, fenêtres de chat dédiées, clics superflus) pour adopter un design de niveau Apple/Google axé sur la discrétion absolue et la continuité cognitive.
+Hakille rompt fondamentalement avec le paradigme des assistants conversationnels actuels (boîtes de dialogue web, fenêtres de chat dédiées, clics superflus) pour adopter un design de niveau Apple/Google axé sur la discrétion absolue et la continuité cognitive.
 
 ### Invariants Clés du Design
 1. **Zéro fenêtre de chat par défaut** :
-   Annora ne maintient aucune application fenêtrée permanente ouverte sur l'écran de l'utilisateur.
+   Hakille ne maintient aucune application fenêtrée permanente ouverte sur l'écran de l'utilisateur.
 2. **Point de présence ambiant minimal** :
    Un indicateur discret dans la barre d'état système avec seulement trois états perceptifs :
    - **Veille (Idle)** : Statique, point gris anthracite estompé (`#787878`), aucune consommation GPU/CPU visible.
@@ -30,7 +30,7 @@ Annora rompt fondamentalement avec le paradigme des assistants conversationnels 
 Sur desktop et laptop, le raccourci global universel (`Alt+Space` sous Windows/Linux, `Cmd+Space` sous macOS) invoque une **ligne de commande éphémère** :
 
 ```text
-╭─ [Annora HUD • Alt+Space] ──────────────────────────╮
+╭─ [Hakille HUD • Alt+Space] ──────────────────────────╮
 │ > Transférer 25 EUR pour déjeuner█                  │
 ╰─────────────────────────────────────────────────────╯
 ```
@@ -40,7 +40,7 @@ Sur desktop et laptop, le raccourci global universel (`Alt+Space` sous Windows/L
 2. **Streaming inline** : Les tokens de réponse s'écrivent directement dans la ligne, sans ouvrir de panneau supplémentaire.
 3. **Puce de validation Corail `#FF5722`** :
    ```text
-   ╭─ [Annora VALIDATION REQUIRED #FF5722 CORAL] ─────────╮
+   ╭─ [Hakille VALIDATION REQUIRED #FF5722 CORAL] ─────────╮
    │ Action [wallet-spend-42]: Envoi 25.00 EUR vers Resto │
    │ Risk: Financial | Cost: 25.00 EUR                    │
    │ [Enter] Confirmer  |  [Esc] Annuler                  │
@@ -52,12 +52,12 @@ Sur desktop et laptop, le raccourci global universel (`Alt+Space` sous Windows/L
 
 ## 3. Perception Multimodale Native & Caméras (§6)
 
-Annora traite en continu les flux de capteurs (caméra webcam, microphones de proximité, capteurs de présence) directement via le trait `Substrate`.
+Hakille traite en continu les flux de capteurs (caméra webcam, microphones de proximité, capteurs de présence) directement via le trait `Substrate`.
 
 ### Invariant Fondamental de Confidentialité
 > **Aucun pixel brut ne quitte la mémoire vive éphémère locale.**
 
-- Les trames capturées (`CameraFrame`) sont analysées en temps réel dans `annora-perception::CameraPipeline`.
+- Les trames capturées (`CameraFrame`) sont analysées en temps réel dans `hakille-perception::CameraPipeline`.
 - Une empreinte cryptographique SHA-256 de chaque trame est calculée pour l'attestation et l'auditabilité matérielle.
 - Les données de pixels bruts sont immédiatement jetées de la mémoire. Seules les métadonnées sémantiques sont conservées et transmises au `WorldModel`.
 
@@ -97,7 +97,7 @@ Pour éviter le travers des assistants intrusifs qui dérangent l'utilisateur à
 1. **Rappels programmés par l'utilisateur** : Coûtent **0 crédit**. Toujours délivrés.
 2. **Suggestions inférées par le système** : Coûtent **1 crédit d'interruption** sur un quota quotidien strict (par défaut 5 crédits / jour).
 3. **Condition de confiance requise** : Une suggestion proactive n'est autorisée que si la confiance cognitive de System 2 dépasse `0.85`.
-4. **Épuisement du budget** : Lorsque les 5 crédits sont consommés, Annora bascule en silence complet pour le reste de la journée, attendant une sollicitation explicite de l'utilisateur.
+4. **Épuisement du budget** : Lorsque les 5 crédits sont consommés, Hakille bascule en silence complet pour le reste de la journée, attendant une sollicitation explicite de l'utilisateur.
 
 ---
 

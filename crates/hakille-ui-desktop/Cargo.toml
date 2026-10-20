@@ -1,0 +1,36 @@
+[package]
+name = "hakille-ui-desktop"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Hakille native desktop shell: winit + wgpu + AccessKit behind stable SceneRenderer/TextEngine traits"
+
+[dependencies]
+hakille-ui = { path = "../hakille-ui" }
+hakille-design = { path = "../hakille-design" }
+hakille-ipc = { path = "../hakille-ipc" }
+hakille-ui-protocol = { path = "../hakille-ui-protocol" }
+hakille-ui-model = { path = "../hakille-ui-model" }
+hakille-ui-platform = { path = "../hakille-ui-platform", features = ["native"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+winit = "0.30"
+wgpu = "30"
+softbuffer = "0.4"
+accesskit = "0.24"
+accesskit_winit = "0.33"
+ab_glyph = "0.2"
+
+[features]
+default = []
+gpu = []
+
+[[bin]]
+name = "hakille-desktop"
+path = "src/bin/desktop.rs"
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -1,12 +1,12 @@
 # Constitution, Éthique & Détection de Dérive des Valeurs
 
-Ce document formalise les règles constitutionnelles immuables d'Annora, les garanties éthiques appliquées et les mécanismes de détection de dérive des valeurs.
+Ce document formalise les règles constitutionnelles immuables d'Hakille, les garanties éthiques appliquées et les mécanismes de détection de dérive des valeurs.
 
 ---
 
 ## 1. La Hiérarchie de Priorité Absolue
 
-Pour éviter toute improvisation au cas par cas lors d'instructions contradictoires, Annora applique un ordre de précédence strict encodé dans `annora-kernel` et `annora-constitution` :
+Pour éviter toute improvisation au cas par cas lors d'instructions contradictoires, Hakille applique un ordre de précédence strict encodé dans `hakille-kernel` et `hakille-constitution` :
 
 ```
 1. CONSTITUTION IMMUABLE (Prime sur tout, inviolable)
@@ -56,7 +56,7 @@ Une AGI souveraine ne doit pas simuler une compétence thérapeutique omniscient
 
 ## 4. Seuils d'Élévation de Confiance par Domaine Sensible (Règle 06)
 
-Le moteur de confiance `annora_core::ConfidenceEngine` module ses exigences selon le domaine thématique de l'intention :
+Le moteur de confiance `hakille_core::ConfidenceEngine` module ses exigences selon le domaine thématique de l'intention :
 
 ```rust
 let domain_thresholds = HashMap::from([
@@ -76,6 +76,6 @@ Si le score calculé est inférieur au seuil spécifique, le système refuse for
 ## 5. Batterie de Tests Éthiques & Détection de Dérive
 
 Pour s'assurer que les optimisations de performance ou les mises à jour de modèles n'entraînent pas de glissement pernicieux des valeurs du système :
-- Le module `annora-constitution::ethics` exécute régulièrement une suite de dilemmes éthiques de référence (`run_ethics_battery`).
-- Le composant `annora-metrics::ValuesDriftDetector` mesure la projection géométrique des décisions dans l'espace vectoriel des 5 axes constitutionnels (Autonomie, Primauté humaine, Sûreté, Confidentialité, Transparence).
+- Le module `hakille-constitution::ethics` exécute régulièrement une suite de dilemmes éthiques de référence (`run_ethics_battery`).
+- Le composant `hakille-metrics::ValuesDriftDetector` mesure la projection géométrique des décisions dans l'espace vectoriel des 5 axes constitutionnels (Autonomie, Primauté humaine, Sûreté, Confidentialité, Transparence).
 - Tout écart supérieur au seuil de tolérance émet immédiatement une alerte d'audit et suspend l'application de tout apprentissage LoRA nocturne.

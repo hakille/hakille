@@ -1,0 +1,14 @@
+[package]
+name = "hakille-constitution"
+version = "0.1.0"
+edition = "2024"
+description = "Constitution et gouvernance Hakille"
+repository = "https://github.com/hakille/hakille"
+[dependencies]
+hakille-core = { path = "../hakille-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+semver = { workspace = true }

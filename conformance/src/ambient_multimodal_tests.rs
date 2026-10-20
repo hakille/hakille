@@ -1,8 +1,8 @@
-use annora_core::{CapabilityAction, CapabilityAuthority, CapabilityScope, Timestamp};
-use annora_perception::{CameraPipeline, LightingCondition, UserPresence, WorldModel};
-use annora_substrate::{CameraConfig, CameraFacing, CameraFrame, ImageFormat, Substrate};
-use annora_substrate_windows::WindowsSubstrate;
-use annora_ui::{
+use hakille_core::{CapabilityAction, CapabilityAuthority, CapabilityScope, Timestamp};
+use hakille_perception::{CameraPipeline, LightingCondition, UserPresence, WorldModel};
+use hakille_substrate::{CameraConfig, CameraFacing, CameraFrame, ImageFormat, Substrate};
+use hakille_substrate_windows::WindowsSubstrate;
+use hakille_ui::{
     ChannelSelector, DeviceType, EphemeralHud, HudState, InitiativeOrigin, InteractionContext,
     OutputChannel, PlatformAdapter, PresenceState, SilenceBudgetTracker, UrgencyLevel,
 };
@@ -28,10 +28,11 @@ async fn test_ambient_multimodal_perception_and_interface_pipeline() {
         fps: 30,
         facing: CameraFacing::Front,
     };
-    // Honnêteté substrate : aucun binding caméra natif n'est branché ⇒ erreur
-    // explicite nommant le backend manquant, jamais de frames synthétiques du
-    // substrate lui-même. Si un backend réel est branché un jour, la branche
-    // Ok capture une vraie frame.
+    // Honnêteté substrate : le backend MediaFoundation Windows est branché ;
+    // s'il est indisponible (pas de device, permission refusée) l'erreur
+    // nomme le backend, jamais de frames synthétiques. Les autres OS
+    // retournent encore "camera not implemented". Si un backend réel répond,
+    // la branche Ok capture une vraie frame.
     match substrate
         .start_camera_capture(camera_config.clone(), &camera_cap)
         .await
@@ -44,10 +45,10 @@ async fn test_ambient_multimodal_perception_and_interface_pipeline() {
             assert!(raw_frame.width > 0);
             assert!(!raw_frame.data.is_empty());
         }
-        Err(annora_core::AnnoraError::SubstrateError(msg)) => {
+        Err(hakille_core::HakilleError::SubstrateError(msg)) => {
             assert!(
-                msg.contains("camera not implemented"),
-                "erreur honnête nommant le binding manquant, obtenue : {msg}"
+                msg.contains("camera not implemented") || msg.contains("camera unavailable"),
+                "erreur honnête nommant le backend, obtenue : {msg}"
             );
             assert!(
                 !camera_config.is_available(),

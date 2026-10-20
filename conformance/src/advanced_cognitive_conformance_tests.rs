@@ -1,14 +1,14 @@
-use annora_agents::{AgentQuotaTracker, CapabilityQuota, QuotaBreachPolicy};
-use annora_audit::consent_registry::ConsentRegistry;
-use annora_auth::{GuestSessionManager, VoiceLivenessDetector};
-use annora_core::{
+use hakille_agents::{AgentQuotaTracker, CapabilityQuota, QuotaBreachPolicy};
+use hakille_audit::consent_registry::ConsentRegistry;
+use hakille_auth::{GuestSessionManager, VoiceLivenessDetector};
+use hakille_core::{
     ActorId, CapabilityAction, CapabilityAuthority, CapabilityScope, Timestamp, UserId,
 };
-use annora_kernel::{
+use hakille_kernel::{
     CognitiveState, DeliberatePlanner, DryRunSimulator, ExecutionPlan, GraphCuriosityScanner,
     SelfModel, WorkingMemory,
 };
-use annora_memory::{
+use hakille_memory::{
     ContextPartition,
     graph::KnowledgeGraph,
     query_lang::GraphQueryBuilder,
@@ -29,11 +29,11 @@ fn test_conformance_working_memory_distillation_and_query_dsl() {
 
     // Persist into sovereign KnowledgeGraph
     let mut graph = KnowledgeGraph::new();
-    let subj_emma = annora_core::NodeId(Uuid::new_v4());
-    let pred_interest = annora_core::PredicateId(Uuid::new_v4());
+    let subj_emma = hakille_core::NodeId(Uuid::new_v4());
+    let pred_interest = hakille_core::PredicateId(Uuid::new_v4());
 
     let triplet = Triplet {
-        id: annora_core::TripletId(Uuid::new_v4()),
+        id: hakille_core::TripletId(Uuid::new_v4()),
         subject: subj_emma.clone(),
         predicate: pred_interest,
         object: NodeValue::Text(distilled[0].object.clone()),
@@ -44,7 +44,7 @@ fn test_conformance_working_memory_distillation_and_query_dsl() {
             source: TripletSource::Inferred,
             confidence: distilled[0].confidence,
             context: ContextPartition::Personal,
-            trust_level: annora_core::TrustLevel::User,
+            trust_level: hakille_core::TrustLevel::User,
             decay_rate: 0.01,
         },
         node_type: None,
@@ -166,8 +166,8 @@ fn test_conformance_anti_spoofing_and_guest_manager() {
 #[test]
 fn test_conformance_spo_query_dsl_weight_confidence_sorting() {
     // Verrouille mission 3 : GraphQuery typée + tri poids/confiance via recall.
-    use annora_constitution::rules::Constitution;
-    use annora_kernel::{
+    use hakille_constitution::rules::Constitution;
+    use hakille_kernel::{
         fabric::{CognitiveFabric, CognitiveManifest},
         orchestrator::CognitiveOrchestrator,
     };
@@ -180,7 +180,7 @@ fn test_conformance_spo_query_dsl_weight_confidence_sorting() {
         ("Alice", "boit", "Café"),
     ] {
         match orch.remember(subj, pred, obj) {
-            annora_memory::InsertResult::Inserted(_) => {}
+            hakille_memory::InsertResult::Inserted(_) => {}
             other => panic!("Insertion SPO attendue, obtenue : {:?}", other),
         }
     }
@@ -189,7 +189,7 @@ fn test_conformance_spo_query_dsl_weight_confidence_sorting() {
         .memory_graph
         .lookup_predicate("parle")
         .expect("Prédicat registré");
-    let hits = annora_memory::GraphQueryBuilder::select()
+    let hits = hakille_memory::GraphQueryBuilder::select()
         .where_predicate(pid)
         .build()
         .execute(&orch.memory_graph);
@@ -217,8 +217,10 @@ fn test_conformance_spo_query_dsl_weight_confidence_sorting() {
 async fn test_conformance_system2_confidence_formula_and_naive_trace() {
     // Verrouille mission 6 : confiance 0.6·modèle+0.4·graphe (COGNITION.md §3),
     // coût depuis tokens réels, trace à vraies étapes (split phrases, ≤5+1).
-    use annora_kernel::system2::System2Engine;
-    let engine = System2Engine::new("TestSlot", 2);
+    use hakille_kernel::system2::System2Engine;
+    // Timeout LLM aligné sur le décodage Qwen CPU réel (deux reason() en debug,
+    // machine partagée) : le défaut 600 s est trop court pour un tour sain.
+    let engine = System2Engine::new("TestSlot", 2).with_llm_timeout(3_600_000);
     let prompt = "Analyse ce contrat. Compare les clauses. Diagnostique le risque ?";
     let facts = vec![
         "Fait A".to_string(),
@@ -226,7 +228,7 @@ async fn test_conformance_system2_confidence_formula_and_naive_trace() {
         "Fait C".to_string(),
     ];
     let plan = engine
-        .reason(prompt, &facts, &annora_core::TrustLevel::User)
+        .reason(prompt, &facts, &hakille_core::TrustLevel::User)
         .await
         .expect("System2 reason");
     // 0.6·0.75 + 0.4·1.0 = 0.85 avec 3 faits.
@@ -236,7 +238,7 @@ async fn test_conformance_system2_confidence_formula_and_naive_trace() {
         plan.confidence_score
     );
     let bare = engine
-        .reason("Bonjour", &[], &annora_core::TrustLevel::User)
+        .reason("Bonjour", &[], &hakille_core::TrustLevel::User)
         .await
         .expect("System2 bare");
     assert!(

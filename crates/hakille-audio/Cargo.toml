@@ -1,0 +1,11 @@
+[package]
+name = "hakille-audio"
+version = "0.1.0"
+edition = "2024"
+description = "I/O audio réel (capture micro + lecture haut-parleur) pour Hakille"
+
+[dependencies]
+hakille-core = { path = "../hakille-core" }
+cpal = "0.18"
+thiserror = { workspace = true }
+tracing = { workspace = true }

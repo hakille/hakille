@@ -1,4 +1,4 @@
-# Security Policy — Annora (pre-alpha prototype)
+# Security Policy — Hakille (pre-alpha prototype)
 
 > Status: **prototype / pre-alpha**. Do not deploy with production secrets,
 > biometric auth, autonomous payments, or unreviewed network egress.
@@ -28,8 +28,8 @@ We aim to acknowledge within 72h and publish a fix + CVE note.
   confined to the sandbox root.
 - Pinned-root verification (`with_trusted_root`) rejects attacker
   self-signed tokens. Unpinned mode remains for tests only.
-- Audit journal is persistent (`LOCALAPPDATA/Annora/audit.redb` or
-  `./annora_data/Annora/audit.redb`), Ed25519-chained.
+- Audit journal is persistent (`LOCALAPPDATA/Hakille/audit.redb` or
+  `./hakille_data/Hakille/audit.redb`), Ed25519-chained.
 - ONNX/ASR/TTS/GUI engines are explicitly **simulated** (identity projections,
   sine TTS, keyword GUI). `OnnxSession::run_real` errors; do not treat
   inspection output as neural inference.

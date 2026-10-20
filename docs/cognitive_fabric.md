@@ -1,6 +1,6 @@
 # Cognitive Fabric & Routage Dynamique System 1 / System 2
 
-Ce document détaille le fonctionnement du **Cognitive Fabric** d'Annora et les mécanismes de décision cognitive.
+Ce document détaille le fonctionnement du **Cognitive Fabric** d'Hakille et les mécanismes de décision cognitive.
 
 ---
 
@@ -11,7 +11,7 @@ Dans une architecture conventionnelle, le code applicatif lie en dur des bibliot
 2. Elle empêche d'absorber la convergence progressive vers des modèles omnimodaux unifiés.
 
 ### Découplage par Capacités
-Annora sépare strictement la notion de **Capacité** de la notion d'**Instance de Modèle**. Le noyau `annora-kernel` n'interagit qu'avec des capacités canoniques :
+Hakille sépare strictement la notion de **Capacité** de la notion d'**Instance de Modèle**. Le noyau `hakille-kernel` n'interagit qu'avec des capacités canoniques :
 
 ```rust
 pub enum CapabilityName {
@@ -96,6 +96,6 @@ En mode **Full-Duplex Speech-to-Speech (Kyutai Moshi)**, la cascade ASR → LLM 
 
 ## 4. BYOM (Bring Your Own Model) & Transparence des Coûts
 
-Annora refuse tout verrouillage vers un fournisseur d'API unique pour le System 2 :
+Hakille refuse tout verrouillage vers un fournisseur d'API unique pour le System 2 :
 - L'utilisateur peut configurer une clé d'API commerciale standard (OpenAI, Anthropic, Google) ou son propre cluster d'inférence privé (vLLM, Ollama, SGLang, cluster personnel TiKV).
 - Chaque appel à System 2 calcule son coût financier réel et l'incrémente sur le `CostCounter` visible en direct dans l'interface, sans surprise en fin de mois.

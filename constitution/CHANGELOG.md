@@ -1,4 +1,4 @@
-# Changelog de la Constitution d'Annora
+# Changelog de la Constitution d'Hakille
 
 ## [1.0.1] - 2026-10-16
 ### Complété
@@ -11,5 +11,5 @@
 ## [1.0.0] - 2026-10-04
 ### Ajouté
 - Définition initiale des 4 articles fondamentaux (Primauté humaine, Souveraineté de la mémoire, Cloisonnement Biscuit, Auditabilité).
-- Encodage des 10 règles constitutionnelles machine-vérifiables dans `annora-constitution`.
+- Encodage des 10 règles constitutionnelles machine-vérifiables dans `hakille-constitution`.
 - Matrice de dilemmes éthiques de conformité.

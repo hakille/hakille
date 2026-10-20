@@ -1,14 +1,15 @@
-use annora_constitution::governance::{AmendmentStatus, GovernanceAction, GovernanceConfig};
-use annora_constitution::rules::Constitution;
-use annora_core::{ConfidenceDecision, Domain, TrustLevel, UserId};
-use annora_kernel::{
-    budget::PipelineBudgetConfig,
+use hakille_constitution::governance::{AmendmentStatus, GovernanceAction, GovernanceConfig};
+use hakille_constitution::rules::Constitution;
+use hakille_core::{ConfidenceDecision, Domain, TrustLevel, UserId};
+use hakille_kernel::{
+    budget::{LatencyTracker, PipelineBudgetConfig},
     confidence::{ConfidenceEngine, ProposedAction},
     fabric::{CognitiveFabric, CognitiveManifest},
     orchestrator::CognitiveOrchestrator,
     priority::{Directive, PriorityEngine, PriorityLevel},
 };
-use annora_memory::{InsertResult, NodeValue};
+use hakille_memory::{InsertResult, NodeValue};
+use std::time::Duration;
 use uuid::Uuid;
 
 fn test_orchestrator() -> CognitiveOrchestrator {
@@ -77,13 +78,19 @@ async fn test_orchestrator_turn_flow() {
     let constitution = Constitution::default();
 
     let mut orchestrator = CognitiveOrchestrator::new(fabric, user_id, constitution);
+    // Budget + timeout alignés sur le décodage Qwen réel (CPU, minutes en
+    // debug) : le défaut pipeline (100 ms d'inférence) aborterait par
+    // construction — l'abort budget nul reste verrouillé par le test fast dédié.
+    orchestrator.set_budget_config(PipelineBudgetConfig::aligned_with_llm_timeout(3_600_000));
+    orchestrator.system1.set_llm_timeout(3_600_000);
+    orchestrator.system2.set_llm_timeout(3_600_000);
     let res = orchestrator
         .process_user_turn("Quel temps fait-il aujourd'hui ?", &TrustLevel::User)
         .await
         .unwrap();
 
     assert!(!res.response_text.is_empty());
-    assert_eq!(orchestrator.context.conversation_stream.len(), 2); // 1 User + 1 Annora
+    assert_eq!(orchestrator.context.conversation_stream.len(), 2); // 1 User + 1 Hakille
 }
 
 #[test]
@@ -127,7 +134,7 @@ fn test_mem_spo_deterministic_ids_and_object_only() {
         .memory_graph
         .lookup_subject("alice")
         .expect("Sujet registré");
-    let hits = annora_memory::GraphQuery::new()
+    let hits = hakille_memory::GraphQuery::new()
         .with_subject(sid)
         .with_limit(10)
         .execute(&orch.memory_graph);
@@ -168,24 +175,26 @@ fn test_mem_contradiction_returned_never_silently_overwritten() {
 #[test]
 fn test_mem_decay_exponential_decreases_and_purges() {
     // Mission 4 : W(t)=W0·e^−λ(t−t0) lue depuis decay_rate + last_activated.
-    use annora_memory::{ContextPartition, Triplet, TripletMetadata, TripletSource};
-    let mut graph = annora_memory::KnowledgeGraph::new();
+    use hakille_memory::{ContextPartition, Triplet, TripletMetadata, TripletSource};
+    let mut graph = hakille_memory::KnowledgeGraph::new();
     let subject = graph.resolve_subject("Capteur");
-    let old = annora_core::Timestamp(chrono::Utc::now() - chrono::Duration::hours(1));
+    let old = hakille_core::Timestamp(chrono::Utc::now() - chrono::Duration::hours(1));
     for (obj, rate) in [("vieux-fait", 0.01), ("fait-frais", 0.0)] {
         // Prédicats distincts pour éviter le routage contradiction.
         let pred = graph.resolve_predicate(&format!("mesure-{}", obj));
         let object = NodeValue::Text(obj.to_string());
         let triplet = Triplet {
-            id: annora_memory::KnowledgeGraph::deterministic_triplet_id(&subject, &pred, &object),
+            id: hakille_memory::KnowledgeGraph::deterministic_triplet_id(&subject, &pred, &object),
             subject: subject.clone(),
             predicate: pred,
             object,
             metadata: TripletMetadata {
                 weight: 1.0,
-                created_at: annora_core::Timestamp::now(),
+                created_at: hakille_core::Timestamp::now(),
                 last_activated: old.clone(),
-                source: TripletSource::System,
+                // Capteur ⇒ inféré : source System serait exclue du decay
+                // (faits système stables, règle de durcissement).
+                source: TripletSource::Inferred,
                 confidence: 1.0,
                 context: ContextPartition::Default,
                 trust_level: TrustLevel::User,
@@ -199,7 +208,7 @@ fn test_mem_decay_exponential_decreases_and_purges() {
         }
     }
     // Cutoff 0.0 : rien n'est purgé mais le vieux fait a décru.
-    let report = annora_memory::DecayEngine::apply_decay(&mut graph, 0.0);
+    let report = hakille_memory::DecayEngine::apply_decay(&mut graph, 0.0);
     assert_eq!(report.nodes_decayed, 1, "Seul λ=0.01 décroît (λ=0 stable)");
     assert_eq!(report.nodes_removed, 0);
     assert!(
@@ -208,7 +217,7 @@ fn test_mem_decay_exponential_decreases_and_purges() {
         report.avg_weight
     );
     // Cutoff 0.5 : le fait effondré (e^−36 ≈ 0) est fané mais préservé (histoire conservée).
-    let report2 = annora_memory::DecayEngine::apply_decay(&mut graph, 0.5);
+    let report2 = hakille_memory::DecayEngine::apply_decay(&mut graph, 0.5);
     assert_eq!(
         report2.nodes_removed, 0,
         "Histoire préservée : rien supprimé"
@@ -218,7 +227,7 @@ fn test_mem_decay_exponential_decreases_and_purges() {
     assert!(orch_recall_contains(&graph, "fait-frais"));
 }
 
-fn orch_recall_contains(graph: &annora_memory::KnowledgeGraph, text: &str) -> bool {
+fn orch_recall_contains(graph: &hakille_memory::KnowledgeGraph, text: &str) -> bool {
     graph.search_text(text).iter().any(|t| match &t.object {
         NodeValue::Text(s) => s.contains(text),
         _ => false,
@@ -246,6 +255,82 @@ async fn test_orchestrator_budget_abort_returns_error() {
         msg.contains("budget"),
         "Erreur de budget explicite, obtenue : {}",
         msg
+    );
+}
+
+#[test]
+fn test_conformance_pipeline_budget_aligned_with_real_llm() {
+    // Verrou de conformance (fast gate) : la config budget de production est
+    // alignée sur le timeout LLM (défaut 600 s) et accepte le tour réel mesuré
+    // (Qwen 0.5B Q4_K_M CPU : 27 428 ms / 64 tokens), ce que le défaut refuse.
+    let aligned = PipelineBudgetConfig::aligned_with_llm_timeout(600_000);
+    assert_eq!(
+        aligned.max_inference_ms, 630_000,
+        "max_inference_ms attendu 630 000 (timeout 600 000 + marge 30 000), obtenu : {}",
+        aligned.max_inference_ms
+    );
+    assert_eq!(
+        aligned.max_total_ms, 660_000,
+        "max_total_ms attendu 660 000 (inférence 630 000 + marge 30 000), obtenu : {}",
+        aligned.max_total_ms
+    );
+
+    // Le fast-path n'est pas dégradé : les autres stages gardent les défauts.
+    assert_eq!(
+        aligned.max_perception_ms, 60,
+        "max_perception_ms attendu 60, obtenu : {}",
+        aligned.max_perception_ms
+    );
+    assert_eq!(
+        aligned.max_routing_ms, 20,
+        "max_routing_ms attendu 20, obtenu : {}",
+        aligned.max_routing_ms
+    );
+    assert_eq!(
+        aligned.max_action_ms, 40,
+        "max_action_ms attendu 40, obtenu : {}",
+        aligned.max_action_ms
+    );
+
+    // Tour réel mesuré : la config alignée doit l'accepter.
+    let real_turn = Duration::from_millis(27_428);
+    let mut tracker =
+        LatencyTracker::start(PipelineBudgetConfig::aligned_with_llm_timeout(600_000));
+    let check = tracker.check_stage("inference", real_turn);
+    assert!(
+        check.is_ok(),
+        "la config alignée doit accepter le tour réel mesuré (27 428 ms), obtenu : {:?}",
+        check
+    );
+    tracker.record_stage("inference", real_turn);
+    assert!(
+        tracker.is_within_budget(),
+        "après record_stage du tour réel, is_within_budget doit rester vrai (total 660 000 ms)"
+    );
+
+    // Le défaut reste strict : c'est bien la config alignée qui débloque le
+    // daemon, pas une suppression des checks.
+    let strict = LatencyTracker::start(PipelineBudgetConfig::default());
+    assert!(
+        strict
+            .check_stage("inference", Duration::from_millis(27_428))
+            .is_err(),
+        "le défaut strict (100 ms) doit refuser le tour réel de 27 428 ms"
+    );
+
+    // Saturation : aucune panic sur u64::MAX.
+    let saturated = PipelineBudgetConfig::aligned_with_llm_timeout(u64::MAX);
+    assert_eq!(
+        saturated.max_inference_ms,
+        u64::MAX,
+        "saturation : max_inference_ms doit rester u64::MAX, obtenu : {}",
+        saturated.max_inference_ms
+    );
+    assert_eq!(
+        saturated.max_total_ms,
+        u64::MAX,
+        "saturation : max_total_ms doit rester u64::MAX, obtenu : {}",
+        saturated.max_total_ms
     );
 }
 

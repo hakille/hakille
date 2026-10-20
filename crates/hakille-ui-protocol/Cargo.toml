@@ -1,0 +1,10 @@
+[package]
+name = "hakille-ui-protocol"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Versioned typed messages between Hakille kernel and UI shell (natif, UniFFI, WASM)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

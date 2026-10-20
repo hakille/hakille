@@ -2,24 +2,23 @@
 
 > *"De la compilation à la conformité formelle : bâtir et étendre un système d'exploitation cognitif en Rust pur."*
 
-Ce document constitue le guide de référence complet pour les développeurs, contributeurs et intégrateurs d'Annora. Il détaille la configuration de l'environnement de développement, la compilation du monorepo, la suite de tests formelle (61 tests : 54 fast verts + 7 slow ignorés en gate hebdo, voir [CI](../.github/workflows/ci.yml)), l'utilisation approfondie du CLI interactif (`annora-daemon`), la création d'agents WASM sandboxés, et l'implémentation de nouveaux backends `Substrate`.
+Ce document constitue le guide de référence complet pour les développeurs, contributeurs et intégrateurs d'Hakille. Il détaille la configuration de l'environnement de développement, la compilation du monorepo, la suite de tests formelle (73 tests : 66 fast verts + 7 slow ignorés en gate hebdo, voir [CI](../.github/workflows/ci.yml)), l'utilisation approfondie du CLI interactif (`hakille-daemon`), la création d'agents WASM sandboxés, et l'implémentation de nouveaux backends `Substrate`.
 
 ---
 
 ## 1. Prérequis Système et Environnement de Développement
 
 ### 1.1. Chaîne d'Outils Requise
-- **Compilateur Rust** : Version **1.85+** (support natif de l'édition **Rust 2024** requis).
+- **Compilateur Rust** : Version **1.95+** (support natif de l'édition **Rust 2024** requis).
   ```bash
   rustup update stable
   rustup default stable
   ```
-- **Cibles WebAssembly** (agents vs shell-web, voir `xtask shell-web`) :
+- **Cibles WebAssembly** (agents WASI sandboxés) :
   ```bash
   rustup target add wasm32-wasip1          # agents WASI sandboxés (Wasmtime)
-  rustup target add wasm32-unknown-unknown # shell-web Slint canvas (wasm-pack)
   ```
-  Écart honnête : `xtask shell-web` vérifie `wasm32-unknown-unknown` + `wasm-pack` ; les agents exigent `wasm32-wasip1` (`cargo xtask build-agents`).
+  Écart honnête : les agents exigent `wasm32-wasip1` (`cargo build -p agent-calendar --target wasm32-wasip1 --release`, voir `docs/agents_guide.md`) ; la démo Web Slint a été retirée avec le renderer (ADR-009).
 - **Outils C/C++ et CMake** (pour les liaisons FFI des runtimes Candle et ONNX) :
   - **Windows** : Visual Studio Build Tools 2022 avec la charge de travail *"Développement Desktop en C++"*.
   - **Linux (Debian/Ubuntu)** : `sudo apt install build-essential cmake pkg-config libasound2-dev libssl-dev libudev-dev`
@@ -27,15 +26,15 @@ Ce document constitue le guide de référence complet pour les développeurs, co
 
 ### 1.2. Cloner le Dépôt
 ```bash
-git clone https://github.com/annora-os/annora.git
-cd annora
+git clone https://github.com/hakille/hakille.git
+cd hakille
 ```
 
 ---
 
 ## 2. Compilation du Projet
 
-Le workspace Cargo est configuré pour compiler les 26 crates (+ 5 agents) de façon unifiée :
+Le workspace Cargo est configuré pour compiler les 31 crates (+ 5 agents, `conformance`, `xtask`) de façon unifiée :
 
 ```bash
 # 1. Vérification statique rapide de l'ensemble des crates
@@ -52,22 +51,22 @@ cargo build --workspace --release
 
 ## 3. Exécution des Suites de Tests et Validation Formelle
 
-Annora impose une politique de **zéro régression** : aucun composant ne peut être intégré sans validation complète de la suite de tests.
+Hakille impose une politique de **zéro régression** : aucun composant ne peut être intégré sans validation complète de la suite de tests.
 
 ### 3.1. Tests Unitaires et d'Intégration Workspace
 ```bash
 cargo test --workspace
 ```
 Cette commande valide :
-- L'algèbre de chiffrement ChaCha20-Poly1305 et signatures Ed25519 (`annora-core`).
-- L'atténuation cryptographique hors-ligne des jetons Biscuit (`annora-core`).
-- La triple indexation SPO, POS, OSP et le moteur ACID `redb` (`annora-memory`).
-- Les filtres Seccomp-BPF avec simulateur de bytecode (`annora-substrate-linux`).
-- La capture GDI BitBlt et l'injection `SendInput` (`annora-substrate-windows`).
-- Les profils Sandbox Seatbelt `(deny default)` (`annora-substrate-macos`).
-- Les schemes natifs et la sérialisation `RedoxPacket` (`annora-substrate-redox`).
-- La réconciliation CRDT et les tombstones de suppression (`annora-sync`).
-- L'anti-spoofing et le classifieur de voix de synthèse (`annora-auth`).
+- L'algèbre de chiffrement ChaCha20-Poly1305 et signatures Ed25519 (`hakille-core`).
+- L'atténuation cryptographique hors-ligne des jetons Biscuit (`hakille-core`).
+- La triple indexation SPO, POS, OSP et le moteur ACID `redb` (`hakille-memory`).
+- Les filtres Seccomp-BPF avec simulateur de bytecode (`hakille-substrate-linux`).
+- La capture GDI BitBlt et l'injection `SendInput` (`hakille-substrate-windows`).
+- Les profils Sandbox Seatbelt `(deny default)` (`hakille-substrate-macos`).
+- Les schemes natifs et la sérialisation `RedoxPacket` (`hakille-substrate-redox`).
+- La réconciliation CRDT et les tombstones de suppression (`hakille-sync`).
+- L'anti-spoofing et le classifieur de voix de synthèse (`hakille-auth`).
 
 ### 3.2. Suite de Conformité Formelle des Substrates (`cargo xtask conformance`)
 ```bash
@@ -75,7 +74,7 @@ cargo xtask conformance
 # ou directement :
 cargo test -p conformance
 ```
-La suite `conformance` exécute **61 tests (54 fast verts en CI + 7 slow ignorés en gate hebdo `cargo xtask conformance-slow`)** couvrant l'ensemble des 6 couches :
+La suite `conformance` exécute **73 tests (66 fast verts en CI + 7 slow ignorés en gate hebdo `cargo xtask conformance-slow`)** couvrant l'ensemble des 6 couches :
 1. `test_conformance_anti_spoofing_and_guest_manager` : Validation de l'anti-usurpation vocale et expiration des invités.
 2. `test_conformance_consent_registry_and_quota_enforcement` : Vérification du registre de consentement et auto-révocation des quotas.
 3. `test_conformance_self_model_and_simulator` : Introspection du Self-Model et simulation d'action à blanc.
@@ -106,19 +105,19 @@ La suite `conformance` exécute **61 tests (54 fast verts en CI + 7 slow ignoré
 
 ---
 
-## 4. Démarrage et Utilisation du Démon Annora (`annora-daemon`)
+## 4. Démarrage et Utilisation du Démon Hakille (`hakille-daemon`)
 
-Le binaire `annora-daemon` est le point d'entrée exécutable du système d'exploitation cognitif.
+Le binaire `hakille-daemon` est le point d'entrée exécutable du système d'exploitation cognitif.
 
 ### 4.1. Lancement Standard
 ```bash
-cargo run -p annora-daemon
+cargo run -p hakille-daemon
 ```
 
 Au démarrage, le démon affiche les six étapes d'initialisation du système :
 ```text
 ============================================================
-  Annora — Sovereign Cognitive Operating System (Rust Native)
+  Hakille — Sovereign Cognitive Operating System (Rust Native)
   'Un système d'exploitation cognitif, pas un chatbot.'
 ============================================================
 
@@ -151,14 +150,18 @@ Au démarrage, le démon affiche les six étapes d'initialisation du système :
   Presence State: Idle (Ready)
 ```
 
-### 4.2. Commandes de l'Invite Interactive REPL (`annora>`)
+Au boot, le démon dimensionne le budget pipeline sur le **timeout LLM effectif** (`HAKILLE_QWEN_TIMEOUT_MS`, défaut `600000` ms — `crates/hakille-kernel/src/system1.rs:27`) via `PipelineBudgetConfig::aligned_with_llm_timeout` (`crates/hakille-kernel/src/budget.rs:42`) : `max_inference_ms = timeout + 30 s` (marge pour le chargement lazy du GGUF) et `max_total_ms = timeout + 60 s` ; les autres étages restent aux valeurs par défaut (perception 60 ms, routing 20 ms, action 40 ms). Le fast-path 100 ms de `docs/COGNITION.md` reste l'invariant produit et n'est pas modifié par défaut : sans cette config, un prompt réel échouait avec `Stage budget exceeded for 'inference' (elapsed ... > max 100 ms)`.
+
+Le REPL est **résilient** : un tour raté affiche `✗ Tour échoué : ...` + suggestion actionnable (`→ ...`) et la session continue ; une commande inconnue n'est jamais envoyée au LLM (`✗ Commande inconnue` + suggestion par distance d'édition). La mémoire (`./hakille-memory.json`) est auto-sauvegardée après chaque tour (réussi ou raté), à `:exit` et à la sortie EOF ; Ctrl+C affiche `⚠ Interruption (Ctrl+C) — arrêt. La mémoire a été auto-sauvegardée après le dernier tour.` (exit 130).
+
+### 4.2. Commandes de l'Invite Interactive REPL (`hakille>`)
 
 Le REPL accepte du texte naturel (qui est routé vers le `CognitiveOrchestrator`) ainsi qu'une suite complète de méta-commandes d'inspection :
 
 | Commande REPL | Description & Action Réalisée |
 | :--- | :--- |
-| **`:help`** | Affiche la liste complète des commandes interactives. |
-| **`:status`** | Affiche le palier matériel, l'état de la mémoire vive et l'état de présence actuel. |
+| **`:help`** | Affiche la liste complète des commandes interactives (y compris `:help` et `:quit`, alias `:exit`) et rappelle que toute saisie sans `:` est envoyée au modèle Qwen. |
+| **`:status`** | Affiche le palier matériel, l'état de la mémoire vive, l'état de présence actuel et le timeout LLM effectif. |
 | **`:metrics`** | Inspecte les 3 métriques North-Star (Continuité, Initiative Bornée, Généralité) et le détecteur de dérive des valeurs éthiques. |
 | **`:agents`** | Liste les agents WASM enregistrés et leurs scopes Biscuit associés. |
 | **`:cost`** | Affiche le compteur financier des appels Système 2 en temps réel. |
@@ -169,7 +172,7 @@ Le REPL accepte du texte naturel (qui est routé vers le `CognitiveOrchestrator`
 | **`:download <id>`** | Télécharge et installe un modèle par son identifiant (ex: `:download silero-vad-v5`). |
 | **`:camera`** | Capture une trame vidéo et évalue la situation visuelle sans fuite de pixels bruts. |
 | **`:hud`** | Démontre l'affichage du HUD Spotlight éphémère avec puce d'action Braise `#FF7A2F`. |
-| **`:shell`** | Snapshot shell Slint (présence/HUD/coût/silence → JSON compositor) + rappel lancement render. |
+| **`:shell`** | Snapshot shell ambient (présence/HUD/coût/silence → JSON compositor) + rappel lancement `hakille-desktop`. |
 | **`:models-honest`** | Statuts honnêtes Inspected/Simulated des 7 moteurs (jamais de faux Operational). |
 | **`:agents-cards`** | 5 agents avec badges DEMO honnêtes + flags validation Braise. |
 | **`:powers`** | Pouvoirs : périmètre, quota, dernier usage, expiration, interrupteur (+ verrou politique). |
@@ -188,35 +191,37 @@ Le REPL accepte du texte naturel (qui est routé vers le `CognitiveOrchestrator`
 | **`:win-power`** | Affiche l'état réel de l'alimentation secteur, de la batterie et de la charge (sous Windows). |
 | **`:win-screen`** | Effectue une capture d'écran de l'affichage principal via GDI BitBlt. |
 | **`:win-tray`** | Teste les états de l'icône de présence dans la barre des tâches Win32. |
-| **`:exit` / `:quit`** | Arrête proprement le démon Annora. |
+| **`:exit` / `:quit`** | Arrête proprement le démon Hakille (mémoire auto-sauvegardée). |
+
+> Note : une commande inconnue (`:hlep`) n'est jamais transmise au LLM — `✗ Commande inconnue` + suggestion par distance d'édition ; une commande sans argument (`:plan`, `:defer`, `:remember`, `:recall`, `:forget`, `:download`, `:asr-test`, `:embed-test`, `:journal-why`, `:why2`, `:gui-action`, `:import`, `:revalidate`, `:heritage-erase`) affiche son usage au lieu d'atteindre le modèle. Toute saisie sans `:` est envoyée au modèle Qwen.
 
 ### 4.3. Sous-Commandes en Ligne de Commande (Mode Batch / CLI)
 
-Le binaire `annora-daemon` peut être piloté directement sans entrer dans le REPL :
+Le binaire `hakille-daemon` peut être piloté directement sans entrer dans le REPL :
 
 ```bash
 # Lister le catalogue des modèles et leur état d'installation
-cargo run -p annora-daemon -- models list
+cargo run -p hakille-daemon -- models list
 
 # Télécharger un modèle spécifique par son identifiant ou alias
-cargo run -p annora-daemon -- models download sensevoice-small
+cargo run -p hakille-daemon -- models download sensevoice-small
 # ou avec l'ID catalogue complet :
-cargo run -p annora-daemon -- models download --model sensevoice-small-int8
+cargo run -p hakille-daemon -- models download --model sensevoice-small-int8
 
 # Vérifier l'intégrité cryptographique SHA-256 des fichiers de modèles locaux
-cargo run -p annora-daemon -- models verify
+cargo run -p hakille-daemon -- models verify
 
 # Évaluer une requête en mode headless sans interface (mode script)
-cargo run -p annora-daemon -- --prompt "Planifier une réunion demain matin à 10h"
+cargo run -p hakille-daemon -- --prompt "Planifier une réunion demain matin à 10h"
 # ou via le drapeau formel :
-cargo run -p annora-daemon -- --eval-prompt "Planifier une réunion demain matin à 10h"
+cargo run -p hakille-daemon -- --eval-prompt "Planifier une réunion demain matin à 10h"
 ```
 
 ---
 
 ## 5. Guide de Développement d'Agents WASM Sandboxés
 
-Tout agent tiers ou extension système s'exécute dans un bac à sable WebAssembly/WASI hermétique géré par `annora-agents`.
+Tout agent tiers ou extension système s'exécute dans un bac à sable WebAssembly/WASI hermétique géré par `hakille-agents`.
 
 ### 5.1. Structure d'un Agent
 Les agents de référence se situent dans le répertoire `agents/` :
@@ -228,8 +233,8 @@ Les agents de référence se situent dans le répertoire `agents/` :
 
 ### 5.2. Exemple de Manifeste d'Agent (`AgentManifest`)
 ```rust
-use annora_agents::AgentManifest;
-use annora_core::CapabilityScope;
+use hakille_agents::AgentManifest;
+use hakille_core::CapabilityScope;
 
 let manifest = AgentManifest {
     id: "agent-mail".to_string(),
@@ -244,12 +249,33 @@ let manifest = AgentManifest {
 
 ## 6. Ajout d'un Nouveau Backend `Substrate`
 
-Pour porter Annora sur un nouvel environnement (ex: `annora-substrate-freebsd` ou un système robotique ROS2) :
+Pour porter Hakille sur un nouvel environnement (ex: `hakille-substrate-freebsd` ou un système robotique ROS2) :
 
-1. Créer un crate Cargo : `crates/annora-substrate-nom`.
-2. Implémenter le trait `Substrate` de `annora-substrate` :
+1. Créer un crate Cargo : `crates/hakille-substrate-nom`.
+2. Implémenter le trait `Substrate` de `hakille-substrate` :
    - Fournir le `PlatformManifest` avec le palier (`Tier`).
    - Implémenter la signature matérielle dans `attest()`.
    - Mapper les opérations de fichiers, capture d'écran, injection d'entrées et télémétrie.
 3. Implémenter le trait `Compute` pour déclarer les backends d'accélération disponibles.
 4. Ajouter le nouveau crate à la suite `conformance` : **le nouveau Substrate n'est mergeable que s'il réussit 100 % des tests de conformité**.
+
+---
+
+## 7. Compatibilité OS (Étape 7, ADR-010)
+
+Windows 11 est la cible de référence. Linux puis macOS sont des projets de compatibilité distincts : un OS n'est déclaré « supporté » qu'après preuve labo par OS (`docs/SPIKES_LAB.md`), jamais parce qu'il compile.
+
+| Cible | Commande de vérification | Statut |
+| :--- | :--- | :--- |
+| `x86_64-unknown-linux-gnu` | `cargo check --workspace --target x86_64-unknown-linux-gnu --locked` | compilation vérifiée en CI (`ubuntu-latest`) ; support après labo |
+| `x86_64-apple-darwin` | `cargo check --workspace --target x86_64-apple-darwin --locked` | compilation non vérifiée en CI ; job macOS non bloquant à venir ; support après labo |
+| `aarch64-apple-darwin` | `cargo check --workspace --target aarch64-apple-darwin --locked` | compilation non vérifiée en CI ; job macOS non bloquant à venir ; support après labo |
+
+```bash
+rustup target add x86_64-unknown-linux-gnu
+rustup target add x86_64-apple-darwin aarch64-apple-darwin
+```
+
+Écart honnête : la vérification croisée depuis un hôte Windows échoue sans chaîne C pour la cible (`ring`, dépendance de `biscuit-auth`, compile du C) ; en CI, Linux passe sur runner natif `ubuntu-latest`, et **la CI macOS restera `continue-on-error` tant que le labo n'a pas validé l'OS** (ADR-010).
+
+**Contrat d'honnêteté :** un chemin OS non implémenté renvoie une erreur ou un état explicite, jamais un faux succès — `TrayError::NotifierMissing` (hôte tray absent), `HotkeyError::Registration` (les deux causes réelles du raccourci, pas de succès feint), `PlatformKind` déduit uniquement des `cfg`. Les parseurs Linux/macOS (seccomp BPF, Seatbelt, Endpoint Security) sont testés host-indépendamment par la conformance (73 tests : 66 fast + 7 slow).

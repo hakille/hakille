@@ -2,13 +2,13 @@
 
 > *"Un seul cœur cognitif, six systèmes hôtes, zéro compromis sur la sûreté d'exécution."*
 
-Ce document constitue la référence exhaustive de la couche de virtualisation de bas niveau d'Annora. Il détaille le contrat d'abstraction `Substrate`, le trait orthogonal d'accélération matérielle `Compute`, ainsi que les implémentations natives des six systèmes d'exploitation cibles : **Windows**, **Linux**, **macOS**, **Redox OS (Micro-noyau)**, **Mobile (Android/iOS)** et **Web (WebAssembly)**.
+Ce document constitue la référence exhaustive de la couche de virtualisation de bas niveau d'Hakille. Il détaille le contrat d'abstraction `Substrate`, le trait orthogonal d'accélération matérielle `Compute`, ainsi que les implémentations natives des six systèmes d'exploitation cibles : **Windows**, **Linux**, **macOS**, **Redox OS (Micro-noyau)**, **Mobile (Android/iOS)** et **Web (WebAssembly)**.
 
 ---
 
 ## 1. Contrats d'Abstraction Fondamentaux : Traits `Substrate` et `Compute`
 
-Dans Annora, le noyau cognitif, le graphe de mémoire et les agents WASM n'interagissent jamais directement avec les appels système (syscalls) de l'OS hôte. L'intégralité des interactions matérielles est encapsulée dans deux traits Rust définis dans [`crates/annora-substrate`](../crates/annora-substrate) :
+Dans Hakille, le noyau cognitif, le graphe de mémoire et les agents WASM n'interagissent jamais directement avec les appels système (syscalls) de l'OS hôte. L'intégralité des interactions matérielles est encapsulée dans deux traits Rust définis dans [`crates/hakille-substrate`](../crates/hakille-substrate) :
 
 ### Le Trait `Substrate` : Contrôle Système et Environnement
 Le trait `Substrate` formalise toutes les capacités requises par l'OS cognitif :
@@ -20,33 +20,33 @@ pub trait Substrate: Send + Sync + 'static {
     fn manifest(&self) -> &PlatformManifest;
 
     /// Fournit une attestation cryptographique matérielle (TPM / Secure Enclave)
-    async fn attest(&self, data: &[u8]) -> annora_core::Result<SignedAttestation>;
+    async fn attest(&self, data: &[u8]) -> hakille_core::Result<SignedAttestation>;
 
     // Système de fichiers restreint par capability Biscuit
-    async fn read_file(&self, path: &VirtualPath, cap: &CapabilityToken) -> annora_core::Result<Vec<u8>>;
-    async fn write_file(&self, path: &VirtualPath, data: &[u8], cap: &CapabilityToken) -> annora_core::Result<()>;
-    async fn list_dir(&self, path: &VirtualPath, cap: &CapabilityToken) -> annora_core::Result<Vec<VirtualPath>>;
-    async fn delete_file(&self, path: &VirtualPath, cap: &CapabilityToken) -> annora_core::Result<()>;
+    async fn read_file(&self, path: &VirtualPath, cap: &CapabilityToken) -> hakille_core::Result<Vec<u8>>;
+    async fn write_file(&self, path: &VirtualPath, data: &[u8], cap: &CapabilityToken) -> hakille_core::Result<()>;
+    async fn list_dir(&self, path: &VirtualPath, cap: &CapabilityToken) -> hakille_core::Result<Vec<VirtualPath>>;
+    async fn delete_file(&self, path: &VirtualPath, cap: &CapabilityToken) -> hakille_core::Result<()>;
 
     // Réseau restreint par capability Biscuit
-    async fn http_request(&self, req: HttpRequest, cap: &CapabilityToken) -> annora_core::Result<HttpResponse>;
+    async fn http_request(&self, req: HttpRequest, cap: &CapabilityToken) -> hakille_core::Result<HttpResponse>;
 
     // Audio physique (streaming & playback)
-    async fn start_audio_capture(&self, config: AudioConfig, cap: &CapabilityToken) -> annora_core::Result<AudioStreamHandle>;
-    async fn stop_audio_capture(&self, handle: AudioStreamHandle) -> annora_core::Result<()>;
-    async fn play_audio(&self, data: &[u8], config: AudioConfig, cap: &CapabilityToken) -> annora_core::Result<()>;
+    async fn start_audio_capture(&self, config: AudioConfig, cap: &CapabilityToken) -> hakille_core::Result<AudioStreamHandle>;
+    async fn stop_audio_capture(&self, handle: AudioStreamHandle) -> hakille_core::Result<()>;
+    async fn play_audio(&self, data: &[u8], config: AudioConfig, cap: &CapabilityToken) -> hakille_core::Result<()>;
 
     // Flux caméra pour perception visuelle (sans fuite de pixels bruts)
-    async fn start_camera_capture(&self, config: CameraConfig, cap: &CapabilityToken) -> annora_core::Result<CameraStreamHandle>;
-    async fn stop_camera_capture(&self, handle: CameraStreamHandle) -> annora_core::Result<()>;
-    async fn capture_camera_frame(&self, handle: CameraStreamHandle, cap: &CapabilityToken) -> annora_core::Result<CameraFrame>;
+    async fn start_camera_capture(&self, config: CameraConfig, cap: &CapabilityToken) -> hakille_core::Result<CameraStreamHandle>;
+    async fn stop_camera_capture(&self, handle: CameraStreamHandle) -> hakille_core::Result<()>;
+    async fn capture_camera_frame(&self, handle: CameraStreamHandle, cap: &CapabilityToken) -> hakille_core::Result<CameraFrame>;
 
     // Affichage et injection d'entrées physiques
-    async fn capture_screen(&self, cap: &CapabilityToken) -> annora_core::Result<ScreenCapture>;
-    async fn inject_input(&self, action: InputAction, cap: &CapabilityToken) -> annora_core::Result<()>;
+    async fn capture_screen(&self, cap: &CapabilityToken) -> hakille_core::Result<ScreenCapture>;
+    async fn inject_input(&self, action: InputAction, cap: &CapabilityToken) -> hakille_core::Result<()>;
 
     // Confinement de processus WASM
-    async fn spawn_sandboxed(&self, wasm: &[u8], caps: Vec<CapabilityToken>) -> annora_core::Result<ProcessHandle>;
+    async fn spawn_sandboxed(&self, wasm: &[u8], caps: Vec<CapabilityToken>) -> hakille_core::Result<ProcessHandle>;
 
     // Télémétrie d'alimentation et thermique
     fn power_state(&self) -> PowerState;
@@ -80,7 +80,7 @@ pub trait Compute: Send + Sync + 'static {
 
 ## 2. Implémentations Natives des 6 Systèmes d'Exploitation
 
-### 2.1. Windows (`annora-substrate-windows`) — Tier Natif
+### 2.1. Windows (`hakille-substrate-windows`) — Tier Natif
 
 L'implémentation Windows s'interface directement avec l'API Win32 via des liaisons FFI C sûres, sans runtime externe.
 
@@ -89,7 +89,7 @@ L'implémentation Windows s'interface directement avec l'API Win32 via des liais
 - **Injection d'Entrées Physiques (`SendInput`)** :
   Convertit les intentions `InputAction` en structures natives Win32 `INPUT` (`INPUT_MOUSE`, `INPUT_KEYBOARD`). Calcule les coordonnées absolues normalisées $0..65535$ avec les flags `MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE`, `MOUSEEVENTF_LEFTDOWN`, `MOUSEEVENTF_LEFTUP`. Pour le clavier, gère les codes virtuels `VK_*` et les flags `KEYEVENTF_KEYUP`.
 - **Isolation de Processus AppContainer** :
-  Configure un profil sandbox AppContainer (`Annora.AppContainer.<Nom>`) avec des SIDs de capabilities déclarées (ex: `S-1-15-3-1` pour `NetworkClient`, `S-1-15-3-2` pour `NetworkClientServer`). Crée des ACLs strictes sur le système de fichiers interdisant l'accès en dehors du répertoire racine attribué à l'agent.
+  Configure un profil sandbox AppContainer (`Hakille.AppContainer.<Nom>`) avec des SIDs de capabilities déclarées (ex: `S-1-15-3-1` pour `NetworkClient`, `S-1-15-3-2` pour `NetworkClientServer`). Crée des ACLs strictes sur le système de fichiers interdisant l'accès en dehors du répertoire racine attribué à l'agent.
 - **Télémétrie Matérielle Réelle** :
   - Mémoire vive interrogée via `GlobalMemoryStatusEx` (`MEMORYSTATUSEX`), extrayant `ullTotalPhys`, `ullAvailPhys` et `dwMemoryLoad`.
   - Alimentation interrogée via `GetSystemPowerStatus` (`SYSTEM_POWER_STATUS`), extrayant `ACLineStatus` (secteur vs batterie), `BatteryLifePercent` et `BatteryFlag`.
@@ -99,7 +99,7 @@ L'implémentation Windows s'interface directement avec l'API Win32 via des liais
 
 ---
 
-### 2.2. Linux (`annora-substrate-linux`) — Tier Natif
+### 2.2. Linux (`hakille-substrate-linux`) — Tier Natif
 
 L'implémentation Linux exploite les primitives modernes de sécurité du noyau Linux pour un contrôle granulaire sans failles.
 
@@ -115,7 +115,7 @@ L'implémentation Linux exploite les primitives modernes de sécurité du noyau 
   - `CLONE_NEWNET` : pas d'interface réseau sauf interface `lo` ou veth isolée.
   - `CLONE_NEWIPC` et `CLONE_NEWUTS` : isolation totale des IPC et du nom d'hôte.
 - **Contrôleur de Ressources Cgroups v2** :
-  Applique des quotas stricts sur `/sys/fs/cgroup/annora/` : `memory.max` (borne stricte de RAM), `cpu.max` (quota de cycles processeur) et `pids.max` (prévention des fork-bombs).
+  Applique des quotas stricts sur `/sys/fs/cgroup/hakille/` : `memory.max` (borne stricte de RAM), `cpu.max` (quota de cycles processeur) et `pids.max` (prévention des fork-bombs).
 - **Injection d'Entrées Virtuelles via `/dev/uinput`** :
   Crée un périphérique virtuel `uinput` (`UI_DEV_CREATE`, `UI_DEV_SETUP`) capable d'émettre des événements `EV_KEY`, `EV_REL`, `EV_ABS` et `EV_SYN` conformes au protocole Linux Input Subsystem.
 - **Capture d'Écran Wayland & X11** :
@@ -125,7 +125,7 @@ L'implémentation Linux exploite les primitives modernes de sécurité du noyau 
 
 ---
 
-### 2.3. macOS (`annora-substrate-macos`) — Tier Natif
+### 2.3. macOS (`hakille-substrate-macos`) — Tier Natif
 
 L'implémentation macOS s'intègre étroitement à l'architecture Apple Silicon et aux frameworks de sécurité du système Darwin.
 
@@ -144,14 +144,14 @@ L'implémentation macOS s'intègre étroitement à l'architecture Apple Silicon 
 
 ---
 
-### 2.4. Redox OS (`annora-substrate-redox`) — Tier Souverain
+### 2.4. Redox OS (`hakille-substrate-redox`) — Tier Souverain
 
-Redox OS représente la cible d'accueil souveraine d'Annora : un système d'exploitation micro-noyau entièrement écrit en Rust où chaque ressource est adressable sous forme d'URI de *scheme* (`scheme:`).
+Redox OS représente la cible d'accueil souveraine d'Hakille : un système d'exploitation micro-noyau entièrement écrit en Rust où chaque ressource est adressable sous forme d'URI de *scheme* (`scheme:`).
 
 - **Modèle Unifié Tout-en-Scheme** :
-  Annora ne charge pas de pilotes monolithiques mais implémente et consomme les schemes natifs du micro-noyau :
+  Hakille ne charge pas de pilotes monolithiques mais implémente et consomme les schemes natifs du micro-noyau :
   - `chan:` : Scheme de canaux IPC bidirectionnels à haute vitesse entre le noyau cognitif et les agents WASM.
-  - `orbital:` : Scheme du gestionnaire de fenêtres Orbital. Crée des surfaces d'affichage mémoire partagée (`orbital:Annora_Overlay`) pour projeter le HUD Spotlight et les indicateurs sans passer par un serveur X11/Wayland.
+  - `orbital:` : Scheme du gestionnaire de fenêtres Orbital. Crée des surfaces d'affichage mémoire partagée (`orbital:Hakille_Overlay`) pour projeter le HUD Spotlight et les indicateurs sans passer par un serveur X11/Wayland.
   - `disk:` : Scheme d'accès direct au système de fichiers RedoxFS avec permissions cryptographiques.
   - `sys:` : Télémétrie native exposée par le kernel Redox (`sys:memory`, `sys:cpu`, `sys:context`).
   - `audio:` : Accès brut aux flux PCM du pilote audio AC'97/Intel HDA.
@@ -173,12 +173,12 @@ Redox OS représente la cible d'accueil souveraine d'Annora : un système d'expl
 
 ---
 
-### 2.5. Mobile (`annora-substrate-mobile`) — Tier Invité
+### 2.5. Mobile (`hakille-substrate-mobile`) — Tier Invité
 
 Les plateformes Android et iOS interdisent l'exécution de démons en arrière-plan permanent et limitent l'accès aux périphériques. L'implémentation mobile contourne ces contraintes via le concept d'**Ombre Cognitive** (*Shadow Node*).
 
 - **Synchronisation d'Ombre (*Shadow Sync*) avec Horloge de Lamport** :
-  Une instance légère d'Annora tourne en continu sur le hub domestique ou le cluster TiKV. Lorsque le terminal mobile se connecte, le moteur `MobileShadowSync` réconcilie l'état local avec l'ombre distante selon la règle Last-Write-Wins (LWW) et les horloges de Lamport.
+  Une instance légère d'Hakille tourne en continu sur le hub domestique ou le cluster TiKV. Lorsque le terminal mobile se connecte, le moteur `MobileShadowSync` réconcilie l'état local avec l'ombre distante selon la règle Last-Write-Wins (LWW) et les horloges de Lamport.
   - Gestion des conflits hors-ligne : les modifications locales en file d'attente (`queue_local_delta`) sont propagées au réveil.
   - Tombstones de suppression : les suppressions locales créent un delta marqué `is_deleted = true`, empêchant les résurrections de données obsolètes.
 - **Machine à États d'Économie d'Énergie (*Battery Conservation*)** :
@@ -192,9 +192,9 @@ Les plateformes Android et iOS interdisent l'exécution de démons en arrière-p
 
 ---
 
-### 2.6. Web (`annora-substrate-web`) — Tier Invité
+### 2.6. Web (`hakille-substrate-web`) — Tier Invité
 
-L'implémentation Web permet à Annora de tourner dans n'importe quel navigateur moderne via WebAssembly (WASM).
+L'implémentation Web permet à Hakille de tourner dans n'importe quel navigateur moderne via WebAssembly (WASM).
 
 - **Bridge Web Audio et Rééchantillonnage Linéaire** :
   Les microphones des navigateurs opèrent généralement à 44.1 kHz ou 48 kHz, tandis que les modèles ASR (SenseVoice-Small) et le codec Mimi exigent un flux PCM 16 kHz.

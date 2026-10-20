@@ -14,7 +14,7 @@ fn test_mail_integration_folder_and_search() {
     assert_eq!(contrat.len(), 1);
     assert_eq!(contrat[0].id, "msg-101");
 
-    let cluster = client.search("annora.io");
+    let cluster = client.search("hakille.io");
     assert_eq!(cluster.len(), 1);
     assert_eq!(cluster[0].id, "msg-102");
 

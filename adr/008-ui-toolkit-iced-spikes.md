@@ -1,12 +1,14 @@
 # ADR 008: Toolkit d'interface — iced cible (spec Hakille §10), Slint conservé, Xilem plan B
 
 ## Statut
+Remplacé par ADR-009 (2026-10-17) — winit + wgpu + AccessKit retenus,
+Iced reste un prototype de comparaison (spike S6). Conservé pour l'historique.
 Accepté (2026-10-12) — migration conditionnée aux spikes, pas au calendrier.
 
 ## Contexte
 La spec Hakille §10 tranche : bureau/web = **iced + wgpu** (Elm,
 AccessKit, cosmic-text, Fluent + ICU4X), mobile = SwiftUI/Compose + UniFFI,
-protocole `akora-ui-protocol`. Écartés : Slint (à trancher juridiquement), Tauri (vue web, anti tout-Rust),
+protocole `hakille-ui-protocol`. Écartés : Slint (à trancher juridiquement), Tauri (vue web, anti tout-Rust),
 Qt Bridge (bêta, Redox à valider), Flutter (Dart). Xilem = plan B suivi et
 contribué.
 
@@ -17,8 +19,8 @@ le moteur de rendu bureau.
 
 ## Décision
 1. **Cible : iced.** Tout le nouveau code UI est toolkit-agnostique
-   (`annora-ui` machines d'état, `annora-design` tokens/composants,
-   `annora-ui-protocol` messages, `annora-ui-shell` VMs) : il alimentera
+   (`hakille-ui` machines d'état, `hakille-design` tokens/composants,
+   `hakille-ui-protocol` messages, `hakille-ui-shell` VMs) : il alimentera
    iced sans réécriture, comme la spec l'exige (« l'interface en est une
    projection »).
 2. **Gate par spikes, pas par date** (spec §10, Phase 0) :
@@ -31,7 +33,7 @@ le moteur de rendu bureau.
    - S4 événementiel : 0 réveil/s en Veille — sinon boucle suspendue par l'OS.
 3. **En attendant : Slint conservé** comme renderer de travail (il compile,
    il tourne, `shell_demo` le prouve). Aucune logique métier n'y est
-   enfermée : le jour du basculement iced, seul `ui/annora.slint` +
+   enfermée : le jour du basculement iced, seul `ui/hakille.slint` +
    `render.rs` sont remplacés.
 
 ## Conséquences

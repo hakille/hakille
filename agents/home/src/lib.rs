@@ -1,4 +1,4 @@
-use annora_core::{CapabilityAction, CapabilityScope};
+use hakille_core::{CapabilityAction, CapabilityScope};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

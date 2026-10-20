@@ -1,26 +1,28 @@
-use annora_core::{CapabilityAction, CapabilityScope, Tier, Timestamp, VirtualPath};
-use annora_substrate::{Compute, Substrate};
-use annora_substrate_linux::{LinuxComputeBackend, LinuxSubstrate, SeccompProfile, SyscallArch};
-use annora_substrate_macos::{MacosComputeBackend, MacosSandboxProfile, MacosSubstrate};
-use annora_substrate_mobile::{
+use hakille_core::{CapabilityAction, CapabilityScope, Tier, Timestamp, VirtualPath};
+use hakille_substrate::{Compute, Substrate};
+use hakille_substrate_linux::{LinuxComputeBackend, LinuxSubstrate, SeccompProfile, SyscallArch};
+use hakille_substrate_macos::{MacosComputeBackend, MacosSandboxProfile, MacosSubstrate};
+use hakille_substrate_mobile::{
     BatteryTier, MobileComputeBackend, MobileShadowSync, MobileSubstrate, ScopedStorageSandbox,
     ShadowState, StorageScope,
 };
-use annora_substrate_redox::{
+use hakille_substrate_redox::{
     CAP_READ, CAP_WRITE, RedoxCapabilityTable, RedoxComputeBackend, RedoxSchemeHandler,
     RedoxSubstrate, SchemeHandler,
 };
-use annora_substrate_web::{
+use hakille_substrate_web::{
     WebAudioBridge, WebAudioNodeConfig, WebComputeBackend, WebGpuDetector, WebSubstrate,
 };
-use annora_substrate_windows::{WindowsComputeBackend, WindowsSubstrate};
+use hakille_substrate_windows::{WindowsComputeBackend, WindowsSubstrate};
 
 #[tokio::test]
 async fn test_all_substrates_manifest_and_attestation() {
     let win = WindowsSubstrate::new();
     assert_eq!(win.manifest().tier, Tier::Native);
     let att = win.attest(b"test").await.unwrap();
-    assert_eq!(att.platform_id, "Windows-Substrate-Host");
+    // Attestation HONNÊTE : clé éphémère locale, pas de preuve VBS/TPM — le
+    // platform_id porte volontairement le suffixe.
+    assert_eq!(att.platform_id, "Windows-Substrate-Host-dev-attestation");
 
     let lin = LinuxSubstrate::new();
     assert_eq!(lin.manifest().tier, Tier::Native);
@@ -80,12 +82,12 @@ async fn test_all_compute_backends() {
 async fn test_cross_substrate_screen_capture_conformance() {
     // Token Sensor+GuiInput / Read+Execute : capture_screen exige Sensor/Read
     // (cohérent Windows). Expiration future pour ne pas expirer mid-test.
-    let cap = annora_core::CapabilityAuthority::new()
+    let cap = hakille_core::CapabilityAuthority::new()
         .create_root_token(
             vec![CapabilityScope::Sensor, CapabilityScope::GuiInput],
             vec![
-                annora_core::CapabilityAction::Read,
-                annora_core::CapabilityAction::Execute,
+                hakille_core::CapabilityAction::Read,
+                hakille_core::CapabilityAction::Execute,
             ],
             future_expiry(),
         )
@@ -128,7 +130,7 @@ fn future_expiry() -> Timestamp {
     Timestamp(chrono::Utc::now() + chrono::Duration::hours(1))
 }
 
-fn fs_write_cap(auth: &annora_core::CapabilityAuthority) -> annora_core::CapabilityToken {
+fn fs_write_cap(auth: &hakille_core::CapabilityAuthority) -> hakille_core::CapabilityToken {
     auth.create_root_token(
         vec![CapabilityScope::Filesystem],
         vec![CapabilityAction::Write],
@@ -140,7 +142,7 @@ fn fs_write_cap(auth: &annora_core::CapabilityAuthority) -> annora_core::Capabil
 #[tokio::test]
 async fn test_substrate_write_with_wrong_cap_refused() {
     // Token porte le mauvais scope (Network/Read) : write_file doit refuser partout.
-    let authority = annora_core::CapabilityAuthority::new();
+    let authority = hakille_core::CapabilityAuthority::new();
     let wrong_cap = authority
         .create_root_token(
             vec![CapabilityScope::Network],
@@ -170,7 +172,7 @@ async fn test_substrate_write_with_wrong_cap_refused() {
 #[tokio::test]
 async fn test_substrate_traversal_evil_refused() {
     // `../evil` doit être rejeté par resolve_path AVANT tout effet.
-    let authority = annora_core::CapabilityAuthority::new();
+    let authority = hakille_core::CapabilityAuthority::new();
     let dir = tempfile::tempdir().unwrap();
     let evil = VirtualPath("../evil".to_string());
 
@@ -196,8 +198,8 @@ async fn test_substrate_traversal_evil_refused() {
 async fn test_substrate_forged_token_refused_when_pinned() {
     // Substrat pinné sur la racine honnête A : un token auto-signé forgé par
     // l'attaquant B (bon scope/action) doit être refusé ; le token honnête passe.
-    let honest = annora_core::CapabilityAuthority::new();
-    let attacker = annora_core::CapabilityAuthority::new();
+    let honest = hakille_core::CapabilityAuthority::new();
+    let attacker = hakille_core::CapabilityAuthority::new();
     let forged = fs_write_cap(&attacker);
     let legit = fs_write_cap(&honest);
     let path = VirtualPath("pinned.txt".to_string());
@@ -233,23 +235,23 @@ fn test_linux_conformance_seccomp_and_sysfs() {
 
     // Verify BPF simulation
     let allow_res = SeccompProfile::simulate_bpf(&bpf, SyscallArch::X86_64, 9); // mmap
-    assert_eq!(allow_res, annora_substrate_linux::SECCOMP_RET_ALLOW);
+    assert_eq!(allow_res, hakille_substrate_linux::SECCOMP_RET_ALLOW);
 
     let deny_res = SeccompProfile::simulate_bpf(&bpf, SyscallArch::X86_64, 999);
-    assert_eq!(deny_res, annora_substrate_linux::SECCOMP_RET_ERRNO | 1);
+    assert_eq!(deny_res, hakille_substrate_linux::SECCOMP_RET_ERRNO | 1);
 
     let lockdown = SeccompProfile::strict_lockdown();
     let lockdown_bpf = lockdown.compile_bpf(SyscallArch::X86_64);
     assert_eq!(
         SeccompProfile::simulate_bpf(&lockdown_bpf, SyscallArch::X86_64, 0),
-        annora_substrate_linux::SECCOMP_RET_KILL_PROCESS
+        hakille_substrate_linux::SECCOMP_RET_KILL_PROCESS
     );
 
-    let meminfo = annora_substrate_linux::read_host_meminfo();
+    let meminfo = hakille_substrate_linux::read_host_meminfo();
     assert!(meminfo.mem_total_bytes > 0);
     assert!(meminfo.mem_available_bytes > 0);
 
-    let power = annora_substrate_linux::read_host_power_state();
+    let power = hakille_substrate_linux::read_host_power_state();
     assert!(power.battery_percent >= 0.0 && power.battery_percent <= 100.0);
 }
 
@@ -266,14 +268,14 @@ fn test_macos_conformance_seatbelt_and_mach() {
     assert!(!profile.allow_file_read);
 
     // Endpoint Security PID muting
-    let mut es_client = annora_substrate_macos::EndpointSecurityClient::default();
+    let mut es_client = hakille_substrate_macos::EndpointSecurityClient::default();
     es_client.add_mute_pid(9999);
     assert!(es_client.is_pid_muted(9999));
 
-    let vm = annora_substrate_macos::read_host_vm_statistics();
+    let vm = hakille_substrate_macos::read_host_vm_statistics();
     assert!(vm.total_physical_ram(16384) > 0);
 
-    let quartz = annora_substrate_macos::MacosQuartzDisplayCapture::new();
+    let quartz = hakille_substrate_macos::MacosQuartzDisplayCapture::new();
     assert_eq!(quartz.physical_width(), 5120);
 }
 
@@ -287,9 +289,9 @@ fn test_redox_conformance_schemes_and_capabilities() {
     let mut mem_pool = vec![0u8; 512];
     let path = b"chan:conformance/stream";
     mem_pool[..path.len()].copy_from_slice(path);
-    let mut open_pkt = annora_substrate_redox::RedoxPacket::new(
+    let mut open_pkt = hakille_substrate_redox::RedoxPacket::new(
         10,
-        annora_substrate_redox::SYS_OPEN,
+        hakille_substrate_redox::SYS_OPEN,
         0,
         0,
         path.len(),
@@ -323,11 +325,11 @@ fn test_mobile_conformance_shadow_and_battery() {
     );
 
     // CRDT LWW resolution
-    let remote_delta = annora_substrate_mobile::ShadowDelta {
+    let remote_delta = hakille_substrate_mobile::ShadowDelta {
         key: "draft.txt".to_string(),
         value: b"newer draft from TiKV".to_vec(),
         version: 5,
-        timestamp: annora_core::Timestamp::now(),
+        timestamp: hakille_core::Timestamp::now(),
         is_deleted: false,
     };
     shadow.push_remote_delta(remote_delta);
@@ -340,7 +342,7 @@ fn test_mobile_conformance_shadow_and_battery() {
     let resolved = sandbox
         .resolve_path(
             StorageScope::Documents,
-            &annora_core::VirtualPath("db.sqlite".to_string()),
+            &hakille_core::VirtualPath("db.sqlite".to_string()),
         )
         .unwrap();
     assert!(resolved.ends_with("Documents/db.sqlite"));
@@ -350,7 +352,7 @@ fn test_mobile_conformance_shadow_and_battery() {
         sandbox
             .resolve_path(
                 StorageScope::Documents,
-                &annora_core::VirtualPath("C:\\Windows".to_string())
+                &hakille_core::VirtualPath("C:\\Windows".to_string())
             )
             .is_err()
     );
@@ -358,12 +360,12 @@ fn test_mobile_conformance_shadow_and_battery() {
         sandbox
             .resolve_path(
                 StorageScope::Documents,
-                &annora_core::VirtualPath("/etc/shadow".to_string())
+                &hakille_core::VirtualPath("/etc/shadow".to_string())
             )
             .is_err()
     );
 
-    let bat = annora_substrate_mobile::BatteryConservationEngine::new(20.0, false);
+    let bat = hakille_substrate_mobile::BatteryConservationEngine::new(20.0, false);
     assert_eq!(bat.current_tier(), BatteryTier::Conserve);
     assert_eq!(bat.perception_fps(), 1);
     assert!(!bat.should_offload_inference_with_network(false));
@@ -392,7 +394,7 @@ fn test_web_conformance_audio_and_webgpu() {
             .is_err()
     );
 
-    let adapter = annora_substrate_web::WebScreenCaptureAdapter::default();
+    let adapter = hakille_substrate_web::WebScreenCaptureAdapter::default();
     let rgba = vec![200u8; 50 * 50 * 4];
     let frame = adapter.ingest_image_data(50, 50, &rgba).unwrap();
     assert_eq!(frame.width, 50);

@@ -1,4 +1,4 @@
-use annora_core::{CapabilityAction, CapabilityScope};
+use hakille_core::{CapabilityAction, CapabilityScope};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,8 +52,10 @@ impl WorkspaceCodeIndexer {
             "Rust"
         } else if path.ends_with(".py") {
             "Python"
-        } else if path.ends_with(".ts") || path.ends_with(".js") {
+        } else if path.ends_with(".ts") || path.ends_with(".tsx") {
             "TypeScript"
+        } else if path.ends_with(".js") || path.ends_with(".jsx") || path.ends_with(".mjs") {
+            "JavaScript"
         } else if path.ends_with(".toml") {
             "TOML"
         } else {
@@ -481,7 +483,7 @@ pub fn bootstrap_runtime() -> bool {
     #[test]
     fn test_patch_creation_and_application() {
         let orig = "fn main() {\n    println!(\"Hello\");\n}\n";
-        let modif = "fn main() {\n    println!(\"Hello, Annora!\");\n}\n";
+        let modif = "fn main() {\n    println!(\"Hello, Hakille!\");\n}\n";
 
         let patch =
             CodePatchEngine::create_patch("src/main.rs", orig, modif, "Salutation enrichie");
@@ -541,5 +543,26 @@ pub(crate) struct TokenBuffer {
         assert_eq!(summary_rs.symbols[1].kind, CodeSymbolKind::Constant);
         assert_eq!(summary_rs.symbols[2].name, "TokenBuffer");
         assert_eq!(summary_rs.symbols[2].kind, CodeSymbolKind::Struct);
+    }
+
+    #[test]
+    fn test_javascript_is_not_misclassified_as_typescript() {
+        let mut indexer = WorkspaceCodeIndexer::new();
+        let js = "export function boot() { return true; }\n";
+        assert_eq!(indexer.index_file("src/boot.js", js).language, "JavaScript");
+        assert_eq!(
+            indexer.index_file("src/boot.mjs", js).language,
+            "JavaScript"
+        );
+        assert_eq!(
+            indexer.index_file("src/boot.jsx", js).language,
+            "JavaScript"
+        );
+        assert_eq!(indexer.index_file("src/boot.ts", js).language, "TypeScript");
+        assert_eq!(
+            indexer.index_file("src/boot.tsx", js).language,
+            "TypeScript"
+        );
+        assert_eq!(indexer.index_file("README.md", "").language, "Plaintext");
     }
 }

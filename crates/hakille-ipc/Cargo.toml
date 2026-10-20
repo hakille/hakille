@@ -1,0 +1,14 @@
+[package]
+name = "hakille-ipc"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Contrat IPC local entre le HUD desktop et le démon Hakille (named pipe Windows, socket Unix)"
+
+[dependencies]
+hakille-ui-protocol = { path = "../hakille-ui-protocol" }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }

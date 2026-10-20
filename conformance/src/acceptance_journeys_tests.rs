@@ -1,4 +1,4 @@
-//! Parcours d'acceptation §23 (spec Akora) : 4 scénarios de référence.
+//! Parcours d'acceptation §23 (spec Hakille) : 4 scénarios de référence.
 //!
 //! Utilise les VRAIES APIs disponibles dans `conformance` (sans nouvelle
 //! dépendance) : agents mail (`AgentRegistry` + cartes de référence),
@@ -8,16 +8,16 @@
 //! vérifiée via ces sources de vérité UI (validation requise, pass 1 h,
 //! diff d'apprentissage vide pour l'invité).
 
-use annora_agents::{AgentManifest, AgentRegistry};
-use annora_audit::entry::{ActionRecord, AuditEntry, ReasoningStep, ReasoningTrace};
-use annora_audit::journal::AuditJournal;
-use annora_core::{ActorId, CapabilityScope, EntryId, KeyPair, Timestamp, UserId};
-use annora_sync::{Outbox, OutboxEntry};
-use annora_ui::{
+use chrono::Duration;
+use hakille_agents::{AgentManifest, AgentRegistry};
+use hakille_audit::entry::{ActionRecord, AuditEntry, ReasoningStep, ReasoningTrace};
+use hakille_audit::journal::AuditJournal;
+use hakille_core::{ActorId, CapabilityScope, EntryId, KeyPair, Timestamp, UserId};
+use hakille_sync::{Outbox, OutboxEntry};
+use hakille_ui::{
     ChannelSelector, DeviceType, EphemeralHud, InteractionContext, OutputChannel, UrgencyLevel,
 };
-use annora_ui_shell::{LearningDiff, PowersView, reference_agent_cards};
-use chrono::Duration;
+use hakille_ui_shell::{LearningDiff, PowersView, reference_agent_cards};
 
 fn test_journal() -> (tempfile::TempDir, AuditJournal) {
     let dir = tempfile::tempdir().unwrap();
@@ -60,7 +60,7 @@ fn journal_entry_for(action: &str, description: &str) -> AuditEntry {
 
 #[test]
 fn test_journey_a_mail_cran1_card_approve_journal() {
-    // A. « Dis Akora, réponds à Awa que j'arrive à 18 h » : bureau, seul,
+    // A. « Dis Hakille, réponds à Awa que j'arrive à 18 h » : bureau, seul,
     // en ligne, Mail au cran 1 (Préparer = valide chaque action).
 
     // 1. VRAI agent mail enregistré (registry + carte de référence).
@@ -111,7 +111,7 @@ fn test_journey_a_mail_cran1_card_approve_journal() {
     journal.append(entry).unwrap();
     let entries = journal.all_entries().unwrap();
     assert_eq!(entries.len(), 1);
-    let full = annora_ui::JournalView::full_reasoning(&entries[0]);
+    let full = hakille_ui::JournalView::full_reasoning(&entries[0]);
     assert!(full.contains("Awa"));
 }
 
@@ -139,7 +139,7 @@ fn test_journey_b_meeting_channel_n1_no_voice() {
     hud.open_prompt();
     hud.insert_text("Réponds à Awa que j'arrive à 18 h");
     match hud.state() {
-        annora_ui::HudState::Prompting { query, .. } => {
+        hakille_ui::HudState::Prompting { query, .. } => {
             assert!(query.contains("Awa"));
         }
         _ => panic!("la carte clavier doit s'afficher en réunion"),

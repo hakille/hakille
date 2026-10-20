@@ -1,4 +1,4 @@
-use annora_core::{CapabilityAction, CapabilityScope};
+use hakille_core::{CapabilityAction, CapabilityScope};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -79,7 +79,7 @@ impl MailClient {
         let sample_messages = vec![
             MailMessage {
                 id: "msg-101".to_string(),
-                message_id: "<20261008-01@annora.internal>".to_string(),
+                message_id: "<20261008-01@hakille.internal>".to_string(),
                 from: "sophie.martin@avocat-associes.fr".to_string(),
                 to: vec!["utilisateur@entreprise.fr".to_string()],
                 cc: vec![],
@@ -93,12 +93,12 @@ impl MailClient {
             },
             MailMessage {
                 id: "msg-102".to_string(),
-                message_id: "<20261008-02@annora.internal>".to_string(),
-                from: "equipe-technique@annora.io".to_string(),
+                message_id: "<20261008-02@hakille.internal>".to_string(),
+                from: "equipe-technique@hakille.io".to_string(),
                 to: vec!["utilisateur@entreprise.fr".to_string()],
                 cc: vec![],
                 subject: "Déploiement du cluster Rust 2024 souverain".to_string(),
-                body: "Les 20 crates du système d'exploitation cognitif Annora compilent parfaitement sur Windows. Zero dépendance Python.".to_string(),
+                body: "Les 20 crates du système d'exploitation cognitif Hakille compilent parfaitement sur Windows. Zero dépendance Python.".to_string(),
                 date: "2026-10-08T11:15:00Z".to_string(),
                 folder: MailFolder::Inbox,
                 is_read: true,
@@ -183,7 +183,9 @@ impl MailClient {
         Some(draft)
     }
 
-    /// Sending an email STRICTLY requires explicit user validation chip!
+    /// « Envoi » d'un e-mail : validation utilisateur obligatoire, puis dépôt
+    /// dans le dossier Sent **local**. Aucun transport SMTP/réseau n'est câblé
+    /// dans cette crate : le statut le dit explicitement (pas de faux succès).
     pub fn send_message(
         &mut self,
         draft: &MailDraft,
@@ -193,11 +195,11 @@ impl MailClient {
             return Err("Émission refusée : L'envoi d'e-mails externes requiert la confirmation explicite de l'utilisateur (Puce #FF5722).".to_string());
         }
 
-        let msg_id = format!("<{}-annora@local>", draft.draft_id);
+        let msg_id = format!("<{}-hakille@local>", draft.draft_id);
         let sent_msg = MailMessage {
             id: format!("msg-sent-{}", draft.draft_id),
             message_id: msg_id.clone(),
-            from: "me@annora.local".to_string(),
+            from: "me@hakille.local".to_string(),
             to: draft.to.clone(),
             cc: draft.cc.clone(),
             subject: draft.subject.clone(),
@@ -217,7 +219,7 @@ impl MailClient {
             message_id: msg_id,
             timestamp: chrono::Utc::now().to_rfc3339(),
             recipient_count: draft.to.len() + draft.cc.len(),
-            status: "SMTP transmission successful".to_string(),
+            status: "archived-locally (no SMTP transport configured)".to_string(),
         })
     }
 
@@ -234,11 +236,11 @@ impl MailClient {
 
             if line_trimmed_cr.starts_with(' ') || line_trimmed_cr.starts_with('\t') {
                 // Folded continuation line
-                if let Some(ref k) = current_key {
-                    if let Some(val) = headers.get_mut(k) {
-                        val.push(' ');
-                        val.push_str(line_trimmed_cr.trim());
-                    }
+                if let Some(ref k) = current_key
+                    && let Some(val) = headers.get_mut(k)
+                {
+                    val.push(' ');
+                    val.push_str(line_trimmed_cr.trim());
                 }
             } else if let Some(colon) = line_trimmed_cr.find(':') {
                 let key = line_trimmed_cr[..colon].trim().to_lowercase();
@@ -269,12 +271,12 @@ impl MailClient {
         let message_id = headers
             .get("message-id")
             .cloned()
-            .unwrap_or_else(|| format!("<{}@annora.local>", uuid::Uuid::now_v7()));
+            .unwrap_or_else(|| format!("<{}@hakille.local>", uuid::Uuid::now_v7()));
 
         let from = headers
             .get("from")
             .cloned()
-            .unwrap_or_else(|| "unknown@annora.local".to_string());
+            .unwrap_or_else(|| "unknown@hakille.local".to_string());
 
         let to: Vec<String> = headers
             .get("to")
@@ -381,31 +383,34 @@ mod tests {
         let send_res = client.send_message(&draft, false);
         assert!(send_res.is_err());
 
-        // Sending with user approval succeeds
+        // Sending with user approval succeeds (local Sent folder; no SMTP).
         let receipt = client.send_message(&draft, true).unwrap();
-        assert_eq!(receipt.status, "SMTP transmission successful");
+        assert_eq!(
+            receipt.status,
+            "archived-locally (no SMTP transport configured)"
+        );
         assert_eq!(receipt.recipient_count, 1);
     }
 
     #[test]
     fn test_rfc5322_header_parsing() {
-        let raw = "From: Alice <alice@example.com>\nTo: Bob <bob@example.com>\nSubject: Hello Annora\nDate: Fri, 08 Oct 2026 12:00:00 +0000\n\nBody here";
+        let raw = "From: Alice <alice@example.com>\nTo: Bob <bob@example.com>\nSubject: Hello Hakille\nDate: Fri, 08 Oct 2026 12:00:00 +0000\n\nBody here";
         let headers = MailClient::parse_rfc5322(raw);
         assert_eq!(headers.get("from").unwrap(), "Alice <alice@example.com>");
-        assert_eq!(headers.get("subject").unwrap(), "Hello Annora");
+        assert_eq!(headers.get("subject").unwrap(), "Hello Hakille");
     }
 
     #[test]
     fn test_rfc5322_folded_headers_and_message_ingestion() {
         let raw = "\
 From: Charlie <charlie@enterprise.org>\r\n\
-To: team@annora.internal\r\n\
+To: team@hakille.internal\r\n\
 Subject: Rapport de gouvernance\r\n\
 \x20et souverainete numerique\r\n\
 Message-ID: <unique-20261009-xyz@enterprise.org>\r\n\
 Date: Fri, 09 Oct 2026 14:00:00 +0200\r\n\
 \r\n\
-Bonjour l'equipe Annora,\r\n\
+Bonjour l'equipe Hakille,\r\n\
 \r\n\
 Voici le compte-rendu d'audit pour le systeme.";
 
@@ -424,8 +429,8 @@ Voici le compte-rendu d'audit pour le systeme.";
             "Rapport de gouvernance et souverainete numerique"
         );
         assert_eq!(ingested.from, "Charlie <charlie@enterprise.org>");
-        assert_eq!(ingested.to, vec!["team@annora.internal"]);
-        assert!(ingested.body.contains("Bonjour l'equipe Annora"));
+        assert_eq!(ingested.to, vec!["team@hakille.internal"]);
+        assert!(ingested.body.contains("Bonjour l'equipe Hakille"));
         assert_eq!(
             client.fetch_folder(&MailFolder::Inbox).len(),
             initial_inbox_count + 1

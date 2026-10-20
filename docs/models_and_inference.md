@@ -1,8 +1,12 @@
 # Sélection des Modèles, Runtimes d'Inférence & Provisioning Autonome
 
-> **Bandeau d'honnêteté inspection-only (SIMULÉ) : 7/7 inspectés (présence + SHA-256 + headers), pas d'exécution neurale locale. Runtimes = inspection-only. Moteurs locaux = heuristiques (RMS+ZCR, énergie, sine hash, gabarits, mots-clés, sine 440Hz).**
+> **Document historique (phase « inspection-only » révolue).** L'état courant est décrit dans
+> [MODELS.md](MODELS.md) : forwards `ort`/Candle réels (VAD, ASR, CAM++, MiniLM, Qwen 2.5),
+> RVQ Mimi sur vrais codebooks et TTS formantique. Les tableaux ci-dessous restent utiles pour
+> les artefacts, checksums et le provisioning, mais les mentions « inspection-only / SIMULÉ »
+> ne reflètent plus le runtime actuel.
 
-Ce document consigne la matrice des modèles fondations ouverts retenus pour Annora, leurs runtimes d'exécution natifs en Rust, les stratégies d'allocation mémoire, ainsi que le système de téléchargement et d'approvisionnement autonome à déploiement zéro-touch (*Zero-Touch Model Provisioning*).
+Ce document consigne la matrice des modèles fondations ouverts retenus pour Hakille, leurs runtimes d'exécution natifs en Rust, les stratégies d'allocation mémoire, ainsi que le système de téléchargement et d'approvisionnement autonome à déploiement zéro-touch (*Zero-Touch Model Provisioning*).
 
 ---
 
@@ -36,7 +40,7 @@ Pour garantir qu'un utilisateur n'ait **jamais** besoin de configurer Python, Hu
    - En cas d'intégrité validée, renommage atomique (`rename`) du fichier `.part` vers son chemin final, protégeant l'OS de toute corruption ou coupure d'alimentation intempestive.
 
 3. **Orchestrateur Local de Modèles (`ModelProvisioner`)** :
-   - Découverte automatique des fichiers présents dans `./models` ou `$ANNORA_MODELS_DIR`.
+   - Découverte automatique des fichiers présents dans `./models` ou `$HAKILLE_MODELS_DIR`.
    - Inspection du catalogue et calcul des métriques de disque et mémoire.
    - Téléchargement autonome à la demande, par niveau de déploiement (`Guest`, `Native`, `Sovereign`) ou pour l'ensemble du catalogue.
 
@@ -44,29 +48,29 @@ Pour garantir qu'un utilisateur n'ait **jamais** besoin de configurer Python, Hu
 
 ## 3. Commandes CLI et REPL
 
-### A. Ligne de Commande Système (`annora-daemon`)
+### A. Ligne de Commande Système (`hakille-daemon`)
 
 ```bash
 # Lister l'état du catalogue et les modèles présents localement
-annora-daemon models list
+hakille-daemon models list
 
 # Télécharger un modèle spécifique de manière autonome
-annora-daemon models download --model silero-vad-v5
+hakille-daemon models download --model silero-vad-v5
 
 # Télécharger l'intégralité des modèles d'un tier (ex: guest ou native)
-annora-daemon models download --tier native
+hakille-daemon models download --tier native
 
 # Vérifier l'intégrité cryptographique SHA-256 de tous les modèles installés
-annora-daemon models verify
+hakille-daemon models verify
 
 # Lancer le démon avec téléchargement automatique des modèles essentiels manquants
-annora-daemon --auto-download
+hakille-daemon --auto-download
 ```
 
-### B. Shell Interactif du Démon Annora (`annora>`)
+### B. Shell Interactif du Démon Hakille (`hakille>`)
 
 ```text
-annora> :models
+hakille> :models
 Foundation Model Catalog (Directory: ./models):
   • silero-vad-v5              Guest      [INSTALLED - 2.2 MB]   Silero Voice Activity Detector v5
   • campplus-speaker-id        Guest      [INSTALLED - 27.0 MB]  CAM++ Neural Speaker Verifier
@@ -76,7 +80,7 @@ Foundation Model Catalog (Directory: ./models):
   • ui-tars-2b-sft-q4km        Native     [INSTALLED - 1065.6 MB] UI-TARS 2B SFT GGUF (GUI Agent)
   • moshi-mimi-s2s             Sovereign  [INSTALLED - 366.8 MB] Kyutai Mimi Streaming Audio Codec (Candle Native)
 
-annora> :verify-models
+hakille> :verify-models
 Verifying models integrity...
   • silero-vad-v5              [OK - Valid]
   • campplus-speaker-id        [OK - Valid]

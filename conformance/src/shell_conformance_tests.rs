@@ -1,13 +1,13 @@
-//! Conformance du shell ambient Slint : snapshot, dashboard, honnêteté.
+//! Conformance du shell ambient : snapshot, dashboard, honnêteté.
 //!
-//! 28e test de conformance : la coquille affiche l'état réel (présence,
-//! HUD, coût, silence) et ne ment jamais sur l'inférence.
+//! La coquille affiche l'état réel (présence, HUD, coût, silence) et ne
+//! ment jamais sur l'inférence. Baseline renderer-independent (ADR-009).
 
-use annora_ui::{
+use hakille_ui::{
     ChannelSelector, CostCounter, EphemeralHud, InteractionContext, OnboardingManager,
     OutputChannel, PresenceIndicator, PresenceState, SilenceBudgetTracker,
 };
-use annora_ui_shell::{
+use hakille_ui_shell::{
     ChannelDebugView, JournalRow, ShellSnapshot, filter_journal, honest_engine_rows, page_journal,
     reference_agent_cards,
 };
@@ -29,7 +29,7 @@ fn test_shell_snapshot_dashboard_and_honesty() {
     assert!(snap.hud_validation_cost.contains("25.00"));
     assert!(snap.presence_a11y_label.contains("journal"));
 
-    // Dashboard texte : même info que Slint, lisible sans GPU.
+    // Dashboard texte : même info que le renderer, lisible sans GPU.
     let dash = snap.render_text_dashboard();
     assert!(dash.contains("Action en cours"));
     assert!(dash.contains("#FF7A2F"));
@@ -49,7 +49,7 @@ fn test_shell_snapshot_dashboard_and_honesty() {
     let rows = honest_engine_rows(2.1, 7);
     assert_eq!(rows.len(), 7);
     for row in &rows {
-        if row.status == annora_ui_shell::InferenceStatus::Real {
+        if row.status == hakille_ui_shell::InferenceStatus::Real {
             assert!(
                 row.detail.contains("ort")
                     || row.detail.contains("Candle")
@@ -104,9 +104,9 @@ fn test_shell_onboarding_blocks_without_ack() {
 
     // Defer existe : faible urgence + inattentif → reporté, pas d'interruption.
     let d = ChannelSelector::arbitrate(&InteractionContext {
-        urgency: annora_ui::UrgencyLevel::Low,
+        urgency: hakille_ui::UrgencyLevel::Low,
         user_attentive_to_screen: false,
-        device_type: annora_ui::DeviceType::Desktop,
+        device_type: hakille_ui::DeviceType::Desktop,
         ..Default::default()
     });
     assert_eq!(d.channel, OutputChannel::Defer);

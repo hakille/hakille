@@ -4,24 +4,24 @@
 //! graphe, filtre pro/perso sans fusion, file d'envoi avec revalidation > 15 min.
 //! Aucune exécution réelle : `Approve` simulé = transition d'état documentée.
 //!
-//! NOTE intégration : `conformance/Cargo.toml` ne dépend PAS d'`annora-design`
-//! (ajout interdit) : on passe par les miroirs purs d'`annora-ui-shell`
+//! NOTE intégration : `conformance/Cargo.toml` ne dépend PAS d'`hakille-design`
+//! (ajout interdit) : on passe par les miroirs purs d'`hakille-ui-shell`
 //! (`ActionCardStrings::from_parts`, `WhyStrings::from_parts`) avec les mêmes
 //! formats que `ActionCardView` / `WhySheet`. Triplets construits en mémoire
-//! via `annora-memory` (dépendance présente). `lib.rs` non touché :
+//! via `hakille-memory` (dépendance présente). `lib.rs` non touché :
 //! l'intégrateur déclare `pub mod screens_model_tests;`.
 
-use annora_audit::entry::{ActionRecord, AuditEntry, ReasoningStep, ReasoningTrace};
-use annora_core::{
+use hakille_audit::entry::{ActionRecord, AuditEntry, ReasoningStep, ReasoningTrace};
+use hakille_core::{
     ActorId, EntryId, NodeId, PredicateId, Timestamp, TripletId, TrustLevel, UserId,
 };
-use annora_memory::{
+use hakille_memory::{
     ContextPartition, KnowledgeGraph, NodeValue, Triplet, TripletMetadata, TripletSource,
     scan_contradictions,
 };
-use annora_sync::{Outbox, OutboxEntry, REVALIDATE_AFTER_MINUTES};
-use annora_ui::OnboardingManager;
-use annora_ui_shell::{
+use hakille_sync::{Outbox, OutboxEntry, REVALIDATE_AFTER_MINUTES};
+use hakille_ui::OnboardingManager;
+use hakille_ui_shell::{
     ActionCardStrings, MemoryRow, MemoryScreenVM, OnboardingSheetVM, OnboardingView, OutboxPanelVM,
     SettingsState, SettingsView, WhyStrings,
 };
@@ -108,7 +108,7 @@ fn test_mail_card_first_notch_approve_is_documented_state_transition() {
         "Local",
         "− annulable",
         false,
-        "Akora",
+        "Hakille",
         false,
     );
     assert_eq!(
@@ -132,7 +132,7 @@ fn test_mail_card_first_notch_approve_is_documented_state_transition() {
     assert_eq!(decision, Decision::Approved);
 
     let entry = sample_entry();
-    let row = annora_ui_shell::JournalRow::from_entry(&entry);
+    let row = hakille_ui_shell::JournalRow::from_entry(&entry);
     assert!(row.reason_full.contains("Tu as demandé"));
     assert!(row.reason_full.contains("annulable 30 s"));
     assert_eq!(row.graph_nodes.len(), 1);
@@ -142,7 +142,7 @@ fn test_mail_card_first_notch_approve_is_documented_state_transition() {
 #[test]
 fn test_why_sheet_three_levels_from_entry_and_graph_facts() {
     let entry = sample_entry();
-    let sentence = annora_ui::JournalView::explain_action(&entry);
+    let sentence = hakille_ui::JournalView::explain_action(&entry);
     assert!(sentence.contains("send-mail"));
 
     // Faits graphe réels : deux triplets insérés, relus via `all_triplets`.
@@ -239,10 +239,10 @@ fn test_memory_screen_pro_perso_never_merges() {
         t.subject = NodeId(uuid::Uuid::from_u128(100 + i as u128));
         graph.insert(t);
     }
-    let items = annora_ui::MemoryViewerPanel::list_all_items(&graph);
-    let grown: Vec<annora_ui_shell::MemoryRow> = items
+    let items = hakille_ui::MemoryViewerPanel::list_all_items(&graph);
+    let grown: Vec<hakille_ui_shell::MemoryRow> = items
         .iter()
-        .map(annora_ui_shell::MemoryRow::from_item)
+        .map(hakille_ui_shell::MemoryRow::from_item)
         .collect();
     let screen = MemoryScreenVM::from_rows(&grown, "Professional", 0);
     assert_eq!(screen.visible.len(), 1);

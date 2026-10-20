@@ -1,4 +1,4 @@
-use annora_core::{CapabilityAction, CapabilityAuthority, CapabilityScope, Timestamp};
+use hakille_core::{CapabilityAction, CapabilityAuthority, CapabilityScope, Timestamp};
 
 #[test]
 fn test_capability_creation_and_verification() {

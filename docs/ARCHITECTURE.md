@@ -1,23 +1,23 @@
-# Architecture Système Complète d'Annora
+# Architecture Système Complète d'Hakille
 
 > *"Un système d'exploitation cognitif souverain, pas un chatbot."*
 
-Ce document constitue la référence architecturale exhaustive d'Annora. Il détaille les principes fondamentaux de conception, la décomposition en 6 couches, le modèle d'interaction sans session, les flux de données inter-couches, les protocoles de passage de messages typés, et le graphe complet des dépendances du monorepo Cargo.
+Ce document constitue la référence architecturale exhaustive d'Hakille. Il détaille les principes fondamentaux de conception, la décomposition en 6 couches, le modèle d'interaction sans session, les flux de données inter-couches, les protocoles de passage de messages typés, et le graphe complet des dépendances du monorepo Cargo.
 
 ---
 
 ## 1. Principes Fondamentaux de Conception
 
-Annora rompt formellement avec le paradigme des assistants virtuels traditionnels (ChatGPT, Claude, Siri, Copilot) qui reposent sur des sessions conversationnelles éphémères, des serveurs centralisés et des environnements managés lents. Annora est un **système d'exploitation cognitif natif** gouverné par quatre axiomes d'ingénierie :
+Hakille rompt formellement avec le paradigme des assistants virtuels traditionnels (ChatGPT, Claude, Siri, Copilot) qui reposent sur des sessions conversationnelles éphémères, des serveurs centralisés et des environnements managés lents. Hakille est un **système d'exploitation cognitif natif** gouverné par quatre axiomes d'ingénierie :
 
 ### Axiome 1 : Continuité d'État Sans Session (*No-Session Continuity*)
-Le système n'a aucune notion de "début de chat" ou de "fin de session". La vie cognitive d'Annora est un fil temporel continu. Tout événement, perception, réflexion ou interaction enrichit un graphe de connaissances distribué persistant. L'état situationnel persiste à travers les redémarrages, les changements de réseau et les bascules multi-appareils.
+Le système n'a aucune notion de "début de chat" ou de "fin de session". La vie cognitive d'Hakille est un fil temporel continu. Tout événement, perception, réflexion ou interaction enrichit un graphe de connaissances distribué persistant. L'état situationnel persiste à travers les redémarrages, les changements de réseau et les bascules multi-appareils.
 
 ### Axiome 2 : Initiative Bornée (*Bounded Initiative*)
 Une véritable assistance exige une autonomie proactive : organiser des fichiers, suggérer des actions, détecter des contradictions ou alerter sur une anomalie sans attendre d'être explicitement invoquée. Cependant, cette initiative est mathématiquement bornée par des **contrats cryptographiques (capabilities Biscuit)** et un **budget de silence**. Le système ne peut jamais outrepasser son mandat.
 
 ### Axiome 3 : Généralité Pratique (*Practical Generality*)
-Annora n'est pas confinée dans une boîte de dialogue. Elle contrôle directement le matériel hôte via l'abstraction `Substrate` : manipulation d'interfaces graphiques (GUI grounding via UI-TARS), injection d'entrées physiques (clavier/souris), capture d'écran native, contrôle audio, ordonnancement de processus et gestion de fichiers, sans changer d'application.
+Hakille n'est pas confinée dans une boîte de dialogue. Elle contrôle directement le matériel hôte via l'abstraction `Substrate` : manipulation d'interfaces graphiques (GUI grounding via UI-TARS), injection d'entrées physiques (clavier/souris), capture d'écran native, contrôle audio, ordonnancement de processus et gestion de fichiers, sans changer d'application.
 
 ### Axiome 4 : Éradication Absolue de Python en Production (*Zero-Python Runtime*)
 Garantir le temps réel strict (< 150 ms de latence vocale bout-en-bout), la sûreté mémoire (`#![deny(unsafe_code)]` là où possible), l'absence totale de pauses de ramasse-miettes (GC pauses) et une empreinte mémoire prédictible interdit formellement l'utilisation de CPython ou de runtimes managés en production. **100 % de la pile est compilée en Rust natif (édition 2024)** et en WebAssembly/WASI via Wasmtime, Candle, et ONNX Runtime (`ort`).
@@ -26,25 +26,25 @@ Garantir le temps réel strict (< 150 ms de latence vocale bout-en-bout), la sû
 
 ## 2. Décomposition des 6 Couches du Système
 
-Annora est structuré selon une hiérarchie stricte en 6 couches hermétiques. Chaque couche communique avec les couches adjacentes par des structures de données typées et des canaux asynchrones Tokio.
+Hakille est structuré selon une hiérarchie stricte en 6 couches hermétiques. Chaque couche communique avec les couches adjacentes par des structures de données typées et des canaux asynchrones Tokio.
 
 ```
 +===================================================================================+
 |                            COUCHE 6 : CONFIANCE & AUDIT                           |
-|  - Journal append-only signé Ed25519 (annora-audit)                               |
+|  - Journal append-only signé Ed25519 (hakille-audit)                               |
 |  - Chaînage d'empreintes SHA-256 (H_i = SHA256(H_{i-1} || Entry_i))               |
 |  - Registre de consentement dynamique & révocation                                |
-|  - Constitution immuable en 10 règles & batterie éthique (annora-constitution)    |
-|  - Authentification biométrique continue CAM++ & anti-spoofing (annora-auth)      |
+|  - Constitution immuable en 10 règles & batterie éthique (hakille-constitution)    |
+|  - Authentification biométrique continue CAM++ & anti-spoofing (hakille-auth)      |
 +===================================================================================+
                                          ▲
                                          │ Validation des invariants & Traçabilité
                                          ▼
 +===================================================================================+
 |                            COUCHE 5 : ACTION (AGENTS WASM)                        |
-|  - Runtime de bac à sable WASI / Wasmtime (annora-agents)                         |
+|  - Runtime de bac à sable WASI / Wasmtime (hakille-agents)                         |
 |  - Vérification & atténuation hors-ligne de capabilities Biscuit                  |
-|  - Quotas stricts d'appels et révocation automatique en cas d'abus (état réel : quotas WASM enforced — `crates/annora-agents/src/runtime.rs:53-62` ; egress loopback-only, allowlist TODO — `crates/annora-substrate-linux/src/substrate_impl.rs:334-346`) |
+|  - Quotas stricts d'appels et révocation automatique en cas d'abus (état réel : quotas WASM enforced — `crates/hakille-agents/src/runtime.rs:53-62` ; egress loopback-only, allowlist TODO — `crates/hakille-substrate-linux/src/substrate_impl.rs:334-346`) |
 |  - Agent GUI UI-TARS (intentions d'action abstraites : Click, Type, Drag)         |
 |  - Protocole inter-agents signé Ed25519 (négociation d'agenda et de tâches)       |
 +===================================================================================+
@@ -53,11 +53,11 @@ Annora est structuré selon une hiérarchie stricte en 6 couches hermétiques. C
                                          ▼
 +===================================================================================+
 |                            COUCHE 4 : MÉMOIRE DISTRIBUÉE                          |
-|  - Triple Store SPO / POS / OSP (annora-memory)                                   |
+|  - Triple Store SPO / POS / OSP (hakille-memory)                                   |
 |  - Moteur local embarqué ACID redb (Tier Edge - zéro configuration)               |
-|  - Index vectoriel sémantique HNSW instant-distance (non branché au recall — brute-force documentée, `crates/annora-memory/src/vector/edge.rs:22-34`) |
+|  - Index vectoriel sémantique HNSW instant-distance (non branché au recall — brute-force documentée, `crates/hakille-memory/src/vector/edge.rs:22-34`) |
 |  - Cluster distribué Raft transactionnel TiKV (Tier Cluster)                      |
-|  - Synchronisation CRDT (Grow-only Sets + Tombstones, Vector Clocks) (annora-sync)|
+|  - Synchronisation CRDT (Grow-only Sets + Tombstones, Vector Clocks) (hakille-sync)|
 |  - Décroissance temporelle exponentielle & Résolution de contradictions           |
 +===================================================================================+
                                          ▲
@@ -65,7 +65,7 @@ Annora est structuré selon une hiérarchie stricte en 6 couches hermétiques. C
                                          ▼
 +===================================================================================+
 |                            COUCHE 3 : NOYAU COGNITIF                              |
-|  - Cognitive Fabric & Manifeste dynamique de capacités (annora-kernel)            |
+|  - Cognitive Fabric & Manifeste dynamique de capacités (hakille-kernel)            |
 |  - Cognitive Orchestrator & boucle de décision (Sense -> Reason -> Plan -> Act)   |
 |  - Routeur dynamique System 1 (3-7B local <100ms) / System 2 (distant lourd)      |
 |  - Working Memory (tampon temporaire d'hypothèses et distillation)                |
@@ -77,7 +77,7 @@ Annora est structuré selon une hiérarchie stricte en 6 couches hermétiques. C
                                          ▼
 +===================================================================================+
 |                         COUCHE 2 : PERCEPTION MULTIMODALE                         |
-|  - Détection VAD (Silero) & Mot d'activation openWakeWord ("Dis Annora")          |
+|  - Détection VAD (Silero) & Mot d'activation openWakeWord ("Dis Hakille")          |
 |  - Transcription SenseVoice-Small (234M, non-autorégressif, ASR, émotions, bruits)|
 |  - Diarisation continue Nemotron-3 (100M, Sortformer, 8 locuteurs)                |
 |  - Biométrie vocale déterministe CAM++ (7.2M, 192-d)                              |
@@ -90,7 +90,7 @@ Annora est structuré selon une hiérarchie stricte en 6 couches hermétiques. C
                                          ▼
 +===================================================================================+
 |                      COUCHE 1 : COUCHE OS (SUBSTRATE & COMPUTE)                    |
-|  - Traits d'abstraction Substrate & Compute (annora-substrate)                    |
+|  - Traits d'abstraction Substrate & Compute (hakille-substrate)                    |
 |  - Backends OS natifs :                                                           |
 |    * Windows (Win32 BitBlt, SendInput, AppContainer, GlobalMemoryStatusEx)        |
 |    * Linux (Seccomp-BPF, Namespaces, Cgroups v2, /proc & /sys, uinput, Wayland)   |
@@ -98,39 +98,49 @@ Annora est structuré selon une hiérarchie stricte en 6 couches hermétiques. C
 |    * Redox OS (Micro-noyau, Schemes natifs chan:, orbital:, sys:, RedoxPacket)    |
 |    * Mobile (Shadow sync TiKV, Scoped storage, Battery conservation state machine)|
 |    * Web (WebAssembly, Web Audio resampling 48->16kHz, Canvas, WebGPU limits)     |
-|  - Attestation matérielle cryptographique (état réel : signature dev locale, pas une preuve TPM — `crates/annora-daemon/src/main.rs:300`, tracked) |
+|  - Attestation matérielle cryptographique (état réel : signature dev locale, pas une preuve TPM — `crates/hakille-daemon/src/main.rs:300`, tracked) |
 +===================================================================================+
 ```
 
 ---
 
-## 3. Matrice Complète des 26 Crates du Projet (+ 5 Agents)
+## 3. Matrice Complète des 31 Crates du Projet (+ 5 Agents)
 
-Le monorepo Cargo regroupe 26 crates modulaires (+ 5 agents WASM `agents/`) garantissant un découplage rigoureux :
+Le monorepo Cargo regroupe 31 crates modulaires (+ 5 agents WASM `agents/`, `conformance`, `xtask`) garantissant un découplage rigoureux :
 
 | Crate | Chemin | Rôle & Composants Clés | Couche |
 | :--- | :--- | :--- | :--- |
-| **`annora-core`** | [`../crates/annora-core`](../crates/annora-core) | Types universels, identifiants UUIDv7, primitives crypto Ed25519 / ChaCha20Poly1305, jetons Biscuit, niveaux de confiance (`TrustLevel`), bus de messages typés (`Message`). | Fondations |
-| **`annora-substrate`** | [`../crates/annora-substrate`](../crates/annora-substrate) | Contrats système : traits `Substrate` et `Compute`, `PlatformManifest`, attestation matérielle, configurations de caméra, événements de capture et d'injection. | Couche 1 |
-| **`annora-substrate-windows`** | [`../crates/annora-substrate-windows`](../crates/annora-substrate-windows) | Implémentation Windows native : GDI BitBlt display capture, injection Win32 `SendInput`, bac à sable AppContainer avec SIDs, surveillance batterie/RAM Win32, icône Tray et hook Alt+Space. | Couche 1 |
-| **`annora-substrate-linux`** | [`../crates/annora-substrate-linux`](../crates/annora-substrate-linux) | Implémentation Linux : compilateur Seccomp-BPF avec simulateur de bytecode, isolation Namespaces et Cgroups v2, télémétrie `/proc` et `/sys`, injection `/dev/uinput`, capture Wayland/X11. | Couche 1 |
-| **`annora-substrate-macos`** | [`../crates/annora-substrate-macos`](../crates/annora-substrate-macos) | Implémentation macOS : profils Sandbox Seatbelt (`(deny default)`), interception Endpoint Security, télémétrie Mach `host_statistics64` et IOKit, capture Retina 2x CoreGraphics. | Couche 1 |
-| **`annora-substrate-redox`** | [`../crates/annora-substrate-redox`](../crates/annora-substrate-redox) | Implémentation Redox OS micro-noyau : gestionnaire de schemes natifs (`chan:`, `orbital:`, `disk:`, `sys:`, `audio:`), sérialisation `RedoxPacket`, table de capacités microkernel. | Couche 1 |
-| **`annora-substrate-mobile`** | [`../crates/annora-substrate-mobile`](../crates/annora-substrate-mobile) | Implémentation mobile (Android/iOS) : synchronisation d'ombre (*Shadow sync*) avec horloge de Lamport, sandbox de stockage scopé, machine à états d'économie de batterie (Doze). | Couche 1 |
-| **`annora-substrate-web`** | [`../crates/annora-substrate-web`](../crates/annora-substrate-web) | Implémentation WebAssembly : bridge Web Audio avec rééchantillonnage linéaire 48kHz -> 16kHz, tampon circulaire anti-overrun, capture Canvas ImageData, détection WebGPU. | Couche 1 |
-| **`annora-perception`** | [`../crates/annora-perception`](../crates/annora-perception) | Ingestion sensorielle : capture audio 16kHz, Silero VAD, openWakeWord, SenseVoice-Small ASR, CAM++ speaker ID, Nemotron-3 diarisation, CameraPipeline et WorldModel spatial continu. | Couche 2 |
-| **`annora-voice`** | [`../crates/annora-voice`](../crates/annora-voice) | Moteur vocal : codec neural causal Kyutai Mimi (12.5Hz, 80ms), moteur full-duplex Moshi S2S en Candle Rust, CosyVoice2 streaming TTS, détecteur d'interruption naturelle (Barge-in). | Couche 2 |
-| **`annora-inference`** | [`../crates/annora-inference`](../crates/annora-inference) | Runtimes neuronaux : parseur Candle Safetensors, inspecteur ONNX Runtime (`ort`), parseur binaire streaming GGUF v3, ModelRegistry avec éviction LRU VRAM et provisioner d'artefacts. | Transverse |
-| **`annora-kernel`** | [`../crates/annora-kernel`](../crates/annora-kernel) | Cerveau cognitif : `CognitiveFabric`, routeur System 1/2, `WorkingMemory`, `DeliberatePlanner`, `SelfModel`, `GraphCuriosityScanner`, `DryRunSimulator`, budgets de latence par étage. | Couche 3 |
-| **`annora-memory`** | [`../crates/annora-memory`](../crates/annora-memory) | Mémoire à long terme : graphe de triplets SPO avec triple indexation (SPO, POS, OSP — écriture 3 index, lecture par préfixe O(N) documentée, `crates/annora-memory/src/storage/edge.rs:164-167`), backend local ACID `redb`, index vectoriel HNSW `instant-distance` (non branché au recall, brute-force `vector/edge.rs:22-34`), GraphQueryLang DSL, déclin temporel. | Couche 4 |
-| **`annora-sync`** | [`../crates/annora-sync`](../crates/annora-sync) | Continuité multi-appareils : ensembles CRDT à croissance seule avec tombstones, horloges vectorielles, coordinateur de handoff de tâche et protocole de réplication TiKV. | Couche 4 |
-| **`annora-agents`** | [`../crates/annora-agents`](../crates/annora-agents) | Runtime d'action : bac à sable WASI via Wasmtime, vérification de capabilities Biscuit, quotas d'appels et auto-révocation, agent GUI UI-TARS, protocole inter-agents signé. | Couche 5 |
-| **`annora-audit`** | [`../crates/annora-audit`](../crates/annora-audit) | Journalisation inviolable : journal append-only avec signatures Ed25519, chaînage de hachages SHA-256, registre de consentement explicite, moteur de requêtes et d'explicabilité du "pourquoi". | Couche 6 |
-| **`annora-auth`** | [`../crates/annora-auth`](../crates/annora-auth) | Gestion d'identité : authentification multimodale continue, détecteur anti-usurpation vocale (liveness), gestionnaire de sessions invités bornées, profils mineurs, capability Wallet de paiement. | Couche 6 |
-| **`annora-constitution`** | [`../crates/annora-constitution`](../crates/annora-constitution) | Règles suprêmes : 10 règles constitutionnelles machine-vérifiables, gouvernance d'amendement par quorum, batterie de tests éthiques automatisée. | Couche 6 |
-| **`annora-ui`** | [`../crates/annora-ui`](../crates/annora-ui) | Présence ambiante : indicateur minimal à 3 états, HUD Spotlight éphémère (Alt+Space), sélecteur de canal dynamique, budget de silence proactif, compteur financier System 2 en temps réel. | Présentation |
-| **`annora-metrics`** | [`../crates/annora-metrics`](../crates/annora-metrics) | Mesure des objectifs : 3 métriques North-Star (Taux de continuité, Conformité d'initiative bornée, Généralité pratique) et détecteur de dérive des valeurs éthiques. | Télémétrie |
-| **`annora-daemon`** | [`../crates/annora-daemon`](../crates/annora-daemon) | Démon exécutable principal avec boucle REPL interactive, initialisation en 6 étapes et inspection approfondie de tous les sous-systèmes. | Binaire |
+| **`hakille-core`** | [`../crates/hakille-core`](../crates/hakille-core) | Types universels, identifiants UUIDv7, primitives crypto Ed25519 / ChaCha20Poly1305, jetons Biscuit, niveaux de confiance (`TrustLevel`), bus de messages typés (`Message`). | Fondations |
+| **`hakille-substrate`** | [`../crates/hakille-substrate`](../crates/hakille-substrate) | Contrats système : traits `Substrate` et `Compute`, `PlatformManifest`, attestation matérielle, configurations de caméra, événements de capture et d'injection. | Couche 1 |
+| **`hakille-substrate-windows`** | [`../crates/hakille-substrate-windows`](../crates/hakille-substrate-windows) | Implémentation Windows native : GDI BitBlt display capture, injection Win32 `SendInput`, bac à sable AppContainer avec SIDs, surveillance batterie/RAM Win32, icône Tray et hook Alt+Space. | Couche 1 |
+| **`hakille-substrate-linux`** | [`../crates/hakille-substrate-linux`](../crates/hakille-substrate-linux) | Implémentation Linux : compilateur Seccomp-BPF avec simulateur de bytecode, isolation Namespaces et Cgroups v2, télémétrie `/proc` et `/sys`, injection `/dev/uinput`, capture Wayland/X11. | Couche 1 |
+| **`hakille-substrate-macos`** | [`../crates/hakille-substrate-macos`](../crates/hakille-substrate-macos) | Implémentation macOS : profils Sandbox Seatbelt (`(deny default)`), interception Endpoint Security, télémétrie Mach `host_statistics64` et IOKit, capture Retina 2x CoreGraphics. | Couche 1 |
+| **`hakille-substrate-redox`** | [`../crates/hakille-substrate-redox`](../crates/hakille-substrate-redox) | Implémentation Redox OS micro-noyau : gestionnaire de schemes natifs (`chan:`, `orbital:`, `disk:`, `sys:`, `audio:`), sérialisation `RedoxPacket`, table de capacités microkernel. | Couche 1 |
+| **`hakille-substrate-mobile`** | [`../crates/hakille-substrate-mobile`](../crates/hakille-substrate-mobile) | Implémentation mobile (Android/iOS) : synchronisation d'ombre (*Shadow sync*) avec horloge de Lamport, sandbox de stockage scopé, machine à états d'économie de batterie (Doze). | Couche 1 |
+| **`hakille-substrate-web`** | [`../crates/hakille-substrate-web`](../crates/hakille-substrate-web) | Implémentation WebAssembly : bridge Web Audio avec rééchantillonnage linéaire 48kHz -> 16kHz, tampon circulaire anti-overrun, capture Canvas ImageData, détection WebGPU. | Couche 1 |
+| **`hakille-perception`** | [`../crates/hakille-perception`](../crates/hakille-perception) | Ingestion sensorielle : capture audio 16kHz, Silero VAD, openWakeWord, SenseVoice-Small ASR, CAM++ speaker ID, Nemotron-3 diarisation, CameraPipeline et WorldModel spatial continu. | Couche 2 |
+| **`hakille-audio`** | [`../crates/hakille-audio`](../crates/hakille-audio) | I/O audio temps réel `cpal` : capture micro, downmix mono et rééchantillonnage vers 16 kHz par blocs de 10 ms, lecture PCM. Erreur explicite si périphérique indisponible — jamais de simulation. | Couche 2 |
+| **`hakille-voice`** | [`../crates/hakille-voice`](../crates/hakille-voice) | Moteur vocal : décodeur RVQ Mimi (12,5 Hz, 80 ms) en Rust, TTS formantique Klatt (`FormantTts`, 24 kHz), détecteur d'interruption naturelle (Barge-in). `MoshiEngine::is_simulated()` expose honnêtement l'absence de poids Mimi réels. | Couche 2 |
+| **`hakille-inference`** | [`../crates/hakille-inference`](../crates/hakille-inference) | Runtimes neuronaux : parseur Candle Safetensors, inspecteur ONNX Runtime (`ort`), parseur binaire streaming GGUF v3, ModelRegistry avec éviction LRU VRAM et provisioner d'artefacts. | Transverse |
+| **`hakille-ipc`** | [`../crates/hakille-ipc`](../crates/hakille-ipc) | Contrat IPC local : named pipe Windows et socket Unix, messages délimités et gestion de cycle de vie ; aucun transport TCP exposé. | Transverse |
+| **`hakille-kernel`** | [`../crates/hakille-kernel`](../crates/hakille-kernel) | Cerveau cognitif : `CognitiveFabric`, routeur System 1/2, `WorkingMemory`, `DeliberatePlanner`, `SelfModel`, `GraphCuriosityScanner`, `DryRunSimulator`, budgets de latence par étage. | Couche 3 |
+| **`hakille-memory`** | [`../crates/hakille-memory`](../crates/hakille-memory) | Mémoire à long terme : graphe de triplets SPO avec triple indexation (SPO, POS, OSP — écriture 3 index, lecture par préfixe O(N) documentée, `crates/hakille-memory/src/storage/edge.rs:164-167`), backend local ACID `redb`, index vectoriel HNSW `instant-distance` (non branché au recall, brute-force `vector/edge.rs:22-34`), GraphQueryLang DSL, déclin temporel. | Couche 4 |
+| **`hakille-sync`** | [`../crates/hakille-sync`](../crates/hakille-sync) | Continuité multi-appareils : ensembles CRDT à croissance seule avec tombstones, horloges vectorielles, coordinateur de handoff de tâche et protocole de réplication TiKV. | Couche 4 |
+| **`hakille-agents`** | [`../crates/hakille-agents`](../crates/hakille-agents) | Runtime d'action : bac à sable WASI via Wasmtime, vérification de capabilities Biscuit, quotas d'appels et auto-révocation, agent GUI UI-TARS, protocole inter-agents signé. | Couche 5 |
+| **`hakille-audit`** | [`../crates/hakille-audit`](../crates/hakille-audit) | Journalisation inviolable : journal append-only avec signatures Ed25519, chaînage de hachages SHA-256, registre de consentement explicite, moteur de requêtes et d'explicabilité du "pourquoi". | Couche 6 |
+| **`hakille-auth`** | [`../crates/hakille-auth`](../crates/hakille-auth) | Gestion d'identité : authentification multimodale continue, détecteur anti-usurpation vocale (liveness), gestionnaire de sessions invités bornées, profils mineurs, capability Wallet de paiement. | Couche 6 |
+| **`hakille-keystore`** | [`../crates/hakille-keystore`](../crates/hakille-keystore) | Trousseau de clés longues durées : seeds 32 octets stockés dans le keychain OS (Credential Manager, Keychain, Secret Service), utilisateurs versionnés (`capability-root-v1`, `journal-signing-v1`) et rotation. | Couche 6 |
+| **`hakille-constitution`** | [`../crates/hakille-constitution`](../crates/hakille-constitution) | Règles suprêmes : 10 règles constitutionnelles machine-vérifiables, gouvernance d'amendement par quorum, batterie de tests éthiques automatisée. | Couche 6 |
+| **`hakille-ui`** | [`../crates/hakille-ui`](../crates/hakille-ui) | Présence ambiante : indicateur minimal à 3 états, HUD Spotlight éphémère (Alt+Space), sélecteur de canal dynamique, budget de silence proactif, compteur financier System 2 en temps réel. | Présentation |
+| **`hakille-design`** | [`../crates/hakille-design`](../crates/hakille-design) | Design system Rust : identité de marque (`brand.rs`), cartes d'action, bandes de provenance, silence et voix, alignement sur les jetons `tokens/`. | Présentation |
+| **`hakille-ui-protocol`** | [`../crates/hakille-ui-protocol`](../crates/hakille-ui-protocol) | Protocole UI ↔ noyau versionné : messages typés, `PROTOCOL_VERSION`, négociation de compatibilité et schéma golden verrouillé par test. | Présentation |
+| **`hakille-ui-model`** | [`../crates/hakille-ui-model`](../crates/hakille-ui-model) | Modèle de snapshot de l'interface (état de présence, cartes, provenance), indépendant du backend de rendu. | Présentation |
+| **`hakille-ui-shell`** | [`../crates/hakille-ui-shell`](../crates/hakille-ui-shell) | Shell d'interface : vues, pont entre le noyau et l'UI, composition des cartes et de la présence. | Présentation |
+| **`hakille-ui-platform`** | [`../crates/hakille-ui-platform`](../crates/hakille-ui-platform) | Abstraction plateforme : fenêtres, icône de zone de notification, intégration système et cycle de vie de l'application. | Présentation |
+| **`hakille-ui-desktop`** | [`../crates/hakille-ui-desktop`](../crates/hakille-ui-desktop) | Application desktop : scène, moteur de texte multi-script, accessibilité et runtime natif. | Présentation |
+| **`hakille-spikes`** | [`../crates/hakille-spikes`](../crates/hakille-spikes) | Spikes techniques isolés (arbre de rendu S1, rendu S2, accessibilité S3) pour valider l'UI avant intégration. | Lab |
+| **`hakille-metrics`** | [`../crates/hakille-metrics`](../crates/hakille-metrics) | Mesure des objectifs : 3 métriques North-Star (Taux de continuité, Conformité d'initiative bornée, Généralité pratique) et détecteur de dérive des valeurs éthiques. | Télémétrie |
+| **`hakille-daemon`** | [`../crates/hakille-daemon`](../crates/hakille-daemon) | Démon exécutable principal avec boucle REPL interactive, initialisation en 6 étapes et inspection approfondie de tous les sous-systèmes. | Binaire |
 
 ---
 
@@ -139,42 +149,42 @@ Le monorepo Cargo regroupe 26 crates modulaires (+ 5 agents WASM `agents/`) gara
 Le schéma suivant illustre l'arbre d'appels et de compilation entre les briques :
 
 ```
-                                   [ annora-daemon ]
+                                   [ hakille-daemon ]
                                           │
          ┌────────────────────────────────┼────────────────────────────────┐
          │                                │                                │
          ▼                                ▼                                ▼
-   [ annora-ui ]                   [ annora-kernel ]               [ annora-metrics ]
+   [ hakille-ui ]                   [ hakille-kernel ]               [ hakille-metrics ]
          │                                │                                │
          │         ┌──────────────────────┴──────────────────────┐         │
          │         │              kernel dépend :                │         │
          │         │  inference + memory + constitution (+core)  │         │
          │         └──────────────────────┬──────────────────────┘         │
          ▼                                ▼                                ▼
-  [ annora-agents ]               [ annora-voice ]                [ annora-memory ]──►[ annora-sync ]
+  [ hakille-agents ]               [ hakille-voice ]                [ hakille-memory ]──►[ hakille-sync ]
          │                                │                                │
          ├────────────────────────────────┼────────────────────────────────┤
          │                                │                                │
          ▼                                ▼                                ▼
-   [ annora-auth ]               [ annora-perception ]            [ annora-audit ]──►[ annora-constitution ]
+   [ hakille-auth ]               [ hakille-perception ]            [ hakille-audit ]──►[ hakille-constitution ]
          │                                │                                │
          └────────────────────────────────┴────────────────────────────────┘
                                           │
                                           ▼
-                                [ annora-inference ]  ◄── couche basse (GGUF/Safetensors/ONNX ort,
+                                [ hakille-inference ]  ◄── couche basse (GGUF/Safetensors/ONNX ort,
                                           │               Candle Qwen, registre LRU VRAM)
                                           ▼
-  [ annora-substrate ] ◄─── [ annora-substrate-windows / linux / macos / redox / mobile / web ]
+  [ hakille-substrate ] ◄─── [ hakille-substrate-windows / linux / macos / redox / mobile / web ]
                                           │
                                           ▼
-                                    [ annora-core ]
+                                    [ hakille-core ]
 ```
 
-> Écart corrigé : l'ancien arbre plaçait `annora-inference` au-dessus du
+> Écart corrigé : l'ancien arbre plaçait `hakille-inference` au-dessus du
 > substrate comme dépendant de l'audit ; en réalité `inference` est bas
 > (ne dépend que de `core` + `substrate`), et `kernel` dépend de
 > `inference` + `memory` + `constitution` (+ `core`/`substrate`), voir
-> `crates/annora-kernel/Cargo.toml` et `crates/annora-inference/Cargo.toml`.
+> `crates/hakille-kernel/Cargo.toml` et `crates/hakille-inference/Cargo.toml`.
 
 ---
 
@@ -186,7 +196,7 @@ Une requête cognitive suit un cycle rigoureux garantissant réactivité sub-sec
 Utilisateur        Perception           Kernel            Mémoire           Agents / OS          Audit
     │                  │                   │                 │                   │                 │
     │── Audio 16kHz ──►│                   │                 │                   │                 │
-    │   "Dis Annora"   │── VAD + ASR ─────►│                 │                   │                 │
+    │   "Dis Hakille"   │── VAD + ASR ─────►│                 │                   │                 │
     │                  │   (SenseVoice)    │                 │                   │                 │
     │                  │── Biométrie ─────►│                 │                   │                 │
     │                  │   (CAM++ 192d)    │                 │                   │                 │
@@ -215,15 +225,15 @@ Utilisateur        Perception           Kernel            Mémoire           Age
 ```
 
 ### Étape 1 : Ingestion Perceptive & Biométrie Continue
-1. Le flux microphone (16 kHz, PCM 16-bit) est ingéré par `annora-perception`.
-2. Le `VoiceActivityDetector` (Silero VAD) filtre le bruit et active `WakeWordDetector` ("Dis Annora").
+1. Le flux microphone (16 kHz, PCM 16-bit) est ingéré par `hakille-perception`.
+2. Le `VoiceActivityDetector` (Silero VAD) filtre le bruit et active `WakeWordDetector` ("Dis Hakille").
 3. `SenseVoiceSmall` réalise la transcription phonétique, l'analyse d'émotions et la détection d'événements ambiants en < 50 ms.
 4. Simultanément, `Nemotron3Diarization` isole la voix du locuteur et `CAM++` génère un vecteur d'empreinte de 192 dimensions.
-5. `annora-auth` vérifie ce vecteur contre les gabarits chiffrés dans l'enclave sécurisée (TPM / Secure Enclave) et génère un jeton Biscuit root pour la personne authentifiée.
+5. `hakille-auth` vérifie ce vecteur contre les gabarits chiffrés dans l'enclave sécurisée (TPM / Secure Enclave) et génère un jeton Biscuit root pour la personne authentifiée.
 
 ### Étape 2 : Résolution Mémorielle & Contexte
-1. L'intention transcrite est envoyée à `annora-kernel::CognitiveFabric`.
-2. `annora-memory` interroge simultanément :
+1. L'intention transcrite est envoyée à `hakille-kernel::CognitiveFabric`.
+2. `hakille-memory` interroge simultanément :
    - Le graphe de triplets SPO local `redb` pour les relations symboliques exactes.
    - L'index HNSW `instant-distance` pour les concepts sémantiques proches.
 3. Les faits récupérés subissent une pondération temporelle (décroissance exponentielle des faits non réactivés).
@@ -244,12 +254,12 @@ Utilisateur        Perception           Kernel            Mémoire           Age
 
 ### Étape 5 : Exécution Sécurisée & Journalisation d'Audit
 1. L'agent WASM exécute l'action dans le bac à sable Wasmtime ou transmet une intention typée (`Action::Click(x, y)`) au `Substrate` de l'hôte.
-2. L'action est enregistrée dans `annora-audit` :
+2. L'action est enregistrée dans `hakille-audit` :
    - Horodatage et identifiant UUIDv7.
    - Signature cryptographique Ed25519 de l'acteur.
    - Empreinte SHA-256 chaînée : $H_n = \text{SHA-256}(H_{n-1} \parallel \text{Payload}_n)$.
    - Pointeurs explicites vers les nœuds du graphe mémoire justifiant l'action.
-3. La réponse orale est renvoyée en streaming temps réel via `annora-voice` (codec Kyutai Mimi + Moshi ou CosyVoice2).
+3. La réponse orale est renvoyée en streaming temps réel via `hakille-voice` (codec Kyutai Mimi + Moshi ou CosyVoice2).
 
 ---
 

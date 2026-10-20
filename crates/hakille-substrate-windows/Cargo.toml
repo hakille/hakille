@@ -1,0 +1,21 @@
+[package]
+name = "hakille-substrate-windows"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hakille-core = { path = "../hakille-core" }
+hakille-substrate = { path = "../hakille-substrate" }
+biscuit-auth = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com"] }

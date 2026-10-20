@@ -5,8 +5,8 @@
 //! - Les autres moteurs réels (MiniLM/SenseVoice/CAM++/Qwen/RVQ/formant/CV)
 //!   sont golden-testés dans leurs crates respectives (non testés ici).
 
-use annora_inference::{OrtVadSession, to_mono_16k};
-use annora_perception::audio::{AudioChunk, VoiceActivityDetector};
+use hakille_inference::{OrtVadSession, to_mono_16k};
+use hakille_perception::audio::{AudioChunk, VoiceActivityDetector};
 use std::path::{Path, PathBuf};
 
 fn models_dir() -> PathBuf {

@@ -1,12 +1,12 @@
 # Déploiement par Palier Matériel (Tiers)
 
-Ce document décrit l'organisation du déploiement d'Annora selon les contraintes physiques et logicielles des plateformes d'accueil.
+Ce document décrit l'organisation du déploiement d'Hakille selon les contraintes physiques et logicielles des plateformes d'accueil.
 
 ---
 
 ## 1. La Matrice des Trois Paliers Matériels
 
-Annora refuse l'illusion d'un comportement strictement identique sur toutes les machines. Les systèmes d'exploitation commerciaux (notamment mobiles) imposent des restrictions de sandbox infranchissables. Annora assume trois paliers honnêtes :
+Hakille refuse l'illusion d'un comportement strictement identique sur toutes les machines. Les systèmes d'exploitation commerciaux (notamment mobiles) imposent des restrictions de sandbox infranchissables. Hakille assume trois paliers honnêtes :
 
 ```
                                 PALIER SOUVERAIN
@@ -57,7 +57,7 @@ Annora refuse l'illusion d'un comportement strictement identique sur toutes les 
 
 ## 3. Configuration et Sélection Automatique
 
-Au démarrage, le démon `annora-daemon` interroge le `Substrate` de la machine hôte :
+Au démarrage, le démon `hakille-daemon` interroge le `Substrate` de la machine hôte :
 ```rust
 let manifest = substrate.manifest();
 println!("Host OS: {} {}", manifest.os_name, manifest.os_version);

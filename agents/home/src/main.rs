@@ -1,7 +1,7 @@
 use agent_home::{HomeCommand, SmartHomeHub};
 
 fn main() {
-    println!("Annora Home Automation Agent initialized with physical safety safeguards.");
+    println!("Hakille Home Automation Agent initialized with physical safety safeguards.");
     let mut hub = SmartHomeHub::new();
     let devices = hub.discover_devices();
     println!(

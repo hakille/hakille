@@ -1,4 +1,4 @@
-# Akora — tokens mouvement/haptique/son, SOURCE UNIQUE (spec §6).
+# Hakille — tokens mouvement/haptique/son, SOURCE UNIQUE (spec §6).
 # Durées ms, easings, ressort carte, haptiques ms, notes Karplus-Strong.
 # Jamais de valeurs en dur dans le code : tout vient d'ici via `xtask tokens`.
 

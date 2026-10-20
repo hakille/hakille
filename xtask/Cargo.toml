@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-annora-core = { path = "../crates/annora-core" }
-annora-substrate = { path = "../crates/annora-substrate" }
-annora-inference = { path = "../crates/annora-inference" }
+hakille-core = { path = "../crates/hakille-core" }
+hakille-substrate = { path = "../crates/hakille-substrate" }
+hakille-inference = { path = "../crates/hakille-inference" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

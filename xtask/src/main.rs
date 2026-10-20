@@ -1,4 +1,4 @@
-use annora_inference::{ModelCatalog, ModelProvisioner, ModelTier};
+use hakille_inference::{ModelCatalog, ModelProvisioner, ModelTier};
 use std::env;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 mod tokens;
 
-fn make_progress_callback() -> annora_inference::ProgressCallback {
-    Arc::new(|p: &annora_inference::DownloadProgress| {
+fn make_progress_callback() -> hakille_inference::ProgressCallback {
+    Arc::new(|p: &hakille_inference::DownloadProgress| {
         let pct_str = match p.percentage {
             Some(pct) => format!("{:5.1}%", pct),
             None => "  ?% ".to_string(),
@@ -31,14 +31,14 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
     let command = args.get(1).map(|s| s.as_str()).unwrap_or("help");
 
-    let models_dir = env::var("ANNORA_MODELS_DIR")
+    let models_dir = env::var("HAKILLE_MODELS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("./models"));
 
     match command {
         "conformance" => {
             println!(
-                "== Running Annora Conformance Suite (fast gate, slow real-inference tests excluded) =="
+                "== Running Hakille Conformance Suite (fast gate, slow real-inference tests excluded) =="
             );
             let status = std::process::Command::new("cargo")
                 .args(["test", "-p", "conformance"])
@@ -50,13 +50,13 @@ async fn main() {
         }
         "conformance-slow" => {
             println!(
-                "== Running Annora SLOW gate (real Qwen CPU decode, MiniLM/VAD ort — tens of minutes in debug) =="
+                "== Running Hakille SLOW gate (real Qwen CPU decode, MiniLM/VAD ort — tens of minutes in debug) =="
             );
             println!("== Fast suite first, then --ignored real-inference tests ==");
             for args in [
                 vec!["test", "-p", "conformance"],
                 vec!["test", "-p", "conformance", "--", "--ignored"],
-                vec!["test", "-p", "annora-kernel", "--", "--ignored"],
+                vec!["test", "-p", "hakille-kernel", "--", "--ignored"],
             ] {
                 let status = std::process::Command::new("cargo")
                     .args(&args)
@@ -68,7 +68,7 @@ async fn main() {
             }
         }
         "check-all" => {
-            println!("== Checking all Annora workspace crates ==");
+            println!("== Checking all Hakille workspace crates ==");
             let status = std::process::Command::new("cargo")
                 .args(["check", "--workspace"])
                 .status()
@@ -84,7 +84,7 @@ async fn main() {
             println!("Tier Guest (Mobile/Web) -> manifests/guest.toml");
         }
         "list-models" => {
-            println!("== Annora Model Catalog ==");
+            println!("== Hakille Model Catalog ==");
             let provisioner = ModelProvisioner::new(models_dir);
             for s in provisioner.list_all_status() {
                 let badge = if s.is_installed {
@@ -146,7 +146,7 @@ async fn main() {
             }
         }
         "tokens" => {
-            println!("== Akora design tokens: TOML source unique → Rust/Swift/Kotlin/CSS ==");
+            println!("== Hakille design tokens: TOML source unique → Rust/Swift/Kotlin/CSS ==");
             let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
             let export_kind = args.iter().find_map(|a| match a.as_str() {
                 "export-swift" => Some("swift"),
@@ -176,11 +176,14 @@ async fn main() {
                 });
                 let (name, content) = match kind {
                     "swift" => (
-                        "AkoraTokens.swift",
+                        "HakilleTokens.swift",
                         tokens::emit_swift(&color, &motion, &ty),
                     ),
-                    "kotlin" => ("AkoraTokens.kt", tokens::emit_kotlin(&color, &motion, &ty)),
-                    _ => ("akora-tokens.css", tokens::emit_css(&color, &motion, &ty)),
+                    "kotlin" => (
+                        "HakilleTokens.kt",
+                        tokens::emit_kotlin(&color, &motion, &ty),
+                    ),
+                    _ => ("hakille-tokens.css", tokens::emit_css(&color, &motion, &ty)),
                 };
                 let target = out_dir.join(name);
                 std::fs::write(&target, content).unwrap_or_else(|e| {
@@ -213,7 +216,7 @@ async fn main() {
             if let Some(fmted) = tokens::rustfmt_str(&out) {
                 out = fmted;
             }
-            let target = root.join("crates/annora-design/src/generated.rs");
+            let target = root.join("crates/hakille-design/src/generated.rs");
             let current = std::fs::read_to_string(&target).unwrap_or_default();
             if check_only {
                 if current != out {
@@ -238,36 +241,8 @@ async fn main() {
                 println!("✓ {} régénéré.", target.display());
             }
         }
-        "shell-web" => {
-            println!("== Annora Slint Web Demo (WASM canvas) ==");
-            println!("Prérequis : rustup target add wasm32-unknown-unknown + wasm-pack");
-            let has_target = std::process::Command::new("rustup")
-                .args(["target", "list", "--installed"])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).contains("wasm32-unknown-unknown"))
-                .unwrap_or(false);
-            let has_pack = std::process::Command::new("wasm-pack")
-                .arg("--version")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-            if !has_target {
-                println!(
-                    "✗ target wasm32-unknown-unknown manquante : rustup target add wasm32-unknown-unknown"
-                );
-            }
-            if !has_pack {
-                println!("✗ wasm-pack introuvable : cargo install wasm-pack");
-            }
-            if !has_target || !has_pack {
-                println!("Page statique : crates/annora-ui-shell/web/index.html (canvas #canvas).");
-                std::process::exit(2);
-            }
-            println!("→ wasm-pack build --target web crates/annora-ui-shell --features render …");
-            println!("  puis servez crates/annora-ui-shell/web/ en HTTP (pas file://).");
-        }
         _ => {
-            println!("Annora xtask workspace tool");
+            println!("Hakille xtask workspace tool");
             println!("Usage: cargo xtask <command> [options]");
             println!("Commands:");
             println!("  conformance                 Run conformance test suite (fast gate)");
@@ -283,16 +258,13 @@ async fn main() {
                 "  tokens [--check]            Régénérer/vérifier les tokens design (TOML → Rust)"
             );
             println!(
-                "  tokens export-swift       Générer target/tokens/AkoraTokens.swift (Swift struct)"
+                "  tokens export-swift       Générer target/tokens/HakilleTokens.swift (Swift struct)"
             );
             println!(
-                "  tokens export-kotlin      Générer target/tokens/AkoraTokens.kt (Kotlin object)"
+                "  tokens export-kotlin      Générer target/tokens/HakilleTokens.kt (Kotlin object)"
             );
             println!(
-                "  tokens export-css         Générer target/tokens/akora-tokens.css (CSS :root)"
-            );
-            println!(
-                "  shell-web                   Check/préparer la démo web WASM du shell Slint"
+                "  tokens export-css         Générer target/tokens/hakille-tokens.css (CSS :root)"
             );
         }
     }

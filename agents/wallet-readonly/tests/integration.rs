@@ -2,7 +2,7 @@ use agent_wallet_readonly::{
     BudgetCategory, FinancialTransaction, TransactionType, WalletReadOnlyClient,
     check_wallet_capabilities,
 };
-use annora_core::{CapabilityAction, CapabilityScope};
+use hakille_core::{CapabilityAction, CapabilityScope};
 
 /// Intégration wallet : lecture + budget, refus write absolu (fail-closed).
 #[test]

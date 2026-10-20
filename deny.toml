@@ -1,9 +1,37 @@
 # `cargo deny check advisories` actif en CI (job deny : bans sources advisories).
 # Seuils en warn documenté : n'échoue pas la CI sur un yank transitoire,
-# mais reste visible. `unmaintained` suit le workspace (warn effectif).
+# mais reste visible. `unmaintained = "all"` (syntaxe cargo-deny ≥ 0.16 ;
+# l'ancien "warn" scalaire est refusé) : crates non maintenues signalées,
+# sévérité warn effective.
 [advisories]
 yanked = "warn"
-unmaintained = "warn"
+unmaintained = "all"
+
+# Advisories acceptées en connaissance de cause (2026-10-17) — dépendances
+# transitives sans correctif semver-compatible dans les contraintes actuelles :
+# - zip 8.6.0 (transitif candle-core 0.11, hakille-inference) : dernière
+#   version compatible des dépendances amont.
+# - zbus_names / zvariant / zvariant_derive (zbus 5.19, accesskit Linux) :
+#   signalés non maintenus par l'amont, pas d'alternative sur cet axe.
+# - bincode 1.3.3 (direct hakille-audit + hakille-memory) : non maintenu, mais
+#   version « complète » assumée par l'équipe bincode (RUSTSEC-2025-0141).
+# - paste (via gemm/candle), proc-macro-error (via biscuit-quote),
+#   ttf-parser (via owned_ttf_parser/parley) : non maintenus en amont.
+# wasmtime : monté 29 → 48 le 2026-10-17 (correctif de la série CVE sandbox) ;
+# l'upgrade 49+ exige MSRV 1.96 (à planifier avec le workspace).
+# À réévaluer à chaque montée de version de ces dépendances.
+ignore = [
+    "RUSTSEC-2024-0370",
+    "RUSTSEC-2024-0436",
+    "RUSTSEC-2025-0141",
+    "RUSTSEC-2026-0192",
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
+]
 
 [bans]
 # multiple-versions reste en "warn" (pas "deny") : `cargo deny check bans`

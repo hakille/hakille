@@ -1,21 +1,21 @@
 # Guide de Développement d'Agents Sandboxés WASM
 
-Ce guide explique comment créer, tester et déployer des agents autonomes isolés au sein de l'environnement d'exécution WASM d'Annora.
+Ce guide explique comment créer, tester et déployer des agents autonomes isolés au sein de l'environnement d'exécution WASM d'Hakille.
 
 ---
 
 ## 1. Principes d'Isolation des Agents
 
-Dans Annora, aucun agent tiers ou compétence autonome ne s'exécute directement dans le processus hôte :
-1. **Isolation WASM/WASI** : Les agents sont compilés en cibles `wasm32-wasip1` ou `wasm32-wasip2` et exécutés dans des instances isolées orchestrées par `annora-agents` (basé sur **Wasmtime**).
+Dans Hakille, aucun agent tiers ou compétence autonome ne s'exécute directement dans le processus hôte :
+1. **Isolation WASM/WASI** : Les agents sont compilés en cibles `wasm32-wasip1` ou `wasm32-wasip2` et exécutés dans des instances isolées orchestrées par `hakille-agents` (basé sur **Wasmtime**).
 2. **Capabilities Explicites** : Un agent ne dispose d'aucun accès au système de fichiers, au réseau ou aux périphériques par défaut.
 3. **Passeport Cryptographique** : Chaque agent détient un passeport signé Ed25519 attestant de l'identité pour laquelle il agit et de la délégation de pouvoirs reçue.
 
 ---
 
-## 2. Structure d'un Agent Annora
+## 2. Structure d'un Agent Hakille
 
-Un agent Annora est un crate Rust autonome contenant un fichier de manifeste `agent.toml` et un point d'entrée :
+Un agent Hakille est un crate Rust autonome contenant un fichier de manifeste `agent.toml` et un point d'entrée :
 
 ```
 agents/my-custom-agent/
@@ -50,7 +50,7 @@ fn main() {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input).expect("Failed to read input");
 
-    // 2. Traitement de la commande passée par annora-kernel
+    // 2. Traitement de la commande passée par hakille-kernel
     let response = format!("Agent calendar executed action on input: {}", input.trim());
 
     // 3. Émission de la réponse structurée
@@ -62,7 +62,7 @@ fn main() {
 
 ## 4. Les Agents de Référence Inclus
 
-Le monorepo Annora fournit cinq agents de référence prêts à l'emploi dans `agents/` :
+Le monorepo Hakille fournit cinq agents de référence prêts à l'emploi dans `agents/` :
 
 | Agent | Scopes de Capabilities | Rôle & Fonctionnalité |
 | :--- | :--- | :--- |
@@ -81,4 +81,4 @@ Pour compiler un agent en bytecode WebAssembly :
 cargo build -p agent-calendar --target wasm32-wasip1 --release
 ```
 
-Le démon `annora-daemon` charge automatiquement les binaires compilés et valide les manifestes avant d'accorder les tokens Biscuit correspondants.
+Le démon `hakille-daemon` charge automatiquement les binaires compilés et valide les manifestes avant d'accorder les tokens Biscuit correspondants.

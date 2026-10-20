@@ -1,0 +1,16 @@
+[package]
+name = "hakille-substrate"
+version = "0.1.0"
+edition = "2024"
+description = "Abstraction substrate multi-plateforme Hakille"
+repository = "https://github.com/hakille/hakille"
+[dependencies]
+hakille-core = { path = "../hakille-core" }
+serde = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }

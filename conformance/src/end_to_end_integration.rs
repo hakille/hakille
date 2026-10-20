@@ -1,21 +1,22 @@
-use annora_audit::entry::{ActionRecord, AuditEntry, ReasoningStep, ReasoningTrace};
-use annora_audit::journal::AuditJournal;
-use annora_constitution::rules::Constitution;
-use annora_core::{
+use hakille_audit::entry::{ActionRecord, AuditEntry, ReasoningStep, ReasoningTrace};
+use hakille_audit::journal::AuditJournal;
+use hakille_constitution::rules::Constitution;
+use hakille_core::{
     ActorId, CapabilityAction, CapabilityAuthority, CapabilityScope, EntryId, KeyPair, NodeId,
     PredicateId, Timestamp, TripletId, TrustLevel, UserId,
 };
-use annora_kernel::{
+use hakille_kernel::{
+    budget::PipelineBudgetConfig,
     fabric::{CognitiveFabric, CognitiveManifest},
     orchestrator::CognitiveOrchestrator,
 };
-use annora_memory::{
+use hakille_memory::{
     ContextPartition, KnowledgeGraph, NodeValue, Triplet, TripletMetadata, TripletSource,
 };
-use annora_metrics::{BoundedInitiativeTracker, ContinuityTracker, ValuesDriftDetector};
-use annora_substrate::Substrate;
-use annora_substrate_windows::WindowsSubstrate;
-use annora_sync::CrdtSync;
+use hakille_metrics::{BoundedInitiativeTracker, ContinuityTracker, ValuesDriftDetector};
+use hakille_substrate::Substrate;
+use hakille_substrate_windows::WindowsSubstrate;
+use hakille_sync::CrdtSync;
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 
@@ -29,10 +30,10 @@ async fn test_full_system_end_to_end_integration() {
     let manifest = substrate.manifest();
     assert_eq!(manifest.os_name, "Windows");
     assert_eq!(manifest.os_version, "11 (24H2)");
-    assert_eq!(manifest.tier, annora_core::Tier::Native);
+    assert_eq!(manifest.tier, hakille_core::Tier::Native);
     assert!(manifest.has_tpm);
 
-    let attestation_payload = b"annora-e2e-session-verification";
+    let attestation_payload = b"hakille-e2e-session-verification";
     let attestation = substrate
         .attest(attestation_payload)
         .await
@@ -130,6 +131,11 @@ async fn test_full_system_end_to_end_integration() {
     let constitution = Constitution::default_v1();
     let fabric = CognitiveFabric::new(CognitiveManifest::default());
     let mut orchestrator = CognitiveOrchestrator::new(fabric, user_id.clone(), constitution);
+    // Budget + timeout alignés sur le décodage Qwen réel (CPU, minutes en
+    // debug) : le défaut pipeline (100 ms d'inférence) aborterait le tour.
+    orchestrator.set_budget_config(PipelineBudgetConfig::aligned_with_llm_timeout(3_600_000));
+    orchestrator.system1.set_llm_timeout(3_600_000);
+    orchestrator.system2.set_llm_timeout(3_600_000);
 
     // Turn 1: User introduces themselves
     let turn1_res = orchestrator
@@ -278,7 +284,7 @@ async fn test_full_system_end_to_end_integration() {
 #[ignore = "slow: tours complets avec décodage Qwen CPU réel (minutes en debug) ; gate lente `-- --ignored`"]
 async fn test_mem_cognition_loop_spo_contradiction_decay_budget() {
     // Boucle MEM de bout en bout (missions 1/2/4/7) via l'orchestrateur seul.
-    use annora_kernel::budget::PipelineBudgetConfig;
+    use hakille_kernel::budget::PipelineBudgetConfig;
     let user_id = UserId(Uuid::now_v7());
     let constitution = Constitution::default_v1();
     let fabric = CognitiveFabric::new(CognitiveManifest::default());
@@ -286,7 +292,7 @@ async fn test_mem_cognition_loop_spo_contradiction_decay_budget() {
 
     // SPO réel : objet = 3e partie, IDs déterministes requêtables.
     match orch.remember("Utilisateur", "langage", "Rust 2024") {
-        annora_memory::InsertResult::Inserted(_) => {}
+        hakille_memory::InsertResult::Inserted(_) => {}
         other => panic!("Insertion SPO attendue, obtenue : {:?}", other),
     }
     assert!(orch.recall("Rust 2024").contains(&"Rust 2024".to_string()));
@@ -297,7 +303,7 @@ async fn test_mem_cognition_loop_spo_contradiction_decay_budget() {
 
     // Contradiction : second fait conflictuel retourné, premier intact.
     match orch.remember("Utilisateur", "langage", "Python 2024") {
-        annora_memory::InsertResult::NeedsUserResolution { .. } => {}
+        hakille_memory::InsertResult::NeedsUserResolution { .. } => {}
         other => panic!("Conflit attendu, obtenu : {:?}", other),
     }
     assert_eq!(orch.memory_graph.len(), 1);
@@ -310,7 +316,7 @@ async fn test_mem_cognition_loop_spo_contradiction_decay_budget() {
             m.metadata.decay_rate = 0.01;
         }
     }
-    let report = annora_memory::DecayEngine::apply_decay(&mut orch.memory_graph, 0.5);
+    let report = hakille_memory::DecayEngine::apply_decay(&mut orch.memory_graph, 0.5);
     assert_eq!(report.nodes_removed, 0, "Histoire préservée : rien purgé");
     assert_eq!(report.nodes_faded, 1, "Décru sous cutoff ⇒ fané");
     assert_eq!(orch.memory_graph.len(), 1);

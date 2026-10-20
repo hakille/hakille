@@ -1,7 +1,7 @@
-use annora_core::{
+use hakille_core::{
     CapabilityAction, CapabilityScope, NodeId, PredicateId, Timestamp, TripletId, TrustLevel,
 };
-use annora_memory::{
+use hakille_memory::{
     ContextPartition, KnowledgeGraph, NodeValue, Triplet, TripletMetadata, TripletSource,
 };
 use serde::{Deserialize, Serialize};
@@ -32,7 +32,7 @@ impl CalendarManager {
     fn seed_sample_events(&mut self) {
         self.events.push(CalendarEvent {
             uid: "evt-20261009-01".to_string(),
-            summary: "Revue Architecture Cognitive Annora".to_string(),
+            summary: "Revue Architecture Cognitive Hakille".to_string(),
             description: "Validation des 20 crates Rust et des modèles neuronaux.".to_string(),
             start_time: "2026-10-09T10:00:00Z".to_string(),
             end_time: "2026-10-09T11:30:00Z".to_string(),
@@ -106,12 +106,12 @@ impl CalendarManager {
     /// - RFC 3339 `2026-10-09T10:00:00Z` et offsets `+02:00`/`+0200`
     ///   (ramenés à UTC) ;
     /// - date seule `20261009` ⇒ minuit.
-    /// Best-effort documenté : entrée non reconnue ⇒ chiffres extraits.
+    ///   Best-effort documenté : entrée non reconnue ⇒ chiffres extraits.
     pub fn normalize_ics_time(raw: &str) -> String {
         normalize_ics_time(raw)
     }
 
-    /// Synchronizes scheduled events into Annora's sovereign knowledge graph as structured triplets
+    /// Synchronizes scheduled events into Hakille's sovereign knowledge graph as structured triplets
     pub fn sync_with_memory_graph(&self, graph: &mut KnowledgeGraph) {
         for event in &self.events {
             let event_node = NodeId(uuid::Uuid::now_v7());
@@ -216,19 +216,17 @@ impl CalendarManager {
                     }
                     in_vevent = false;
                 }
-            } else if in_vevent {
-                if let Some((name, val)) = Self::parse_property(&line) {
-                    match name.to_uppercase().as_str() {
-                        "UID" => current_uid = val.to_string(),
-                        "SUMMARY" => current_summary = val.to_string(),
-                        "DESCRIPTION" => current_desc = val.to_string(),
-                        "DTSTART" => current_start = val.to_string(),
-                        "DTEND" => current_end = val.to_string(),
-                        "LOCATION" => current_location = Some(val.to_string()),
-                        "RRULE" => current_recurrence = Some(val.to_string()),
-                        "STATUS" => current_status = val.to_string(),
-                        _ => {}
-                    }
+            } else if in_vevent && let Some((name, val)) = Self::parse_property(&line) {
+                match name.to_uppercase().as_str() {
+                    "UID" => current_uid = val.to_string(),
+                    "SUMMARY" => current_summary = val.to_string(),
+                    "DESCRIPTION" => current_desc = val.to_string(),
+                    "DTSTART" => current_start = val.to_string(),
+                    "DTEND" => current_end = val.to_string(),
+                    "LOCATION" => current_location = Some(val.to_string()),
+                    "RRULE" => current_recurrence = Some(val.to_string()),
+                    "STATUS" => current_status = val.to_string(),
+                    _ => {}
                 }
             }
         }
@@ -239,7 +237,7 @@ impl CalendarManager {
     /// Export events to RFC 5545 iCalendar string
     pub fn export_ics(events: &[CalendarEvent]) -> String {
         let mut ics = String::new();
-        ics.push_str("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Annora Cognitive OS//FR\r\n");
+        ics.push_str("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Hakille Cognitive OS//FR\r\n");
         for e in events {
             ics.push_str("BEGIN:VEVENT\r\n");
             ics.push_str(&format!("UID:{}\r\n", e.uid));
@@ -378,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_ics_parsing_and_export_roundtrip() {
-        let sample_ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:test-123\r\nSUMMARY:Sprint Review\r\nDESCRIPTION:Démonstration Annora HUD\r\nDTSTART:20261009T140000Z\r\nDTEND:20261009T150000Z\r\nLOCATION:Bureau 42\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let sample_ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:test-123\r\nSUMMARY:Sprint Review\r\nDESCRIPTION:Démonstration Hakille HUD\r\nDTSTART:20261009T140000Z\r\nDTEND:20261009T150000Z\r\nLOCATION:Bureau 42\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         let parsed = CalendarManager::parse_ics(sample_ics).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].summary, "Sprint Review");
@@ -408,7 +406,7 @@ VERSION:2.0\r\n\
 BEGIN:VEVENT\r\n\
 UID:recurring-001\r\n\
 SUMMARY;LANGUAGE=fr:Revue Hebdomadaire \r\n\
-\x20Annora OS\r\n\
+\x20Hakille OS\r\n\
 DESCRIPTION:Discussion technique et \r\n\
 \x20souveraine sur le noyau Rust.\r\n\
 DTSTART;TZID=Europe/Paris:20261012T090000\r\n\
@@ -424,7 +422,7 @@ END:VCALENDAR\r\n";
         let ev = &parsed[0];
         assert_eq!(ev.uid, "recurring-001");
         assert_eq!(
-            ev.summary, "Revue Hebdomadaire Annora OS",
+            ev.summary, "Revue Hebdomadaire Hakille OS",
             "Folded summary must be unfolded"
         );
         assert_eq!(

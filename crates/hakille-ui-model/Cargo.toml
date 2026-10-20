@@ -1,0 +1,20 @@
+[package]
+name = "hakille-ui-model"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Hakille UI model: stable headless frontier (snapshot + viewmodels + UiEvent), no GPU, no renderer"
+
+[dependencies]
+hakille-ui = { path = "../hakille-ui" }
+hakille-design = { path = "../hakille-design" }
+hakille-ui-protocol = { path = "../hakille-ui-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+hakille-ui-shell = { path = "../hakille-ui-shell" }

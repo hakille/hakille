@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-annora-core = { path = "../../crates/annora-core" }
+hakille-core = { path = "../../crates/hakille-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-annora-memory = { path = "../../crates/annora-memory" }
+hakille-memory = { path = "../../crates/hakille-memory" }

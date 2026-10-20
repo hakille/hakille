@@ -28,20 +28,47 @@ jobs:
       - name: redox compat (S2, crates pures)
         run: |
           rustup target add x86_64-unknown-redox
-          cargo check -p annora-design -p annora-ui-protocol -p annora-ui -p annora-core -p annora-ui-shell --target x86_64-unknown-redox
+          cargo check -p hakille-design -p hakille-ui-protocol -p hakille-ui -p hakille-core -p hakille-ui-shell --target x86_64-unknown-redox
       - name: check
         run: cargo check --workspace --all-targets --locked
-      - name: render (windows only)
-        if: matrix.os == 'windows-latest'
-        run: cargo check -p annora-ui-shell --features render --locked
       - name: clippy
         run: cargo clippy --workspace --all-targets -- --no-deps
-        # TODO: re-enable `-D warnings` once the ~60 pre-existing
-        # `new_without_default` / collapsible-if lints are fixed incrementally.
+        # Windows : 0 warning (vérifié localement). `-D warnings` reste désactivé
+        # tant que la matrice Ubuntu n'a pas été repassée en revue.
       - name: tests
         run: cargo test --workspace --locked
       - name: conformance
         run: cargo run -p xtask -- conformance
+
+  ui-desktop-quality:
+    # Qualité de rendu (plan refonte §8) — jobs progressivement bloquants.
+    # Non-bloquants aujourd'hui : aucun score esthétique ne remplace un échec
+    # S3/S4, mais les gates doivent d'abord être stables sur runners partagés.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
+      - name: view-models purs + protocole versionné
+        run: cargo test -p hakille-ui-model -p hakille-ui-protocol --locked
+      - name: accessibilité (tout contrôle interactif a un nom, rôle, action)
+        run: cargo test -p hakille-ui-desktop --locked a11y
+      - name: snapshots graphe de scène + golden images logiciel
+        run: cargo test -p hakille-ui-desktop --locked renderer
+      - name: performance p50/p95 (virtualisation 100k, budget frame)
+        run: cargo test -p hakille-spikes --locked s2
+      - name: dégradation GPU (adapter absent, reset surface, DPI)
+        run: cargo test -p hakille-ui-desktop --locked wgpu_fallback
+      - name: conformance desktop e2e
+        run: cargo test -p conformance --locked desktop_shell
+      - name: audit dépendances et versions verrouillées
+        run: cargo tree -p hakille-ui-desktop --locked --depth 1
 
   deny:
     # Job séparé : ne masque pas check/test, échec visible (pas de
@@ -59,7 +86,7 @@ jobs:
 
   conformance-slow:
     # Gate lente hebdo : 7 tests ignorés (décodage Qwen CPU réel, minutes en
-    # debug). Fast gate (54 tests) reste dans check-test via `xtask conformance`.
+    # debug). Fast gate (66 tests) reste dans check-test via `xtask conformance`.
     # Tant que les 7 slow ne sont pas verts en nightly, la suite fast est la
     # référence CI ; voir xtask conformance-slow.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -71,3 +98,58 @@ jobs:
           toolchain: "1.95"
       - name: conformance slow (ignored real-inference)
         run: cargo run -p xtask -- conformance-slow
+
+  os-compat:
+    # Preuve de compilation cross-OS (Linux → macOS x86_64/arm64) : `cargo
+    # check` ne lie pas, donc aucune dépendance C/FFI (ring, etc.) n'est
+    # résolue ici et le produit n'est pas exécuté sur Mac. C'est une preuve
+    # de compilation (crates validées localement), pas une preuve labo —
+    # la preuve labo macOS reste le job macos-compat sur runner réel.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
+      - name: cibles cross (Linux natif + Apple x86_64/arm64)
+        run: rustup target add x86_64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin
+      - name: check cross x86_64-apple-darwin
+        run: >
+          cargo check --all-targets --target x86_64-apple-darwin
+          -p hakille-design -p hakille-ui-protocol -p hakille-ui-model
+          -p hakille-ui-platform -p hakille-ui-shell -p hakille-ui-desktop
+          -p hakille-core -p hakille-memory -p hakille-spikes
+      - name: check cross aarch64-apple-darwin
+        run: >
+          cargo check --all-targets --target aarch64-apple-darwin
+          -p hakille-design -p hakille-ui-protocol -p hakille-ui-model
+          -p hakille-ui-platform -p hakille-ui-shell -p hakille-ui-desktop
+          -p hakille-core -p hakille-memory -p hakille-spikes
+      - name: check natif Linux (même périmètre)
+        run: >
+          cargo check --all-targets
+          -p hakille-design -p hakille-ui-protocol -p hakille-ui-model
+          -p hakille-ui-platform -p hakille-ui-shell -p hakille-ui-desktop
+          -p hakille-core -p hakille-memory -p hakille-spikes
+
+  macos-compat:
+    # Non bloquant tant que la preuve labo macOS n'est pas faite : un runner
+    # GitHub macOS partagé n'est pas un Mac de labo, et la compatibilité
+    # macOS réelle reste à attester (voir ADR per-OS). Ce job informe sans
+    # bloquer ; il deviendra bloquant après la campagne labo macOS.
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95"
+          components: rustfmt
+      - name: fmt check
+        run: cargo fmt --all -- --check
+      - name: check workspace macOS (natif, lock)
+        run: cargo check --workspace --all-targets --locked
+      - name: tests crates pures UI (model, protocol, platform, design)
+        run: cargo test -p hakille-ui-model -p hakille-ui-protocol -p hakille-ui-platform -p hakille-design --locked
+      - name: tests substrate macOS
+        run: cargo test -p hakille-substrate-macos --locked

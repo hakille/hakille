@@ -1,19 +1,19 @@
 # Interfaces Ambiantes et Perception Multimodale
 
-> Référence design désormais : **[AKORA_SPEC_2026-10-12.md](AKORA_SPEC_2026-10-12.md)** (Hakille v0.1) + tokens sources `tokens/` + `annora-design`.
-> Ce document reste la description du pipeline perception/voix ; en cas de conflit de tokens (couleurs, rythmes), la spec + `cargo xtask tokens --check` font foi.
+> Référence design : jetons sources `tokens/` (vérifiés par `cargo xtask tokens --check`) + [`crates/hakille-design`](../crates/hakille-design) + ce document.
+> Ce document reste la description du pipeline perception/voix ; en cas de conflit de jetons (couleurs, rythmes), `tokens/` + `cargo xtask tokens --check` font foi.
 
 > *"Moins l'utilisateur voit d'interface, mieux le système fonctionne. Une présence discrète, pas une application intrusive."*
 
-Ce document constitue la référence exhaustive des interactions utilisateur et de la perception physique d'Annora ([`crates/annora-ui`](../crates/annora-ui), [`crates/annora-perception`](../crates/annora-perception) et [`crates/annora-voice`](../crates/annora-voice)). Il détaille la philosophie de l'interface minimale, l'indicateur de présence ambiant, le HUD Spotlight éphémère, le sélecteur dynamique de canal, le budget de silence, le modèle de situation du monde et le moteur vocal full-duplex avec détection d'interruption naturelle (*Barge-In*).
+Ce document constitue la référence exhaustive des interactions utilisateur et de la perception physique d'Hakille ([`crates/hakille-ui`](../crates/hakille-ui), [`crates/hakille-perception`](../crates/hakille-perception) et [`crates/hakille-voice`](../crates/hakille-voice)). Il détaille la philosophie de l'interface minimale, l'indicateur de présence ambiant, le HUD Spotlight éphémère, le sélecteur dynamique de canal, le budget de silence, le modèle de situation du monde et le moteur vocal duplex (RVQ Mimi + VAD réel ; modèle neuronal Moshi 7,6B non provisionné) avec détection d'interruption naturelle (*Barge-In*).
 
 ---
 
 ## 1. Philosophie : L'Interface qui n'Existe Presque Pas
 
-Annora rompt avec l'esthétique des assistants virtuels qui imposent de vastes fenêtres de discussion textuelle, des bulles de messages colorées et des avatars bavards. Les principes de design directeurs sont :
+Hakille rompt avec l'esthétique des assistants virtuels qui imposent de vastes fenêtres de discussion textuelle, des bulles de messages colorées et des avatars bavards. Les principes de design directeurs sont :
 
-1. **Aucune fenêtre de chat par défaut** : Sur le bureau, Annora se résume à un point lumineux discret dans la barre des tâches ou le coin de l'écran.
+1. **Aucune fenêtre de chat par défaut** : Sur le bureau, Hakille se résume à un point lumineux discret dans la barre des tâches ou le coin de l'écran.
 2. **Voix d'abord, texte en secours, écran jamais forcé** : Le dialogue se déroule oralement ou par des impulsions tactiles/sonores.
 3. **Le journal d'audit est le produit** : L'interface visuelle la plus riche du système est l'explorateur d'audit, navigable comme un historique Git avec annulation en un clic.
 4. **Charte graphique fonctionnelle et couleur d'alerte unique** : Thème sombre absolu (`#0B0C0F`), texte clair `#ECEEF2`, et **une seule couleur d'accent vive : Braise `#FF7A2F`**. Cette teinte est strictement réservée aux demandes de confirmation humaine explicite (transactions, actions irréversibles). L'œil apprend instantanément à la repérer sans avoir à lire le texte.
@@ -22,7 +22,7 @@ Annora rompt avec l'esthétique des assistants virtuels qui imposent de vastes f
 
 ## 2. Indicateur de Présence Ambiant à 6 États
 
-L'indicateur de présence (`crates/annora-ui/src/presence.rs:90-99`) matérialise l'état interne du système par six comportements visuels (spec Hakille §7 : un point, six états ; repos = lueur `#F4EBDD`, braise `#FF7A2F` = décision requise uniquement) :
+L'indicateur de présence (`crates/hakille-ui/src/presence.rs:90-99`) matérialise l'état interne du système par six comportements visuels (spec Hakille §7 : un point, six états ; repos = lueur `#F4EBDD`, braise `#FF7A2F` = décision requise uniquement) :
 
 ```
     [ Idle ]      [ Listening ]    [ Acting ]      [ Speaking ]     [ DecisionRequired ]   [ Urgent ]
@@ -41,7 +41,7 @@ L'indicateur de présence (`crates/annora-ui/src/presence.rs:90-99`) matérialis
 
 ## 3. Le HUD Spotlight Éphémère (`EphemeralHud`)
 
-Invoqué par le raccourci global universel **`Ctrl + Alt + Space`** (`Cmd + Space` sur macOS, alias historique `Alt + Space` accepté, spec §8/§29, géré nativement par `annora-substrate-windows`, `linux` ou `macos`) :
+Invoqué par le raccourci global universel **`Ctrl + Alt + Space`** (`Cmd + Space` sur macOS, alias historique `Alt + Space` accepté, spec §8/§29, géré nativement par `hakille-substrate-windows`, `linux` ou `macos`) :
 
 ```rust
 pub enum HudState {
@@ -94,25 +94,25 @@ pub struct InteractionContext {
 
 ## 5. Le Budget de Silence et l'Initiative Bornée
 
-L'autonomie proactive ne doit pas virer au harcèlement de notifications. Annora applique un **budget de silence quotidien** (`crates/annora-ui/src/silence_budget.rs`) :
+L'autonomie proactive ne doit pas virer au harcèlement de notifications. Hakille applique un **budget de silence quotidien** (`crates/hakille-ui/src/silence_budget.rs`) :
 
 $$\text{Crédits Quotidiens} = 3 \text{ interventions autonomes par jour (spec §18/§29)}$$
 
 - **Rappels programmés par l'utilisateur (`UserScheduled`)** : Coût = **0 crédit**. Ils s'exécutent sans restriction.
 - **Suggestions autonomes inférées par le système (`SystemInferred`)** : Coût = **1 crédit**.
 - **Seuil de confiance minimal** : Pour qu'une suggestion déduite ait le droit de consommer un crédit, sa certitude doit être $\ge 0.85$.
-- **Métrique Nord du produit** : Contrairement aux applications commerciales cherchant à maximiser le temps passé et le taux de clics, **Annora vise la diminution du temps d'attention requis**. Un système qui s'améliore interrompt moins souvent et résout les problèmes plus vite.
+- **Métrique Nord du produit** : Contrairement aux applications commerciales cherchant à maximiser le temps passé et le taux de clics, **Hakille vise la diminution du temps d'attention requis**. Un système qui s'améliore interrompt moins souvent et résout les problèmes plus vite.
 
 ---
 
 ## 6. Pipeline de Perception Multimodale Continue
 
-Le crate [`crates/annora-perception`](../crates/annora-perception) capture en continu l'environnement sensoriel :
+Le crate [`crates/hakille-perception`](../crates/hakille-perception) capture en continu l'environnement sensoriel :
 
 ### 6.1. Chaîne Audio Non Bloquante
 1. **Tampon Circulaire 16 kHz** : Capture continue via le microphone hôte par blocs de 10 ms (160 échantillons).
 2. **Silero VAD** : Évalue la probabilité de présence vocale humaine. Si la voix est absente, l'ASR et le GPU restent en sommeil profond.
-3. **openWakeWord** : Détecte l'empreinte acoustique de "Dis Annora" en moins de 20 ms sur un seul cœur CPU.
+3. **openWakeWord** : Détecte l'empreinte acoustique de "Dis Hakille" en moins de 20 ms sur un seul cœur CPU.
 4. **SenseVoice-Small & CAM++** : Dès l'activation, transcription phonétique multi-tâches et extraction du vecteur biométrique 192-d.
 
 ### 6.2. Pipeline Visuel & Grounding d'Écran
@@ -120,7 +120,7 @@ Le crate [`crates/annora-perception`](../crates/annora-perception) capture en co
 - `GuiGrounder` : Coordonne la capture d'écran avec l'agent visuel UI-TARS pour convertir les intentions d'interface en coordonnées physiques réelles.
 
 ### 6.3. Modèle de Situation du Monde (`WorldModel`)
-Au lieu de traiter chaque requête comme une image isolée, Annora maintient une structure vivante de la situation physique (`SituationalState`) :
+Au lieu de traiter chaque requête comme une image isolée, Hakille maintient une structure vivante de la situation physique (`SituationalState`) :
 ```rust
 pub struct SituationalState {
     pub location_context: String,          // "Bureau personnel", "Salon", "Extérieur"
@@ -142,7 +142,7 @@ pub struct SituationalState {
 
 ## 7. Moteur Vocal Full-Duplex et Détection d'Interruption (*Barge-In*)
 
-Dans [`crates/annora-voice`](../crates/annora-voice), le dialogue vocal s'affranchit de l'alternance rigide des tours de parole grâce à Kyutai Moshi et au codec Mimi :
+Dans [`crates/hakille-voice`](../crates/hakille-voice), le dialogue vocal s'affranchit de l'alternance rigide des tours de parole grâce à Kyutai Moshi et au codec Mimi :
 
 ```
 Microphone  ──► [ Codec Mimi (80ms) ] ──► [ Moshi Temporal Transformer ] ──► [ Codec Mimi ] ──► Haut-Parleurs
@@ -156,11 +156,11 @@ Pendant que le système parle :
 1. Le microphone continue d'ingérer l'audio sans coupure.
 2. Si l'énergie vocale de l'utilisateur dépasse `speech_threshold` pendant $N$ trames consécutives (environ 80-120 ms), un événement `BargeInEvent` est émis.
 3. Le flux audio de sortie est **instantanément coupé à la milliseconde**, et le texte non prononcé est renvoyé au noyau pour ajuster le contexte conversationnel.
-4. L'utilisateur peut couper la parole à Annora exactement comme il le ferait avec un interlocuteur humain.
+4. L'utilisateur peut couper la parole à Hakille exactement comme il le ferait avec un interlocuteur humain.
 
 ---
 
-## 8. Navigation écrans (spec §8 — 4 destinations, classes Slint équipe render)
+## 8. Navigation écrans (spec §8 — 4 destinations, view-models du shell desktop)
 
 1. **Journal** (`JournalRow` + `filter_journal`/`page_journal`, 20 lignes/page, virtualisé).
 2. **Mémoire** (`MemoryScreenVM` : `[frais] texte (part, conf%)`, filtre `Tout/Personal/Professional/Shared`, jamais de fusion).

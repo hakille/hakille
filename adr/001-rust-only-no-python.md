@@ -4,7 +4,7 @@
 Accepté
 
 ## Contexte
-Annora est conçu comme un système d'exploitation cognitif souverain et non une simple couche applicative ou un chatbot.
+Hakille est conçu comme un système d'exploitation cognitif souverain et non une simple couche applicative ou un chatbot.
 Dans les architectures d'IA conventionnelles, les runtimes Python (CPython, PyTorch, vLLM, transformers) sont omniprésents. Cependant, Python introduit des limites rédhibitoires pour un OS cognitif :
 1. **Non-déterminisme mémoire et ramasse-miettes (GC)** : interruptions imprévisibles de thread et consommation de mémoire vive incontrôlée.
 2. **Vulnérabilités de supply chain et surface d'attaque** : des milliers de dépendances transitoires pip, wheel, et wrappers C/C++ opaques.
@@ -12,7 +12,7 @@ Dans les architectures d'IA conventionnelles, les runtimes Python (CPython, PyTo
 4. **Pente glissante d'administration** : gestion des environnements virtuels, glibc conflicts, et conflits CUDA.
 
 ## Décision
-Toute l'infrastructure d'Annora — du micro-noyau aux modèles d'inférence, en passant par le graphe de mémoire et les agents — est développée **exclusivement en Rust**.
+Toute l'infrastructure d'Hakille — du micro-noyau aux modèles d'inférence, en passant par le graphe de mémoire et les agents — est développée **exclusivement en Rust**.
 - L'inférence neuronale s'effectue via **Candle** (Hugging Face) en Rust natif et les liaisons ONNX Runtime (`ort` et `sherpa-onnx`).
 - Les modèles GGUF et BitNet sont chargés via des crates Rust sans dépendance Python.
 - Le runtime d'agents s'appuie sur **Wasmtime / WASI** avec isolation par jetons Biscuit cryptographiques.

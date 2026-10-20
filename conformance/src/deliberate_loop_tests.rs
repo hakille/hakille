@@ -7,10 +7,11 @@
 //! - enveloppe WorkingMemory : journal distillé vers le graphe ;
 //! - curiosité `using_graph_orphans` + `plan_preview` (daemon `:plan`).
 
-use annora_constitution::rules::Constitution;
-use annora_core::{ConfidenceDecision, TrustLevel, UserId};
-use annora_kernel::{
+use hakille_constitution::rules::Constitution;
+use hakille_core::{ConfidenceDecision, TrustLevel, UserId};
+use hakille_kernel::{
     GraphCuriosityScanner,
+    budget::PipelineBudgetConfig,
     fabric::{CognitiveFabric, CognitiveManifest},
     orchestrator::CognitiveOrchestrator,
 };
@@ -22,12 +23,23 @@ fn test_orchestrator() -> CognitiveOrchestrator {
     CognitiveOrchestrator::new(fabric, user_id, Constitution::default_v1())
 }
 
+/// Orchestrateur prêt pour un tour réel avec décodage Qwen CPU (minutes en
+/// debug) : budget pipeline + timeouts LLM alignés juste après création. Le
+/// défaut (100 ms d'inférence, 600 s de timeout LLM) aborterait par construction.
+fn test_orchestrator_real_llm() -> CognitiveOrchestrator {
+    let mut orch = test_orchestrator();
+    orch.set_budget_config(PipelineBudgetConfig::aligned_with_llm_timeout(3_600_000));
+    orch.system1.set_llm_timeout(3_600_000);
+    orch.system2.set_llm_timeout(3_600_000);
+    orch
+}
+
 #[tokio::test]
 #[ignore = "slow: tour complet avec décodage Qwen CPU réel (minutes en debug) ; gate lente `-- --ignored`"]
 async fn test_deliberate_loop_benign_no_card_non_empty() {
-    let mut orch = test_orchestrator();
+    let mut orch = test_orchestrator_real_llm();
     let res = orch
-        .process_user_turn("Bonjour Annora, comment vas-tu ?", &TrustLevel::User)
+        .process_user_turn("Bonjour Hakille, comment vas-tu ?", &TrustLevel::User)
         .await
         .expect("benign turn failed");
     assert!(!res.response_text.is_empty(), "réponse non vide");
@@ -89,16 +101,24 @@ async fn test_deliberate_loop_irreversible_delete_card_en() {
     assert_eq!(res.confidence_decision, ConfidenceDecision::ProposeAndWait);
 }
 
+// TODO conformance-slow: assertion obsolète — la décision attendue
+// `InternalContradiction` exige que `InternalContradictionEngine::critique`
+// détecte « conserve » vs « supprime », mais l'orchestrateur critique la
+// RÉPONSE LLM (`critique(&response, ...)`, orchestrator.rs:1388) et non le
+// prompt : la réponse réelle Qwen (S1 greedy, 8 tokens) est un refus sans ce
+// vocabulaire, donc `has_contradiction=false` et la décision est honnêtement
+// redressée en `AutoExecute`. Vérifié en release le 2026-10-18 ; ne pas forcer
+// l'assertion (orchestrateur hors périmètre de cette passe budget/timeouts).
 #[tokio::test]
 #[ignore = "slow: tour complet avec décodage Qwen CPU réel (minutes en debug) ; gate lente `-- --ignored`"]
 async fn test_deliberate_loop_fr_contradiction_penalty_applied() {
-    let mut orch = test_orchestrator();
+    let mut orch = test_orchestrator_real_llm();
     match orch.remember(
         "Document",
         "consigne",
         "supprime les brouillons chaque soir",
     ) {
-        annora_memory::InsertResult::Inserted(_) => {}
+        hakille_memory::InsertResult::Inserted(_) => {}
         other => panic!("insertion initiale attendue, obtenue : {:?}", other),
     }
     // « Conserve » (conserve-side) vs fait « supprime » (supprime-side),
@@ -137,7 +157,7 @@ async fn test_deliberate_loop_fr_contradiction_penalty_applied() {
 
 #[tokio::test]
 async fn test_deliberate_loop_budget_abort_preserved() {
-    use annora_kernel::budget::PipelineBudgetConfig;
+    use hakille_kernel::budget::PipelineBudgetConfig;
     let mut orch = test_orchestrator();
     orch.set_budget_config(PipelineBudgetConfig {
         max_perception_ms: 0,
@@ -157,7 +177,7 @@ async fn test_deliberate_loop_budget_abort_preserved() {
 #[tokio::test]
 #[ignore = "slow: tours complets avec décodage Qwen CPU réel (minutes en debug) ; gate lente `-- --ignored`"]
 async fn test_deliberate_loop_working_memory_distilled_to_graph() {
-    let mut orch = test_orchestrator();
+    let mut orch = test_orchestrator_real_llm();
     assert!(orch.memory_graph.is_empty());
     let _ = orch
         .process_user_turn("Bonjour", &TrustLevel::User)
@@ -180,7 +200,7 @@ fn test_deliberate_loop_curiosity_orphan_mode() {
     let mut orch = test_orchestrator();
     for (s, p, o) in [("ProjetX", "statut", "en cours"), ("Alice", "aime", "Rust")] {
         match orch.remember(s, p, o) {
-            annora_memory::InsertResult::Inserted(_) => {}
+            hakille_memory::InsertResult::Inserted(_) => {}
             other => panic!("insertion attendue, obtenue : {:?}", other),
         }
     }
@@ -242,7 +262,7 @@ fn test_deliberate_loop_irreversible_detector() {
         "Quel pays visites-tu ?",
         "Quel est mon nom ?",
         "Explique le paiement SEPA",
-        "Bonjour Annora",
+        "Bonjour Hakille",
     ] {
         assert!(
             !CognitiveOrchestrator::is_irreversible_prompt(p),

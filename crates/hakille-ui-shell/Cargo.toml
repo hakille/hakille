@@ -1,0 +1,25 @@
+[package]
+name = "hakille-ui-shell"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Hakille ambient shell baseline: headless snapshot + view-models (renderer-independent)"
+# Baseline headless gelée (filet de sécurité de la migration UI) : snapshot,
+# view-models et specs plateforme, pur Rust. Le renderer Slint a été retiré à
+# l'Étape 6 (ADR-009) ; le shell actif est `hakille-ui-desktop`.
+
+[dependencies]
+hakille-core = { path = "../hakille-core" }
+hakille-ui = { path = "../hakille-ui" }
+hakille-audit = { path = "../hakille-audit" }
+hakille-memory = { path = "../hakille-memory" }
+hakille-design = { path = "../hakille-design" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -1,4 +1,12 @@
 /target
+/target-hakille-*/
+/target-test-hakille/
+/.hakille-*-target/
+/.hakille-substrate-audit/
+/.hakille-check.log
+/.hakille-check.err.log
+/.hakille-meta.json
+/.hakille-meta.err
 **/*.rs.bk
 *.pdb
 *.exe
@@ -6,3 +14,4 @@
 Thumbs.db
 models/*
 !models/.gitkeep
+hakille-memory.json

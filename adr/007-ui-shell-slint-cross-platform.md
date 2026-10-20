@@ -1,7 +1,9 @@
 # ADR 007: Coquille UI cross-platform — Slint natif (pas de WebView)
 
 ## Statut
-Accepté (2026-10-11)
+Remplacé par ADR-009 (2026-10-17) — le renderer Slint a été retiré à
+l'Étape 6 (winit + wgpu + AccessKit). Conservé pour l'historique.
+Accepté (2026-10-11).
 
 ## Contexte
 Vision §13 (interface qui n'existe presque pas) + §21 (sélecteur de canal,
@@ -31,11 +33,11 @@ Options évaluées (oct. 2026) :
   compatible Redox/ressources contraintes et adapté au desktop/mobile/web.
 
 ## Décision
-- `annora-ui` reste **headless / testable** : state machines pures
+- `hakille-ui` reste **headless / testable** : state machines pures
   (Presence, EphemeralHud, ChannelSelector, SilenceBudget, CostCounter,
   JournalView, Onboarding, Accessibility) + `to_compositor_payload()` JSON.
-- Nouveau crate `annora-ui-shell` : pont fin vers **Slint** :
-  `ui/annora.slint` (design tokens #0D1117/#E0E0E0/#FF5722, PresenceDot,
+- Nouveau crate `hakille-ui-shell` : pont fin vers **Slint** :
+  `ui/hakille.slint` (design tokens #0D1117/#E0E0E0/#FF5722, PresenceDot,
   HudBar, ValidationChip, JournalView, OnboardingSheet) + `shell.rs`
   (bridge Rust↔Slint, event-loop non bloquant via `invoke_from_event_loop`,
   tray `tray-icon`+`muda`+`global-hotkey`, overlay par OS : DWM / NSPanel /

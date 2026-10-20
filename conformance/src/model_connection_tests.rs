@@ -1,15 +1,15 @@
-use annora_agents::gui_agent::{GuiIntention, UiTarsAgent};
-use annora_inference::{
+use hakille_agents::gui_agent::{GuiIntention, UiTarsAgent};
+use hakille_inference::{
     GgufModel, ModelProvisioner, OnnxModelInspector, SafetensorsModel, SenseVoiceTokenizer,
 };
-use annora_kernel::fabric::{CapabilityName, CognitiveFabric};
-use annora_perception::audio::{
+use hakille_kernel::fabric::{CapabilityName, CognitiveFabric};
+use hakille_perception::audio::{
     asr::{AsrEngine, SenseVoiceSmall},
     capture::AudioChunk,
     speaker_id::{CamPlusPlusIdentifier, SpeakerIdentifier},
     vad::VoiceActivityDetector,
 };
-use annora_voice::codec::MimiCodec;
+use hakille_voice::codec::MimiCodec;
 use std::path::{Path, PathBuf};
 
 fn get_models_dir() -> PathBuf {
@@ -356,15 +356,15 @@ async fn test_end_to_end_cross_crate_model_wiring() {
     // Verify capability bindings
     let reason_binding = fabric.get_binding(CapabilityName::Reason).unwrap();
     assert_eq!(reason_binding.quantization, Some("Q4_K_M".to_string()));
-    assert_eq!(reason_binding.runtime, annora_core::RuntimeType::Gguf);
+    assert_eq!(reason_binding.runtime, hakille_core::RuntimeType::Gguf);
 
     let listen_binding = fabric.get_binding(CapabilityName::Listen).unwrap();
     assert_eq!(listen_binding.quantization, Some("INT8".to_string()));
     assert_eq!(
         listen_binding.runtime,
-        annora_core::RuntimeType::OnnxRuntime
+        hakille_core::RuntimeType::OnnxRuntime
     );
 
     let speak_binding = fabric.get_binding(CapabilityName::Speak).unwrap();
-    assert_eq!(speak_binding.runtime, annora_core::RuntimeType::Candle);
+    assert_eq!(speak_binding.runtime, hakille_core::RuntimeType::Candle);
 }

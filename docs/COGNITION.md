@@ -1,14 +1,14 @@
-# Le Noyau Cognitif et la Mémoire Distribuée d'Annora
+# Le Noyau Cognitif et la Mémoire Distribuée d'Hakille
 
 > *"Penser en continu, planifier avant d'agir, et retenir ce qui compte sans jamais encombrer le graphe."*
 
-Ce document constitue la référence exhaustive de la couche cognitive d'Annora : le **Noyau Cognitif** ([`crates/annora-kernel`](../crates/annora-kernel)) et la **Mémoire Distribuée** ([`crates/annora-memory`](../crates/annora-memory)). Il détaille la dynamique bicamérale Système 1 / Système 2, l'abstraction du Fabric cognitif, la mémoire de travail éphémère, la planification délibérée, le modèle introspectif de soi, le scanner de curiosité, ainsi que l'architecture du triple store symbolique et vectoriel.
+Ce document constitue la référence exhaustive de la couche cognitive d'Hakille : le **Noyau Cognitif** ([`crates/hakille-kernel`](../crates/hakille-kernel)) et la **Mémoire Distribuée** ([`crates/hakille-memory`](../crates/hakille-memory)). Il détaille la dynamique bicamérale Système 1 / Système 2, l'abstraction du Fabric cognitif, la mémoire de travail éphémère, la planification délibérée, le modèle introspectif de soi, le scanner de curiosité, ainsi que l'architecture du triple store symbolique et vectoriel.
 
 ---
 
 ## 1. Architecture Bicamérale Dynamique : Système 1 et Système 2
 
-Inspiré des neurosciences cognitives (Kahneman) et adapté aux contraintes de systèmes distribués souverains, le noyau d'Annora articule deux régimes de pensée complémentaires :
+Inspiré des neurosciences cognitives (Kahneman) et adapté aux contraintes de systèmes distribués souverains, le noyau d'Hakille articule deux régimes de pensée complémentaires :
 
 ```
                                  [ Intention Perceptive ]
@@ -59,7 +59,7 @@ Pour préserver la fluidité de la conversation sans introduire de silences dér
 | **7. Raisonnement Système 2** | Modèle Distant / BYOM | **< 1200 ms** | 2000 ms |
 | **8. Synthèse Vocale (TTS)** | Moshi (Mimi) / CosyVoice2 | **< 80-150 ms** | 200 ms |
 
-> Écart honnête : cette table vise les étages perceptifs ; le budget pipeline exécutable est `PipelineBudgetConfig` (perception 60 / routing 20 / inférence 100 / action 40 / total 220 ms, mapping `memory_extract|recall|context_record`→perception etc., `crates/annora-kernel/src/budget.rs:14-24,54-68`).
+> Écart honnête : cette table vise les étages perceptifs ; le budget pipeline exécutable est `PipelineBudgetConfig` (perception 60 / routing 20 / inférence 100 / action 40 / total 220 ms, mapping `memory_extract|recall|context_record`→perception etc., `crates/hakille-kernel/src/budget.rs:14-24,54-68`).
 
 ---
 
@@ -150,7 +150,7 @@ $$\text{Règle Constitutionnelle} > \text{Instruction Humaine Explicite} > \text
 
 ## 5. Mémoire Distribuée : Le Graphe SPO et le DSL de Requête
 
-Annora rejette le simple RAG textuel au profit d'un **graphe de triplets symboliques SPO** (*Sujet, Prédicat, Objet*) enrichi d'un index vectoriel. Écriture SPO déterministe (registre nom→UUID FNV-1a, `crates/annora-memory/src/graph.rs:53-67`, `crates/annora-kernel/src/orchestrator.rs:71-135`) ; contradiction ambigüe = AskUser bloquant sans écrasement (`orchestrator.rs:115-134`).
+Hakille rejette le simple RAG textuel au profit d'un **graphe de triplets symboliques SPO** (*Sujet, Prédicat, Objet*) enrichi d'un index vectoriel. Écriture SPO déterministe (registre nom→UUID FNV-1a, `crates/hakille-memory/src/graph.rs:53-67`, `crates/hakille-kernel/src/orchestrator.rs:71-135`) ; contradiction ambigüe = AskUser bloquant sans écrasement (`orchestrator.rs:115-134`).
 
 ### Modèle de Données des Triplets
 Chaque fait dans le graphe est une structure typée avec métadonnées associées :
@@ -178,7 +178,7 @@ pub struct Triplet {
 ```
 
 ### Triple Indexation (SPO, POS, OSP)
-Pour garantir des traversées rapides sans scan complet (nuance : EdgeStore écrit SPO/POS/OSP mais la lecture par préfixe est O(N) bornée au tier edge, `crates/annora-memory/src/storage/edge.rs:164-167`) :
+Pour garantir des traversées rapides sans scan complet (nuance : EdgeStore écrit SPO/POS/OSP mais la lecture par préfixe est O(N) bornée au tier edge, `crates/hakille-memory/src/storage/edge.rs:164-167`) :
 1. **Index SPO** : Permet de trouver instantanément toutes les propriétés d'une entité donnée.
 2. **Index POS** : Permet de trouver tous les sujets partageant un prédicat et une valeur cible.
 3. **Index OSP** : Permet d'effectuer des recherches inversées depuis les objets vers les sujets.
@@ -188,7 +188,7 @@ Pour garantir des traversées rapides sans scan complet (nuance : EdgeStore écr
 - **Tier Cluster (`TiKV`)** : Base clé-valeur distribuée à consensus Raft pour la synchronisation multi-machines à grande échelle.
 
 ### Recherche Sémantique Vectorielle HNSW (`instant-distance`)
-Pour les requêtes approximatives où la formulation exacte diffère du prédicat enregistré, un index HNSW (*Hierarchical Navigable Small World*) tourne localement, permettant de retrouver des nœuds voisins en quelques microsecondes par distance cosinus (nuance : `instant-distance` non branché au recall — brute-force documentée, `crates/annora-memory/src/vector/edge.rs:22-34` ; recall réel 3 étages + cosinus 0.40 dernier recours, `crates/annora-kernel/src/orchestrator.rs:150-248`).
+Pour les requêtes approximatives où la formulation exacte diffère du prédicat enregistré, un index HNSW (*Hierarchical Navigable Small World*) tourne localement, permettant de retrouver des nœuds voisins en quelques microsecondes par distance cosinus (nuance : `instant-distance` non branché au recall — brute-force documentée, `crates/hakille-memory/src/vector/edge.rs:22-34` ; recall réel 3 étages + cosinus 0.40 dernier recours, `crates/hakille-kernel/src/orchestrator.rs:150-248`).
 
 ### Décroissance Temporelle Exponentielle
 Les faits qui ne sont pas réactivés voient leur poids décroître selon la loi exponentielle :

@@ -268,7 +268,7 @@ fn swift_ident(section: &str, key: &str) -> String {
 
 fn css_var(section: &str, key: &str) -> String {
     format!(
-        "--akora-{}-{}",
+        "--hakille-{}-{}",
         section.replace(['.', '/'], "-"),
         key.replace(['.', '/'], "-")
     )
@@ -277,7 +277,7 @@ fn css_var(section: &str, key: &str) -> String {
 /// Export Swift depuis les MÊMES TOML (braise/surface inclus).
 pub fn emit_swift(color: &Doc, motion: &Doc, ty: &Doc) -> String {
     let mut out = String::from(
-        "// Généré par `cargo xtask tokens export-swift` depuis tokens/*.toml. NE PAS ÉDITER.\n// braise + surface : source unique tokens/color.toml.\nimport SwiftUI\n\npublic enum AkoraTokens {\n",
+        "// Généré par `cargo xtask tokens export-swift` depuis tokens/*.toml. NE PAS ÉDITER.\n// braise + surface : source unique tokens/color.toml.\nimport SwiftUI\n\npublic enum HakilleTokens {\n",
     );
     for (section, keys) in color {
         for (k, v) in keys {
@@ -327,7 +327,7 @@ pub fn emit_swift(color: &Doc, motion: &Doc, ty: &Doc) -> String {
 /// Export Kotlin depuis les MÊMES TOML (braise/surface inclus).
 pub fn emit_kotlin(color: &Doc, motion: &Doc, ty: &Doc) -> String {
     let mut out = String::from(
-        "// Généré par `cargo xtask tokens export-kotlin` depuis tokens/*.toml. NE PAS ÉDITER.\n// braise + surface : source unique tokens/color.toml.\npackage akora.tokens\n\nobject AkoraTokens {\n",
+        "// Généré par `cargo xtask tokens export-kotlin` depuis tokens/*.toml. NE PAS ÉDITER.\n// braise + surface : source unique tokens/color.toml.\npackage hakille.tokens\n\nobject HakilleTokens {\n",
     );
     for (section, keys) in color {
         for (k, v) in keys {
@@ -395,7 +395,7 @@ pub fn emit_css(color: &Doc, motion: &Doc, ty: &Doc) -> String {
                 Val::Int(n) => {
                     out.push_str(&format!("  {}: {}ms;\n", css_var(section, k), n));
                 }
-                // Sons : `--akora-motion-sound-eveil: 69 90ms, 76 90ms;`
+                // Sons : `--hakille-motion-sound-eveil: 69 90ms, 76 90ms;`
                 Val::IntPairList(pairs) => {
                     let list = pairs
                         .iter()
@@ -454,8 +454,8 @@ mod tests {
                 "export doit contenir surface : {export}"
             );
         }
-        assert!(swift.contains("AkoraTokens"));
-        assert!(kotlin.contains("AkoraTokens"));
+        assert!(swift.contains("HakilleTokens"));
+        assert!(kotlin.contains("HakilleTokens"));
         assert!(css.contains(":root"));
         // Valeurs exactes issues des TOML (jamais modifiées ici).
         assert!(swift.contains("#FF7A2F") && swift.contains("#0B0C0F"));

@@ -1,16 +1,16 @@
 # Spécification des Modèles Fondations et Runtimes d'Inférence
 
-> **Bandeau d'honnêteté (inférence RÉELLE, golden-testée) : artefacts vérifiés (présence + SHA-256 + headers) ET exécution locale réelle — forwards `ort` (Silero VAD, SenseVoice CTC, CAM++ 192-d, MiniLM 384-d WordPiece), décodage Candle Qwen 2.5 Q4_K_M + KV-cache, RVQ Mimi sur vrais codebooks, TTS formantique Klatt, grounding par vision classique (Sobel + NCC). Limites explicites : pas de forward VLM UI-TARS (grounding CV, pas de VLA), pas de beam search ASR, TTS non-neural (checkpoint CosyVoice2/NeuTTS non provisionné), diarisation par clustering CAM++ (checkpoint Nemotron non provisionné). Latences mesurées sur poste (voir goldens), sinon marquées catalogue amont.**
+> **Bandeau d'honnêteté (inférence RÉELLE, golden-testée) : artefacts vérifiés (présence + SHA-256 + headers) ET exécution locale réelle — forwards `ort` (Silero VAD, SenseVoice CTC, CAM++ 192-d, MiniLM 384-d WordPiece), décodage Candle Qwen 2.5 Q4_K_M + KV-cache, RVQ Mimi sur vrais codebooks, TTS formantique Klatt, grounding par vision classique (Sobel + NCC). Limites explicites : pas de modèle neuronal Moshi 7,6B (duplex RVQ/VAD v1, `MoshiEngine::is_simulated() == true`), pas de forward VLM UI-TARS (grounding CV, pas de VLA), pas de beam search ASR, TTS non-neural (checkpoint CosyVoice2/NeuTTS non provisionné), diarisation par clustering CAM++ (checkpoint Nemotron non provisionné). Latences mesurées sur poste (voir goldens), sinon marquées catalogue amont.**
 
 > *"Zéro runtime Python en production : du tenseur brut au code machine natif via Candle, ONNX Runtime et des parseurs binaires GGUF purs."*
 
-Ce document constitue la référence exhaustive de la couche neuronale d'Annora ([`crates/annora-inference`](../crates/annora-inference)). Il détaille la sélection des sept modèles fondations, leurs métriques sur les benchmarks ouverts, leurs spécifications de quantification, ainsi que l'implémentation bas niveau des parseurs de formats de poids (**GGUF v3**, **Safetensors**, **ONNX**) et le registre de mémoire VRAM avec éviction LRU.
+Ce document constitue la référence exhaustive de la couche neuronale d'Hakille ([`crates/hakille-inference`](../crates/hakille-inference)). Il détaille la sélection des sept modèles fondations, leurs métriques sur les benchmarks ouverts, leurs spécifications de quantification, ainsi que l'implémentation bas niveau des parseurs de formats de poids (**GGUF v3**, **Safetensors**, **ONNX**) et le registre de mémoire VRAM avec éviction LRU.
 
 ---
 
-## 1. Les 7 Modèles Fondations d'Annora
+## 1. Les 7 Modèles Fondations d'Hakille
 
-L'ingénierie d'Annora privilégie une **chaîne modulaire découplée** où chaque composant excelle dans sa tâche plutôt qu'un modèle omnimodal monolithique opaque et énergivore.
+L'ingénierie d'Hakille privilégie une **chaîne modulaire découplée** où chaque composant excelle dans sa tâche plutôt qu'un modèle omnimodal monolithique opaque et énergivore.
 
 ```
 +====================================================================================================+
@@ -40,7 +40,7 @@ L'ingénierie d'Annora privilégie une **chaîne modulaire découplée** où cha
 - **Capacités condensées** : Transcription ASR (mandarin, anglais, japonais, coréen, cantonais), détection implicite de voix (VAD), identification de langue (LID), reconnaissance d'émotions vocales (joie, colère, tristesse) et classification d'événements sonores (toux, rire, applaudissements, musique).
 - **Performances** : Facteur temps réel (RTF) de 0.02 sur GPU et < 0.08 sur CPU. 15x plus rapide que Whisper-Large. (inspection seule — valeur catalogue amont, non mesurée localement).
 - **Empreinte** : INT8 ONNX = 229 Mo d'espace disque, < 1 Go de RAM résidente.
-- **Runtime** : ONNX Runtime (`ort`) via `crates/annora-inference/src/onnx_runtime.rs`.
+- **Runtime** : ONNX Runtime (`ort`) via `crates/hakille-inference/src/onnx_runtime.rs`.
 
 #### 2. VibeVoice-ASR (Microsoft Research)
 - **Rôle** : Ingestion d'enregistrements audio longs (réunions, conférences, dictées jusqu'à 60 minutes d'un seul bloc).
@@ -69,7 +69,7 @@ L'ingénierie d'Annora privilégie une **chaîne modulaire découplée** où cha
 - **Codec Mimi** : Échantillonnage 24 kHz compressé à 12.5 Hz (1.1 kbps) avec une latence causale de trame de **80 millisecondes**. (inspection seule — valeur catalogue amont, non mesurée localement).
 - **Monologue Intérieur (*Inner Monologue*)** : Projette des tokens textuels alignés dans le temps juste avant de générer les tokens audio, stabilisant la grammaire et fournissant une transcription temps réel gratuite.
 - **Latence de bout en bout** : ~160 ms théorique, ~200 ms mesuré sur carte NVIDIA L4. (inspection seule — valeurs catalogue amont, non mesurées localement).
-- **Runtime** : Implémentation **100 % Rust native** basée sur le framework **Candle** (`crates/annora-inference/src/candle_runtime.rs`).
+- **Runtime** : Implémentation **100 % Rust native** basée sur le framework **Candle** (`crates/hakille-inference/src/candle_runtime.rs`).
 
 #### 6. UI-TARS (ByteDance Seed / Tsinghua)
 - **Rôle** : Agent autonome de contrôle d'interface graphique (*Computer-Use*).
@@ -88,7 +88,7 @@ L'ingénierie d'Annora privilégie une **chaîne modulaire découplée** où cha
 
 ## 2. Runtimes et Parseurs Binaires Développés en Rust
 
-Le crate `annora-inference` intègre ses propres parseurs et moteurs sans dépendre de wrappers CPython :
+Le crate `hakille-inference` intègre ses propres parseurs et moteurs sans dépendre de wrappers CPython :
 
 ### 2.1. Parseur Binaire Streaming GGUF v3 (`gguf_runtime.rs`)
 Le parseur lit directement la spécification binaire GGUF v3 petit-boutiste (*little-endian*) :
@@ -147,7 +147,7 @@ pub struct ModelRegistry {
 
 ## 4. Matrice de Synthèse des Modèles
  
-| Modèle | ID Catalogue | Format | Paramètres | Empreinte VRAM / RAM | Latence Étage | Rôle dans Annora |
+| Modèle | ID Catalogue | Format | Paramètres | Empreinte VRAM / RAM | Latence Étage | Rôle dans Hakille |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **SenseVoice-Small** | `sensevoice-small-int8` | ONNX INT8 | 234M | 229 Mo (RAM < 1 Go) | ~160-300 ms / utterance 2 s (mesuré) | ASR réactif (CTC greedy réel), confiance mesurée |
 | **VibeVoice-ASR** | *(hors catalogue local)* | BitNet / GGUF | ~8.3B | 1.58 Go (BitNet) / 9 Go | Traitement différé (non provisionné) | Transcription longue durée (jusqu'à 60 min) — NON inspecté |

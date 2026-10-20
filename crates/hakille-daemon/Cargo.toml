@@ -1,0 +1,46 @@
+[package]
+name = "hakille-daemon"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+hakille-core = { path = "../hakille-core" }
+hakille-substrate = { path = "../hakille-substrate" }
+hakille-substrate-windows = { path = "../hakille-substrate-windows" }
+hakille-substrate-linux = { path = "../hakille-substrate-linux" }
+hakille-substrate-macos = { path = "../hakille-substrate-macos" }
+hakille-substrate-redox = { path = "../hakille-substrate-redox" }
+hakille-substrate-mobile = { path = "../hakille-substrate-mobile" }
+hakille-substrate-web = { path = "../hakille-substrate-web" }
+hakille-kernel = { path = "../hakille-kernel" }
+hakille-memory = { path = "../hakille-memory" }
+hakille-audio = { path = "../hakille-audio" }
+hakille-perception = { path = "../hakille-perception" }
+hakille-inference = { path = "../hakille-inference" }
+hakille-ipc = { path = "../hakille-ipc" }
+hakille-voice = { path = "../hakille-voice" }
+hakille-agents = { path = "../hakille-agents" }
+hakille-audit = { path = "../hakille-audit" }
+hakille-sync = { path = "../hakille-sync" }
+hakille-auth = { path = "../hakille-auth" }
+hakille-constitution = { path = "../hakille-constitution" }
+hakille-ui = { path = "../hakille-ui" }
+hakille-ui-protocol = { path = "../hakille-ui-protocol" }
+hakille-ui-shell = { path = "../hakille-ui-shell" }
+hakille-keystore = { path = "../hakille-keystore" }
+hakille-design = { path = "../hakille-design" }
+hakille-metrics = { path = "../hakille-metrics" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+biscuit-auth = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
+tempfile = "3"
+sha2 = { workspace = true }

@@ -1,8 +1,8 @@
-# Annora — Sovereign Cognitive Operating System (Rust Native)
+# Hakille — Sovereign Cognitive Operating System (Rust Native)
 
 [![Rust Version](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](.github/workflows/ci.yml)
-[![Conformance](https://img.shields.io/badge/conformance-54%20fast%20%2B7%20slow%20ignored-yellow.svg)](.github/workflows/ci.yml)
+[![Conformance](https://img.shields.io/badge/conformance-66%20fast%20%2B7%20slow%20ignored-yellow.svg)](.github/workflows/ci.yml)
 [![Security](https://img.shields.io/badge/security-Biscuit%20Capabilities-red.svg)]()
 [![No Python](https://img.shields.io/badge/python-0%25%20(Pure%20Rust)-purple.svg)]()
 
@@ -11,17 +11,18 @@
 > **Statut : prototype / pré-alpha.** Voir [SECURITY.md](SECURITY.md) et
 > [l'audit du 2026-10-08](docs/AUDIT_PROJET_2026-10-08.md) : l'inférence est
 > **RÉELLE et golden-testée** (forwards `ort` VAD/ASR/CAM++/MiniLM, Qwen 2.5
-> Candle, RVQ Mimi, TTS formantique, grounding CV) ; seul le VLM UI-TARS
-> reste inspecté sans forward, l'attestation n'est pas matérielle, et le
-> sandboxing WASM est partiel. Ne pas utiliser avec des secrets de
-> production, de la biométrie réelle ou des paiements autonomes.
+> Candle, RVQ Mimi, TTS formantique, grounding CV) ; le VLM UI-TARS reste
+> inspecté sans forward, le modèle neuronal Moshi 7,6B n'est pas provisionné
+> (duplex RVQ/VAD v1, voir `MoshiEngine::is_simulated()`), l'attestation n'est
+> pas matérielle, et le sandboxing WASM est partiel. Ne pas utiliser avec des
+> secrets de production, de la biométrie réelle ou des paiements autonomes.
 > Détail par moteur : [docs/MODELS.md](docs/MODELS.md).
 
 ---
 
 ## 🧭 Vision et Philosophie
 
-Annora n'est ni une application de chat, ni un wrapper d'API, ni un agent prompté dans un navigateur. C'est une **couche système cognitive souveraine** pensée dès le départ pour :
+Hakille n'est ni une application de chat, ni un wrapper d'API, ni un agent prompté dans un navigateur. C'est une **couche système cognitive souveraine** pensée dès le départ pour :
 
 1. **La Continuité d'État (*No-Session Continuity*)** : Aucun concept de session qui s'achève. Un fil de vie continu persistant dans un graphe de connaissances distribué.
 2. **L'Initiative Bornée (*Bounded Initiative*)** : Le système agit et anticipe de façon proactive dans un périmètre strict garanti par des contrats cryptographiques et un budget de silence.
@@ -80,40 +81,55 @@ Annora n'est ni une application de chat, ni un wrapper d'API, ni un agent prompt
 +===================================================================================+
 ```
 
+> Le bloc « Kyutai Moshi Full-Duplex » désigne la **cible** : le runtime actuel
+> fournit un duplex RVQ Mimi + VAD réel, sans modèle neuronal Moshi 7,6B
+> (`MoshiEngine::is_simulated() == true`). Le détail par moteur est dans
+> [docs/MODELS.md](docs/MODELS.md).
+
 ---
 
-## 📦 Structure du Workspace (26 Crates + 5 Agents + Conformance)
+## 📦 Structure du Workspace (31 Crates + 5 Agents + Conformance)
 
-Le projet est un monorepo Cargo structuré en **26 crates modulaires**, **5 agents WASM de référence**, une suite de conformité exhaustive (61 tests : 54 fast + 7 slow ignorés, voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
+Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **5 agents WASM de référence**, une suite de conformité exhaustive (73 tests : 66 fast + 7 slow ignorés, voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
 
 ### 1. Fondations & Substrates OS
-- [`annora-core`](crates/annora-core) : Primitives cryptographiques (Ed25519, ChaCha20Poly1305), jetons Biscuit, types temporels, bus de messages typés (`Message`) et niveaux de confiance (`TrustLevel`).
-- [`annora-substrate`](crates/annora-substrate) : Traits d'abstraction OS (`Substrate`) et d'accélération matérielle (`Compute`), attestations TPM/Secure Enclave.
-- [`annora-substrate-windows`](crates/annora-substrate-windows) : Backend Windows Win32 natif (GDI BitBlt display capture, injection `SendInput`, bac à sable AppContainer, surveillance RAM/Batterie, présence Tray et hotkey `Ctrl+Alt+Space`, alias `Alt+Space`).
-- [`annora-substrate-linux`](crates/annora-substrate-linux) : Backend Linux natif (compilateur Seccomp-BPF avec simulateur de bytecode, Namespaces PID/Mount/Net, Cgroups v2, télémétrie `/proc` et `/sys`, injection `/dev/uinput`, Wayland/X11).
-- [`annora-substrate-macos`](crates/annora-substrate-macos) : Backend macOS Darwin natif (profils Sandbox Seatbelt `(deny default)`, Endpoint Security muting, Mach `host_statistics64`, IOKit, capture Retina 2x CoreGraphics).
-- [`annora-substrate-redox`](crates/annora-substrate-redox) : Backend micro-noyau souverain Redox OS (schemes natifs `chan:`, `orbital:`, `disk:`, `sys:`, `audio:`, sérialisation `RedoxPacket`, table de capacités microkernel).
-- [`annora-substrate-mobile`](crates/annora-substrate-mobile) : Backend mobile Android/iOS (synchronisation d'ombre *Shadow Sync* avec horloges de Lamport, scoped storage, machine à états Doze).
-- [`annora-substrate-web`](crates/annora-substrate-web) : Backend WebAssembly pour navigateur (bridge Web Audio avec rééchantillonnage 48kHz -> 16kHz, tampon anti-overrun, Canvas ImageData, limites WebGPU).
+- [`hakille-core`](crates/hakille-core) : Primitives cryptographiques (Ed25519, ChaCha20Poly1305), jetons Biscuit, types temporels, bus de messages typés (`Message`) et niveaux de confiance (`TrustLevel`).
+- [`hakille-substrate`](crates/hakille-substrate) : Traits d'abstraction OS (`Substrate`) et d'accélération matérielle (`Compute`), attestations TPM/Secure Enclave.
+- [`hakille-substrate-windows`](crates/hakille-substrate-windows) : Backend Windows Win32 natif (GDI BitBlt display capture, injection `SendInput`, bac à sable AppContainer, surveillance RAM/Batterie, présence Tray et hotkey `Ctrl+Alt+Space`, alias `Alt+Space`).
+- [`hakille-substrate-linux`](crates/hakille-substrate-linux) : Backend Linux natif (compilateur Seccomp-BPF avec simulateur de bytecode, Namespaces PID/Mount/Net, Cgroups v2, télémétrie `/proc` et `/sys`, injection `/dev/uinput`, Wayland/X11).
+- [`hakille-substrate-macos`](crates/hakille-substrate-macos) : Backend macOS Darwin natif (profils Sandbox Seatbelt `(deny default)`, Endpoint Security muting, Mach `host_statistics64`, IOKit, capture Retina 2x CoreGraphics).
+- [`hakille-substrate-redox`](crates/hakille-substrate-redox) : Backend micro-noyau souverain Redox OS (schemes natifs `chan:`, `orbital:`, `disk:`, `sys:`, `audio:`, sérialisation `RedoxPacket`, table de capacités microkernel).
+- [`hakille-substrate-mobile`](crates/hakille-substrate-mobile) : Backend mobile Android/iOS (synchronisation d'ombre *Shadow Sync* avec horloges de Lamport, scoped storage, machine à états Doze).
+- [`hakille-substrate-web`](crates/hakille-substrate-web) : Backend WebAssembly pour navigateur (bridge Web Audio avec rééchantillonnage 48kHz -> 16kHz, tampon anti-overrun, Canvas ImageData, limites WebGPU).
 
 ### 2. Mémoire & Synchronisation
-- [`annora-memory`](crates/annora-memory) : Graphe en triplets SPO avec triple indexation (SPO, POS, OSP), backend local ACID `redb`, index vectoriel sémantique HNSW `instant-distance`, GraphQueryLang DSL, déclin temporel et résolution des contradictions.
-- [`annora-sync`](crates/annora-sync) : Synchronisation CRDT (grow-only sets + tombstones, vector clocks), handoff de tâche cross-device et réplication TiKV.
+- [`hakille-memory`](crates/hakille-memory) : Graphe en triplets SPO avec triple indexation (SPO, POS, OSP), backend local ACID `redb`, index vectoriel sémantique HNSW `instant-distance`, GraphQueryLang DSL, déclin temporel et résolution des contradictions.
+- [`hakille-sync`](crates/hakille-sync) : Synchronisation CRDT (grow-only sets + tombstones, vector clocks), handoff de tâche cross-device et réplication TiKV.
 
 ### 3. Perception, Voix & Inférence Neuronale
-- [`annora-perception`](crates/annora-perception) : Pipeline audio (SenseVoice-Small, Silero VAD, openWakeWord, CAM++ speaker ID, Nemotron-3 diarisation), CameraPipeline et WorldModel situationnel continu.
-- [`annora-voice`](crates/annora-voice) : Dialogue parlé full-duplex sans tour de parole basé sur Kyutai Moshi en Candle Rust, codec Mimi (12.5 Hz, 80ms causal), CosyVoice2 TTS et détecteur d'interruption naturelle Barge-In.
-- [`annora-inference`](crates/annora-inference) : Runtimes neuronaux natifs (parseur binaire streaming GGUF v3, parseur Safetensors Candle, inspecteur ONNX Runtime `ort`, registre LRU de pagination VRAM).
+- [`hakille-perception`](crates/hakille-perception) : Pipeline audio (SenseVoice-Small, Silero VAD, openWakeWord, CAM++ speaker ID, Nemotron-3 diarisation), CameraPipeline et WorldModel situationnel continu.
+- [`hakille-audio`](crates/hakille-audio) : I/O audio temps réel via `cpal` — capture micro 16 kHz (downmix + rééchantillonnage) et lecture PCM ; aucune simulation, erreur explicite si aucun périphérique.
+- [`hakille-voice`](crates/hakille-voice) : Moteur vocal honnête — décodeur RVQ Mimi (12,5 Hz) en Rust, TTS formantique Klatt (`FormantTts`, 24 kHz) et détecteur d'interruption Barge-In ; `MoshiEngine::is_simulated()` signale `true` tant que les vrais poids Mimi ne sont pas chargés.
+- [`hakille-inference`](crates/hakille-inference) : Runtimes neuronaux natifs (parseur binaire streaming GGUF v3, parseur Safetensors Candle, inspecteur ONNX Runtime `ort`, registre LRU de pagination VRAM) et provisioner d'artefacts.
 
 ### 4. Cognition, Agents, Confiance & UI
-- [`annora-kernel`](crates/annora-kernel) : Fabric cognitif, routeur System 1/2, Working Memory scratchpad, Deliberate Planner, Self-Model introspectif, Graph Curiosity Scanner, Dry-Run Simulator et budgets de latence par étage.
-- [`annora-agents`](crates/annora-agents) : Runtime WASM/WASI (Wasmtime) avec vérification de capabilities Biscuit, quotas d'appels et auto-révocation, agent GUI UI-TARS et protocole inter-agents signé.
-- [`annora-audit`](crates/annora-audit) : Journal append-only signé Ed25519 avec chaînage SHA-256, registre de consentement explicite, moteur de requêtes et d'explicabilité causale.
-- [`annora-auth`](crates/annora-auth) : Authentification multimodale continue, détecteur anti-usurpation vocale (liveness), gestionnaire de sessions invités, profils mineurs et capability Wallet.
-- [`annora-constitution`](crates/annora-constitution) : Les 10 règles constitutionnelles machine-vérifiables, gouvernance d'amendement par quorum et batterie de tests éthiques.
-- [`annora-ui`](crates/annora-ui) : Indicateur de présence ambiant à 6 états (Idle/Listening/Acting/Speaking/DecisionRequired/Urgent, voir `presence.rs:90-99`), HUD Spotlight éphémère (`Ctrl+Alt+Space`, alias `Alt+Space`), sélecteur dynamique de canal (seuil bruit 65 dB), budget de silence proactif et compteur financier System 2 en direct.
-- [`annora-metrics`](crates/annora-metrics) : Tableau de bord des 3 métriques cardinales (Continuité, Initiative Bornée, Généralité Pratique) et détecteur de dérive des valeurs éthiques.
-- [`annora-daemon`](crates/annora-daemon) : Démon système exécutable orchestrant l'ensemble de la pile avec invite interactive REPL et inspection approfondie.
+- [`hakille-kernel`](crates/hakille-kernel) : Fabric cognitif, routeur System 1/2, Working Memory scratchpad, Deliberate Planner, Self-Model introspectif, Graph Curiosity Scanner, Dry-Run Simulator et budgets de latence par étage.
+- [`hakille-agents`](crates/hakille-agents) : Runtime WASM/WASI (Wasmtime) avec vérification de capabilities Biscuit, quotas d'appels et auto-révocation, agent GUI UI-TARS et protocole inter-agents signé.
+- [`hakille-audit`](crates/hakille-audit) : Journal append-only signé Ed25519 avec chaînage SHA-256, registre de consentement explicite, moteur de requêtes et d'explicabilité causale.
+- [`hakille-auth`](crates/hakille-auth) : Authentification multimodale continue, détecteur anti-usurpation vocale (liveness), gestionnaire de sessions invités, profils mineurs et capability Wallet.
+- [`hakille-keystore`](crates/hakille-keystore) : Registre de seeds 32 octets adossé au trousseau OS (Windows Credential Manager, Keychain, Secret Service) avec versions de clés et rotation.
+- [`hakille-constitution`](crates/hakille-constitution) : Les 10 règles constitutionnelles machine-vérifiables, gouvernance d'amendement par quorum et batterie de tests éthiques.
+- [`hakille-design`](crates/hakille-design) : Design system Rust — marque (`brand.rs`), jetons, cartes d'action, bandes de provenance, silence et présence vocale.
+- [`hakille-ui`](crates/hakille-ui) : Indicateur de présence ambiant à 6 états (Idle/Listening/Acting/Speaking/DecisionRequired/Urgent, voir `presence.rs:90-99`), HUD Spotlight éphémère (`Ctrl+Alt+Space`, alias `Alt+Space`), sélecteur dynamique de canal (seuil bruit 65 dB), budget de silence proactif et compteur financier System 2 en direct.
+- [`hakille-ui-protocol`](crates/hakille-ui-protocol) : Protocole UI ↔ noyau versionné (messages typés, négociation de version, schéma golden `schema_snapshot.json`).
+- [`hakille-ui-model`](crates/hakille-ui-model) : Modèle de snapshot et d'état de l'interface, découplé du rendu.
+- [`hakille-ui-shell`](crates/hakille-ui-shell) : Shell d'interface (vues, pont noyau ↔ UI, composition des cartes et de la présence).
+- [`hakille-ui-platform`](crates/hakille-ui-platform) : Abstraction plateforme pour fenêtres, icône de zone de notification et intégration système.
+- [`hakille-ui-desktop`](crates/hakille-ui-desktop) : Rendu desktop (scène, texte multi-script, accessibilité, runtime) sous forme d'application native.
+- [`hakille-metrics`](crates/hakille-metrics) : Tableau de bord des 3 métriques cardinales (Continuité, Initiative Bornée, Généralité Pratique) et détecteur de dérive des valeurs éthiques.
+- [`hakille-ipc`](crates/hakille-ipc) : Transport IPC local (named pipe Windows, socket Unix) pour les clients du démon ; pas de TCP exposé.
+- [`hakille-spikes`](crates/hakille-spikes) : Spikes techniques isolés (arbre de rendu S1, rendu S2, accessibilité S3) utilisés pour valider l'UI avant intégration.
+- [`hakille-daemon`](crates/hakille-daemon) : Démon système exécutable orchestrant l'ensemble de la pile avec invite interactive REPL et inspection approfondie.
 
 ### 5. Agents Sandboxés de Référence (`agents/`)
 - `mail` : Gestion des courriels sous capability `Filesystem` + `Network` scopée.
@@ -132,6 +148,10 @@ Le projet est un monorepo Cargo structuré en **26 crates modulaires**, **5 agen
 | **Natif** | Laptop Windows, Linux, macOS | SenseVoice-Small (veille CPU) + CAM++ + CosyVoice2 / NeuTTS + UI-TARS (on demand) | Qwen 7B (Q4) local + redb local | Contrôle quasi-total via sandboxing OS (AppContainer, Seccomp, Seatbelt). |
 | **Invité** | Mobile Android / iOS / Web WASM | Moonshine + SenseVoice Mobile (NPU/CoreML) + WebAudio 16kHz | Ombre déportée sur Hub personnel via sync CRDT | Accès restreint par l'OS hôte, continuité portée par le cluster. |
 
+> Les modèles neuronaux non provisionnés (Moshi 7,6B, VibeVoice, CosyVoice2/NeuTTS,
+> UI-TARS, Moonshine) sont des **cibles**. Le runtime actuel signale leur état via
+> `:models-honest` et `is_simulated()` ; il n'affiche jamais un statut `Operational` feint.
+
 ---
 
 ## 🛡️ Modèle de Sécurité et Garanties Formelles
@@ -147,7 +167,7 @@ Le projet est un monorepo Cargo structuré en **26 crates modulaires**, **5 agen
 ## 🚀 Démarrage Rapide
 
 ### Prérequis
-- Rust 1.85+ (avec support de l'édition Rust 2024)
+- Rust 1.95+ (avec support de l'édition Rust 2024)
 - CMake & Compilateur C/C++ (MSVC sous Windows, GCC/Clang sous Linux/macOS)
 
 ### Compilation et Tests
@@ -158,60 +178,59 @@ cargo check --workspace
 # Exécuter l'intégralité des tests unitaires et d'intégration
 cargo test --workspace
 
-# Exécuter la suite de conformité formelle (61 tests : 54 fast verts + 7 slow ignorés, voir CI)
+# Exécuter la suite de conformité formelle (73 tests : 66 fast verts + 7 slow ignorés, voir CI)
 cargo xtask conformance
 # Gate lente hebdo (décodage Qwen CPU réel) :
 cargo xtask conformance-slow
 ```
 
-### Lancement du Démon Annora
+### Lancement du Démon Hakille
 ```bash
-cargo run -p annora-daemon
+cargo run -p hakille-daemon
 ```
 
-### Lancement du shell Slint natif (sans WebView, ADR-007)
+Le premier prompt est lent : le premier tour inclut le chargement lazy du GGUF Qwen (~10-60 s) puis un décodage CPU réel — comptez ~478 s en debug contre ~24 s en release (64 tokens, i7-1165G7 mesuré), donc préférez `cargo run -p hakille-daemon --release`. Le REPL est résilient (un tour raté n'arrête pas la session) et la mémoire `./hakille-memory.json` est auto-sauvegardée après chaque tour. Dépannage, variables d'environnement et codes de sortie headless : [docs/getting_started.md § 5. Dépannage & Configuration](docs/getting_started.md#5-dépannage--configuration).
+
+### Lancement du shell desktop natif (winit + wgpu + AccessKit, ADR-009)
 ```bash
-# Bridge headless (CI rapide, tests) :
-cargo test -p annora-ui-shell
+# Shell desktop (fenêtre winit, fallback logiciel si GPU absent) :
+cargo run -p hakille-ui-desktop --bin hakille-desktop
 
-# Fenêtre réelle (tray + Ctrl+Alt+Space + overlay OS) :
-cargo run -p annora-ui-shell --features render --bin shell_demo
-
-# Galerie des composants (tous états × thèmes, base régression visuelle) :
-cargo run -p annora-ui-shell --features render --bin gallery
+# Baseline headless de migration (snapshot, view-models — filet de sécurité) :
+cargo test -p hakille-ui-model -p hakille-ui-shell
 
 # Tokens design (source unique TOML → Rust/Swift/Kotlin/CSS, CI) :
 cargo xtask tokens --check
-cargo xtask tokens export-swift   # target/tokens/AkoraTokens.swift
-cargo xtask tokens export-kotlin  # target/tokens/AkoraTokens.kt
-cargo xtask tokens export-css     # target/tokens/akora-tokens.css
+cargo xtask tokens export-swift   # target/tokens/HakilleTokens.swift
+cargo xtask tokens export-kotlin  # target/tokens/HakilleTokens.kt
+cargo xtask tokens export-css     # target/tokens/hakille-tokens.css
 ```
 
-Dans l'invite interactive (`annora>`) :
+Dans l'invite interactive (`hakille>`) :
 ```text
-annora> :status           # Afficher le Tier matériel, RAM et état de présence
-annora> :metrics          # Inspecter les 3 métriques North-Star et l'alignement éthique
-annora> :models           # Lister le catalogue des modèles et l'état du cache
-annora> :connected        # Afficher la connexion vérifiée des 7 modèles fondations
-annora> :inspect-models   # Inspection binaire des tenseurs GGUF, Safetensors et ONNX
-annora> :hud              # Tester le HUD Spotlight éphémère (Ctrl+Alt+Space, alias Alt+Space)
-annora> :shell            # Snapshot shell Slint (présence/HUD/coût/silence → JSON compositor)
-annora> :models-honest    # Statuts honnêtes Inspected/Simulated (jamais de faux Operational)
-annora> :agents-cards     # 5 agents avec badges DEMO honnêtes + validations Braise
-annora> :powers           # Pouvoirs : périmètre, quota, expiration, interrupteur
-annora> :journal-search EUR  # Recherche journal (plus récent d'abord, 20/page)
-annora> :journal-why 1    # Pourquoi cette action ? (trace complète + nœuds graphe)
-annora> :a11y text        # Modalité voice|text|visual|haptic + override canal live
-annora> :onboarding       # Manifeste limites-avant-capacités + état acknowledgement
-annora> :channel          # Afficher l'arbitrage dynamique du Sélecteur de Canal
-annora> :settings          # Réglages §8 : fournisseurs, voix, canaux, langues, accessibilité, sauvegarde, foyer, simulation
-annora> :budget           # Consulter le quota restant du Budget de Silence (3/jour, spec §18/§29)
-annora> :agents           # Lister les agents WASM sandboxés et leurs capabilities
-annora> :cost             # Suivre la consommation financière en temps réel
-annora> :memory           # Afficher les triplets SPO du graphe de connaissances
-annora> :remember Bob habite à Paris
-annora> :recall Paris     # Rechercher dans la mémoire sémantique
-annora> :exit             # Arrêt propre du démon
+hakille> :status           # Afficher le Tier matériel, RAM et état de présence
+hakille> :metrics          # Inspecter les 3 métriques North-Star et l'alignement éthique
+hakille> :models           # Lister le catalogue des modèles et l'état du cache
+hakille> :connected        # Afficher la connexion vérifiée des 7 modèles fondations
+hakille> :inspect-models   # Inspection binaire des tenseurs GGUF, Safetensors et ONNX
+hakille> :hud              # Tester le HUD Spotlight éphémère (Ctrl+Alt+Space, alias Alt+Space)
+hakille> :shell            # Snapshot shell ambient (présence/HUD/coût/silence → JSON compositor)
+hakille> :models-honest    # Statuts honnêtes Inspected/Simulated (jamais de faux Operational)
+hakille> :agents-cards     # 5 agents avec badges DEMO honnêtes + validations Braise
+hakille> :powers           # Pouvoirs : périmètre, quota, expiration, interrupteur
+hakille> :journal-search EUR  # Recherche journal (plus récent d'abord, 20/page)
+hakille> :journal-why 1    # Pourquoi cette action ? (trace complète + nœuds graphe)
+hakille> :a11y text        # Modalité voice|text|visual|haptic + override canal live
+hakille> :onboarding       # Manifeste limites-avant-capacités + état acknowledgement
+hakille> :channel          # Afficher l'arbitrage dynamique du Sélecteur de Canal
+hakille> :settings          # Réglages §8 : fournisseurs, voix, canaux, langues, accessibilité, sauvegarde, foyer, simulation
+hakille> :budget           # Consulter le quota restant du Budget de Silence (3/jour, spec §18/§29)
+hakille> :agents           # Lister les agents WASM sandboxés et leurs capabilities
+hakille> :cost             # Suivre la consommation financière en temps réel
+hakille> :memory           # Afficher les triplets SPO du graphe de connaissances
+hakille> :remember Bob habite à Paris
+hakille> :recall Paris     # Rechercher dans la mémoire sémantique
+hakille> :exit             # Arrêt propre du démon
 ```
 
 ---
@@ -225,8 +244,8 @@ Pour explorer chaque sous-système en profondeur, consultez les guides dédiés 
 - 🧠 [**Noyau Cognitif & Mémoire Distribuée**](docs/COGNITION.md) : Système 1/2, Cognitive Fabric, Working Memory, Deliberate Planner, Self-Model, Curiosité, Graphe SPO et DSL.
 - 🤖 [**Modèles Fondations & Runtimes d'Inférence**](docs/MODELS.md) : Spécifications des 7 modèles, parseurs binaires GGUF v3 / Safetensors / ONNX et registre LRU VRAM.
 - 🛡️ [**Sécurité, Capabilities & Gouvernance**](docs/SECURITY_AND_GOVERNANCE.md) : Jetons Biscuit, Registre de Consentement, Journal chaîné Ed25519, Constitution et Anti-Spoofing.
-- 👁️ [**Interfaces Ambiantes & Perception**](docs/INTERFACES_AND_PERCEPTION.md) : Présence discrète, HUD Spotlight éphémère, Sélecteur de Canal, Budget de Silence, World Model et Moshi Full-Duplex.
-- 💻 [**Guide du Développeur & Manuel d'Ingénierie**](docs/DEVELOPER_GUIDE.md) : Guide pas à pas de compilation, suite de conformance 56/56, commandes CLI REPL et création d'agents WASM.
+- 👁️ [**Interfaces Ambiantes & Perception**](docs/INTERFACES_AND_PERCEPTION.md) : Présence discrète, HUD Spotlight éphémère, Sélecteur de Canal, Budget de Silence, World Model et moteur vocal duplex (RVQ/VAD v1).
+- 💻 [**Guide du Développeur & Manuel d'Ingénierie**](docs/DEVELOPER_GUIDE.md) : Guide pas à pas de compilation, suite de conformance 66 fast + 7 slow, commandes CLI REPL et création d'agents WASM.
 - 📋 [**Index des Décisions d'Architecture (ADRs)**](adr/) : Historique et justifications des choix techniques fondamentaux.
 
 ---
