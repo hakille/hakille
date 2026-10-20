@@ -6,7 +6,9 @@ pub struct PlatformManifest {
     pub tier: Tier,
     pub capabilities_granted: Vec<CapabilityScope>,
     pub capabilities_denied: Vec<CapabilityScope>,
-    pub max_memory_bytes: u64,
+    /// Capacité mémoire maximale en octets. `None` signifie « inconnue » :
+    /// une valeur non mesurée n'est jamais remplacée par un chiffre inventé.
+    pub max_memory_bytes: Option<u64>,
     pub gpu_vram_bytes: Option<u64>,
     pub has_secure_enclave: bool,
     pub has_tpm: bool,
@@ -19,13 +21,14 @@ pub struct PlatformManifest {
 impl PlatformManifest {
     /// Vérifie la cohérence du manifest plateforme.
     ///
-    /// - `max_memory_bytes` doit être > 0
+    /// - `max_memory_bytes` doit être `Some(> 0)` s'il est connu
+    ///   (`None` = capacité non mesurée, état honnête et accepté)
     /// - aucun scope ne peut être à la fois accordé et refusé
     /// - `os_name` / `os_version` non vides
     pub fn validate(&self) -> hakille_core::Result<()> {
-        if self.max_memory_bytes == 0 {
+        if matches!(self.max_memory_bytes, Some(0)) {
             return Err(hakille_core::HakilleError::SubstrateError(
-                "max_memory_bytes must be > 0".into(),
+                "max_memory_bytes must be > 0 when known".into(),
             ));
         }
         for scope in &self.capabilities_granted {
@@ -46,6 +49,38 @@ impl PlatformManifest {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest(max_memory_bytes: Option<u64>) -> PlatformManifest {
+        PlatformManifest {
+            tier: Tier::Native,
+            capabilities_granted: vec![CapabilityScope::Filesystem],
+            capabilities_denied: vec![CapabilityScope::FullSystem],
+            max_memory_bytes,
+            gpu_vram_bytes: None,
+            has_secure_enclave: false,
+            has_tpm: true,
+            battery_powered: false,
+            thermal_envelope_watts: None,
+            os_name: "Test".into(),
+            os_version: "1".into(),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_unknown_or_positive_memory() {
+        assert!(manifest(None).validate().is_ok());
+        assert!(manifest(Some(1)).validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_zero_memory_when_known() {
+        assert!(manifest(Some(0)).validate().is_err());
     }
 }
 

@@ -28,7 +28,9 @@ impl WindowsComputeBackend {
             if GlobalMemoryStatusEx(&mut mem) != 0 {
                 mem.ullTotalPhys
             } else {
-                16 * 1024 * 1024 * 1024
+                // Fallback non-Windows / échec API : 0 = inconnu. Ne jamais
+                // inventer une capacité mémoire qui n'a pas été mesurée.
+                0
             }
         }
     }
@@ -40,7 +42,8 @@ impl WindowsComputeBackend {
             if GlobalMemoryStatusEx(&mut mem) != 0 {
                 mem.ullAvailPhys
             } else {
-                8 * 1024 * 1024 * 1024
+                // 0 = inconnu, jamais une valeur simulée.
+                0
             }
         }
     }

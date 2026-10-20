@@ -58,7 +58,7 @@ impl MacosSubstrate {
                 CapabilityScope::ModelInference,
             ],
             capabilities_denied: vec![CapabilityScope::FullSystem],
-            max_memory_bytes: total_ram,
+            max_memory_bytes: (total_ram > 0).then_some(total_ram),
             // Honest: the shareable unified-memory fraction is dynamic and
             // only knowable via a Metal / IORegistry query (not linked);
             // unknown, not a hard-coded 3/4 share.

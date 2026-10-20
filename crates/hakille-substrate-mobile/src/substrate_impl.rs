@@ -56,7 +56,7 @@ impl MobileSubstrate {
             // Honest: per-app RAM budget placeholder for the shadow runtime
             // (the real budget comes from ActivityManager on Android /
             // os_proc_available_memory on iOS — no JNI/ObjC binding linked).
-            max_memory_bytes: 4 * 1024 * 1024 * 1024,
+            max_memory_bytes: Some(4 * 1024 * 1024 * 1024),
             gpu_vram_bytes: None,
             has_secure_enclave: true,
             has_tpm: false,

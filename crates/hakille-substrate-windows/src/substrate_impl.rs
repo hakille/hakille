@@ -70,7 +70,7 @@ impl WindowsSubstrate {
                 CapabilityScope::ModelInference,
             ],
             capabilities_denied: vec![CapabilityScope::FullSystem],
-            max_memory_bytes: total_ram,
+            max_memory_bytes: (total_ram > 0).then_some(total_ram),
             // Honest: dedicated VRAM is unknown without a DXGI adapter query
             // (win32_ffi intentionally exposes no DXGI); not an 8 GiB claim.
             gpu_vram_bytes: None,
@@ -201,9 +201,13 @@ impl WindowsSubstrate {
                 "absolute / drive path rejected".into(),
             ));
         }
+        // Normalise les deux séparateurs : sur Linux, `..\\evil.txt` est un
+        // simple nom de fichier pour `Path`, mais il doit rester refusé comme
+        // traversée Windows. La sécurité ne doit pas dépendre de l'hôte.
+        let normalized = path.0.replace('\\', "/");
         let mut clean = PathBuf::new();
         let mut saw_normal = false;
-        for comp in std::path::Path::new(&path.0).components() {
+        for comp in std::path::Path::new(&normalized).components() {
             match comp {
                 Component::Normal(p) => {
                     if p == std::ffi::OsStr::new("..") {

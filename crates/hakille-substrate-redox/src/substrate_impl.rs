@@ -55,7 +55,7 @@ impl RedoxSubstrate {
             capabilities_denied: vec![CapabilityScope::FullSystem],
             // Sovereign-node quota mirroring the `sys:memory` scheme report
             // (MemTotal 64 GiB); the scheme is the source of truth, not a probe.
-            max_memory_bytes: 64 * 1024 * 1024 * 1024,
+            max_memory_bytes: Some(64 * 1024 * 1024 * 1024),
             // Honest: no orbital/sys VRAM discovery binding is linked;
             // unknown, not a 16 GiB claim.
             gpu_vram_bytes: None,

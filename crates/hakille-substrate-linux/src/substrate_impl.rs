@@ -109,7 +109,7 @@ impl LinuxSubstrate {
                 CapabilityScope::ModelInference,
             ],
             capabilities_denied: vec![CapabilityScope::FullSystem],
-            max_memory_bytes: mem.mem_total_bytes,
+            max_memory_bytes: (mem.mem_total_bytes > 0).then_some(mem.mem_total_bytes),
             // Honest: discrete VRAM from sysfs DRM when discoverable, else
             // None (shared-memory iGPUs / headless VMs report nothing).
             gpu_vram_bytes: detect_linux_vram_bytes(),

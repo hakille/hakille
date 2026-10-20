@@ -59,7 +59,7 @@ impl WebSubstrate {
             // Honest: tab memory budget for the WASM sandbox (the live quota
             // comes from navigator.storage.estimate() — no browser binding
             // linked on native targets); labeled budget, not a measurement.
-            max_memory_bytes: 4 * 1024 * 1024 * 1024,
+            max_memory_bytes: Some(4 * 1024 * 1024 * 1024),
             // Honest: VRAM is only knowable from the live WebGPU
             // adapter.limits (see WebGpuDetector at runtime); unknown here.
             gpu_vram_bytes: None,
