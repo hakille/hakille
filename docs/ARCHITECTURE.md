@@ -133,14 +133,14 @@ Le monorepo Cargo regroupe 31 crates modulaires (+ 5 crates d'agents métier dé
 | **`hakille-constitution`** | [`../crates/hakille-constitution`](../crates/hakille-constitution) | Règles suprêmes : 10 règles constitutionnelles machine-vérifiables, gouvernance d'amendement par quorum, batterie de tests éthiques automatisée. | Couche 6 |
 | **`hakille-ui`** | [`../crates/hakille-ui`](../crates/hakille-ui) | Présence ambiante : indicateur minimal à 3 états, HUD Spotlight éphémère (Alt+Space), sélecteur de canal dynamique, budget de silence proactif, compteur financier System 2 en temps réel. | Présentation |
 | **`hakille-design`** | [`../crates/hakille-design`](../crates/hakille-design) | Design system Rust : identité de marque (`brand.rs`), cartes d'action, bandes de provenance, silence et voix, alignement sur les jetons `tokens/`. | Présentation |
-| **`hakille-ui-protocol`** | [`../crates/hakille-ui-protocol`](../crates/hakille-ui-protocol) | Protocole UI ↔ noyau versionné : messages typés, `PROTOCOL_VERSION`, négociation de compatibilité et schéma golden verrouillé par test. | Présentation |
+| **`hakille-ui-protocol`** | [`../crates/hakille-ui-protocol`](../crates/hakille-ui-protocol) | Protocole UI ↔ noyau versionné : messages typés, `PROTOCOL_VERSION`, négociation de compatibilité, schéma golden verrouillé par test et extension additive v1 des cartes (`ShowCard`, `CardDecisionAck`). | Présentation |
 | **`hakille-ui-model`** | [`../crates/hakille-ui-model`](../crates/hakille-ui-model) | Modèle de snapshot de l'interface (état de présence, cartes, provenance), indépendant du backend de rendu. | Présentation |
 | **`hakille-ui-shell`** | [`../crates/hakille-ui-shell`](../crates/hakille-ui-shell) | Shell d'interface : vues, pont entre le noyau et l'UI, composition des cartes et de la présence. | Présentation |
 | **`hakille-ui-platform`** | [`../crates/hakille-ui-platform`](../crates/hakille-ui-platform) | Abstraction plateforme : fenêtres, icône de zone de notification, intégration système et cycle de vie de l'application. | Présentation |
-| **`hakille-ui-desktop`** | [`../crates/hakille-ui-desktop`](../crates/hakille-ui-desktop) | Application desktop : scène, moteur de texte multi-script, accessibilité et runtime natif. | Présentation |
+| **`hakille-ui-desktop`** | [`../crates/hakille-ui-desktop`](../crates/hakille-ui-desktop) | Application desktop : scène, moteur de texte multi-script, accessibilité et runtime natif ; carte 720×360, maintien clavier 600 ms et décisions AccessKit. Les boutons visuels ne sont pas encore cliquables à la souris. | Présentation |
 | **`hakille-spikes`** | [`../crates/hakille-spikes`](../crates/hakille-spikes) | Spikes techniques isolés (arbre de rendu S1, rendu S2, accessibilité S3) pour valider l'UI avant intégration. | Lab |
 | **`hakille-metrics`** | [`../crates/hakille-metrics`](../crates/hakille-metrics) | Mesure des objectifs : 3 métriques North-Star (Taux de continuité, Conformité d'initiative bornée, Généralité pratique) et détecteur de dérive des valeurs éthiques. | Télémétrie |
-| **`hakille-daemon`** | [`../crates/hakille-daemon`](../crates/hakille-daemon) | Démon exécutable principal avec boucle REPL interactive, initialisation en 6 étapes et inspection approfondie de tous les sous-systèmes. | Binaire |
+| **`hakille-daemon`** | [`../crates/hakille-daemon`](../crates/hakille-daemon) | Démon exécutable principal avec boucle REPL interactive, mode `--serve` IPC, cartes d'action auditées et initialisation en 6 étapes. | Binaire |
 
 ---
 
@@ -252,6 +252,40 @@ Utilisateur        Perception           Kernel            Mémoire           Age
    - Le `DeliberatePlanner` produit la séquence ordonnée d'étapes.
    - Le `DryRunSimulator` simule l'action dans un bac à sable pour vérifier l'absence d'effets secondaires destructeurs.
 2. Le jeton Biscuit est atténué avec le périmètre le plus strict possible (scopes minimaux, quota de requêtes borné, durée de vie brève).
+
+### Étape 4 bis : Décision humaine via carte d'action (implémenté v1)
+
+Lorsqu'un prompt irréversible est détecté, le noyau ne passe pas directement à l'étape 5 : il produit un plan sec et le démon expose une carte de décision.
+
+```
+Prompt irréversible
+   │
+   ▼
+CognitiveOrchestrator::action_card_preview  (plan + dry-run, zéro effet)
+   │
+   ▼
+Audit ActionCardProposed ──► ShowCard(card) + Presence(DecisionRequired)
+   │                                      │
+   │                         Desktop 720×360 : Entrée maintenue 600 ms,
+   │                         R = refuser, Échap = masquer,
+   │                         AccessKit 40/41/42 = décision explicite
+   ▼                                      │
+Approve / Reject / Edit ──────────────────┘
+   │
+   ▼
+Audit ActionCardApproved|ActionCardRejected ──► CardDecisionAck(audit_id)
+```
+
+Règles vérifiées :
+
+- une carte n'est créée que pour une action irréversible détectée ; le plan reste sec ;
+- l'audit de proposition précède l'envoi de la carte ; l'audit de décision précède l'accusé ;
+- si l'audit échoue, la carte reste en attente et le HUD reçoit un refus explicite ;
+- `CardDecisionAck` contient l'UUID réel de l'entrée d'audit, et le HUD ne retire la carte qu'à sa réception ;
+- **aucun effet métier n'est exécuté** par l'approbation ou le refus en v1 ;
+- les boutons visuels ne sont pas encore cliquables à la souris : le clavier est le chemin exercé ; l'arbre AccessKit est testé, mais pas encore activé par un lecteur d'écran réel.
+
+Le flux a été rejoué en smoke IPC puis dans la fenêtre winit réelle avec un vrai démon : `HudReply` → `Presence(DecisionRequired)` → `ShowCard`, appui court refusé avec avertissement, maintien 600 ms → approbation auditée, puis `R` → refus audité. Les entrées `ActionCardProposed`, `ActionCardApproved` et `ActionCardRejected` ont été vérifiées dans le journal.
 
 ### Étape 5 : Exécution Sécurisée & Journalisation d'Audit
 1. **(Réel pour la référence, cible pour le métier)** Les agents `echo-agent` et `count-agent` sont exécutés dans le bac à sable Wasmtime. Les cinq agents métier ne sont pas encore routés vers un runner ; leurs manifests restent déclaratifs.

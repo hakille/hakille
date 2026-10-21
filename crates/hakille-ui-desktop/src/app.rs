@@ -10,14 +10,14 @@
 use crate::daemon_bridge::RealDaemonBridge;
 use crate::kernel_bridge::KernelBridge;
 use crate::renderer::{
-    CONSULT_HEIGHT, ConsultLine, ConsultLineKind, ConsultView, consult_scene, hud_scene,
+    CONSULT_HEIGHT, ConsultLine, ConsultLineKind, ConsultView, card_scene, consult_scene, hud_scene,
 };
 use crate::runtime::FrameBudget;
 use crate::scene::{Color, DrawCmd, Scene};
 use hakille_ui::{CostCounter, EphemeralHud, HudState, PresenceIndicator, SilenceBudgetTracker};
 use hakille_ui_model::snapshot::{EVAPORATE_MS, HUD_HEIGHT, HUD_WIDTH};
 use hakille_ui_model::{KernelEvent, StableSnapshot, UiEvent};
-use hakille_ui_protocol::{JournalEntryDto, KernelToUi, MemoryRowDto, StatusDto};
+use hakille_ui_protocol::{ActionCard, JournalEntryDto, KernelToUi, MemoryRowDto, StatusDto};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -68,15 +68,37 @@ pub enum HudAction {
     /// Prochaine frame d'animation au plus tôt dans cette durée.
     RequestFrameIn(Duration),
     /// Soumission de la requête au pont noyau (l'hôte appelle `submit_query`).
-    Submit { query: String },
+    Submit {
+        query: String,
+    },
     /// Redimensionne la fenêtre logique (HUD 64 px ou panneau 360 px).
-    ResizeWindow { width: u32, height: u32 },
+    ResizeWindow {
+        width: u32,
+        height: u32,
+    },
     /// Consultation additive v1 : dernières entrées du journal.
-    RequestJournal { limit: usize },
+    RequestJournal {
+        limit: usize,
+    },
     /// Consultation additive v1 : vue mémoire ou rappel.
-    RequestMemory { query: Option<String>, limit: usize },
+    RequestMemory {
+        query: Option<String>,
+        limit: usize,
+    },
     /// Statut minimal du démon.
     RequestStatus,
+    /// Décision explicite sur la carte en attente (jamais un effet local :
+    /// le démon revérifie et audite avant tout accusé).
+    ApproveCard {
+        card_id: u64,
+    },
+    RejectCard {
+        card_id: u64,
+    },
+    /// Édition demandée : le démon peut la refuser explicitement.
+    EditCard {
+        card_id: u64,
+    },
     /// Quitte la boucle d'événements.
     Quit,
 }
@@ -89,6 +111,7 @@ pub enum PanelKind {
     Journal,
     Memory,
     Status,
+    Card,
 }
 
 fn map_presence(state: hakille_ui_protocol::PresenceState) -> hakille_ui::PresenceState {
@@ -136,6 +159,9 @@ pub struct HudApp {
     pub cost: CostCounter,
     pub silence: SilenceBudgetTracker,
     pub pending_actions: usize,
+    /// Carte d'action issue du démon, en attente de décision. Une seule à la
+    /// fois (spec §8) ; elle n'est jamais déduite d'un texte local.
+    pending_card: Option<ActionCard>,
     pub bridge: KernelBridge<RealDaemonBridge>,
     /// Refus honnête à afficher (plus prioritaire que `hud_response`).
     pub notice: Option<String>,
@@ -185,6 +211,7 @@ impl HudApp {
             cost: CostCounter::new(500, "EUR"),
             silence: SilenceBudgetTracker::new(3),
             pending_actions: 0,
+            pending_card: None,
             bridge: KernelBridge::new(bridge),
             notice: None,
             budget,
@@ -244,10 +271,18 @@ impl HudApp {
         self.panel
     }
 
+    /// Carte d'action réelle en attente, si le démon en a proposé une.
+    pub fn pending_card(&self) -> Option<&ActionCard> {
+        self.pending_card.as_ref()
+    }
+
     /// Scène HUD : compacte, ou étendue quand un panneau est ouvert.
     pub fn scene(&self) -> Scene {
         let snap = self.snapshot();
         let dark = !snap.light_mode;
+        if let Some(card) = &self.pending_card {
+            return card_scene(&snap, card, self.data_notice.as_deref(), dark);
+        }
         if self.panel != PanelKind::None {
             return consult_scene(&snap, &self.consult_view(), dark);
         }
@@ -370,6 +405,41 @@ impl HudApp {
                     footer,
                 }
             }
+            PanelKind::Card => {
+                let lines = match &self.pending_card {
+                    Some(card) => vec![
+                        ConsultLine::new(
+                            format!("{} {}", card.verb, card.object),
+                            ConsultLineKind::Strong,
+                        ),
+                        ConsultLine::new(card.reason.clone(), ConsultLineKind::Normal),
+                        ConsultLine::new(
+                            format!(
+                                "Coût : {} · Données : {:?} · {}",
+                                card.cost.display(),
+                                card.data_exit,
+                                if card.reversible {
+                                    "annulable"
+                                } else {
+                                    "définitif"
+                                }
+                            ),
+                            ConsultLineKind::Muted,
+                        ),
+                    ],
+                    None => vec![ConsultLine::new(
+                        "Aucune carte en attente.",
+                        ConsultLineKind::Muted,
+                    )],
+                };
+                ConsultView {
+                    title: "Décision requise".into(),
+                    subtitle: "Carte issue du démon — aucune exécution sans décision auditée"
+                        .into(),
+                    lines,
+                    footer,
+                }
+            }
             PanelKind::Response | PanelKind::None => {
                 let aux = self.aux_notice();
                 let lines = match &aux {
@@ -442,6 +512,16 @@ impl HudApp {
 
     /// Traite une entrée et renvoie les effets pour l'hôte.
     pub fn handle(&mut self, input: HudInput) -> Vec<HudAction> {
+        // Une carte ouverte est un état de décision : la frappe ne doit ni
+        // modifier la requête ni envoyer un tour par accident.
+        if self.pending_card.is_some()
+            && matches!(
+                &input,
+                HudInput::Char(_) | HudInput::ImeCommit(_) | HudInput::Backspace | HudInput::Enter
+            )
+        {
+            return Vec::new();
+        }
         match input {
             HudInput::HotkeyToggle => self.toggle_visibility(),
             HudInput::Char(c) => {
@@ -610,6 +690,120 @@ impl HudApp {
         }
     }
 
+    /// Carte réelle proposée par le démon : une seule à la fois. Elle force
+    /// l'état `DecisionRequired`, ouvre le panneau 720×360 et ne produit aucun
+    /// effet avant une décision auditée côté démon.
+    pub fn show_card(&mut self, card: ActionCard) -> Vec<HudAction> {
+        let was_visible = self.visible;
+        if self.pending_card.is_some() {
+            // Le protocole ne permet qu'une carte ouverte ; on conserve la
+            // plus récente et on rend l'ancienne explicitement inaccessible.
+            tracing::warn!(
+                card_id = card.id,
+                "nouvelle carte : la précédente est remplacée"
+            );
+        }
+        self.pending_card = Some(card);
+        self.pending_actions = 1;
+        self.presence
+            .set_state(hakille_ui::PresenceState::DecisionRequired);
+        self.notice = None;
+        self.data_notice = None;
+        self.pending_query = None;
+        self.panel = PanelKind::Card;
+        if !self.visible {
+            self.visible = true;
+            self.hud.open_prompt();
+        }
+        let mut actions = Vec::new();
+        if !was_visible {
+            actions.push(HudAction::ShowWindow);
+        }
+        actions.push(self.resize_action(true));
+        actions.push(HudAction::Redraw);
+        actions
+    }
+
+    /// Décision envoyée au démon : la carte reste visible jusqu'à l'accusé
+    /// d'audit. Aucun effet local n'est simulé.
+    pub fn on_card_decision_sent(&mut self, card_id: u64, approved: bool) -> Vec<HudAction> {
+        if self.pending_card.as_ref().map(|c| c.id) != Some(card_id) {
+            return Vec::new();
+        }
+        self.presence.set_state(hakille_ui::PresenceState::Acting);
+        self.data_notice = Some(if approved {
+            "validation envoyée — en attente de l'audit du démon…".to_string()
+        } else {
+            "refus envoyé — en attente de l'audit du démon…".to_string()
+        });
+        if self.visible {
+            vec![HudAction::Redraw]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Édition envoyée : aucune mutation locale ; le démon peut refuser.
+    pub fn on_card_edit_sent(&mut self, card_id: u64) -> Vec<HudAction> {
+        if self.pending_card.as_ref().map(|c| c.id) != Some(card_id) {
+            return Vec::new();
+        }
+        self.data_notice =
+            Some("demande de modification envoyée — le démon peut la refuser".to_string());
+        if self.visible {
+            vec![HudAction::Redraw]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Accusé signé du démon : la carte est retirée uniquement après l'audit.
+    /// Le texte rappelle qu'aucun effet métier n'a été exécuté.
+    pub fn on_card_decision_ack(
+        &mut self,
+        card_id: u64,
+        approved: bool,
+        audit_id: &str,
+    ) -> Vec<HudAction> {
+        if self.pending_card.as_ref().map(|c| c.id) != Some(card_id) {
+            return self.notice_actions(format!(
+                "accusé de carte #{card_id} ignoré — aucune carte correspondante"
+            ));
+        }
+        self.pending_card = None;
+        self.pending_actions = 0;
+        self.presence.set_state(hakille_ui::PresenceState::Idle);
+        let short: String = audit_id.chars().take(8).collect();
+        self.data_notice = Some(format!(
+            "carte #{card_id} {} — décision auditée [{short}] ; aucune exécution métier",
+            if approved { "approuvée" } else { "refusée" }
+        ));
+        let was_expanded = self.panel != PanelKind::None;
+        self.panel = PanelKind::None;
+        if self.visible {
+            let mut actions = Vec::new();
+            if was_expanded {
+                actions.push(self.resize_action(false));
+            }
+            actions.push(HudAction::Redraw);
+            actions
+        } else {
+            self.unseen_reply = true;
+            Vec::new()
+        }
+    }
+
+    /// Appui trop court sur une carte irréversible : aucun envoi, aucun effet.
+    pub fn on_card_hold_too_short(&mut self) -> Vec<HudAction> {
+        self.data_notice =
+            Some("appui trop court — maintenir 600 ms pour valider, ou refuser".to_string());
+        if self.visible {
+            vec![HudAction::Redraw]
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Réponse asynchrone du démon — même logique que les branches `Ok` de
     /// `submit_query`. Fenêtre masquée : mémorisée (`unseen_reply`), zéro
     /// frame.
@@ -623,6 +817,12 @@ impl HudApp {
                     Vec::new()
                 }
             }
+            KernelToUi::ShowCard(card) => self.show_card(card),
+            KernelToUi::CardDecisionAck {
+                card_id,
+                approved,
+                audit_id,
+            } => self.on_card_decision_ack(card_id, approved, &audit_id),
             KernelToUi::JournalReply { entries } => {
                 let count = entries.len();
                 self.journal_entries = entries;
@@ -746,7 +946,7 @@ impl HudApp {
                 limit: CONSULT_LIMIT,
             },
             PanelKind::Status => HudAction::RequestStatus,
-            PanelKind::Response | PanelKind::None => HudAction::Redraw,
+            PanelKind::Card | PanelKind::Response | PanelKind::None => HudAction::Redraw,
         });
         actions.push(HudAction::Redraw);
         actions
@@ -771,17 +971,42 @@ impl HudApp {
     /// Déconnexion IPC : la requête en vol est annulée (le démon n'a pas
     /// d'annulation, aucune réponse ne viendra plus).
     pub fn on_kernel_disconnected(&mut self) -> Vec<HudAction> {
+        let had_card = self.pending_card.take().is_some();
+        if had_card {
+            self.pending_actions = 0;
+            self.panel = PanelKind::None;
+        }
         let Some(query) = self.pending_query.take() else {
+            if had_card {
+                self.notice =
+                    Some("démon déconnecté — carte annulée, aucune décision possible".to_string());
+                self.presence.set_state(hakille_ui::PresenceState::Idle);
+                return if self.visible {
+                    vec![self.resize_action(false), HudAction::Redraw]
+                } else {
+                    self.unseen_reply = true;
+                    Vec::new()
+                };
+            }
             return Vec::new();
         };
-        let cancel = "démon déconnecté — requête annulée";
+        let cancel = if had_card {
+            "démon déconnecté — requête et carte annulées"
+        } else {
+            "démon déconnecté — requête annulée"
+        };
         self.notice = Some(cancel.to_string());
         // État final : sinon l'animation d'attente tournerait sans fin alors
         // qu'aucune réponse ne viendra (aucune frame fantôme).
         self.hud.set_streaming(query, cancel.to_string(), true);
         self.presence.set_state(hakille_ui::PresenceState::Idle);
         if self.visible {
-            vec![HudAction::Redraw]
+            let mut actions = Vec::new();
+            if had_card {
+                actions.push(self.resize_action(false));
+            }
+            actions.push(HudAction::Redraw);
+            actions
         } else {
             self.unseen_reply = true;
             Vec::new()
@@ -809,6 +1034,11 @@ impl HudApp {
     fn show(&mut self) {
         self.visible = true;
         self.evaporate_remaining_ms = 0;
+        if self.pending_card.is_some() {
+            // Une carte masquée par Échap reste la vue active à la
+            // réouverture : jamais de HUD compact qui cache la décision.
+            self.panel = PanelKind::Card;
+        }
         if self.unseen_reply {
             // Réponse/notice arrivée masqué : `open_prompt` effacerait le
             // streaming mémorisé → on réaffiche tel quel ; l'utilisateur
@@ -832,6 +1062,12 @@ impl HudApp {
     fn escape(&mut self) -> Vec<HudAction> {
         if !self.visible {
             return Vec::new();
+        }
+        // Une carte reste en attente : Échap masque le HUD sans refuser ni
+        // approuver. La carte revient à la réouverture, avec son id intact.
+        if self.pending_card.is_some() {
+            self.hide_now();
+            return vec![HudAction::HideWindow];
         }
         // Premier Échap : referme le panneau étendu et revient au HUD compact.
         // Le second applique la sémantique existante (évaporation/veille).
@@ -1466,6 +1702,101 @@ mod tests {
         let aux = app.aux_notice().expect("refus IPC affiché");
         assert!(aux.error);
         assert!(aux.text.contains("démon non connecté"));
+    }
+
+    fn test_card(id: u64) -> ActionCard {
+        ActionCard {
+            id,
+            verb: "Confirmer".into(),
+            object: "Virement : 25 EUR".into(),
+            reason: "Action irréversible détectée".into(),
+            cost: hakille_ui_protocol::Money::from_cents(2500, "EUR"),
+            data_exit: hakille_ui_protocol::DataExit::Local,
+            reversible: false,
+            provenance: hakille_ui_protocol::Provenance::Hakille,
+        }
+    }
+
+    #[test]
+    fn show_card_expands_blocks_typing_and_escape_only_hides_it() {
+        let mut app = shown(false);
+        let actions = app.on_kernel_reply(KernelToUi::ShowCard(test_card(7)));
+        assert!(actions.contains(&HudAction::ResizeWindow {
+            width: 720,
+            height: 360
+        }));
+        assert_eq!(app.panel(), PanelKind::Card);
+        assert_eq!(app.pending_card().map(|c| c.id), Some(7));
+        assert_eq!(app.pending_actions, 1);
+        assert_eq!(app.snapshot().presence_state, 4);
+        assert_eq!(app.scene().height, CONSULT_HEIGHT);
+        assert!(
+            app.handle(HudInput::Char('x')).is_empty(),
+            "une carte ouverte ne doit pas modifier la requête"
+        );
+
+        // Échap masque mais ne refuse pas : la carte reste en attente.
+        assert_eq!(app.handle(HudInput::Escape), vec![HudAction::HideWindow]);
+        assert!(!app.visible);
+        assert_eq!(app.pending_card().map(|c| c.id), Some(7));
+
+        let actions = app.handle(HudInput::HotkeyToggle);
+        assert!(actions.contains(&HudAction::ShowWindow));
+        assert!(actions.contains(&HudAction::ResizeWindow {
+            width: 720,
+            height: 360
+        }));
+        assert_eq!(app.scene().height, CONSULT_HEIGHT);
+    }
+
+    #[test]
+    fn card_ack_is_the_only_way_to_clear_the_card_and_restores_compact_hud() {
+        let mut app = shown(false);
+        app.on_kernel_reply(KernelToUi::ShowCard(test_card(9)));
+        let actions = app.on_card_decision_sent(9, true);
+        assert!(actions.contains(&HudAction::Redraw));
+        assert_eq!(app.snapshot().presence_state, 2, "Acting pendant l'audit");
+        assert_eq!(app.pending_card().map(|c| c.id), Some(9));
+
+        let actions = app.on_card_decision_ack(9, true, "018f0000-aaaa-bbbb-cccc-000000000009");
+        assert!(actions.contains(&HudAction::ResizeWindow {
+            width: 720,
+            height: 64
+        }));
+        assert!(app.pending_card().is_none());
+        assert_eq!(app.pending_actions, 0);
+        assert_eq!(app.panel(), PanelKind::None);
+        assert_eq!(app.scene().height, HUD_HEIGHT);
+        let notice = app.aux_notice().expect("accusé affiché");
+        assert!(notice.text.contains("décision auditée"));
+        assert!(notice.text.contains("aucune exécution"));
+    }
+
+    #[test]
+    fn unmatched_card_ack_never_clears_the_pending_card() {
+        let mut app = shown(false);
+        app.on_kernel_reply(KernelToUi::ShowCard(test_card(11)));
+        let actions = app.on_card_decision_ack(12, true, "uuid");
+        assert!(actions.contains(&HudAction::Redraw));
+        assert_eq!(app.pending_card().map(|c| c.id), Some(11));
+        let notice = app.aux_notice().expect("accusé ignoré signalé");
+        assert!(notice.text.contains("ignoré"));
+    }
+
+    #[test]
+    fn disconnect_cancels_pending_card_without_pretending_a_decision() {
+        let mut app = shown(false);
+        app.on_kernel_reply(KernelToUi::ShowCard(test_card(13)));
+        let actions = app.on_kernel_disconnected();
+        assert!(actions.contains(&HudAction::ResizeWindow {
+            width: 720,
+            height: 64
+        }));
+        assert!(app.pending_card().is_none());
+        assert_eq!(app.pending_actions, 0);
+        assert_eq!(app.panel(), PanelKind::None);
+        let notice = app.aux_notice().expect("carte annulée signalée");
+        assert!(notice.text.contains("carte annulée"));
     }
 
     #[test]

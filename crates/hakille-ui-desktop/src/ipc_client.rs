@@ -134,6 +134,19 @@ impl IpcClient {
     pub fn request_status(&self) -> bool {
         self.submit(UiToKernel::StatusRequest)
     }
+
+    /// Décision de carte : le démon audite avant d'accuser réception.
+    pub fn approve_card(&self, card_id: u64) -> bool {
+        self.submit(UiToKernel::Approve { card_id })
+    }
+
+    pub fn reject_card(&self, card_id: u64) -> bool {
+        self.submit(UiToKernel::Reject { card_id })
+    }
+
+    pub fn edit_card(&self, card_id: u64) -> bool {
+        self.submit(UiToKernel::Edit { card_id })
+    }
 }
 
 /// Fin de session côté client.
