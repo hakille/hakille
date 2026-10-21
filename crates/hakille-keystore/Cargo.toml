@@ -2,6 +2,7 @@
 name = "hakille-keystore"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 description = "OS-keychain-backed registry for Hakille long-lived seeds (capability root, journal signing)"
 
 # NOTE (confiance au boot) : dependances DIRECTES versionnees uniquement,

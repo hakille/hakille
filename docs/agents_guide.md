@@ -1,84 +1,127 @@
-# Guide de Développement d'Agents Sandboxés WASM
+# Agents de Référence et Runtime WASM
 
-Ce guide explique comment créer, tester et déployer des agents autonomes isolés au sein de l'environnement d'exécution WASM d'Hakille.
+Ce guide décrit l'état **réel** des agents dans Hakille : ce qui existe, ce qui
+est testé et ce qui n'est pas encore branché.
+
+> **Statut v1 — important.** Le crate `hakille-agents` contient un `WasmRunner`
+> Wasmtime fonctionnel et testé, mais le démon ne l'utilise pas encore. Les cinq
+> dossiers de `agents/` sont des **crates natives avec manifests** ; aucun
+> binaire `.wasm` n'est versionné, chargé ou exécuté. `spawn_sandboxed` retourne
+> un handle local sans lancer d'instance WASM. Les scopes déclarés dans les
+> manifests ne sont donc **pas encore appliqués** par un bac à sable en
+> exécution.
 
 ---
 
-## 1. Principes d'Isolation des Agents
+## 1. Ce qui existe réellement
 
-Dans Hakille, aucun agent tiers ou compétence autonome ne s'exécute directement dans le processus hôte :
-1. **Isolation WASM/WASI** : Les agents sont compilés en cibles `wasm32-wasip1` ou `wasm32-wasip2` et exécutés dans des instances isolées orchestrées par `hakille-agents` (basé sur **Wasmtime**).
-2. **Capabilities Explicites** : Un agent ne dispose d'aucun accès au système de fichiers, au réseau ou aux périphériques par défaut.
-3. **Passeport Cryptographique** : Chaque agent détient un passeport signé Ed25519 attestant de l'identité pour laquelle il agit et de la délégation de pouvoirs reçue.
+| Élément | État |
+| :--- | :--- |
+| `WasmRunner` / `Agent::run` (Wasmtime) | Implémenté et testé unitairement : ABI `run`, zéro import, fuel, timeout, mémoire bornée. |
+| ABI agent `memory` + `run(i32,i32)->(i32,i32)` | Implémentée ; entrée JSON UTF-8 écrite en mémoire, sortie JSON validée. |
+| 5 crates `agents/*` | Fonctions natives et tests unitaires présents. |
+| 5 manifests `agent.toml` | Présents ; enregistrés en mémoire par le démon. |
+| Chargement dynamique des manifests par le démon | Absent : la liste est codée en dur. |
+| Binaires `.wasm` | **Absents du dépôt**. |
+| Exécution d'un agent par le démon | **Absente** : `spawn_sandboxed` n'appelle pas `WasmRunner`. |
+| Application effective des scopes Biscuit aux agents | **Absente** tant que l'exécution n'est pas branchée. |
+
+Le REPL `:agents` affiche donc des manifests et un avertissement explicite,
+jamais un agent « en cours d'exécution ».
 
 ---
 
-## 2. Structure d'un Agent Hakille
+## 2. Structure d'un agent
 
-Un agent Hakille est un crate Rust autonome contenant un fichier de manifeste `agent.toml` et un point d'entrée :
+Un dossier d'agent contient :
 
 ```
-agents/my-custom-agent/
-├── agent.toml      # Métadonnées et déclaration des capabilities exigées
-├── Cargo.toml      # Dépendances (std ou core sans accès système direct)
+agents/my-agent/
+├── agent.toml      # métadonnées + capabilities déclarées
+├── Cargo.toml
 └── src/
-    └── main.rs     # Logique de l'agent
+    ├── lib.rs      # logique native testable
+    └── main.rs     # point d'entrée natif (pas l'ABI WasmRunner)
 ```
 
-### Le Manifeste `agent.toml`
+### Manifeste `agent.toml`
+
 ```toml
 id = "agent-calendar"
 name = "Calendar Agent"
 version = "0.1.0"
-description = "Gestionnaire d'agenda et planification locale"
-
-# Déclaration obligatoire des capacités exigées
-required_capabilities = [
-    "Filesystem"
-]
+description = "Planification locale"
+required_capabilities = ["Filesystem"]
+isolated = true
 ```
 
----
+`required_capabilities` est une **déclaration**. Elle ne crée ni ne vérifie de
+jeton Biscuit à elle seule.
 
-## 3. Exemple d'Implémentation (`src/main.rs`)
+Le manifeste Rust correspondant est :
 
 ```rust
-use std::io::{self, Read, Write};
+use hakille_agents::AgentManifest;
+use hakille_core::CapabilityScope;
 
-fn main() {
-    // 1. Les agents communiquent via les flux standard typés (stdin/stdout)
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input).expect("Failed to read input");
-
-    // 2. Traitement de la commande passée par hakille-kernel
-    let response = format!("Agent calendar executed action on input: {}", input.trim());
-
-    // 3. Émission de la réponse structurée
-    io::stdout().write_all(response.as_bytes()).expect("Failed to write output");
-}
+let manifest = AgentManifest {
+    id: "agent-mail".to_string(),
+    name: "MailAssistant".to_string(),
+    version: "0.1.0".to_string(),
+    description: "Lecture et organisation des emails".to_string(),
+    required_capabilities: vec![CapabilityScope::Filesystem, CapabilityScope::Network],
+};
 ```
 
 ---
 
-## 4. Les Agents de Référence Inclus
+## 3. ABI du `WasmRunner` (cible d'exécution)
 
-Le monorepo Hakille fournit cinq agents de référence prêts à l'emploi dans `agents/` :
+Un module destiné au runner doit exporter exactement :
 
-| Agent | Scopes de Capabilities | Rôle & Fonctionnalité |
-| :--- | :--- | :--- |
-| **`agent-mail`** | `Network`, `Filesystem` | Analyse des boîtes de réception, tri, proposition de réponses. Tout contenu externe est marqué `Untrusted`. |
-| **`agent-calendar`** | `Filesystem` | Consultation et mise à jour des plannings sans accès réseau extérieur. |
-| **`agent-code`** | `Filesystem` | Inspection de syntaxe, refactoring et exécution de tests dans un répertoire isolé. |
-| **`agent-home`** | `Network`, `Sensor` | Communication avec les ponts domotiques locaux (Matter / Zigbee / Home Assistant). |
-| **`agent-wallet-readonly`** | `Wallet` | Consultation des plafonds de dépenses alloués et vérification de conformité financière. |
+- `memory` : mémoire linéaire ;
+- `run : (i32, i32) -> (i32, i32)` : `run(input_ptr, input_len)` retourne
+  `(output_ptr, output_len)`.
+
+Contraintes réellement appliquées par `WasmRunner` :
+
+1. **Aucun import** n'est lié (ni WASI, ni `env`) ; un module qui importe quoi
+   que ce soit est refusé au chargement.
+2. L'entrée et la sortie sont du **JSON UTF-8 valide**.
+3. Chaque appel utilise un `Store` neuf : aucun état résiduel entre deux runs.
+4. Quotas par défaut : `fuel = 50_000_000`, `timeout = 5 s`,
+   `max_memory_pages = 256` (16 Mio), surchargeables via `RunLimits`.
+
+Ce contrat est testé dans `crates/hakille-agents/src/wasm_runner.rs`. Il ne
+signifie pas que les cinq agents de référence respectent déjà cet ABI : leurs
+`main.rs` utilisent stdin/stdout natif.
 
 ---
 
-## 5. Compilation et Enregistrement dans le Démon
+## 4. Compiler un module compatible (mode manuel)
 
-Pour compiler un agent en bytecode WebAssembly :
+Le chemin de compilation existe, mais il n'est pas automatisé par le démon :
+
 ```bash
-cargo build -p agent-calendar --target wasm32-wasip1 --release
+rustup target add wasm32-wasip1
+cargo build -p mon-agent --target wasm32-wasip1 --release
 ```
 
-Le démon `hakille-daemon` charge automatiquement les binaires compilés et valide les manifestes avant d'accorder les tokens Biscuit correspondants.
+Le module produit doit être chargé explicitement par un hôte qui appelle
+`AgentSandbox::load` puis `Agent::run` avec des `RunLimits`. Le démon actuel ne
+le fait pas.
+
+---
+
+## 5. Travaux nécessaires pour l'exécution de bout en bout
+
+1. Exporter l'ABI `run`/`memory` depuis les agents (ou fournir des adaptateurs).
+2. Fournir et versionner des binaires `.wasm` reproductibles.
+3. Brancher `spawn_sandboxed` sur `WasmRunner` au lieu du handle local.
+4. Dériver les capabilities Biscuit depuis le manifeste et les vérifier avant
+   chaque run.
+5. Ajouter un test d'intégration démon → runner → réponse JSON, puis mettre à
+   jour ce guide et `README.md`.
+
+Tant que ces étapes ne sont pas faites, toute documentation ou sortie qui
+présente les agents comme « sandboxés et opérationnels » est incorrecte.

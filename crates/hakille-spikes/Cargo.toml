@@ -2,6 +2,7 @@
 name = "hakille-spikes"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 description = "Spikes Phase 0 (spec Hakille §10) : preuves avant engagement iced/Redox/IME/événementiel"
 
 [dependencies]

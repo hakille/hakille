@@ -2,6 +2,7 @@
 name = "hakille-core"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 description = "Noyau de types, capabilities Biscuit et confiance Hakille"
 repository = "https://github.com/hakille/hakille"
 [dependencies]

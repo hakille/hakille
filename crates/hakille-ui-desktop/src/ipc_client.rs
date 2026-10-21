@@ -52,6 +52,18 @@ impl IpcClient {
         on_reply: impl Fn(KernelToUi) + Send + 'static,
         on_disconnected: impl Fn() + Send + 'static,
     ) -> Self {
+        Self::spawn_with_connected(endpoint, token_path, || {}, on_reply, on_disconnected)
+    }
+
+    /// Variante avec callback de connexion (handshake réussi) : l'hôte peut
+    /// alors vider sa file de requêtes saisies avant le démarrage du démon.
+    pub fn spawn_with_connected(
+        endpoint: String,
+        token_path: PathBuf,
+        on_connected: impl Fn() + Send + 'static,
+        on_reply: impl Fn(KernelToUi) + Send + 'static,
+        on_disconnected: impl Fn() + Send + 'static,
+    ) -> Self {
         let (outbound, receiver) = mpsc::unbounded_channel();
         let connected = Arc::new(AtomicBool::new(false));
         let thread_connected = Arc::clone(&connected);
@@ -73,6 +85,7 @@ impl IpcClient {
                     token_path,
                     receiver,
                     thread_connected,
+                    on_connected,
                     on_reply,
                     on_disconnected,
                 ));
@@ -138,6 +151,7 @@ async fn run_client(
     token_path: PathBuf,
     mut outbound: mpsc::UnboundedReceiver<Frame>,
     connected: Arc<AtomicBool>,
+    on_connected: impl Fn() + Send + 'static,
     on_reply: impl Fn(KernelToUi) + Send + 'static,
     on_disconnected: impl Fn() + Send + 'static,
 ) {
@@ -167,6 +181,7 @@ async fn run_client(
             continue;
         }
         connected.store(true, Ordering::SeqCst);
+        on_connected();
         let end = run_session(stream, &mut outbound, &on_reply).await;
         connected.store(false, Ordering::SeqCst);
         match end {

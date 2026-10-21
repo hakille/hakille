@@ -2,6 +2,7 @@
 name = "hakille-voice"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [dependencies]
 hakille-core = { path = "../hakille-core" }

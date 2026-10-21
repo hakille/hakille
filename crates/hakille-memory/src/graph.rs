@@ -597,8 +597,16 @@ impl KnowledgeGraph {
         }
     }
 
-    /// Sauvegarde JSON vers un fichier (triplets + registres).
+    /// Sauvegarde JSON atomique vers un fichier (triplets + registres).
+    ///
+    /// Le snapshot est écrit dans un fichier temporaire du même répertoire,
+    /// synchronisé sur disque, puis renommé sur la destination. Un crash
+    /// pendant l'écriture laisse donc l'ancien snapshot intact, jamais un
+    /// JSON tronqué qui empêcherait le prochain démarrage.
     pub fn save_to_file(&self, path: impl AsRef<std::path::Path>) -> hakille_core::Result<()> {
+        use std::io::Write as _;
+
+        let path = path.as_ref();
         let snapshot = GraphSnapshot {
             triplets: self.triplets.values().cloned().collect(),
             subject_names: self
@@ -624,8 +632,56 @@ impl KnowledgeGraph {
         };
         let bytes = serde_json::to_vec_pretty(&snapshot)
             .map_err(|e| hakille_core::HakilleError::SerializationError(e.to_string()))?;
-        std::fs::write(path.as_ref(), bytes)
-            .map_err(|e| hakille_core::HakilleError::StorageError(e.to_string()))
+
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| hakille_core::HakilleError::StorageError(e.to_string()))?;
+        }
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                hakille_core::HakilleError::StorageError(format!(
+                    "chemin de sauvegarde invalide: {}",
+                    path.display()
+                ))
+            })?;
+        static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nonce = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp_path =
+            path.with_file_name(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
+
+        let write_result = (|| -> std::io::Result<()> {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp_path)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            drop(file);
+            std::fs::rename(&temp_path, path)?;
+            // Rendre le rename durable sur les systèmes POSIX. Sur Windows,
+            // `rename` est déjà une opération de répertoire atomique.
+            #[cfg(unix)]
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+                && let Ok(dir) = std::fs::File::open(parent)
+            {
+                dir.sync_all()?;
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = write_result {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(hakille_core::HakilleError::StorageError(format!(
+                "sauvegarde atomique de {} impossible: {e}",
+                path.display()
+            )));
+        }
+        Ok(())
     }
 
     /// Charge un graphe depuis un fichier JSON écrit par [`Self::save_to_file`].
@@ -983,6 +1039,47 @@ mod tests {
         // Compat : `persist_to` existe toujours et persiste tout le RAM.
         graph.persist_to(&edge).await.unwrap();
         assert_eq!(edge.all_triplets().await.unwrap().len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn save_to_file_roundtrip_uses_atomic_replacement() {
+        let dir = std::env::temp_dir().join(format!(
+            "hakille-graph-snapshot-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("memory.json");
+
+        let mut graph = KnowledgeGraph::new();
+        let alice = graph.resolve_subject("Alice");
+        let aime = graph.resolve_predicate("aime");
+        let triplet = sample_triplet(&alice, &aime, NodeValue::Text("le café".into()), 0.8, 0.9);
+        let triplet_id = triplet.id.clone();
+        graph.insert(triplet);
+
+        graph.save_to_file(&path).unwrap();
+        assert!(path.exists(), "le snapshot final doit exister");
+        let loaded = KnowledgeGraph::load_from_file(&path).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains(&triplet_id));
+        assert_eq!(loaded.subject_label(&alice), Some("Alice"));
+        assert_eq!(loaded.predicate_label(&aime), Some("aime"));
+
+        // Une seconde sauvegarde remplace le snapshot sans laisser de
+        // fichier temporaire derrière elle.
+        graph.save_to_file(&path).unwrap();
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "fichiers temporaires orphelins: {leftovers:?}"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

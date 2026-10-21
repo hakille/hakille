@@ -20,7 +20,7 @@ Une véritable assistance exige une autonomie proactive : organiser des fichiers
 Hakille n'est pas confinée dans une boîte de dialogue. Elle contrôle directement le matériel hôte via l'abstraction `Substrate` : manipulation d'interfaces graphiques (GUI grounding via UI-TARS), injection d'entrées physiques (clavier/souris), capture d'écran native, contrôle audio, ordonnancement de processus et gestion de fichiers, sans changer d'application.
 
 ### Axiome 4 : Éradication Absolue de Python en Production (*Zero-Python Runtime*)
-Garantir le temps réel strict (< 150 ms de latence vocale bout-en-bout), la sûreté mémoire (`#![deny(unsafe_code)]` là où possible), l'absence totale de pauses de ramasse-miettes (GC pauses) et une empreinte mémoire prédictible interdit formellement l'utilisation de CPython ou de runtimes managés en production. **100 % de la pile est compilée en Rust natif (édition 2024)** et en WebAssembly/WASI via Wasmtime, Candle, et ONNX Runtime (`ort`).
+**Viser** un temps réel strict (< 150 ms de latence vocale bout-en-bout) et une empreinte mémoire prédictible oriente l'architecture ; ces latences sont des cibles, pas des garanties mesurées sur toutes les machines. La pile d'exécution est compilée en Rust natif (édition 2024) avec Candle, ONNX Runtime (`ort`) et Wasmtime ; aucun runtime Python n'est requis en production. L'absence de pauses de GC et la sûreté mémoire restent des invariants de conception, vérifiés au cas par cas.
 
 ---
 
@@ -41,10 +41,10 @@ Hakille est structuré selon une hiérarchie stricte en 6 couches hermétiques. 
                                          │ Validation des invariants & Traçabilité
                                          ▼
 +===================================================================================+
-|                            COUCHE 5 : ACTION (AGENTS WASM)                        |
+|                       COUCHE 5 : ACTION (AGENTS WASM — CIBLE)                     |
 |  - Runtime de bac à sable WASI / Wasmtime (hakille-agents)                         |
 |  - Vérification & atténuation hors-ligne de capabilities Biscuit                  |
-|  - Quotas stricts d'appels et révocation automatique en cas d'abus (état réel : quotas WASM enforced — `crates/hakille-agents/src/runtime.rs:53-62` ; egress loopback-only, allowlist TODO — `crates/hakille-substrate-linux/src/substrate_impl.rs:334-346`) |
+|  - Quotas définis dans `WasmRunner` (fuel/timeout/mémoire), **non branchés au démon** en v1 ; `spawn_sandboxed` retourne un handle local sans exécuter de WASM |
 |  - Agent GUI UI-TARS (intentions d'action abstraites : Click, Type, Drag)         |
 |  - Protocole inter-agents signé Ed25519 (négociation d'agenda et de tâches)       |
 +===================================================================================+
@@ -67,7 +67,7 @@ Hakille est structuré selon une hiérarchie stricte en 6 couches hermétiques. 
 |                            COUCHE 3 : NOYAU COGNITIF                              |
 |  - Cognitive Fabric & Manifeste dynamique de capacités (hakille-kernel)            |
 |  - Cognitive Orchestrator & boucle de décision (Sense -> Reason -> Plan -> Act)   |
-|  - Routeur dynamique System 1 (3-7B local <100ms) / System 2 (distant lourd)      |
+|  - Routeur System 1 local (Qwen 0.5B ; cible <100ms non garantie) / System 2       |
 |  - Working Memory (tampon temporaire d'hypothèses et distillation)                |
 |  - Deliberate Planner & Dry-Run Simulator (simulation avant action irréversible)  |
 |  - Self-Model introspectif & Graph Curiosity Scanner (veille cognitive)           |
@@ -81,8 +81,8 @@ Hakille est structuré selon une hiérarchie stricte en 6 couches hermétiques. 
 |  - Transcription SenseVoice-Small (234M, non-autorégressif, ASR, émotions, bruits)|
 |  - Diarisation continue Nemotron-3 (100M, Sortformer, 8 locuteurs)                |
 |  - Biométrie vocale déterministe CAM++ (7.2M, 192-d)                              |
-|  - Speech-to-Speech Full-Duplex Kyutai Moshi (Candle Rust) & Codec Mimi (12.5Hz)  |
-|  - Synthèse vocale CosyVoice2-0.5B streaming sub-150ms                            |
+|  - Cible S2S : Kyutai Moshi (non provisionné) & codec Mimi (RVQ nearest-L2, 12.5Hz)|
+|  - Cible TTS neuronale CosyVoice2 (non provisionnée) ; v1 = formant Klatt          |
 |  - CameraPipeline & WorldModel multimodal (suivi spatial continu de la scène)     |
 +===================================================================================+
                                          ▲
@@ -98,20 +98,20 @@ Hakille est structuré selon une hiérarchie stricte en 6 couches hermétiques. 
 |    * Redox OS (Micro-noyau, Schemes natifs chan:, orbital:, sys:, RedoxPacket)    |
 |    * Mobile (Shadow sync TiKV, Scoped storage, Battery conservation state machine)|
 |    * Web (WebAssembly, Web Audio resampling 48->16kHz, Canvas, WebGPU limits)     |
-|  - Attestation matérielle cryptographique (état réel : signature dev locale, pas une preuve TPM — `crates/hakille-daemon/src/main.rs:300`, tracked) |
+|  - Attestation de plateforme (état réel : signature dev locale, pas une preuve TPM — `crates/hakille-daemon/src/main.rs`, tracked) |
 +===================================================================================+
 ```
 
 ---
 
-## 3. Matrice Complète des 31 Crates du Projet (+ 5 Agents)
+## 3. Matrice Complète des 31 Crates du Projet (+ 5 Agents de Référence)
 
-Le monorepo Cargo regroupe 31 crates modulaires (+ 5 agents WASM `agents/`, `conformance`, `xtask`) garantissant un découplage rigoureux :
+Le monorepo Cargo regroupe 31 crates modulaires (+ 5 crates d'agents de référence dans `agents/`, sans binaire `.wasm` livré, `conformance`, `xtask`) garantissant un découplage rigoureux :
 
 | Crate | Chemin | Rôle & Composants Clés | Couche |
 | :--- | :--- | :--- | :--- |
 | **`hakille-core`** | [`../crates/hakille-core`](../crates/hakille-core) | Types universels, identifiants UUIDv7, primitives crypto Ed25519 / ChaCha20Poly1305, jetons Biscuit, niveaux de confiance (`TrustLevel`), bus de messages typés (`Message`). | Fondations |
-| **`hakille-substrate`** | [`../crates/hakille-substrate`](../crates/hakille-substrate) | Contrats système : traits `Substrate` et `Compute`, `PlatformManifest`, attestation matérielle, configurations de caméra, événements de capture et d'injection. | Couche 1 |
+| **`hakille-substrate`** | [`../crates/hakille-substrate`](../crates/hakille-substrate) | Contrats système : traits `Substrate` et `Compute`, `PlatformManifest`, attestation de plateforme (signature locale de dev), configurations de caméra, événements de capture et d'injection. | Couche 1 |
 | **`hakille-substrate-windows`** | [`../crates/hakille-substrate-windows`](../crates/hakille-substrate-windows) | Implémentation Windows native : GDI BitBlt display capture, injection Win32 `SendInput`, bac à sable AppContainer avec SIDs, surveillance batterie/RAM Win32, icône Tray et hook Alt+Space. | Couche 1 |
 | **`hakille-substrate-linux`** | [`../crates/hakille-substrate-linux`](../crates/hakille-substrate-linux) | Implémentation Linux : compilateur Seccomp-BPF avec simulateur de bytecode, isolation Namespaces et Cgroups v2, télémétrie `/proc` et `/sys`, injection `/dev/uinput`, capture Wayland/X11. | Couche 1 |
 | **`hakille-substrate-macos`** | [`../crates/hakille-substrate-macos`](../crates/hakille-substrate-macos) | Implémentation macOS : profils Sandbox Seatbelt (`(deny default)`), interception Endpoint Security, télémétrie Mach `host_statistics64` et IOKit, capture Retina 2x CoreGraphics. | Couche 1 |
@@ -120,13 +120,13 @@ Le monorepo Cargo regroupe 31 crates modulaires (+ 5 agents WASM `agents/`, `con
 | **`hakille-substrate-web`** | [`../crates/hakille-substrate-web`](../crates/hakille-substrate-web) | Implémentation WebAssembly : bridge Web Audio avec rééchantillonnage linéaire 48kHz -> 16kHz, tampon circulaire anti-overrun, capture Canvas ImageData, détection WebGPU. | Couche 1 |
 | **`hakille-perception`** | [`../crates/hakille-perception`](../crates/hakille-perception) | Ingestion sensorielle : capture audio 16kHz, Silero VAD, openWakeWord, SenseVoice-Small ASR, CAM++ speaker ID, Nemotron-3 diarisation, CameraPipeline et WorldModel spatial continu. | Couche 2 |
 | **`hakille-audio`** | [`../crates/hakille-audio`](../crates/hakille-audio) | I/O audio temps réel `cpal` : capture micro, downmix mono et rééchantillonnage vers 16 kHz par blocs de 10 ms, lecture PCM. Erreur explicite si périphérique indisponible — jamais de simulation. | Couche 2 |
-| **`hakille-voice`** | [`../crates/hakille-voice`](../crates/hakille-voice) | Moteur vocal : décodeur RVQ Mimi (12,5 Hz, 80 ms) en Rust, TTS formantique Klatt (`FormantTts`, 24 kHz), détecteur d'interruption naturelle (Barge-in). `MoshiEngine::is_simulated()` expose honnêtement l'absence de poids Mimi réels. | Couche 2 |
+| **`hakille-voice`** | [`../crates/hakille-voice`](../crates/hakille-voice) | Moteur vocal : RVQ Mimi nearest-L2 sur codebooks réels (12,5 Hz), TTS formantique Klatt (`FormantTts`, 24 kHz), détecteur d'interruption (Barge-in). Pas de décodeur neural Mimi complet ; `MoshiEngine::is_simulated()` vaut `true`. | Couche 2 |
 | **`hakille-inference`** | [`../crates/hakille-inference`](../crates/hakille-inference) | Runtimes neuronaux : parseur Candle Safetensors, inspecteur ONNX Runtime (`ort`), parseur binaire streaming GGUF v3, ModelRegistry avec éviction LRU VRAM et provisioner d'artefacts. | Transverse |
 | **`hakille-ipc`** | [`../crates/hakille-ipc`](../crates/hakille-ipc) | Contrat IPC local : named pipe Windows et socket Unix, messages délimités et gestion de cycle de vie ; aucun transport TCP exposé. | Transverse |
 | **`hakille-kernel`** | [`../crates/hakille-kernel`](../crates/hakille-kernel) | Cerveau cognitif : `CognitiveFabric`, routeur System 1/2, `WorkingMemory`, `DeliberatePlanner`, `SelfModel`, `GraphCuriosityScanner`, `DryRunSimulator`, budgets de latence par étage. | Couche 3 |
 | **`hakille-memory`** | [`../crates/hakille-memory`](../crates/hakille-memory) | Mémoire à long terme : graphe de triplets SPO avec triple indexation (SPO, POS, OSP — écriture 3 index, lecture par préfixe O(N) documentée, `crates/hakille-memory/src/storage/edge.rs:164-167`), backend local ACID `redb`, index vectoriel HNSW `instant-distance` (non branché au recall, brute-force `vector/edge.rs:22-34`), GraphQueryLang DSL, déclin temporel. | Couche 4 |
 | **`hakille-sync`** | [`../crates/hakille-sync`](../crates/hakille-sync) | Continuité multi-appareils : ensembles CRDT à croissance seule avec tombstones, horloges vectorielles, coordinateur de handoff de tâche et protocole de réplication TiKV. | Couche 4 |
-| **`hakille-agents`** | [`../crates/hakille-agents`](../crates/hakille-agents) | Runtime d'action : bac à sable WASI via Wasmtime, vérification de capabilities Biscuit, quotas d'appels et auto-révocation, agent GUI UI-TARS, protocole inter-agents signé. | Couche 5 |
+| **`hakille-agents`** | [`../crates/hakille-agents`](../crates/hakille-agents) | `WasmRunner` Wasmtime (ABI `run`, fuel/timeout/mémoire) et manifests de capabilities. **Non branché au démon** : `spawn_sandboxed` ne l'appelle pas et aucun binaire `.wasm` n'est livré. | Couche 5 (cible) |
 | **`hakille-audit`** | [`../crates/hakille-audit`](../crates/hakille-audit) | Journalisation inviolable : journal append-only avec signatures Ed25519, chaînage de hachages SHA-256, registre de consentement explicite, moteur de requêtes et d'explicabilité du "pourquoi". | Couche 6 |
 | **`hakille-auth`** | [`../crates/hakille-auth`](../crates/hakille-auth) | Gestion d'identité : authentification multimodale continue, détecteur anti-usurpation vocale (liveness), gestionnaire de sessions invités bornées, profils mineurs, capability Wallet de paiement. | Couche 6 |
 | **`hakille-keystore`** | [`../crates/hakille-keystore`](../crates/hakille-keystore) | Trousseau de clés longues durées : seeds 32 octets stockés dans le keychain OS (Credential Manager, Keychain, Secret Service), utilisateurs versionnés (`capability-root-v1`, `journal-signing-v1`) et rotation. | Couche 6 |
@@ -213,34 +213,35 @@ Utilisateur        Perception           Kernel            Mémoire           Age
     │                  │                   │── Planification ┼──────────────────►│ (DryRun Sim)    │
     │                  │                   │   Vérif Biscuit │                   │                 │
     │                  │                   │                 │                   │                 │
-    │                  │                   │── Action WASM ──┼──────────────────►│ UI-TARS / Exec  │
+    │                  │                   │─ Action WASM ───┼──────────────────►│ UI-TARS / Exec  │
+    │                  │                   │     (cible)     │                   │                 │
     │                  │                   │                 │                   │ Action effectuée│
     │                  │                   │                 │                   │                 │
     │                  │                   │── Trace Action ─┼───────────────────┼────────────────►│
     │                  │                   │                 │                   │                 │ H_i = SHA256(H_i-1 || Entry)
     │                  │                   │                 │                   │                 │ Sign Ed25519
     │                  │                   │── Streaming S2S ┼───────────────────┼─────────────────┤
-    │◄── Audio Mimi ───┼───────────────────│   (sub-160ms)   │                   │                 │
+    │◄── Audio Mimi ───┼───────────────────│ (cible 160ms)   │                   │                 │
     │    Full-Duplex   │                   │                 │                   │                 │
 ```
 
 ### Étape 1 : Ingestion Perceptive & Biométrie Continue
 1. Le flux microphone (16 kHz, PCM 16-bit) est ingéré par `hakille-perception`.
 2. Le `VoiceActivityDetector` (Silero VAD) filtre le bruit et active `WakeWordDetector` ("Dis Hakille").
-3. `SenseVoiceSmall` réalise la transcription phonétique, l'analyse d'émotions et la détection d'événements ambiants en < 50 ms.
-4. Simultanément, `Nemotron3Diarization` isole la voix du locuteur et `CAM++` génère un vecteur d'empreinte de 192 dimensions.
-5. `hakille-auth` vérifie ce vecteur contre les gabarits chiffrés dans l'enclave sécurisée (TPM / Secure Enclave) et génère un jeton Biscuit root pour la personne authentifiée.
+3. `SenseVoiceSmall` réalise la transcription phonétique, l'analyse d'émotions et la détection d'événements ambiants ; la latence dépend du CPU et n'est pas garantie sous 50 ms.
+4. Simultanément, la diarisation locale utilise un clustering d'embeddings CAM++ (Nemotron n'est pas provisionné) et `CAM++` génère un vecteur de 192 dimensions.
+5. `hakille-auth` compare ce vecteur à des gabarits locaux et génère un jeton Biscuit ; l'attestation de plateforme est une signature de développement, pas une preuve TPM/Secure Enclave.
 
 ### Étape 2 : Résolution Mémorielle & Contexte
 1. L'intention transcrite est envoyée à `hakille-kernel::CognitiveFabric`.
 2. `hakille-memory` interroge simultanément :
    - Le graphe de triplets SPO local `redb` pour les relations symboliques exactes.
-   - L'index HNSW `instant-distance` pour les concepts sémantiques proches.
+   - Le recall vectoriel (HNSW présent mais non branché ; similarité brute-force documentée côté `hakille-memory`) pour les concepts proches.
 3. Les faits récupérés subissent une pondération temporelle (décroissance exponentielle des faits non réactivés).
 
 ### Étape 3 : Routage Dynamique System 1 / System 2
 1. Le `CognitiveRouter` calcule l'entropie et la complexité de la demande :
-   - **System 1** (80 % des cas) : résolu localement par le modèle 3-7B (Qwen / Moshi) en moins de 100 ms.
+   - **System 1** (cible) : résolu localement par Qwen 2.5 0.5B ; le décodage CPU réel mesuré est de l'ordre de la seconde à la dizaine de secondes selon le mode, pas sous 100 ms.
    - **System 2** : si la complexité syntaxique/sémantique dépasse le seuil ou concerne du raisonnement formel/code lourd, la tâche est escaladée vers un modèle distant ou BYOM (*Bring Your Own Model*), avec mise à jour du `CostCounter` en temps réel.
 2. Le `ConfidenceEngine` calcule le score de certitude combiné :
    $$\text{Confiance} = (\text{Score Modèle} \times 0.6) + (\text{Corrélation Graphe} \times 0.4)$$
@@ -253,13 +254,13 @@ Utilisateur        Perception           Kernel            Mémoire           Age
 2. Le jeton Biscuit est atténué avec le périmètre le plus strict possible (scopes minimaux, quota de requêtes borné, durée de vie brève).
 
 ### Étape 5 : Exécution Sécurisée & Journalisation d'Audit
-1. L'agent WASM exécute l'action dans le bac à sable Wasmtime ou transmet une intention typée (`Action::Click(x, y)`) au `Substrate` de l'hôte.
+1. **(Cible)** L'agent WASM exécuterait l'action dans le bac à sable Wasmtime ou transmettrait une intention typée (`Action::Click(x, y)`) au `Substrate`. En v1, aucun agent WASM n'est exécuté : les manifests sont seulement enregistrés et les intentions ne sont pas encore routées vers un runner.
 2. L'action est enregistrée dans `hakille-audit` :
    - Horodatage et identifiant UUIDv7.
    - Signature cryptographique Ed25519 de l'acteur.
    - Empreinte SHA-256 chaînée : $H_n = \text{SHA-256}(H_{n-1} \parallel \text{Payload}_n)$.
    - Pointeurs explicites vers les nœuds du graphe mémoire justifiant l'action.
-3. La réponse orale est renvoyée en streaming temps réel via `hakille-voice` (codec Kyutai Mimi + Moshi ou CosyVoice2).
+3. **(Cible)** La réponse orale serait renvoyée en streaming via Moshi/CosyVoice2. En v1, `hakille-voice` fournit un RVQ Mimi nearest-L2 et un TTS formantique, sans modèle neuronal Moshi.
 
 ---
 

@@ -1,14 +1,19 @@
 # Spécification Complète des Substrates OS et Abstraction Matérielle
 
-> *"Un seul cœur cognitif, six systèmes hôtes, zéro compromis sur la sûreté d'exécution."*
+> *"Un seul cœur cognitif, six systèmes hôtes, des garanties explicites plutôt qu'une sûreté supposée."*
 
-Ce document constitue la référence exhaustive de la couche de virtualisation de bas niveau d'Hakille. Il détaille le contrat d'abstraction `Substrate`, le trait orthogonal d'accélération matérielle `Compute`, ainsi que les implémentations natives des six systèmes d'exploitation cibles : **Windows**, **Linux**, **macOS**, **Redox OS (Micro-noyau)**, **Mobile (Android/iOS)** et **Web (WebAssembly)**.
+Ce document décrit le contrat d'abstraction `Substrate`, le trait `Compute` et les
+implémentations des six cibles. **État v1 :** plusieurs mécanismes de sandbox
+sont décrits ou simulés, mais ne sont pas appliqués de bout en bout ; les
+attestations sont des signatures locales de développement, pas des preuves
+TPM/Enclave. Aucun agent WASM n'est exécuté par le démon. La matrice finale
+distingue la cible de l'état vérifié.
 
 ---
 
 ## 1. Contrats d'Abstraction Fondamentaux : Traits `Substrate` et `Compute`
 
-Dans Hakille, le noyau cognitif, le graphe de mémoire et les agents WASM n'interagissent jamais directement avec les appels système (syscalls) de l'OS hôte. L'intégralité des interactions matérielles est encapsulée dans deux traits Rust définis dans [`crates/hakille-substrate`](../crates/hakille-substrate) :
+Dans Hakille, le noyau cognitif et le graphe de mémoire passent par les traits Rust du substrate plutôt que d'appeler directement les syscalls. Les agents WASM, non exécutés en v1, seraient eux aussi confinés derrière ce contrat. Les traits sont définis dans [`crates/hakille-substrate`](../crates/hakille-substrate) :
 
 ### Le Trait `Substrate` : Contrôle Système et Environnement
 Le trait `Substrate` formalise toutes les capacités requises par l'OS cognitif :
@@ -19,7 +24,7 @@ pub trait Substrate: Send + Sync + 'static {
     /// Retourne le manifeste statique et dynamique des capacités de la plateforme
     fn manifest(&self) -> &PlatformManifest;
 
-    /// Fournit une attestation cryptographique matérielle (TPM / Secure Enclave)
+    /// Signe une attestation de plateforme (v1 : clé locale de dev, pas de TPM)
     async fn attest(&self, data: &[u8]) -> hakille_core::Result<SignedAttestation>;
 
     // Système de fichiers restreint par capability Biscuit
@@ -209,15 +214,15 @@ L'implémentation Web permet à Hakille de tourner dans n'importe quel navigateu
 
 ---
 
-## 3. Matrice Comparative des Paliers et Garanties de Sécurité
+## 3. Matrice Comparative des Paliers (cible et état v1)
 
 | Critère | Windows (`windows`) | Linux (`linux`) | macOS (`macos`) | Redox OS (`redox`) | Mobile (`mobile`) | Web (`web`) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Palier (Tier)** | Native | Native | Native | **Sovereign** | Guest | Guest |
-| **Niveau de Contrôle** | Élevé (Win32) | Quasi total | Quasi total | **Absolu (Kernel)** | Restreint (OS) | Minimal (Browser) |
-| **Mécanisme de Sandbox** | AppContainer (SIDs) | Seccomp-BPF + Namespaces | Seatbelt `(deny default)` | Schemes capability-scoped | Scoped Storage | Wasm Sandbox |
+| **Niveau de Contrôle** | Élevé (Win32) | Quasi total | Quasi total | Élevé (schemes) | Restreint (OS) | Minimal (Browser) |
+| **Mécanisme de Sandbox (v1)** | AppContainer décrit, enforcement non branché | Seccomp simulé + namespaces décrits | Profils Seatbelt générés, application non validée | Schemes en-process, partiel | Scoped storage décrit | Wasm Sandbox navigateur |
 | **Injection d'Entrées** | `SendInput` | `/dev/uinput` | CGEventCreateMouseEvent | Schemes `orbital:` | Non supporté | Événements DOM |
 | **Capture d'Écran** | GDI BitBlt | Wayland Portal / X11 | CoreGraphics Retina 2x | Surface `orbital:` | Délégué au Hub | Canvas ImageData |
-| **Attestation Matérielle** | TPM 2.0 | TPM 2.0 / sysfs | Apple Secure Enclave | TPM / Enclave | Secure Enclave | Non disponible |
+| **Attestation (v1)** | Signature dev locale | Signature dev locale | Signature dev locale | Signature dev locale | Signature dev locale | Non disponible |
 | **Gestion Alimentation** | `GetSystemPowerStatus` | `/sys/class/power_supply` | IOKit IOPMPowerSource | `sys:power` | BatteryManager | Battery API (opt) |
 | **Continuité de Session** | Locale persistante | Locale persistante | Locale persistante | Locale persistante | **Shadow Sync TiKV** | Déportée Hub |

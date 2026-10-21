@@ -11,6 +11,7 @@
 use accesskit_winit::{
     Adapter as AccessKitAdapter, Event as AccessKitEvent, WindowEvent as AccessKitWindowEvent,
 };
+use hakille_ipc::transport;
 use hakille_ui_desktop::app::{HudAction, HudApp, HudInput};
 use hakille_ui_desktop::runtime::WinitConfig;
 use hakille_ui_desktop::scene::Scene;
@@ -24,6 +25,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
+use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
@@ -62,6 +64,8 @@ enum AppEvent {
     HotkeyToggle,
     /// Réponse du démon reçue par le client IPC.
     KernelReply(KernelToUi),
+    /// Handshake IPC réussi : la file de requêtes peut être vidée.
+    IpcConnected,
     /// Connexion IPC perdue (le démon s'est arrêté ou a fermé la session).
     IpcDisconnected,
 }
@@ -258,9 +262,18 @@ impl DesktopApp {
                         _ => at,
                     });
                 }
+                HudAction::ResizeWindow { width, height } => {
+                    if let Some(ws) = self.window.as_ref() {
+                        let _ = ws
+                            .window
+                            .request_inner_size(LogicalSize::new(width as f64, height as f64));
+                    }
+                }
                 HudAction::Submit { query } => {
                     // Démon branché : envoi IPC (submit non bloquant) puis état
-                    // « en attente » ; sinon repli fail-closed inchangé.
+                    // « en attente ». Démon pas encore prêt : la requête est
+                    // mise en file et partira au handshake, jamais perdue.
+                    let ipc_present = self.ipc.is_some();
                     let sent = self.ipc.as_ref().is_some_and(|ipc| {
                         ipc.connected()
                             && ipc.submit(UiToKernel::HudSubmit {
@@ -269,10 +282,39 @@ impl DesktopApp {
                     });
                     let actions = if sent {
                         self.core.on_submit_sent(query)
+                    } else if ipc_present {
+                        self.core.on_query_queued(query)
                     } else {
                         self.core.submit_query(query)
                     };
                     self.apply(actions, event_loop);
+                }
+                HudAction::RequestJournal { limit } => {
+                    let sent = self
+                        .ipc
+                        .as_ref()
+                        .is_some_and(|ipc| ipc.request_journal(limit));
+                    if !sent {
+                        let actions = self.core.on_ipc_unavailable("journal");
+                        self.apply(actions, event_loop);
+                    }
+                }
+                HudAction::RequestMemory { query, limit } => {
+                    let sent = self
+                        .ipc
+                        .as_ref()
+                        .is_some_and(|ipc| ipc.request_memory(query, limit));
+                    if !sent {
+                        let actions = self.core.on_ipc_unavailable("mémoire");
+                        self.apply(actions, event_loop);
+                    }
+                }
+                HudAction::RequestStatus => {
+                    let sent = self.ipc.as_ref().is_some_and(|ipc| ipc.request_status());
+                    if !sent {
+                        let actions = self.core.on_ipc_unavailable("statut");
+                        self.apply(actions, event_loop);
+                    }
                 }
                 HudAction::Quit => event_loop.exit(),
             }
@@ -388,6 +430,10 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                 let actions = self.core.on_kernel_reply(msg);
                 self.apply(actions, event_loop);
             }
+            AppEvent::IpcConnected => {
+                let actions = self.core.on_ipc_connected();
+                self.apply(actions, event_loop);
+            }
             AppEvent::IpcDisconnected => {
                 let actions = self.core.on_kernel_disconnected();
                 self.apply(actions, event_loop);
@@ -457,6 +503,9 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                 Key::Named(NamedKey::Escape) => inputs.push(HudInput::Escape),
                 Key::Named(NamedKey::Enter) => inputs.push(HudInput::Enter),
                 Key::Named(NamedKey::Backspace) => inputs.push(HudInput::Backspace),
+                Key::Named(NamedKey::F1) => inputs.push(HudInput::ShowJournal),
+                Key::Named(NamedKey::F2) => inputs.push(HudInput::ShowMemory),
+                Key::Named(NamedKey::F3) => inputs.push(HudInput::ShowStatus),
                 _ => {
                     if let Some(text) = text {
                         for c in text.chars() {
@@ -548,9 +597,15 @@ fn main() -> ExitCode {
     let ipc = if args.authorized || args.smoke {
         None
     } else {
+        let connected_proxy = proxy.clone();
         let reply_proxy = proxy.clone();
         let disconnect_proxy = proxy.clone();
-        Some(IpcClient::spawn(
+        Some(IpcClient::spawn_with_connected(
+            transport::default_endpoint(),
+            transport::default_token_path(),
+            move || {
+                let _ = connected_proxy.send_event(AppEvent::IpcConnected);
+            },
             move |msg| {
                 let _ = reply_proxy.send_event(AppEvent::KernelReply(msg));
             },

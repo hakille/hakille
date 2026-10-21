@@ -43,14 +43,35 @@ fn test_shell_snapshot_dashboard_and_honesty() {
     assert_eq!(payload["theme"]["coral"], "#FF7A2F");
     assert_eq!(payload["theme"]["bg"], "#0B0C0F");
 
-    // 2. Honnêteté : chaque moteur RÉEL cite son mécanisme prouvé (forward
-    // ort/Candle, RVQ, formantique, vision classique) ; seul le VLM UI-TARS
-    // (pas de forward) reste Inspecté avec sa limite explicite.
-    let rows = honest_engine_rows(2.1, 7);
+    // 2. Honnêteté : les statuts sont dérivés d'artefacts réellement présents.
+    // Fixture temporaire complète : chaque moteur RÉEL doit citer son
+    // mécanisme, Mimi reste SIMULÉ (projection, pas de codec neural) et
+    // UI-TARS reste INSPECTÉ (pas de forward VLM).
+    let models_dir = std::env::temp_dir().join(format!(
+        "hakille-conformance-shell-models-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&models_dir);
+    std::fs::create_dir_all(&models_dir).unwrap();
+    for name in [
+        "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        "tokenizer.json",
+        "ui-tars-2b-sft-q4_k_m.gguf",
+        "mimi_candle.safetensors",
+        "sensevoice_small.int8.onnx",
+        "tokens.txt",
+        "campplus_zh_en_16k_advanced.onnx",
+        "all-minilm-l6-v2.onnx",
+        "minilm_tokenizer.json",
+        "silero_vad.onnx",
+    ] {
+        std::fs::write(models_dir.join(name), b"fixture").unwrap();
+    }
+    let rows = honest_engine_rows(&models_dir, 2.1, 10);
     assert_eq!(rows.len(), 7);
     for row in &rows {
-        if row.status == hakille_ui_shell::InferenceStatus::Real {
-            assert!(
+        match row.status {
+            hakille_ui_shell::InferenceStatus::Real => assert!(
                 row.detail.contains("ort")
                     || row.detail.contains("Candle")
                     || row.detail.contains("RVQ")
@@ -58,15 +79,15 @@ fn test_shell_snapshot_dashboard_and_honesty() {
                     || row.detail.contains("vision classique"),
                 "moteur RÉEL sans preuve citée : {}",
                 row.name
-            );
-        } else {
-            assert!(
+            ),
+            _ => assert!(
                 row.detail.contains("pas de forward"),
                 "moteur non-RÉEL sans limite explicite : {}",
                 row.name
-            );
+            ),
         }
     }
+    std::fs::remove_dir_all(&models_dir).ok();
     assert_eq!(reference_agent_cards().len(), 5);
 
     // 3. Canal : réunion → HUD ; journal filtrable et paginé.

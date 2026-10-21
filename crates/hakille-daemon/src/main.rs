@@ -317,9 +317,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("./hakille_data"))
         .join("Hakille");
-    let _ = std::fs::create_dir_all(&data_dir);
+    // Refus explicite si l'état persistant ne peut pas être créé : démarrer
+    // avec un chemin différent reviendrait à perdre identité, journal et
+    // mémoire sans que l'utilisateur le sache.
+    std::fs::create_dir_all(&data_dir).map_err(|e| {
+        std::io::Error::other(format!(
+            "répertoire de données inaccessible ({}): {e}",
+            data_dir.display()
+        ))
+    })?;
     let keys_dir = data_dir.join("keys");
-    let _ = std::fs::create_dir_all(&keys_dir);
+    std::fs::create_dir_all(&keys_dir).map_err(|e| {
+        std::io::Error::other(format!(
+            "répertoire de clés inaccessible ({}): {e}",
+            keys_dir.display()
+        ))
+    })?;
     // Clés : keychain OS d'abord (service "hakille"), repli fichier LOUD sinon.
     // Le repli keys/*.bin reste lisible en clair : migrer via rotation dès que
     // le trousseau est débloqué. Jamais de régénération silencieuse.
@@ -399,12 +412,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ./hakille_data with a stable path. Signing key is the persisted identity
     // above (load-or-generate); TPM/DPAPI + rotation remain tracked work.
     let journal_path = data_dir.join("audit.redb");
-    let audit_journal = AuditJournal::new(
-        journal_path.to_str().unwrap(),
+    let journal_path_str = journal_path
+        .to_str()
+        .ok_or_else(|| format!("chemin du journal non UTF-8: {}", journal_path.display()))?;
+    // F3 : la clé racine de capabilities est épinglée dès la construction.
+    // Sans cela, `revert_with_cap` refuse (fail-closed) et l'audit ne peut
+    // pas vérifier les tokens au point d'effet.
+    let audit_journal = AuditJournal::new_with_root(
+        journal_path_str,
         signing_keypair.signing_key.clone(),
+        authority.root_public_key(),
     )?;
+    // Vérification complète au démarrage : une chaîne corrompue ne doit
+    // jamais être complétée silencieusement par de nouvelles entrées.
+    match audit_journal.verify_chain() {
+        Ok(report) if report.is_valid() => {
+            println!(
+                "  Audit Journal: {} entrée(s) vérifiée(s), chaîne Ed25519 saine — {}",
+                report.valid_entries,
+                journal_path.display()
+            );
+        }
+        Ok(report) => {
+            return Err(format!(
+                "journal d'audit corrompu ({} entrées valides / {}, premier maillon cassé: {:?}, corruption: {:?}) — démarrage refusé: {}",
+                report.valid_entries,
+                report.total_entries,
+                report.broken_at,
+                report.corruption,
+                journal_path.display()
+            )
+            .into());
+        }
+        Err(e) => {
+            return Err(format!(
+                "journal d'audit illisible ({e}) — démarrage refusé: {}",
+                journal_path.display()
+            )
+            .into());
+        }
+    }
     println!(
-        "  Audit Journal: persistent append-only log at {} (tamper-evident, Ed25519-chained)",
+        "  Audit Journal: append-only persistant à {} (chaîne Ed25519, racine épinglée)",
         journal_path.display()
     );
 
@@ -448,7 +497,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 conn.total_disk_bytes as f64 / 1_000_000_000.0
             );
             println!(
-                "  NOTE: 7 foundation models — REAL inference (ort forwards + Candle Qwen + RVQ Mimi + formant TTS + CV grounding). UI-TARS VLM: inspected only, no VLM forward."
+                "  NOTE: statuts par artefact — forwards réels pour VAD/ASR/CAM++/MiniLM/Qwen ; Mimi = RVQ nearest-L2 (pas de décodeur neural) ; UI-TARS = inspection seule, pas de forward VLM."
             );
             for m in &summary.models {
                 println!(
@@ -483,7 +532,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "  SenseVoice-Small: mel + LFR + forward ort + CTC greedy — real ASR, measured confidence"
     );
-    println!("  Moshi/TTS/GUI: real engines (Mimi RVQ codebooks, formant Klatt TTS, CV grounding)");
+    println!(
+        "  Voice/GUI: Mimi RVQ nearest-L2 sur codebooks réels, TTS formantique Klatt, grounding CV — pas de modèle neuronal Moshi ni de forward VLM."
+    );
 
     // Camera & Multimodal Perception Pipeline (§6)
     let camera_config = CameraConfig {
@@ -539,7 +590,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  WorldModel: Continuous multimodal situational tracking initialized");
 
     // 5. Initialize Action Agents Layer
-    println!("\n[5/6] Spawning Sandboxed WASM Agent Registry...");
+    println!("\n[5/6] Registering Reference Agent Manifests...");
     let mut agent_registry = AgentRegistry::new();
     let reference_agents = [
         (
@@ -573,12 +624,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             id: id.to_string(),
             name: name.to_string(),
             version: "0.1.0".to_string(),
-            description: format!("Reference sandboxed agent: {}", name),
+            description: format!(
+                "Reference agent manifest (WASM binary not provisioned): {}",
+                name
+            ),
             required_capabilities: caps,
         })?;
     }
     println!(
-        "  Registered {} reference WASM agents with strict Biscuit scopes",
+        "  Registered {} reference agent manifests (scopes déclarés ; aucun binaire .wasm chargé ni exécuté)",
         agent_registry.list_agents().len()
     );
 
@@ -603,23 +657,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         llm_timeout_ms.saturating_add(30_000),
         llm_timeout_ms.saturating_add(60_000)
     );
-    // Mémoire bout-en-bout : restaure le graphe depuis ./hakille-memory.json
-    // (snapshot `save_to_file`) si présent, sinon graphe vide. Sauvegardé à
-    // :exit (et sortie de boucle EOF) + :export/:import via `save_to_file`.
-    let memory_snapshot = PathBuf::from("./hakille-memory.json");
-    match hakille_memory::KnowledgeGraph::load_from_file(&memory_snapshot) {
-        Ok(restored) => {
-            let n = restored.len();
-            orchestrator.memory_graph = restored;
+    // Mémoire bout-en-bout : snapshot principal sous data_dir, repli legacy
+    // ./hakille-memory.json (jamais supprimé). Un snapshot existant mais
+    // illisible refuse le démarrage : démarrer vide puis réécrire écraserait
+    // silencieusement les faits de l'utilisateur.
+    let memory_snapshot = data_dir.join("memory.json");
+    let legacy_memory_snapshot = PathBuf::from("./hakille-memory.json");
+    let memory_source = if memory_snapshot.exists() {
+        Some((memory_snapshot.clone(), false))
+    } else if legacy_memory_snapshot.exists() {
+        Some((legacy_memory_snapshot.clone(), true))
+    } else {
+        None
+    };
+    match memory_source {
+        Some((path, legacy)) => match hakille_memory::KnowledgeGraph::load_from_file(&path) {
+            Ok(restored) => {
+                let n = restored.len();
+                orchestrator.memory_graph = restored;
+                println!(
+                    "  Memory: graphe restauré depuis {} ({} triplet(s)){}",
+                    path.display(),
+                    n,
+                    if legacy { " [repli legacy]" } else { "" }
+                );
+                if legacy {
+                    match orchestrator.memory_graph.save_to_file(&memory_snapshot) {
+                        Ok(()) => println!(
+                            "  Memory: migré vers {} (legacy conservé intact)",
+                            memory_snapshot.display()
+                        ),
+                        Err(e) => eprintln!(
+                            "  ⚠ Memory: migration vers {} impossible — {e} (legacy toujours lisible)",
+                            memory_snapshot.display()
+                        ),
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(format!(
+                    "snapshot mémoire illisible ({}) — démarrage refusé pour ne pas écraser les faits: {e}",
+                    path.display()
+                )
+                .into());
+            }
+        },
+        None => {
             println!(
-                "  Memory: graphe restauré depuis {} ({} triplet(s))",
-                memory_snapshot.display(),
-                n
-            );
-        }
-        Err(_) => {
-            println!(
-                "  Memory: aucun snapshot ({} absent ou illisible) — graphe vide",
+                "  Memory: aucun snapshot ({}) — graphe vide (premier démarrage)",
                 memory_snapshot.display()
             );
         }
@@ -705,6 +790,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut bounded_initiative,
             &mut generality_tracker,
             &audit_journal,
+            &memory_snapshot,
             false,
             speak_enabled,
         )
@@ -728,7 +814,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(hint) = turn_error_hint(&e.to_string()) {
                     eprintln!("  → {hint}");
                 }
-                persist_memory(&orchestrator, true);
                 std::process::exit(1);
             }
         }
@@ -743,6 +828,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut bounded_initiative,
             &mut generality_tracker,
             &audit_journal,
+            &memory_snapshot,
         )
         .await;
     }
@@ -784,19 +870,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut bounded_initiative,
             &mut generality_tracker,
             &audit_journal,
+            &memory_snapshot,
             true,
             speak_enabled,
         )
         .await
         {
-            Ok(_) => persist_memory(&orchestrator, true),
+            Ok(_) => {}
             Err(e) => {
                 presence.set_state(PresenceState::Idle);
                 eprintln!("✗ Tour vocal échoué : {e}");
                 if let Some(hint) = turn_error_hint(&e.to_string()) {
                     eprintln!("  → {hint}");
                 }
-                persist_memory(&orchestrator, true);
             }
         }
     }
@@ -823,19 +909,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &mut bounded_initiative,
                     &mut generality_tracker,
                     &audit_journal,
+                    &memory_snapshot,
                     true,
                     speak_enabled,
                 )
                 .await
                 {
-                    Ok(_) => persist_memory(&orchestrator, true),
+                    Ok(_) => {}
                     Err(e) => {
                         presence.set_state(PresenceState::Idle);
                         eprintln!("✗ Tour échoué : {e}");
                         if let Some(hint) = turn_error_hint(&e.to_string()) {
                             eprintln!("  → {hint}");
                         }
-                        persist_memory(&orchestrator, true);
                     }
                 }
             }
@@ -847,7 +933,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match input.as_str() {
             ":exit" | ":quit" => {
                 // Sauvegarde auto du graphe avant arrêt (miroir sortie EOF).
-                persist_memory(&orchestrator, false);
+                persist_memory(&orchestrator, &memory_snapshot, false);
                 println!("Shutting down Hakille daemon cleanly.");
                 break;
             }
@@ -911,7 +997,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "  :metrics          Display 3 North-Star metrics and ethics drift status"
                 );
-                println!("  :agents           List registered WASM agents");
+                println!(
+                    "  :agents           List registered agent manifests (no WASM binary executed)"
+                );
                 println!("  :cost             Display System 2 inference cost tracking");
                 println!(
                     "  :memory           Display all triplets currently stored in knowledge graph"
@@ -1340,26 +1428,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     };
                     if let Some(triplet_id) = resolved {
-                        match MemoryViewerPanel::revoke_triplet_consent(
-                            &mut orchestrator.memory_graph,
-                            &triplet_id,
-                            "User explicit consent revocation ('Droit à l'oubli')",
+                        if let Err(e) = audit_memory_event(
+                            &audit_journal,
+                            "MemoryForget",
+                            format!(
+                                "Révocation de consentement demandée pour [{}]",
+                                triplet_id.0
+                            ),
+                            serde_json::json!({ "triplet_id": triplet_id.0.to_string(), "origin": "repl" }),
                         ) {
-                            Some(receipt) => {
-                                println!("✓ Droit à l'oubli appliqué avec succès !");
-                                println!("  • ID Révoqué:           {}", receipt.revoked_id);
-                                println!("  • Horodatage:           {}", receipt.timestamp_str);
-                                println!("  • Motif:                {}", receipt.reason);
-                                println!(
-                                    "  • Jeton de Révocation:  {}",
-                                    receipt.verification_token
-                                );
-                            }
-                            None => {
-                                eprintln!(
-                                    "✗ Triplet avec ID '{}' introuvable dans le graphe de mémoire (voir :memory).",
-                                    id_str
-                                );
+                            eprintln!("✗ Révocation refusée — audit indisponible : {e}");
+                        } else {
+                            match MemoryViewerPanel::revoke_triplet_consent(
+                                &mut orchestrator.memory_graph,
+                                &triplet_id,
+                                "User explicit consent revocation ('Droit à l'oubli')",
+                            ) {
+                                Some(receipt) => {
+                                    println!("✓ Droit à l'oubli appliqué avec succès !");
+                                    println!("  • ID Révoqué:           {}", receipt.revoked_id);
+                                    println!("  • Horodatage:           {}", receipt.timestamp_str);
+                                    println!("  • Motif:                {}", receipt.reason);
+                                    println!(
+                                        "  • Jeton de Révocation:  {}",
+                                        receipt.verification_token
+                                    );
+                                    persist_memory(&orchestrator, &memory_snapshot, true);
+                                }
+                                None => {
+                                    eprintln!(
+                                        "✗ Triplet avec ID '{}' introuvable dans le graphe de mémoire (voir :memory).",
+                                        id_str
+                                    );
+                                }
                             }
                         }
                     }
@@ -1616,38 +1717,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "Usage : :remember <sujet> <prédicat> <objet> (ex. :remember Marie aime le jazz)"
                     );
                 } else {
-                    let parts: Vec<&str> = text.splitn(3, ' ').collect();
-                    let report = |res: hakille_memory::InsertResult, s: &str, p: &str, o: &str| {
-                        use hakille_memory::InsertResult;
-                        match res {
-                            InsertResult::Inserted(id) => println!(
-                                "Stored triplet [{}] in sovereign graph: {s} --({p})--> {o}",
-                                id.0
-                            ),
-                            InsertResult::ContradictionResolved { old, new } => println!(
-                                "Contradiction résolue sans écrasement silencieux : [{}] remplacé par [{}] ({s} --({p})--> {o})",
-                                old.0, new.0
-                            ),
-                            InsertResult::NeedsUserResolution { existing, incoming } => println!(
-                                "Contradiction — décision requise : existant [{}] vs entrant [{}]. Rien n'a été écrasé (voir :contradictions).",
-                                existing.id.0, incoming.id.0
-                            ),
-                        }
-                    };
-                    if parts.len() == 3 {
-                        report(
-                            orchestrator.remember(parts[0], parts[1], parts[2]),
-                            parts[0],
-                            parts[1],
-                            parts[2],
-                        );
+                    if let Err(e) = audit_memory_event(
+                        &audit_journal,
+                        "MemoryRemember",
+                        format!("Demande de mémorisation REPL: '{text}'"),
+                        serde_json::json!({ "text": text, "origin": "repl" }),
+                    ) {
+                        eprintln!("✗ Mémorisation refusée — audit indisponible : {e}");
                     } else {
-                        report(
-                            orchestrator.remember("Fait", "est", text),
-                            "Fait",
-                            "est",
-                            text,
-                        );
+                        let parts: Vec<&str> = text.splitn(3, ' ').collect();
+                        let report = |res: hakille_memory::InsertResult,
+                                      s: &str,
+                                      p: &str,
+                                      o: &str| {
+                            use hakille_memory::InsertResult;
+                            match res {
+                                InsertResult::Inserted(id) => println!(
+                                    "Stored triplet [{}] in sovereign graph: {s} --({p})--> {o}",
+                                    id.0
+                                ),
+                                InsertResult::ContradictionResolved { old, new } => println!(
+                                    "Contradiction résolue sans écrasement silencieux : [{}] remplacé par [{}] ({s} --({p})--> {o})",
+                                    old.0, new.0
+                                ),
+                                InsertResult::NeedsUserResolution { existing, incoming } => {
+                                    println!(
+                                        "Contradiction — décision requise : existant [{}] vs entrant [{}]. Rien n'a été écrasé (voir :contradictions).",
+                                        existing.id.0, incoming.id.0
+                                    )
+                                }
+                            }
+                        };
+                        if parts.len() == 3 {
+                            report(
+                                orchestrator.remember(parts[0], parts[1], parts[2]),
+                                parts[0],
+                                parts[1],
+                                parts[2],
+                            );
+                        } else {
+                            report(
+                                orchestrator.remember("Fait", "est", text),
+                                "Fait",
+                                "est",
+                                text,
+                            );
+                        }
+                        persist_memory(&orchestrator, &memory_snapshot, true);
                     }
                 }
             }
@@ -1722,26 +1838,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             ":agents" => {
-                println!("Registered Sandboxed Agents:");
+                println!("Registered Agent Manifests:");
                 for agent in agent_registry.list_agents() {
                     println!(
-                        "  - [{}] {} (Caps: {:?})",
+                        "  - [{}] {} (declared caps: {:?})",
                         agent.id, agent.name, agent.required_capabilities
                     );
                 }
+                println!(
+                    "  NOTE: no .wasm binary is provisioned or executed; scopes are declarations, not an enforced sandbox."
+                );
             }
             ":cost" => {
                 println!("Inference Cost: {}", cost_counter.formatted_total());
             }
             ":models-honest" => {
-                println!("Honest Inference Statuses (never fake Operational):");
+                println!("Honest Inference Statuses (artefacts-derived; never fake Operational):");
                 let statuses = provisioner.list_all_status();
                 let installed = statuses.iter().filter(|s| s.is_installed).count();
                 let gb = statuses
                     .iter()
                     .map(|s| s.total_disk_bytes as f64 / 1_000_000_000.0)
                     .sum::<f64>();
-                for row in hakille_ui_shell::honest_engine_rows(gb, statuses.len()) {
+                for row in hakille_ui_shell::honest_engine_rows(&models_dir, gb, statuses.len()) {
                     println!(
                         "  - {:<22} [{}] {}",
                         row.name,
@@ -1994,13 +2113,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         // Sauvegarde auto du snapshot RAM (miroir :exit) après export.
-                        match orchestrator
-                            .memory_graph
-                            .save_to_file("./hakille-memory.json")
-                        {
-                            Ok(()) => {
-                                println!("  (snapshot RAM sauvegardé vers ./hakille-memory.json)")
-                            }
+                        match orchestrator.memory_graph.save_to_file(&memory_snapshot) {
+                            Ok(()) => println!(
+                                "  (snapshot RAM sauvegardé vers {})",
+                                memory_snapshot.display()
+                            ),
                             Err(e) => eprintln!("  (snapshot RAM non sauvegardé : {e})"),
                         }
                     }
@@ -2015,22 +2132,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match std::fs::read(path) {
                         Ok(bytes) => match hakille_memory::import_graph(&bytes) {
                             Ok(export) => {
-                                let n = import_into_graph(&mut orchestrator.memory_graph, &export);
-                                println!(
-                                    "Graphe importé depuis '{path}' : {} triplet(s) fusionné(s) (total : {}).",
-                                    n,
-                                    orchestrator.memory_graph.len()
-                                );
-                                match orchestrator
-                                    .memory_graph
-                                    .save_to_file("./hakille-memory.json")
-                                {
-                                    Ok(()) => println!(
-                                        "  (snapshot RAM sauvegardé vers ./hakille-memory.json)"
-                                    ),
-                                    Err(e) => {
-                                        eprintln!("  (snapshot RAM non sauvegardé : {e})")
-                                    }
+                                if let Err(e) = audit_memory_event(
+                                    &audit_journal,
+                                    "MemoryImport",
+                                    format!("Import de graphe depuis '{path}'"),
+                                    serde_json::json!({ "path": path }),
+                                ) {
+                                    eprintln!("✗ Import refusé — audit indisponible : {e}");
+                                } else {
+                                    let n =
+                                        import_into_graph(&mut orchestrator.memory_graph, &export);
+                                    println!(
+                                        "Graphe importé depuis '{path}' : {} triplet(s) fusionné(s) (total : {}).",
+                                        n,
+                                        orchestrator.memory_graph.len()
+                                    );
+                                    persist_memory(&orchestrator, &memory_snapshot, true);
                                 }
                             }
                             Err(e) => eprintln!(
@@ -2114,7 +2231,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         action: ActionRecord {
                             action_type: "OutboxFlush".to_string(),
                             description: format!("Transmis (file) : {} {}", e.verb, e.object),
-                            parameters: serde_json::json!({ "dedup_key": e.dedup_key, "attempts": e.attempts }),
+                            parameters: serde_json::json!({
+                                "dedup_key": e.dedup_key.clone(),
+                                "attempts": e.attempts,
+                            }),
                             reversible: false,
                             reversed: false,
                         },
@@ -2136,12 +2256,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         prev_hash: vec![0; 32],
                         token_hash: None,
                     };
-                    let _ = audit_journal.append(entry);
-                    println!(
-                        "  → transmis : {} {} (clé {})",
-                        e.verb, e.object, e.dedup_key
-                    );
-                    sent += 1;
+                    match audit_journal.append(entry) {
+                        Ok(_) => {
+                            println!(
+                                "  → transmis : {} {} (clé {})",
+                                e.verb, e.object, e.dedup_key
+                            );
+                            sent += 1;
+                        }
+                        Err(err) => {
+                            // L'entrée a déjà été retirée par `take_sendable` :
+                            // on la remet en file pour ne pas perdre l'action.
+                            eprintln!(
+                                "  ✗ Audit indisponible pour {} {} — entrée remise en file : {err}",
+                                e.verb, e.object
+                            );
+                            let _ = outbox.enqueue(e);
+                            break;
+                        }
+                    }
                 }
                 if sent == 0 {
                     println!("Rien d'envoyable (file vide ou revalidation requise).");
@@ -2512,19 +2645,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &mut bounded_initiative,
                     &mut generality_tracker,
                     &audit_journal,
+                    &memory_snapshot,
                     true,
                     speak_enabled,
                 )
                 .await
                 {
-                    Ok(_) => persist_memory(&orchestrator, true),
+                    Ok(_) => {}
                     Err(e) => {
                         presence.set_state(PresenceState::Idle);
                         eprintln!("✗ Tour échoué : {e}");
                         if let Some(hint) = turn_error_hint(&e.to_string()) {
                             eprintln!("  → {hint}");
                         }
-                        persist_memory(&orchestrator, true);
                     }
                 }
             }
@@ -2535,7 +2668,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Sortie de boucle (EOF/Ctrl-D) : même sauvegarde auto que :exit.
-    persist_memory(&orchestrator, true);
+    persist_memory(&orchestrator, &memory_snapshot, true);
 
     Ok(())
 }
@@ -2549,6 +2682,9 @@ struct TurnOutcome {
     pub routing_used: String,
     pub latency_ms: u64,
     pub confidence_decision: hakille_core::ConfidenceDecision,
+    /// Échec de persistance mémoire du tour, propagé au HUD au lieu d'être
+    /// masqué (le tour lui-même reste valide).
+    pub persistence_warning: Option<String>,
 }
 
 /// Cœur réutilisable d'un tour : présence, heuristique de domaine, tour
@@ -2564,6 +2700,7 @@ async fn run_turn_core(
     bounded_initiative: &mut BoundedInitiativeTracker,
     generality_tracker: &mut GeneralityTracker,
     audit_journal: &AuditJournal,
+    memory_path: &std::path::Path,
     prompt: &str,
 ) -> Result<TurnOutcome, Box<dyn std::error::Error>> {
     presence.set_state(PresenceState::Listening);
@@ -2637,7 +2774,21 @@ async fn run_turn_core(
         prev_hash: vec![0; 32],
         token_hash: None,
     };
-    let _ = audit_journal.append(entry);
+    // Fail-closed : un tour sans trace d'audit ne doit pas être présenté
+    // comme un succès. L'erreur remonte au REPL/HUD avec la cause réelle.
+    if let Err(e) = audit_journal.append(entry) {
+        presence.set_state(PresenceState::Idle);
+        return Err(format!("journal d'audit: entrée du tour non écrite: {e}").into());
+    }
+
+    // La mémoire est persistée ici, au même point que l'audit, pour que le
+    // REPL et le mode `--serve` aient exactement la même durabilité.
+    let persistence_warning = persist_memory_to(orchestrator, memory_path)
+        .err()
+        .map(|e| format!("mémoire non sauvegardée: {e}"));
+    if let Some(warning) = &persistence_warning {
+        eprintln!("⚠ {warning}");
+    }
 
     presence.set_state(PresenceState::Idle);
 
@@ -2650,6 +2801,7 @@ async fn run_turn_core(
         routing_used: result.routing_used,
         latency_ms: result.latency_ms,
         confidence_decision: result.confidence_decision,
+        persistence_warning,
     })
 }
 
@@ -2669,6 +2821,7 @@ async fn process_prompt(
     bounded_initiative: &mut BoundedInitiativeTracker,
     generality_tracker: &mut GeneralityTracker,
     audit_journal: &AuditJournal,
+    memory_path: &std::path::Path,
     live_stream_ui: bool,
     speak_enabled: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
@@ -2683,6 +2836,7 @@ async fn process_prompt(
         bounded_initiative,
         generality_tracker,
         audit_journal,
+        memory_path,
         prompt,
     );
     tokio::pin!(turn);
@@ -2780,6 +2934,9 @@ async fn process_prompt(
 
     if !outcome.non_empty {
         println!("  ⚠ Réponse vide (EOS immédiat) — propagée honnêtement, pas un succès simulé.");
+    }
+    if let Some(warning) = &outcome.persistence_warning {
+        eprintln!("  ⚠ {warning} — le tour reste affiché, mais la mémoire n'est pas durable.");
     }
 
     // `--speak` : synthèse formantique RÉELLE puis lecture sur le périphérique
@@ -3172,24 +3329,72 @@ fn turn_error_hint(err: &str) -> Option<&'static str> {
     }
 }
 
-/// Sauvegarde le graphe de mémoire vers ./hakille-memory.json.
+/// Journalise une mutation mémoire AVANT de l'appliquer : aucune écriture
+/// non auditée ne doit exister, même si la mutation échoue ensuite.
+fn audit_memory_event(
+    audit_journal: &AuditJournal,
+    action_type: &str,
+    description: String,
+    parameters: serde_json::Value,
+) -> Result<(), String> {
+    let entry = AuditEntry {
+        id: EntryId(uuid::Uuid::now_v7()),
+        timestamp: Timestamp::now(),
+        actor: ActorId::Kernel,
+        action: ActionRecord {
+            action_type: action_type.to_string(),
+            description,
+            parameters,
+            reversible: false,
+            reversed: false,
+        },
+        capability_used: None,
+        reasoning_trace: ReasoningTrace {
+            steps: vec![],
+            model_used: None,
+            duration_ms: 0,
+        },
+        graph_nodes_used: vec![],
+        confidence: 1.0,
+        cost: None,
+        signature: Vec::new(),
+        prev_hash: Vec::new(),
+        token_hash: None,
+    };
+    audit_journal
+        .append(entry)
+        .map(|_| ())
+        .map_err(|e| format!("entrée d'audit non écrite: {e}"))
+}
+
+/// Sauvegarde le graphe de mémoire vers `path` (écriture atomique).
 /// `quiet=false` : message succès (style historique des commandes) ;
 /// `quiet=true` : silencieux sauf erreur (auto-save crash-safe).
-fn persist_memory(orchestrator: &CognitiveOrchestrator, quiet: bool) {
-    match orchestrator
-        .memory_graph
-        .save_to_file("./hakille-memory.json")
-    {
+fn persist_memory(orchestrator: &CognitiveOrchestrator, path: &std::path::Path, quiet: bool) {
+    match persist_memory_to(orchestrator, path) {
         Ok(()) => {
             if !quiet {
                 println!(
-                    "Mémoire sauvegardée ({} triplet(s)) vers ./hakille-memory.json.",
-                    orchestrator.memory_graph.len()
+                    "Mémoire sauvegardée ({} triplet(s)) vers {}.",
+                    orchestrator.memory_graph.len(),
+                    path.display()
                 );
             }
         }
-        Err(e) => eprintln!("✗ Sauvegarde mémoire impossible : {e}"),
+        Err(e) => eprintln!("✗ Sauvegarde mémoire impossible ({}) : {e}", path.display()),
     }
+}
+
+/// Variante résultat pour les chemins qui doivent propager un échec de
+/// persistance (accusé IPC `MemoryRemember`, audits de tour).
+fn persist_memory_to(
+    orchestrator: &CognitiveOrchestrator,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    orchestrator
+        .memory_graph
+        .save_to_file(path)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

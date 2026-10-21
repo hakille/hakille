@@ -2,7 +2,7 @@
 
 > *"De la compilation à la conformité formelle : bâtir et étendre un système d'exploitation cognitif en Rust pur."*
 
-Ce document constitue le guide de référence complet pour les développeurs, contributeurs et intégrateurs d'Hakille. Il détaille la configuration de l'environnement de développement, la compilation du monorepo, la suite de tests formelle (73 tests : 66 fast verts + 7 slow ignorés en gate hebdo, voir [CI](../.github/workflows/ci.yml)), l'utilisation approfondie du CLI interactif (`hakille-daemon`), la création d'agents WASM sandboxés, et l'implémentation de nouveaux backends `Substrate`.
+Ce document constitue le guide de référence complet pour les développeurs, contributeurs et intégrateurs d'Hakille. Il détaille la configuration de l'environnement de développement, la compilation du monorepo, la suite de tests formelle (73 tests : 66 fast verts + 7 slow ignorés en gate hebdo, voir [CI](../.github/workflows/ci.yml)), l'utilisation approfondie du CLI interactif (`hakille-daemon`), l'état réel des agents de référence et du runtime WASM (non branché au démon), et l'implémentation de nouveaux backends `Substrate`.
 
 ---
 
@@ -16,9 +16,9 @@ Ce document constitue le guide de référence complet pour les développeurs, co
   ```
 - **Cibles WebAssembly** (agents WASI sandboxés) :
   ```bash
-  rustup target add wasm32-wasip1          # agents WASI sandboxés (Wasmtime)
+  rustup target add wasm32-wasip1          # cible agents WASI (WasmRunner non branché)
   ```
-  Écart honnête : les agents exigent `wasm32-wasip1` (`cargo build -p agent-calendar --target wasm32-wasip1 --release`, voir `docs/agents_guide.md`) ; la démo Web Slint a été retirée avec le renderer (ADR-009).
+  Écart honnête : les agents cibles exigeraient `wasm32-wasip1` (`cargo build -p agent-calendar --target wasm32-wasip1 --release`, voir `docs/agents_guide.md`), mais aucun binaire `.wasm` n'est livré ni exécuté en v1 ; la démo Web Slint a été retirée avec le renderer (ADR-009).
 - **Outils C/C++ et CMake** (pour les liaisons FFI des runtimes Candle et ONNX) :
   - **Windows** : Visual Studio Build Tools 2022 avec la charge de travail *"Développement Desktop en C++"*.
   - **Linux (Debian/Ubuntu)** : `sudo apt install build-essential cmake pkg-config libasound2-dev libssl-dev libudev-dev`
@@ -34,7 +34,7 @@ cd hakille
 
 ## 2. Compilation du Projet
 
-Le workspace Cargo est configuré pour compiler les 31 crates (+ 5 agents, `conformance`, `xtask`) de façon unifiée :
+Le workspace Cargo est configuré pour compiler les 31 crates (+ 5 crates d'agents de référence, `conformance`, `xtask`) de façon unifiée :
 
 ```bash
 # 1. Vérification statique rapide de l'ensemble des crates
@@ -75,7 +75,7 @@ cargo xtask conformance
 cargo test -p conformance
 ```
 La suite `conformance` exécute **73 tests (66 fast verts en CI + 7 slow ignorés en gate hebdo `cargo xtask conformance-slow`)** couvrant l'ensemble des 6 couches :
-1. `test_conformance_anti_spoofing_and_guest_manager` : Validation de l'anti-usurpation vocale et expiration des invités.
+1. `test_conformance_anti_spoofing_and_guest_manager` : Validation de l'heuristique de vivacité vocale (non certifiée) et expiration des invités.
 2. `test_conformance_consent_registry_and_quota_enforcement` : Vérification du registre de consentement et auto-révocation des quotas.
 3. `test_conformance_self_model_and_simulator` : Introspection du Self-Model et simulation d'action à blanc.
 4. `test_conformance_working_memory_distillation_and_query_dsl` : Distillation de la mémoire de travail vers le graphe SPO.
@@ -88,7 +88,7 @@ La suite `conformance` exécute **73 tests (66 fast verts en CI + 7 slow ignoré
 11. `test_real_mimi_safetensors_parsing` : Désérialisation zéro-copie du codec Mimi.
 12. `test_capability_creation_and_verification` : Vérification cryptographique des droits Biscuit.
 13. `test_all_compute_backends` : Inspection des backends CPU/CUDA/Metal/WebGPU.
-14. `test_all_substrates_manifest_and_attestation` : Validation de l'attestation matérielle sur tous les OS.
+14. `test_all_substrates_manifest_and_attestation` : Validation du contrat d'attestation et de la signature locale de dev sur tous les OS (pas de preuve TPM).
 15. `test_real_sensevoice_tokenizer_parsing` : Test du vocabulaire de 25 055 tokens de SenseVoice.
 16. `test_linux_conformance_seccomp_and_sysfs` : Conformance Seccomp et cgroups sous Linux.
 17. `test_ambient_multimodal_perception_and_interface_pipeline` : Pipeline continu caméra/audio/WorldModel.
@@ -100,7 +100,7 @@ La suite `conformance` exécute **73 tests (66 fast verts en CI + 7 slow ignoré
 23. `test_cross_substrate_screen_capture_conformance` : Validation de la capture d'écran multi-plateformes.
 24. `test_real_ui_tars_gguf_parsing` : Parsing du modèle UI-TARS au format GGUF v3.
 25. `test_real_qwen2_gguf_parsing` : Parsing du modèle Qwen au format GGUF v3.
-26. `test_unified_connect_all_models` : Connexion unifiée des 7 modèles fondations.
+26. `test_unified_connect_all_models` : Connexion unifiée des 7 modèles fondations et de leurs tokenizers essentiels (Qwen et MiniLM).
 27. `test_end_to_end_cross_crate_model_wiring` : Câblage complet entre le noyau cognitif et les runtimes neuronaux.
 
 ---
@@ -126,6 +126,7 @@ Au démarrage, le démon affiche les six étapes d'initialisation du système :
   Tier: Native
   Compute Backends: [Cuda, Vulkan, Cpu]
   Hardware Attestation: Windows-Substrate-Host (Valid)
+  NOTE: attestation is a local dev signature, NOT a TPM/VBS hardware proof (tracked work).
 
 [2/6] Loading Versioned Constitution & Security Primitives...
   Constitution Version: 1.0.0
@@ -136,13 +137,13 @@ Au démarrage, le démon affiche les six étapes d'initialisation du système :
   User Identity: 01a10ce2-402c-770c-be2b-daf41914e258 (Initialized)
   CRDT State: 0 tombstones, vector clock ready
 
-[4/6] Bootstrapping Perception Pipeline & Moshi Voice Engine...
+[4/6] Bootstrapping Inference Models & Cognitive Pipeline...
   Audio Pipeline: 16kHz continuous capture buffer ready
-  SenseVoice-Small: Multi-task transcription & acoustic events loaded
-  Moshi: Full-duplex speech-to-speech engine ready (160ms theoretical latency)
+  SenseVoice-Small: mel + LFR + forward ort + CTC greedy — real ASR, measured confidence
+  Voice/GUI: Mimi RVQ nearest-L2, TTS formantique Klatt, grounding CV — pas de Moshi neural ni de forward VLM
 
-[5/6] Spawning Sandboxed WASM Agent Registry...
-  Registered 5 reference WASM agents with strict Biscuit scopes
+[5/6] Registering Reference Agent Manifests...
+  Registered 5 reference agent manifests (scopes déclarés ; aucun binaire .wasm chargé ni exécuté)
 
 [6/6] Linking Cognitive Fabric & Orchestrator...
   Cognitive Fabric: System 1 / System 2 dynamic router online
@@ -163,7 +164,7 @@ Le REPL accepte du texte naturel (qui est routé vers le `CognitiveOrchestrator`
 | **`:help`** | Affiche la liste complète des commandes interactives (y compris `:help` et `:quit`, alias `:exit`) et rappelle que toute saisie sans `:` est envoyée au modèle Qwen. |
 | **`:status`** | Affiche le palier matériel, l'état de la mémoire vive, l'état de présence actuel et le timeout LLM effectif. |
 | **`:metrics`** | Inspecte les 3 métriques North-Star (Continuité, Initiative Bornée, Généralité) et le détecteur de dérive des valeurs éthiques. |
-| **`:agents`** | Liste les agents WASM enregistrés et leurs scopes Biscuit associés. |
+| **`:agents`** | Liste les manifests d'agents enregistrés et leurs scopes déclarés ; rappelle qu'aucun binaire `.wasm` n'est chargé ni exécuté. |
 | **`:cost`** | Affiche le compteur financier des appels Système 2 en temps réel. |
 | **`:models`** | Liste le catalogue des modèles fondations et l'état du cache disque local. |
 | **`:connected`** | Affiche le statut vérifié de connexion des 7 modèles fondations. |
@@ -173,7 +174,7 @@ Le REPL accepte du texte naturel (qui est routé vers le `CognitiveOrchestrator`
 | **`:camera`** | Capture une trame vidéo et évalue la situation visuelle sans fuite de pixels bruts. |
 | **`:hud`** | Démontre l'affichage du HUD Spotlight éphémère avec puce d'action Braise `#FF7A2F`. |
 | **`:shell`** | Snapshot shell ambient (présence/HUD/coût/silence → JSON compositor) + rappel lancement `hakille-desktop`. |
-| **`:models-honest`** | Statuts honnêtes Inspected/Simulated des 7 moteurs (jamais de faux Operational). |
+| **`:models-honest`** | Statuts Absent/Inspected/Simulated/Real dérivés des artefacts présents (jamais de faux Operational). |
 | **`:agents-cards`** | 5 agents avec badges DEMO honnêtes + flags validation Braise. |
 | **`:powers`** | Pouvoirs : périmètre, quota, dernier usage, expiration, interrupteur (+ verrou politique). |
 | **`:journal-search <q> [page]`** | Recherche journal, plus récent d'abord, 20/page, cherche aussi dans la trace complète. |
@@ -219,13 +220,13 @@ cargo run -p hakille-daemon -- --eval-prompt "Planifier une réunion demain mati
 
 ---
 
-## 5. Guide de Développement d'Agents WASM Sandboxés
+## 5. Agents de Référence et Runtime WASM (état réel)
 
-Tout agent tiers ou extension système s'exécute dans un bac à sable WebAssembly/WASI hermétique géré par `hakille-agents`.
+`hakille-agents` contient un `WasmRunner` Wasmtime avec ABI `run(i32,i32)->(i32,i32)`, mémoire bornée, fuel et timeout. **Il n'est pas branché au démon en v1** : `Substrate::spawn_sandboxed` retourne un handle local sans lancer d'instance, et aucun fichier `.wasm` n'est livré dans `agents/`. Les cinq dossiers sont des crates natives avec manifests ; leurs fonctions sont testées, mais les scopes déclarés ne sont pas appliqués à une exécution d'agent.
 
 ### 5.1. Structure d'un Agent
 Les agents de référence se situent dans le répertoire `agents/` :
-- `agents/mail/` : Gestion des courriels sous capability `Filesystem` et `Network`.
+- `agents/mail/` : Gestion des courriels sous capability déclarée `Filesystem` et `Network`.
 - `agents/calendar/` : Planification d'agenda locale.
 - `agents/code/` : Inspection et transformation de code source.
 - `agents/home/` : Pilotage d'actionneurs domotiques.

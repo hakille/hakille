@@ -36,7 +36,7 @@ Sur desktop et laptop, le raccourci global universel (`Alt+Space` sous Windows/L
 ```
 
 ### Cycle de Vie Éphémère
-1. **Invocation instantanée** : Apparition sans latence sous forme de barre acrylique translucide centrée.
+1. **Invocation rapide (cible)** : apparition sous forme de barre acrylique translucide centrée ; le délai dépend du compositeur et n'est pas garanti nul.
 2. **Streaming inline** : Les tokens de réponse s'écrivent directement dans la ligne, sans ouvrir de panneau supplémentaire.
 3. **Puce de validation Corail `#FF5722`** :
    ```text
@@ -58,7 +58,7 @@ Hakille traite en continu les flux de capteurs (caméra webcam, microphones de p
 > **Aucun pixel brut ne quitte la mémoire vive éphémère locale.**
 
 - Les trames capturées (`CameraFrame`) sont analysées en temps réel dans `hakille-perception::CameraPipeline`.
-- Une empreinte cryptographique SHA-256 de chaque trame est calculée pour l'attestation et l'auditabilité matérielle.
+- Une empreinte SHA-256 de trame peut être calculée pour l'auditabilité locale ; elle ne constitue pas une attestation matérielle.
 - Les données de pixels bruts sont immédiatement jetées de la mémoire. Seules les métadonnées sémantiques sont conservées et transmises au `WorldModel`.
 
 ### Analyse de Présence & Attention en Temps Réel

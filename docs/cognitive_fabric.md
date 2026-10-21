@@ -66,7 +66,7 @@ Le système applique la théorie cognitive des processus duels (Kahneman) :
                │   SYSTEM 1    │   │        SYSTEM 2        │
                │  Modèle local │   │ Modèle lourd / distant │
                │     3-7B      │   │  (BYOM / Cluster GPU)  │
-               │ Latence <100ms│   │   Compteur de coût     │
+               │ <100ms (cible)│   │   Compteur de coût     │
                +───────────────+   +────────────────────────+
 ```
 
@@ -79,7 +79,7 @@ Le système applique la théorie cognitive des processus duels (Kahneman) :
 
 ## 3. Budgets de Latence par Étage
 
-Pour préserver la sensation d'immédiateté et de fluidité conversationnelle, chaque maillon de la chaîne cognitive dispose d'un budget temporel strict :
+Pour préserver la sensation d'immédiateté et de fluidité conversationnelle, chaque maillon de la chaîne cognitive dispose d'un **budget cible**. Ce ne sont pas des garanties mesurées : le décodage Qwen CPU réel peut prendre de l'ordre de la seconde à la dizaine de secondes selon le mode.
 
 | Étage de Traitement | Budget Alloué (Maximal) | Composant Typique |
 | :--- | :--- | :--- |
@@ -90,7 +90,7 @@ Pour préserver la sensation d'immédiateté et de fluidité conversationnelle, 
 | **TTS (Time-To-First-Audio)** | $\le 120\text{ ms}$ | CosyVoice2 streaming ou Moshi direct |
 | **Budget Total Cascade** | **$\le 355\text{ ms}$** | Interaction conversationnelle complète |
 
-En mode **Full-Duplex Speech-to-Speech (Kyutai Moshi)**, la cascade ASR → LLM → TTS est fusionnée en une boucle neuronale unique opérant à **160 ms de latence intrinsèque** (80 ms de trame Mimi + 80 ms acoustique).
+En mode cible **Full-Duplex Speech-to-Speech (Kyutai Moshi)**, la cascade ASR → LLM → TTS serait fusionnée en une boucle neuronale unique visant **160 ms** (80 ms de trame Mimi + 80 ms acoustique). Moshi n'est pas provisionné en v1 : le runtime local fait du RVQ Mimi nearest-L2 et du TTS formantique, sans latence neuronale mesurée.
 
 ---
 

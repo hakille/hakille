@@ -20,7 +20,7 @@ use hakille_metrics::{BoundedInitiativeTracker, ContinuityTracker, GeneralityTra
 use hakille_ui::{CostCounter, MemoryViewerPanel, PresenceIndicator};
 use hakille_ui_protocol::{JournalEntryDto, KernelToUi, MemoryRowDto, StatusDto, UiToKernel};
 
-use crate::{run_turn_core, turn_error_hint};
+use crate::{audit_memory_event, persist_memory_to, run_turn_core, turn_error_hint};
 
 /// Plafond de lignes renvoyées par consultation (marge sous `MAX_FRAME_BYTES`
 /// et réponse rapide — le HUD peut redemander).
@@ -122,6 +122,7 @@ pub async fn run_serve(
     bounded_initiative: &mut BoundedInitiativeTracker,
     generality_tracker: &mut GeneralityTracker,
     audit_journal: &AuditJournal,
+    memory_path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = hakille_ipc::transport::default_endpoint();
     let token_path = hakille_ipc::transport::default_token_path();
@@ -163,6 +164,7 @@ pub async fn run_serve(
             bounded_initiative,
             generality_tracker,
             audit_journal,
+            memory_path,
         )
         .await;
         println!("IPC: client déconnecté — en attente du prochain HUD");
@@ -181,6 +183,7 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     bounded_initiative: &mut BoundedInitiativeTracker,
     generality_tracker: &mut GeneralityTracker,
     audit_journal: &AuditJournal,
+    memory_path: &std::path::Path,
 ) {
     loop {
         let frame = match hakille_ipc::transport::read_frame(stream).await {
@@ -192,6 +195,25 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
             }
         };
         let id = frame.id;
+        let is_turn = matches!(
+            &frame.body,
+            FrameBody::Request {
+                message: UiToKernel::HudSubmit { .. }
+            }
+        );
+        if is_turn {
+            // Notifie l'attente réelle avant le tour (id 0 : hors requête).
+            // Le client filtre `Presence` et ne résout jamais la requête en
+            // vol avec cette trame.
+            let acting = Frame::reply(
+                0,
+                KernelToUi::Presence(hakille_ui_protocol::PresenceState::Acting),
+            );
+            if let Err(e) = hakille_ipc::transport::write_frame(stream, &acting).await {
+                eprintln!("IPC: présence Acting non écrite (id={id}) — {e}");
+                return;
+            }
+        }
         let response = match frame.body {
             FrameBody::Request {
                 message: UiToKernel::HudSubmit { query },
@@ -209,6 +231,7 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                         bounded_initiative,
                         generality_tracker,
                         audit_journal,
+                        memory_path,
                         &query,
                     )
                     .await
@@ -220,12 +243,18 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                                 outcome.cost_cents
                             );
                             if outcome.non_empty {
+                                let validation = match &outcome.persistence_warning {
+                                    Some(warning) => {
+                                        Some((format!("⚠ {warning}"), outcome.cost_cents))
+                                    }
+                                    None => (outcome.cost_cents > 0)
+                                        .then(|| ("coût tour".into(), outcome.cost_cents)),
+                                };
                                 Frame::reply(
                                     id,
                                     KernelToUi::HudReply {
                                         response: outcome.response,
-                                        validation: (outcome.cost_cents > 0)
-                                            .then(|| ("coût tour".into(), outcome.cost_cents)),
+                                        validation,
                                     },
                                 )
                             } else {
@@ -300,44 +329,77 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                     eprintln!("IPC: mémoire vide refusée (id={id})");
                     Frame::error(id, ErrorCode::BadFrame, "mémoire vide refusée")
                 } else {
-                    let (subject, predicate, object) = remember_parts(text.trim());
-                    match orchestrator.remember(subject, predicate, object) {
-                        hakille_memory::InsertResult::Inserted(triplet_id) => {
-                            println!("IPC: mémoire enregistrée (id={id})");
-                            Frame::reply(
-                                id,
-                                KernelToUi::MemoryRememberAck {
-                                    id: triplet_id.0.to_string(),
-                                },
-                            )
-                        }
-                        hakille_memory::InsertResult::ContradictionResolved { new, .. } => {
-                            println!("IPC: contradiction résolue (id={id}, remplacement tracé)");
-                            Frame::reply(
-                                id,
-                                KernelToUi::MemoryRememberAck {
-                                    id: new.0.to_string(),
-                                },
-                            )
-                        }
-                        hakille_memory::InsertResult::NeedsUserResolution {
-                            existing,
-                            incoming,
-                        } => {
-                            // Rien n'a été écrasé : le HUD reçoit les deux ids
-                            // et décide (même contrat que le REPL).
-                            eprintln!(
-                                "IPC: contradiction — décision utilisateur requise (id={id})"
-                            );
-                            Frame::reply(
-                                id,
-                                KernelToUi::Toast {
-                                    text: format!(
-                                        "contradiction — décision requise : existant [{}] vs entrant [{}] ; rien écrasé",
-                                        existing.id.0, incoming.id.0
-                                    ),
-                                },
-                            )
+                    let trimmed = text.trim().to_string();
+                    // Mutation auditée AVANT application : si le journal est
+                    // indisponible, rien n'est mémorisé.
+                    if let Err(e) = audit_memory_event(
+                        audit_journal,
+                        "MemoryRemember",
+                        format!("Demande de mémorisation via HUD: '{trimmed}'"),
+                        serde_json::json!({ "text": trimmed, "origin": "ipc" }),
+                    ) {
+                        eprintln!("IPC: audit mémoire impossible (id={id}) — {e}");
+                        Frame::reply(
+                            id,
+                            KernelToUi::Toast {
+                                text: format!("mémorisation refusée — audit indisponible: {e}"),
+                            },
+                        )
+                    } else {
+                        let (subject, predicate, object) = remember_parts(&trimmed);
+                        let result = orchestrator.remember(subject, predicate, object);
+                        let ack =
+                            |triplet_id: &hakille_core::TripletId,
+                             persisted: &Result<(), String>| {
+                                let id_text = triplet_id.0.to_string();
+                                match persisted {
+                                    Ok(()) => {
+                                        println!("IPC: mémoire enregistrée et persistée (id={id})");
+                                        KernelToUi::MemoryRememberAck { id: id_text }
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "IPC: mémoire en RAM non persistée (id={id}) — {e}"
+                                        );
+                                        KernelToUi::Toast {
+                                            text: format!(
+                                                "fait [{id_text}] en mémoire volatile, persistance échouée: {e}"
+                                            ),
+                                        }
+                                    }
+                                }
+                            };
+                        match result {
+                            hakille_memory::InsertResult::Inserted(triplet_id) => {
+                                let persisted = persist_memory_to(orchestrator, memory_path);
+                                Frame::reply(id, ack(&triplet_id, &persisted))
+                            }
+                            hakille_memory::InsertResult::ContradictionResolved { new, .. } => {
+                                let persisted = persist_memory_to(orchestrator, memory_path);
+                                println!(
+                                    "IPC: contradiction résolue (id={id}, remplacement tracé)"
+                                );
+                                Frame::reply(id, ack(&new, &persisted))
+                            }
+                            hakille_memory::InsertResult::NeedsUserResolution {
+                                existing,
+                                incoming,
+                            } => {
+                                // Rien n'a été écrasé : le HUD reçoit les deux ids
+                                // et décide (même contrat que le REPL).
+                                eprintln!(
+                                    "IPC: contradiction — décision utilisateur requise (id={id})"
+                                );
+                                Frame::reply(
+                                    id,
+                                    KernelToUi::Toast {
+                                        text: format!(
+                                            "contradiction — décision requise : existant [{}] vs entrant [{}] ; rien écrasé",
+                                            existing.id.0, incoming.id.0
+                                        ),
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -374,6 +436,18 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                 Frame::error(id, ErrorCode::BadFrame, "trame inattendue côté serveur")
             }
         };
+        if is_turn {
+            // Le tour est terminé (succès ou échec) : la présence revient à
+            // l'état de veille avant la réponse finale.
+            let idle = Frame::reply(
+                0,
+                KernelToUi::Presence(hakille_ui_protocol::PresenceState::Idle),
+            );
+            if let Err(e) = hakille_ipc::transport::write_frame(stream, &idle).await {
+                eprintln!("IPC: présence Idle non écrite (id={id}) — {e}");
+                return;
+            }
+        }
         if let Err(e) = hakille_ipc::transport::write_frame(stream, &response).await {
             eprintln!("IPC: écriture échouée (id={id}) — {e}; retour à l'écoute");
             return;
