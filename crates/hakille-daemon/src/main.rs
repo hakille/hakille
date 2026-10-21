@@ -1,4 +1,4 @@
-use hakille_agents::{AgentManifest, AgentRegistry, UiTarsAgent};
+use hakille_agents::{AgentManifest, AgentRegistry, UiTarsAgent, sha256_hex};
 use hakille_audit::journal::AuditJournal;
 use hakille_audit::{ActionRecord, AuditEntry, ReasoningStep, ReasoningTrace};
 use hakille_constitution::rules::Constitution;
@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
+mod agent_runtime;
 mod ipc;
 
 use ipc::run_serve;
@@ -590,9 +591,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  WorldModel: Continuous multimodal situational tracking initialized");
 
     // 5. Initialize Action Agents Layer
-    println!("\n[5/6] Registering Reference Agent Manifests...");
+    println!("\n[5/6] Registering Agent Manifests & WASM Runtime...");
     let mut agent_registry = AgentRegistry::new();
-    let reference_agents = [
+    let declarative_business_agents = [
         (
             "agent-mail",
             "Mail Agent",
@@ -619,22 +620,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             vec![CapabilityScope::Wallet],
         ),
     ];
-    for (id, name, caps) in reference_agents {
+    for (id, name, caps) in declarative_business_agents {
         agent_registry.register(AgentManifest {
             id: id.to_string(),
             name: name.to_string(),
             version: "0.1.0".to_string(),
             description: format!(
-                "Reference agent manifest (WASM binary not provisioned): {}",
+                "Declarative business manifest (no WASM binary provisioned): {}",
                 name
             ),
             required_capabilities: caps,
         })?;
     }
     println!(
-        "  Registered {} reference agent manifests (scopes déclarés ; aucun binaire .wasm chargé ni exécuté)",
+        "  Registered {} declarative business agent manifests (scopes déclarés, aucun binaire métier fourni)",
         agent_registry.list_agents().len()
     );
+
+    // Runtime WASM réel : seuls les agents de référence embarqués ont un
+    // binaire. Les artefacts sont content-addressed, vérifiés puis auto-testés
+    // avant toute exécution. Une indisponibilité est affichée, jamais masquée.
+    let mut agent_runtime = match agent_runtime::ReferenceAgentRuntime::provision(&data_dir) {
+        Ok(runtime) => {
+            println!(
+                "  WASM runtime: {} agent(s) de référence réellement chargé(s) depuis {}",
+                runtime.agents().len(),
+                runtime.dir.display()
+            );
+            for agent in runtime.agents() {
+                println!(
+                    "    - {} : {} octet(s), sha256 {}",
+                    agent.name, agent.bytes_len, agent.sha256
+                );
+            }
+            println!(
+                "  WASM self-test: OK en {} ms (fuel 10M, timeout 2 s, 32 pages ; aucun import hôte)",
+                runtime.self_test_duration_ms
+            );
+            Some(runtime)
+        }
+        Err(e) => {
+            eprintln!("  WASM runtime: INDISPONIBLE — aucun binaire chargé ni exécuté : {e}");
+            None
+        }
+    };
 
     // 6. Initialize Cognitive Kernel, UI & North-Star Metrics
     println!("\n[6/6] Linking Cognitive Fabric & Orchestrator...");
@@ -998,7 +1027,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "  :metrics          Display 3 North-Star metrics and ethics drift status"
                 );
                 println!(
-                    "  :agents           List registered agent manifests (no WASM binary executed)"
+                    "  :agents           List declarative business manifests + real WASM reference runtime"
+                );
+                println!(
+                    "  :agents-run <name> <json>  Execute a real reference WASM agent (echo-agent/count-agent)"
                 );
                 println!("  :cost             Display System 2 inference cost tracking");
                 println!(
@@ -1838,7 +1870,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             ":agents" => {
-                println!("Registered Agent Manifests:");
+                println!("Declarative Business Agent Manifests:");
                 for agent in agent_registry.list_agents() {
                     println!(
                         "  - [{}] {} (declared caps: {:?})",
@@ -1846,8 +1878,113 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
                 println!(
-                    "  NOTE: no .wasm binary is provisioned or executed; scopes are declarations, not an enforced sandbox."
+                    "  NOTE: ces cinq manifests métier restent déclaratifs ; aucun binaire métier n'est chargé ni exécuté."
                 );
+                match &agent_runtime {
+                    Some(runtime) => {
+                        println!("Real WASM Reference Runtime:");
+                        for agent in runtime.agents() {
+                            println!(
+                                "  - {} | {} octet(s) | sha256 {} | {}",
+                                agent.name,
+                                agent.bytes_len,
+                                agent.sha256,
+                                agent.path.display()
+                            );
+                        }
+                        println!(
+                            "  Self-test au boot: OK en {} ms ; fuel/timeout/mémoire bornés, aucun import hôte.",
+                            runtime.self_test_duration_ms
+                        );
+                        println!(
+                            "  Exécution réelle : :agents-run <name> <json> (ex. :agents-run echo-agent {{\"msg\":\"bonjour\"}})"
+                        );
+                    }
+                    None => println!(
+                        "  WASM Reference Runtime: INDISPONIBLE — aucun binaire chargé ni exécuté (voir l'avertissement au démarrage)."
+                    ),
+                }
+            }
+            ":agents-run" => {
+                println!(
+                    "Usage : :agents-run <name> <json> (ex. :agents-run echo-agent {{\"msg\":\"bonjour\"}})"
+                );
+            }
+            s if s.starts_with(":agents-run ") => {
+                let rest = s.trim_start_matches(":agents-run ").trim();
+                let mut parts = rest.splitn(2, char::is_whitespace);
+                let name = parts.next().unwrap_or("").trim();
+                let json = parts.next().unwrap_or("").trim();
+                if name.is_empty() || json.is_empty() {
+                    eprintln!(
+                        "Usage : :agents-run <name> <json> (ex. :agents-run echo-agent {{\"msg\":\"bonjour\"}})"
+                    );
+                } else if let Some(runtime) = agent_runtime.as_mut() {
+                    let input_sha256 = sha256_hex(json.as_bytes());
+                    let audit_request = audit_readonly_action(
+                        &audit_journal,
+                        "WasmAgentRunRequested",
+                        format!("Exécution demandée de l'agent WASM '{name}'"),
+                        serde_json::json!({
+                            "agent": name,
+                            "input_sha256": input_sha256,
+                            "input_len": json.len(),
+                        }),
+                    );
+                    match audit_request {
+                        Err(e) => {
+                            eprintln!("Exécution refusée — audit indisponible : {e}");
+                        }
+                        Ok(()) => match runtime.run(name, json) {
+                            Ok(run) => {
+                                println!(
+                                    "Agent {} : OK en {} ms (sortie {} octet(s))",
+                                    run.agent,
+                                    run.duration_ms,
+                                    run.output.len()
+                                );
+                                println!("  output: {}", run.output);
+                                println!(
+                                    "  input sha256: {} | output sha256: {}",
+                                    run.input_sha256, run.output_sha256
+                                );
+                                if let Err(e) = audit_readonly_action(
+                                    &audit_journal,
+                                    "WasmAgentRunCompleted",
+                                    format!("Exécution réussie de l'agent WASM '{}'", run.agent),
+                                    serde_json::json!({
+                                        "agent": run.agent,
+                                        "duration_ms": run.duration_ms,
+                                        "input_sha256": run.input_sha256,
+                                        "output_sha256": run.output_sha256,
+                                        "output_len": run.output.len(),
+                                    }),
+                                ) {
+                                    eprintln!("  Audit du résultat impossible : {e}");
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Agent {name} : échec : {e}");
+                                if let Err(audit_err) = audit_readonly_action(
+                                    &audit_journal,
+                                    "WasmAgentRunFailed",
+                                    format!("Échec de l'agent WASM '{name}'"),
+                                    serde_json::json!({
+                                        "agent": name,
+                                        "input_sha256": input_sha256,
+                                        "error": e.to_string(),
+                                    }),
+                                ) {
+                                    eprintln!("  Audit de l'échec impossible : {audit_err}");
+                                }
+                            }
+                        },
+                    }
+                } else {
+                    eprintln!(
+                        "WASM runtime indisponible — aucune exécution tentée. Vérifie l'avertissement de démarrage."
+                    );
+                }
             }
             ":cost" => {
                 println!("Inference Cost: {}", cost_counter.formatted_total());
@@ -3247,6 +3384,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     ":constitution",
     ":metrics",
     ":agents",
+    ":agents-run",
     ":cost",
     ":models-honest",
     ":agents-cards",
@@ -3337,6 +3475,39 @@ fn audit_memory_event(
     description: String,
     parameters: serde_json::Value,
 ) -> Result<(), String> {
+    audit_action(audit_journal, action_type, description, parameters)
+}
+
+/// Journalise une action générique (mémoire, agent WASM, etc.) avant ou après
+/// son exécution. Les payloads sensibles ne doivent jamais être journalisés
+/// en clair : les appelants passent des hashes ou des métadonnées.
+fn audit_action(
+    audit_journal: &AuditJournal,
+    action_type: &str,
+    description: String,
+    parameters: serde_json::Value,
+) -> Result<(), String> {
+    audit_action_with_reversibility(audit_journal, action_type, description, parameters, false)
+}
+
+/// Variante explicite pour les actions sans effet de bord persistant, comme
+/// l'exécution d'un agent WASM en lecture seule.
+fn audit_readonly_action(
+    audit_journal: &AuditJournal,
+    action_type: &str,
+    description: String,
+    parameters: serde_json::Value,
+) -> Result<(), String> {
+    audit_action_with_reversibility(audit_journal, action_type, description, parameters, true)
+}
+
+fn audit_action_with_reversibility(
+    audit_journal: &AuditJournal,
+    action_type: &str,
+    description: String,
+    parameters: serde_json::Value,
+    reversible: bool,
+) -> Result<(), String> {
     let entry = AuditEntry {
         id: EntryId(uuid::Uuid::now_v7()),
         timestamp: Timestamp::now(),
@@ -3345,7 +3516,7 @@ fn audit_memory_event(
             action_type: action_type.to_string(),
             description,
             parameters,
-            reversible: false,
+            reversible,
             reversed: false,
         },
         capability_used: None,

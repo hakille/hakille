@@ -86,6 +86,20 @@ pub enum AgentError {
     InvalidOutput { agent: String, message: String },
     #[error("Agent '{agent}' : trap WASM : {message}")]
     Trap { agent: String, message: String },
+    #[error("Agent '{agent}' : entrée JSON invalide : {message}")]
+    InvalidInput { agent: String, message: String },
+    #[error("Agent '{agent}' inconnu (chargés : {available})")]
+    UnknownAgent { agent: String, available: String },
+    #[error("Artefact d'agent '{path}' : E/S impossible : {message}")]
+    ArtifactIo { path: String, message: String },
+    #[error(
+        "Artefact d'agent '{path}' : hash SHA-256 non conforme (attendu {expected}, obtenu {actual})"
+    )]
+    ArtifactHashMismatch {
+        path: String,
+        expected: String,
+        actual: String,
+    },
     #[error("Erreur interne du bac à sable WASM : {message}")]
     Internal { message: String },
 }

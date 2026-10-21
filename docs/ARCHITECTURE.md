@@ -41,10 +41,10 @@ Hakille est structuré selon une hiérarchie stricte en 6 couches hermétiques. 
                                          │ Validation des invariants & Traçabilité
                                          ▼
 +===================================================================================+
-|                       COUCHE 5 : ACTION (AGENTS WASM — CIBLE)                     |
+|                  COUCHE 5 : ACTION (AGENTS WASM — RÉFÉRENCE + CIBLE)                  |
 |  - Runtime de bac à sable WASI / Wasmtime (hakille-agents)                         |
 |  - Vérification & atténuation hors-ligne de capabilities Biscuit                  |
-|  - Quotas définis dans `WasmRunner` (fuel/timeout/mémoire), **non branchés au démon** en v1 ; `spawn_sandboxed` retourne un handle local sans exécuter de WASM |
+|  - Quotas réellement appliqués par le runtime de référence (fuel/timeout/mémoire) ; les cinq agents métier ne sont pas branchés ; `spawn_sandboxed` retourne encore un handle local pour eux |
 |  - Agent GUI UI-TARS (intentions d'action abstraites : Click, Type, Drag)         |
 |  - Protocole inter-agents signé Ed25519 (négociation d'agenda et de tâches)       |
 +===================================================================================+
@@ -106,7 +106,7 @@ Hakille est structuré selon une hiérarchie stricte en 6 couches hermétiques. 
 
 ## 3. Matrice Complète des 31 Crates du Projet (+ 5 Agents de Référence)
 
-Le monorepo Cargo regroupe 31 crates modulaires (+ 5 crates d'agents de référence dans `agents/`, sans binaire `.wasm` livré, `conformance`, `xtask`) garantissant un découplage rigoureux :
+Le monorepo Cargo regroupe 31 crates modulaires (+ 5 crates d'agents métier déclaratifs dans `agents/`, sans binaire `.wasm` livré, `conformance`, `xtask`) garantissant un découplage rigoureux :
 
 | Crate | Chemin | Rôle & Composants Clés | Couche |
 | :--- | :--- | :--- | :--- |
@@ -126,7 +126,7 @@ Le monorepo Cargo regroupe 31 crates modulaires (+ 5 crates d'agents de référe
 | **`hakille-kernel`** | [`../crates/hakille-kernel`](../crates/hakille-kernel) | Cerveau cognitif : `CognitiveFabric`, routeur System 1/2, `WorkingMemory`, `DeliberatePlanner`, `SelfModel`, `GraphCuriosityScanner`, `DryRunSimulator`, budgets de latence par étage. | Couche 3 |
 | **`hakille-memory`** | [`../crates/hakille-memory`](../crates/hakille-memory) | Mémoire à long terme : graphe de triplets SPO avec triple indexation (SPO, POS, OSP — écriture 3 index, lecture par préfixe O(N) documentée, `crates/hakille-memory/src/storage/edge.rs:164-167`), backend local ACID `redb`, index vectoriel HNSW `instant-distance` (non branché au recall, brute-force `vector/edge.rs:22-34`), GraphQueryLang DSL, déclin temporel. | Couche 4 |
 | **`hakille-sync`** | [`../crates/hakille-sync`](../crates/hakille-sync) | Continuité multi-appareils : ensembles CRDT à croissance seule avec tombstones, horloges vectorielles, coordinateur de handoff de tâche et protocole de réplication TiKV. | Couche 4 |
-| **`hakille-agents`** | [`../crates/hakille-agents`](../crates/hakille-agents) | `WasmRunner` Wasmtime (ABI `run`, fuel/timeout/mémoire) et manifests de capabilities. **Non branché au démon** : `spawn_sandboxed` ne l'appelle pas et aucun binaire `.wasm` n'est livré. | Couche 5 (cible) |
+| **`hakille-agents`** | [`../crates/hakille-agents`](../crates/hakille-agents) | `AgentSandbox` Wasmtime (ABI `run`, fuel/timeout/mémoire), matérialisation content-addressed et exécution réelle de `echo-agent`/`count-agent`. Les cinq agents métier restent déclaratifs et `spawn_sandboxed` ne les exécute pas. | Couche 5 |
 | **`hakille-audit`** | [`../crates/hakille-audit`](../crates/hakille-audit) | Journalisation inviolable : journal append-only avec signatures Ed25519, chaînage de hachages SHA-256, registre de consentement explicite, moteur de requêtes et d'explicabilité du "pourquoi". | Couche 6 |
 | **`hakille-auth`** | [`../crates/hakille-auth`](../crates/hakille-auth) | Gestion d'identité : authentification multimodale continue, détecteur anti-usurpation vocale (liveness), gestionnaire de sessions invités bornées, profils mineurs, capability Wallet de paiement. | Couche 6 |
 | **`hakille-keystore`** | [`../crates/hakille-keystore`](../crates/hakille-keystore) | Trousseau de clés longues durées : seeds 32 octets stockés dans le keychain OS (Credential Manager, Keychain, Secret Service), utilisateurs versionnés (`capability-root-v1`, `journal-signing-v1`) et rotation. | Couche 6 |
@@ -254,7 +254,7 @@ Utilisateur        Perception           Kernel            Mémoire           Age
 2. Le jeton Biscuit est atténué avec le périmètre le plus strict possible (scopes minimaux, quota de requêtes borné, durée de vie brève).
 
 ### Étape 5 : Exécution Sécurisée & Journalisation d'Audit
-1. **(Cible)** L'agent WASM exécuterait l'action dans le bac à sable Wasmtime ou transmettrait une intention typée (`Action::Click(x, y)`) au `Substrate`. En v1, aucun agent WASM n'est exécuté : les manifests sont seulement enregistrés et les intentions ne sont pas encore routées vers un runner.
+1. **(Réel pour la référence, cible pour le métier)** Les agents `echo-agent` et `count-agent` sont exécutés dans le bac à sable Wasmtime. Les cinq agents métier ne sont pas encore routés vers un runner ; leurs manifests restent déclaratifs.
 2. L'action est enregistrée dans `hakille-audit` :
    - Horodatage et identifiant UUIDv7.
    - Signature cryptographique Ed25519 de l'acteur.

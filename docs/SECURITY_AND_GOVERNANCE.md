@@ -10,7 +10,7 @@ Ce document constitue la référence exhaustive de la couche de confiance et de 
 
 Hakille intègre ses propres primitives cryptographiques formellement prouvées :
 
-- **Signatures Numériques Ed25519** : Utilisées pour signer chaque entrée d'audit et les négociations inter-machines. Les manifests d'agents prévoient un passeport, mais aucun agent WASM n'est exécuté en v1. Clé publique 32 octets, signature 64 octets.
+- **Signatures Numériques Ed25519** : Utilisées pour signer chaque entrée d'audit et les négociations inter-machines. Les deux agents WASM de référence (`echo-agent`, `count-agent`) sont réellement exécutés dans un bac à sable zéro import ; les cinq agents métier ne sont pas exécutés en v1. Clé publique 32 octets, signature 64 octets.
 - **Chiffrement au Repos Authentifié ChaCha20-Poly1305 (AEAD)** : Les gabarits biométriques et les secrets d'authentification sont chiffrés avec des nonces aléatoires de 96 bits et une clé dérivée de l'enclave matérielle (nuance : graphe `redb` en clair — `crates/hakille-memory/src/storage/edge.rs:89-134` sans chiffrement ; gabarits chiffrés — `crates/hakille-auth/src/enrollment.rs:72-75` ; clés éphémères par boot, TPM/DPAPI suivi — `crates/hakille-daemon/src/main.rs:315-316`).
 - **Attestation de Plateforme (état réel)** : au démarrage, `Substrate::attest` produit une signature **locale de développement** avec un identifiant de plateforme. Elle ne cite ni TPM 2.0, ni VBS, ni IMA, ni Secure Enclave, et ne constitue pas une preuve d'intégrité matérielle. Le cluster TiKV n'est pas déployé (shadow-sync local seulement — `crates/hakille-substrate-mobile/src/shadow.rs:153,199-202`). Un vrai ancrage TPM/Enclave reste un travail suivi.
 
@@ -109,8 +109,7 @@ Toute action physique ou délibération cognitive est consignée de manière ind
 
 ## 5. Matrice d'Isolation des Bacs à Sable OS (cible)
 
-La matrice décrit la **cible** de confinement. En v1, aucun agent WASM n'est
-exécuté par le démon ; les mécanismes ci-dessous sont partiels ou simulés, comme
+La matrice décrit la **cible** de confinement. En v1, les deux agents de référence sont exécutés dans Wasmtime ; les cinq agents métier ne le sont pas, et les mécanismes ci-dessous sont partiels ou simulés, comme
 le détaille la note d'état réel. Aucun confinement n'est « impénétrable » :
 
 | OS Cible | Mécanisme Principal | Primitives de Confinement | Comportement en cas de Violation |

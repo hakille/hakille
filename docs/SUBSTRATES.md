@@ -6,14 +6,14 @@ Ce document décrit le contrat d'abstraction `Substrate`, le trait `Compute` et 
 implémentations des six cibles. **État v1 :** plusieurs mécanismes de sandbox
 sont décrits ou simulés, mais ne sont pas appliqués de bout en bout ; les
 attestations sont des signatures locales de développement, pas des preuves
-TPM/Enclave. Aucun agent WASM n'est exécuté par le démon. La matrice finale
+TPM/Enclave. Les deux agents WASM de référence sont exécutés par le démon dans Wasmtime ; les cinq agents métier ne le sont pas. La matrice finale
 distingue la cible de l'état vérifié.
 
 ---
 
 ## 1. Contrats d'Abstraction Fondamentaux : Traits `Substrate` et `Compute`
 
-Dans Hakille, le noyau cognitif et le graphe de mémoire passent par les traits Rust du substrate plutôt que d'appeler directement les syscalls. Les agents WASM, non exécutés en v1, seraient eux aussi confinés derrière ce contrat. Les traits sont définis dans [`crates/hakille-substrate`](../crates/hakille-substrate) :
+Dans Hakille, le noyau cognitif et le graphe de mémoire passent par les traits Rust du substrate plutôt que d'appeler directement les syscalls. Les agents métier, non exécutés en v1, seraient eux aussi confinés derrière ce contrat. Les traits sont définis dans [`crates/hakille-substrate`](../crates/hakille-substrate) :
 
 ### Le Trait `Substrate` : Contrôle Système et Environnement
 Le trait `Substrate` formalise toutes les capacités requises par l'OS cognitif :

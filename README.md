@@ -21,9 +21,11 @@
 > formantique, grounding CV). Le codec Mimi fait un RVQ nearest-L2 sur de vrais
 > codebooks, sans décodeur neural complet ; le VLM UI-TARS reste inspecté sans
 > forward ; le modèle neuronal Moshi 7,6B n'est pas provisionné
-> (`MoshiEngine::is_simulated() == true`). Les cinq agents de `agents/` sont des
-> crates/manifests de référence : **aucun binaire `.wasm` n'est livré, chargé
-> ou exécuté**, et `spawn_sandboxed` n'est pas branché au `WasmRunner`.
+> (`MoshiEngine::is_simulated() == true`). Les cinq agents métier de `agents/` restent des manifests déclaratifs :
+> aucun binaire `.wasm` métier n'est livré ni exécuté, et `spawn_sandboxed`
+> n'est toujours pas branché pour ces crates. En revanche, les deux agents de
+> référence (`echo-agent`, `count-agent`) sont compilés et exécutés dans un
+> bac à sable Wasmtime, avec artefacts content-addressed vérifiés.
 > L'attestation est une signature locale de développement, pas une preuve
 > TPM/Secure Enclave. Ne pas utiliser avec des secrets de production, de la
 > biométrie réelle ou des paiements autonomes. Détail par moteur :
@@ -94,16 +96,16 @@ Hakille n'est ni une application de chat, ni un wrapper d'API, ni un agent promp
 
 > Le bloc « Kyutai Moshi Full-Duplex » désigne la **cible** : le runtime actuel
 > fournit un duplex RVQ Mimi + VAD réel, sans modèle neuronal Moshi 7,6B
-> (`MoshiEngine::is_simulated() == true`). De même, la couche 5 est une cible
-> d'architecture : le démon enregistre cinq manifests, mais ne charge ni
-> n'exécute de binaires WASM. Le détail par moteur est dans
+> (`MoshiEngine::is_simulated() == true`). De même, la couche 5 est partiellement réelle : le démon exécute deux agents
+> WASM de référence, mais les cinq agents métier restent des manifests
+> déclaratifs. Le détail par moteur est dans
 > [docs/MODELS.md](docs/MODELS.md).
 
 ---
 
 ## 📦 Structure du Workspace (31 Crates + 5 Agents + Conformance)
 
-Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **5 agents de référence** (crates natives + manifests ; pas de binaire `.wasm` livré), une suite de conformité exhaustive (73 tests : 66 fast + 7 slow ignorés, voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
+Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agents WASM de référence réellement exécutés**, **5 manifests métier déclaratifs**, une suite de conformité exhaustive (73 tests : 66 fast + 7 slow ignorés, voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
 
 ### 1. Fondations & Substrates OS
 - [`hakille-core`](crates/hakille-core) : Primitives cryptographiques (Ed25519, ChaCha20Poly1305), jetons Biscuit, types temporels, bus de messages typés (`Message`) et niveaux de confiance (`TrustLevel`).
@@ -127,7 +129,7 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **5 agen
 
 ### 4. Cognition, Agents, Confiance & UI
 - [`hakille-kernel`](crates/hakille-kernel) : Fabric cognitif, routeur System 1/2, Working Memory scratchpad, Deliberate Planner, Self-Model introspectif, Graph Curiosity Scanner, Dry-Run Simulator et budgets de latence par étage.
-- [`hakille-agents`](crates/hakille-agents) : `WasmRunner` (Wasmtime) avec ABI `run`, fuel/mémoire/timeout bornés et manifestes de capabilities ; **non branché** au démon ni à `spawn_sandboxed` en v1, donc aucun agent WASM n'est exécuté de bout en bout.
+- [`hakille-agents`](crates/hakille-agents) : `AgentSandbox` (Wasmtime) avec ABI `run`, fuel/mémoire/timeout bornés, matérialisation content-addressed et exécution réelle de `echo-agent`/`count-agent` ; les cinq agents métier et `spawn_sandboxed` restent déclaratifs.
 - [`hakille-audit`](crates/hakille-audit) : Journal append-only signé Ed25519 avec chaînage SHA-256, registre de consentement explicite, moteur de requêtes et d'explicabilité causale.
 - [`hakille-auth`](crates/hakille-auth) : Authentification multimodale continue, détecteur anti-usurpation vocale (liveness), gestionnaire de sessions invités, profils mineurs et capability Wallet.
 - [`hakille-keystore`](crates/hakille-keystore) : Registre de seeds 32 octets adossé au trousseau OS (Windows Credential Manager, Keychain, Secret Service) avec versions de clés et rotation.
@@ -144,7 +146,7 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **5 agen
 - [`hakille-spikes`](crates/hakille-spikes) : Spikes techniques isolés (arbre de rendu S1, rendu S2, accessibilité S3) utilisés pour valider l'UI avant intégration.
 - [`hakille-daemon`](crates/hakille-daemon) : Démon système exécutable orchestrant l'ensemble de la pile avec invite interactive REPL et inspection approfondie.
 
-### 5. Agents de Référence (`agents/` — manifests, sans binaire WASM)
+### 5. Agents Métier (`agents/` — manifests déclaratifs)
 - `mail` : Gestion des courriels sous capability déclarée `Filesystem` + `Network`.
 - `calendar` : Planification d'agenda locale.
 - `code` : Agent d'inspection et de transformation de code.
@@ -152,9 +154,10 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **5 agen
 - `wallet-readonly` : Inspection des soldes et autorisations budgétaires.
 
 > Ces crates exposent des fonctions natives et des tests unitaires ; leurs
-> `agent.toml` ne sont pas chargés dynamiquement par le démon. Aucun fichier
-> `.wasm` n'est versionné, et les scopes déclarés ne sont donc pas encore
-> appliqués par un bac à sable en exécution.
+> `agent.toml` ne sont pas chargés dynamiquement par le démon et aucun binaire
+> métier `.wasm` n'est versionné. Les scopes déclarés ne sont donc pas encore
+> appliqués par un bac à sable en exécution. Les deux agents de référence
+> (`echo-agent`, `count-agent`) sont, eux, réellement exécutés par le démon.
 
 ---
 
@@ -174,7 +177,7 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **5 agen
 
 ## 🛡️ Modèle de Sécurité et Garanties Formelles
 
-1. **Biscuit Capabilities** : Les actions médiées par le noyau et les substrats exigent un jeton Biscuit signé ; les délégations sont atténuées. Le runtime d'agents WASM n'étant pas branché en v1, cette garantie ne couvre pas encore l'exécution d'un agent tiers.
+1. **Biscuit Capabilities** : Les actions médiées par le noyau et les substrats exigent un jeton Biscuit signé ; les délégations sont atténuées. Le runtime de référence est sandboxé (zéro import), mais les scopes Biscuit des agents métier ne sont pas encore appliqués.
 2. **Tag `Untrusted` Immuable** : Tout contenu ingéré depuis l'extérieur (courriels, pages web, documents, OCR) est marqué `TrustLevel::Untrusted`. Il ne peut jamais être promu en instruction motrice, neutralisant les prompt injections.
 3. **Journal Append-Only Chaîné** : Toutes les actions motrices sont enregistrées avec signature Ed25519, empreinte SHA-256 chaînée ($H_i = \text{SHA256}(H_{i-1} \parallel \text{Entry}_i)$) et pointeurs vers les faits du graphe justifiant la décision.
 4. **Constitution Inviolable** : 10 règles constitutionnelles machine-vérifiables s'imposent à tout composant et surpassent toute instruction humaine.
@@ -243,7 +246,8 @@ hakille> :onboarding       # Manifeste limites-avant-capacités + état acknowle
 hakille> :channel          # Afficher l'arbitrage dynamique du Sélecteur de Canal
 hakille> :settings          # Réglages §8 : fournisseurs, voix, canaux, langues, accessibilité, sauvegarde, foyer, simulation
 hakille> :budget           # Consulter le quota restant du Budget de Silence (3/jour, spec §18/§29)
-hakille> :agents           # Lister les manifests d'agents (aucun binaire WASM exécuté)
+hakille> :agents           # Manifests métier déclaratifs + état du runtime WASM réel
+hakille> :agents-run echo-agent {"msg":"bonjour"}  # Exécuter un agent WASM de référence
 hakille> :cost             # Suivre la consommation financière en temps réel
 hakille> :memory           # Afficher les triplets SPO du graphe de connaissances
 hakille> :remember Bob habite à Paris
@@ -263,7 +267,7 @@ Pour explorer chaque sous-système en profondeur, consultez les guides dédiés 
 - 🤖 [**Modèles Fondations & Runtimes d'Inférence**](docs/MODELS.md) : Spécifications des 7 modèles, parseurs binaires GGUF v3 / Safetensors / ONNX et registre LRU VRAM.
 - 🛡️ [**Sécurité, Capabilities & Gouvernance**](docs/SECURITY_AND_GOVERNANCE.md) : Jetons Biscuit, Registre de Consentement, Journal chaîné Ed25519, Constitution et Anti-Spoofing.
 - 👁️ [**Interfaces Ambiantes & Perception**](docs/INTERFACES_AND_PERCEPTION.md) : Présence discrète, HUD Spotlight éphémère, Sélecteur de Canal, Budget de Silence, World Model et moteur vocal duplex (RVQ/VAD v1).
-- 💻 [**Guide du Développeur & Manuel d'Ingénierie**](docs/DEVELOPER_GUIDE.md) : Guide pas à pas de compilation, suite de conformance 66 fast + 7 slow, commandes CLI REPL et état réel du développement d'agents (runtime non branché).
+- [**Guide du Développeur & Manuel d'Ingénierie**](docs/DEVELOPER_GUIDE.md) : Guide pas à pas de compilation, suite de conformance 66 fast + 7 slow, commandes CLI REPL et état réel du runtime d'agents (2 agents de référence exécutés, 5 manifests métier déclaratifs).
 - 📋 [**Index des Décisions d'Architecture (ADRs)**](adr/) : Historique et justifications des choix techniques fondamentaux.
 
 ---
