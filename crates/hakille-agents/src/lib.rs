@@ -1,6 +1,7 @@
 pub mod capability;
 pub mod gui_agent;
 pub mod protocol;
+pub mod reference;
 pub mod registry;
 pub mod runtime;
 pub mod sandbox;
@@ -9,6 +10,7 @@ pub mod wasm_runner;
 pub use capability::*;
 pub use gui_agent::*;
 pub use protocol::*;
+pub use reference::*;
 pub use registry::*;
 pub use runtime::*;
 pub use sandbox::*;

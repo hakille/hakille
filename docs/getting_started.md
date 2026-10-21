@@ -92,8 +92,10 @@ Le démon affiche les six étapes d'initialisation :
   SenseVoice-Small: mel + LFR + forward ort + CTC greedy — real ASR, measured confidence
   Voice/GUI: Mimi RVQ nearest-L2, TTS formantique Klatt, grounding CV — pas de Moshi neural ni de forward VLM
 
-[5/6] Registering Reference Agent Manifests...
-  Registered 5 reference agent manifests (scopes déclarés ; aucun binaire .wasm chargé ni exécuté)
+[5/6] Registering Agent Manifests & WASM Runtime...
+  Registered 5 declarative business agent manifests (scopes déclarés, aucun binaire métier fourni)
+  WASM runtime: 2 agent(s) de référence réellement chargé(s) depuis <data_dir>/agents
+  WASM self-test: OK (fuel 10M, timeout 2 s, 32 pages ; aucun import hôte)
 
 [6/6] Linking Cognitive Fabric & Orchestrator...
   Cognitive Fabric: System 1 / System 2 dynamic router online
@@ -110,7 +112,8 @@ hakille>
 ### Commandes Interactives Disponibles
 - `:status` : Vérifie l'état de présence (`Idle`, `Listening`, `Acting`), le tier actif et les dépenses courantes.
 - `:metrics` : Affiche les 3 métriques cardinales (Continuité, Respect d'initiative bornée, Généralité pratique) et l'audit de dérive éthique.
-- `:agents` : Affiche les manifests d'agents et leurs capabilities déclarées ; précise qu'aucun binaire `.wasm` n'est exécuté.
+- `:agents` : Affiche les cinq manifests métier déclaratifs et l'état du runtime WASM de référence (chemins, hashes, auto-test).
+- `:agents-run <name> <json>` : Exécute réellement `echo-agent` ou `count-agent`, avec audit avant/après.
 - `:cost` : Affiche le montant cumulé consommé pour les inférences lourdes System 2.
 - `:help` : Affiche l'aide des commandes.
 - `:exit` : Décharge les modèles et clôture proprement le démon.

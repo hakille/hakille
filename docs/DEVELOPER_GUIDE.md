@@ -2,7 +2,7 @@
 
 > *"De la compilation à la conformité formelle : bâtir et étendre un système d'exploitation cognitif en Rust pur."*
 
-Ce document constitue le guide de référence complet pour les développeurs, contributeurs et intégrateurs d'Hakille. Il détaille la configuration de l'environnement de développement, la compilation du monorepo, la suite de tests formelle (73 tests : 66 fast verts + 7 slow ignorés en gate hebdo, voir [CI](../.github/workflows/ci.yml)), l'utilisation approfondie du CLI interactif (`hakille-daemon`), l'état réel des agents de référence et du runtime WASM (non branché au démon), et l'implémentation de nouveaux backends `Substrate`.
+Ce document constitue le guide de référence complet pour les développeurs, contributeurs et intégrateurs d'Hakille. Il détaille la configuration de l'environnement de développement, la compilation du monorepo, la suite de tests formelle (73 tests : 66 fast verts + 7 slow ignorés en gate hebdo, voir [CI](../.github/workflows/ci.yml)), l'utilisation approfondie du CLI interactif (`hakille-daemon`), l'état réel des agents de référence et du runtime WASM (2 agents de référence exécutés, 5 manifests métier déclaratifs), et l'implémentation de nouveaux backends `Substrate`.
 
 ---
 
@@ -16,9 +16,9 @@ Ce document constitue le guide de référence complet pour les développeurs, co
   ```
 - **Cibles WebAssembly** (agents WASI sandboxés) :
   ```bash
-  rustup target add wasm32-wasip1          # cible agents WASI (WasmRunner non branché)
+  rustup target add wasm32-wasip1          # cible pour porter les agents métier vers WASI
   ```
-  Écart honnête : les agents cibles exigeraient `wasm32-wasip1` (`cargo build -p agent-calendar --target wasm32-wasip1 --release`, voir `docs/agents_guide.md`), mais aucun binaire `.wasm` n'est livré ni exécuté en v1 ; la démo Web Slint a été retirée avec le renderer (ADR-009).
+  Écart honnête : les deux agents de référence sont compilés depuis WAT et exécutés par le démon ; les cinq agents métier exigeraient `wasm32-wasip1` et ne sont pas encore livrés en `.wasm`.
 - **Outils C/C++ et CMake** (pour les liaisons FFI des runtimes Candle et ONNX) :
   - **Windows** : Visual Studio Build Tools 2022 avec la charge de travail *"Développement Desktop en C++"*.
   - **Linux (Debian/Ubuntu)** : `sudo apt install build-essential cmake pkg-config libasound2-dev libssl-dev libudev-dev`
@@ -142,8 +142,10 @@ Au démarrage, le démon affiche les six étapes d'initialisation du système :
   SenseVoice-Small: mel + LFR + forward ort + CTC greedy — real ASR, measured confidence
   Voice/GUI: Mimi RVQ nearest-L2, TTS formantique Klatt, grounding CV — pas de Moshi neural ni de forward VLM
 
-[5/6] Registering Reference Agent Manifests...
-  Registered 5 reference agent manifests (scopes déclarés ; aucun binaire .wasm chargé ni exécuté)
+[5/6] Registering Agent Manifests & WASM Runtime...
+  Registered 5 declarative business agent manifests (scopes déclarés, aucun binaire métier fourni)
+  WASM runtime: 2 agent(s) de référence réellement chargé(s) depuis <data_dir>/agents
+  WASM self-test: OK (fuel 10M, timeout 2 s, 32 pages ; aucun import hôte)
 
 [6/6] Linking Cognitive Fabric & Orchestrator...
   Cognitive Fabric: System 1 / System 2 dynamic router online
@@ -164,7 +166,8 @@ Le REPL accepte du texte naturel (qui est routé vers le `CognitiveOrchestrator`
 | **`:help`** | Affiche la liste complète des commandes interactives (y compris `:help` et `:quit`, alias `:exit`) et rappelle que toute saisie sans `:` est envoyée au modèle Qwen. |
 | **`:status`** | Affiche le palier matériel, l'état de la mémoire vive, l'état de présence actuel et le timeout LLM effectif. |
 | **`:metrics`** | Inspecte les 3 métriques North-Star (Continuité, Initiative Bornée, Généralité) et le détecteur de dérive des valeurs éthiques. |
-| **`:agents`** | Liste les manifests d'agents enregistrés et leurs scopes déclarés ; rappelle qu'aucun binaire `.wasm` n'est chargé ni exécuté. |
+| **`:agents`** | Liste les cinq manifests métier déclaratifs et l'état du runtime WASM de référence (chemins, hashes, auto-test). |
+| **`:agents-run <name> <json>`** | Exécute réellement `echo-agent` ou `count-agent` ; audit avant/après avec hashes, jamais le payload brut. |
 | **`:cost`** | Affiche le compteur financier des appels Système 2 en temps réel. |
 | **`:models`** | Liste le catalogue des modèles fondations et l'état du cache disque local. |
 | **`:connected`** | Affiche le statut vérifié de connexion des 7 modèles fondations. |
@@ -222,10 +225,10 @@ cargo run -p hakille-daemon -- --eval-prompt "Planifier une réunion demain mati
 
 ## 5. Agents de Référence et Runtime WASM (état réel)
 
-`hakille-agents` contient un `WasmRunner` Wasmtime avec ABI `run(i32,i32)->(i32,i32)`, mémoire bornée, fuel et timeout. **Il n'est pas branché au démon en v1** : `Substrate::spawn_sandboxed` retourne un handle local sans lancer d'instance, et aucun fichier `.wasm` n'est livré dans `agents/`. Les cinq dossiers sont des crates natives avec manifests ; leurs fonctions sont testées, mais les scopes déclarés ne sont pas appliqués à une exécution d'agent.
+`hakille-agents` contient un `AgentSandbox` Wasmtime avec ABI `run(i32,i32)->(i32,i32)`, mémoire bornée, fuel et timeout. Le démon matérialise et exécute réellement `echo-agent` et `count-agent` (artefacts content-addressed, hash SHA-256 vérifié, auto-test au boot). Les cinq dossiers `agents/` restent des crates natives avec manifests déclaratifs : `spawn_sandboxed` ne les exécute pas et leurs scopes ne sont pas encore appliqués.
 
 ### 5.1. Structure d'un Agent
-Les agents de référence se situent dans le répertoire `agents/` :
+Les agents métier se situent dans le répertoire `agents/` :
 - `agents/mail/` : Gestion des courriels sous capability déclarée `Filesystem` et `Network`.
 - `agents/calendar/` : Planification d'agenda locale.
 - `agents/code/` : Inspection et transformation de code source.
