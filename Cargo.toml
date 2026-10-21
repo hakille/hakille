@@ -47,6 +47,7 @@ members = [
 # traitement incrémental prévu).
 [workspace.package]
 rust-version = "1.95"
+license = "Apache-2.0"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

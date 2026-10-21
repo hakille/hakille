@@ -2,6 +2,7 @@
 name = "hakille-metrics"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 description = "Metriques souveraines Hakille (persistance memoire simple)"
 repository = "https://github.com/hakille/hakille"
 [dependencies]

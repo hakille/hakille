@@ -2,6 +2,7 @@
 name = "hakille-constitution"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 description = "Constitution et gouvernance Hakille"
 repository = "https://github.com/hakille/hakille"
 [dependencies]

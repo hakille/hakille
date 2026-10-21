@@ -2,6 +2,7 @@
 name = "hakille-audio"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 description = "I/O audio réel (capture micro + lecture haut-parleur) pour Hakille"
 
 [dependencies]
