@@ -408,7 +408,7 @@ pub struct ActionCard {
 impl ActionCard {
     pub fn validate_label(&self) -> String {
         if self.needs_hold {
-            "Valider — appui long 600 millisecondes (action définitive)".to_string()
+            "Valider — maintenir 600 ms".to_string()
         } else {
             "Valider".to_string()
         }

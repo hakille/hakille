@@ -12,18 +12,20 @@ use accesskit_winit::{
     Adapter as AccessKitAdapter, Event as AccessKitEvent, WindowEvent as AccessKitWindowEvent,
 };
 use hakille_ipc::transport;
+use hakille_ui_desktop::a11y::ActionCardA11y;
 use hakille_ui_desktop::app::{HudAction, HudApp, HudInput};
 use hakille_ui_desktop::runtime::WinitConfig;
 use hakille_ui_desktop::scene::Scene;
 use hakille_ui_desktop::{
-    FrameBudget, IpcClient, SceneRenderer, SoftwareRenderer, build_shell_tree,
+    FrameBudget, IpcClient, SceneRenderer, SoftwareRenderer, build_action_card_tree,
+    build_shell_tree,
 };
 use hakille_ui_platform::hotkey::{HakilleHotkey, HotkeyEvent};
-use hakille_ui_protocol::{KernelToUi, UiToKernel};
+use hakille_ui_protocol::{ActionCard, DataExit, KernelToUi, Provenance, UiToKernel};
 use std::num::NonZeroU32;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
@@ -35,6 +37,39 @@ use winit::window::{Window, WindowId};
 const A11Y_QUERY_NODE: accesskit::NodeId = accesskit::NodeId(20);
 /// Nœud AccessKit du bouton Valider (`build_shell_tree`).
 const A11Y_VALIDATE_NODE: accesskit::NodeId = accesskit::NodeId(22);
+/// Nœuds AccessKit de la carte (`build_action_card_tree`).
+const A11Y_CARD_APPROVE: accesskit::NodeId = accesskit::NodeId(40);
+const A11Y_CARD_EDIT: accesskit::NodeId = accesskit::NodeId(41);
+const A11Y_CARD_REJECT: accesskit::NodeId = accesskit::NodeId(42);
+const CARD_HOLD: Duration = Duration::from_millis(600);
+
+fn card_a11y(card: &ActionCard) -> ActionCardA11y {
+    let data_label = match &card.data_exit {
+        DataExit::Local => "Local".to_string(),
+        DataExit::Cloud { provider } => format!("Cloud : {provider}"),
+    };
+    let provenance_label = match &card.provenance {
+        Provenance::Hakille => "Hakille".to_string(),
+        Provenance::VerifiedSkill { publisher, name } => format!("{publisher}/{name}"),
+        Provenance::External => "Externe".to_string(),
+    };
+    ActionCardA11y {
+        verb: card.verb.clone(),
+        object: card.object.clone(),
+        reason: card.reason.clone(),
+        why_trace: "plan sec — aucune exécution métier".to_string(),
+        cost_label: card.cost.display(),
+        data_label,
+        reversibility_label: if card.reversible {
+            "annulable".to_string()
+        } else {
+            "définitif".to_string()
+        },
+        needs_hold: !card.reversible,
+        provenance_label,
+        is_external: matches!(card.provenance, Provenance::External),
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Args {
@@ -174,8 +209,12 @@ struct WindowState {
 }
 
 impl WindowState {
-    /// Arbre AccessKit complet, focus sur le champ requête si HUD visible.
+    /// Arbre AccessKit complet : la carte remplace le HUD (une seule décision
+    /// ouverte), sinon focus sur le champ requête si le HUD est visible.
     fn tree(&self, core: &HudApp) -> accesskit::TreeUpdate {
+        if let Some(card) = core.pending_card() {
+            return build_action_card_tree(&card_a11y(card));
+        }
         let mut tree = build_shell_tree(&core.snapshot(), &[], &[]);
         if core.visible {
             tree.focus = A11Y_QUERY_NODE;
@@ -197,6 +236,8 @@ struct DesktopApp {
     ipc: Option<IpcClient>,
     window: Option<WindowState>,
     pending_frame_at: Option<Instant>,
+    /// Début de l'appui sur Entrée pour une carte irréversible (≥600 ms).
+    card_hold_start: Option<Instant>,
     frames_rendered: u64,
     code: u8,
     hotkey_status: String,
@@ -232,6 +273,30 @@ impl DesktopApp {
             ws.window.set_ime_allowed(true);
             ws.window.focus_window();
         }
+    }
+
+    /// Envoie une décision de carte au démon. Le HUD ne simule jamais
+    /// l'acceptation : sans IPC, la carte reste ouverte et le refus est affiché.
+    fn submit_card_decision(
+        &mut self,
+        card_id: u64,
+        message: UiToKernel,
+        approved: Option<bool>,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let sent = self
+            .ipc
+            .as_ref()
+            .is_some_and(|ipc| ipc.connected() && ipc.submit(message));
+        let actions = if sent {
+            match approved {
+                Some(approved) => self.core.on_card_decision_sent(card_id, approved),
+                None => self.core.on_card_edit_sent(card_id),
+            }
+        } else {
+            self.core.on_ipc_unavailable("décision de carte")
+        };
+        self.apply(actions, event_loop);
     }
 
     /// Applique les effets de la machine à états.
@@ -288,6 +353,30 @@ impl DesktopApp {
                         self.core.submit_query(query)
                     };
                     self.apply(actions, event_loop);
+                }
+                HudAction::ApproveCard { card_id } => {
+                    self.submit_card_decision(
+                        card_id,
+                        UiToKernel::Approve { card_id },
+                        Some(true),
+                        event_loop,
+                    );
+                }
+                HudAction::RejectCard { card_id } => {
+                    self.submit_card_decision(
+                        card_id,
+                        UiToKernel::Reject { card_id },
+                        Some(false),
+                        event_loop,
+                    );
+                }
+                HudAction::EditCard { card_id } => {
+                    self.submit_card_decision(
+                        card_id,
+                        UiToKernel::Edit { card_id },
+                        None,
+                        event_loop,
+                    );
                 }
                 HudAction::RequestJournal { limit } => {
                     let sent = self
@@ -446,18 +535,38 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                     }
                 }
                 AccessKitWindowEvent::ActionRequested(request) => {
-                    // Focus/click sur le champ requête (ou la présence) → HUD.
-                    let input = if request.target_node == A11Y_VALIDATE_NODE {
-                        HudInput::Enter
+                    if let Some(card_id) = self.core.pending_card().map(|c| c.id) {
+                        // Une activation AccessKit est explicite : elle vaut
+                        // décision, sans le hold souris (pas de clic accidentel
+                        // lecteur d'écran). Focus seul = pas de décision.
+                        if request.action == accesskit::Action::Click {
+                            let action = if request.target_node == A11Y_CARD_APPROVE {
+                                Some(HudAction::ApproveCard { card_id })
+                            } else if request.target_node == A11Y_CARD_EDIT {
+                                Some(HudAction::EditCard { card_id })
+                            } else if request.target_node == A11Y_CARD_REJECT {
+                                Some(HudAction::RejectCard { card_id })
+                            } else {
+                                None
+                            };
+                            if let Some(action) = action {
+                                self.apply(vec![action], event_loop);
+                            }
+                        }
                     } else {
-                        HudInput::FocusQuery
-                    };
-                    if request.target_node == A11Y_QUERY_NODE
-                        || request.target_node == A11Y_VALIDATE_NODE
-                        || request.target_node == accesskit::NodeId(1)
-                    {
-                        let actions = self.core.handle(input);
-                        self.apply(actions, event_loop);
+                        // Focus/click sur le champ requête (ou la présence) → HUD.
+                        let input = if request.target_node == A11Y_VALIDATE_NODE {
+                            HudInput::Enter
+                        } else {
+                            HudInput::FocusQuery
+                        };
+                        if request.target_node == A11Y_QUERY_NODE
+                            || request.target_node == A11Y_VALIDATE_NODE
+                            || request.target_node == accesskit::NodeId(1)
+                        {
+                            let actions = self.core.handle(input);
+                            self.apply(actions, event_loop);
+                        }
                     }
                 }
                 AccessKitWindowEvent::AccessibilityDeactivated => {}
@@ -475,6 +584,7 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
         ws.adapter.process_event(&ws.window, &event);
 
         let mut inputs: Vec<HudInput> = Vec::new();
+        let mut direct_actions: Vec<HudAction> = Vec::new();
         match event {
             WindowEvent::CloseRequested => inputs.push(HudInput::Close),
             WindowEvent::Resized(size) => {
@@ -493,29 +603,72 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
-                        state: ElementState::Pressed,
+                        state,
                         logical_key,
                         text,
                         ..
                     },
                 ..
-            } => match &logical_key {
-                Key::Named(NamedKey::Escape) => inputs.push(HudInput::Escape),
-                Key::Named(NamedKey::Enter) => inputs.push(HudInput::Enter),
-                Key::Named(NamedKey::Backspace) => inputs.push(HudInput::Backspace),
-                Key::Named(NamedKey::F1) => inputs.push(HudInput::ShowJournal),
-                Key::Named(NamedKey::F2) => inputs.push(HudInput::ShowMemory),
-                Key::Named(NamedKey::F3) => inputs.push(HudInput::ShowStatus),
-                _ => {
-                    if let Some(text) = text {
-                        for c in text.chars() {
-                            if !c.is_control() {
-                                inputs.push(HudInput::Char(c));
+            } => {
+                if let Some(card) = self.core.pending_card().map(|c| (c.id, c.reversible)) {
+                    // Une carte capte le clavier : Entrée maintenue valide,
+                    // R refuse, Échap masque sans décider. Les caractères ne
+                    // partent jamais dans la requête derrière la carte.
+                    match state {
+                        ElementState::Pressed => match &logical_key {
+                            Key::Named(NamedKey::Escape) => {
+                                self.card_hold_start = None;
+                                inputs.push(HudInput::Escape);
+                            }
+                            Key::Named(NamedKey::Enter) => {
+                                if card.1 {
+                                    direct_actions.push(HudAction::ApproveCard { card_id: card.0 });
+                                } else {
+                                    self.card_hold_start = Some(Instant::now());
+                                }
+                            }
+                            Key::Character(s) if s.eq_ignore_ascii_case("r") => {
+                                self.card_hold_start = None;
+                                direct_actions.push(HudAction::RejectCard { card_id: card.0 });
+                            }
+                            _ => {}
+                        },
+                        ElementState::Released => {
+                            if matches!(&logical_key, Key::Named(NamedKey::Enter))
+                                && let Some(started) = self.card_hold_start.take()
+                            {
+                                if started.elapsed() >= CARD_HOLD {
+                                    direct_actions.push(HudAction::ApproveCard { card_id: card.0 });
+                                } else {
+                                    let actions = self.core.on_card_hold_too_short();
+                                    self.apply(actions, event_loop);
+                                }
                             }
                         }
                     }
+                } else {
+                    match state {
+                        ElementState::Pressed => match &logical_key {
+                            Key::Named(NamedKey::Escape) => inputs.push(HudInput::Escape),
+                            Key::Named(NamedKey::Enter) => inputs.push(HudInput::Enter),
+                            Key::Named(NamedKey::Backspace) => inputs.push(HudInput::Backspace),
+                            Key::Named(NamedKey::F1) => inputs.push(HudInput::ShowJournal),
+                            Key::Named(NamedKey::F2) => inputs.push(HudInput::ShowMemory),
+                            Key::Named(NamedKey::F3) => inputs.push(HudInput::ShowStatus),
+                            _ => {
+                                if let Some(text) = text {
+                                    for c in text.chars() {
+                                        if !c.is_control() {
+                                            inputs.push(HudInput::Char(c));
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        ElementState::Released => {}
+                    }
                 }
-            },
+            }
             WindowEvent::Ime(Ime::Commit(text)) => inputs.push(HudInput::ImeCommit(text)),
             // Pas de préédition affichée (limite documentée : IME simple seulement).
             WindowEvent::Ime(Ime::Preedit(..)) => {}
@@ -524,6 +677,9 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
         for input in inputs {
             let actions = self.core.handle(input);
             self.apply(actions, event_loop);
+        }
+        for action in direct_actions {
+            self.apply(vec![action], event_loop);
         }
     }
 
@@ -629,6 +785,7 @@ fn main() -> ExitCode {
         ipc,
         window: None,
         pending_frame_at: None,
+        card_hold_start: None,
         frames_rendered: 0,
         code: 0,
         hotkey_status,

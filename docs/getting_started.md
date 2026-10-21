@@ -118,6 +118,29 @@ hakille>
 - `:help` : Affiche l'aide des commandes.
 - `:exit` : Décharge les modèles et clôture proprement le démon.
 
+### Cartes d'action et mode IPC (`--serve`)
+
+Pour le shell desktop, démarrer le démon en mode IPC plutôt qu'en REPL :
+
+```bash
+# Terminal 1 : démon IPC (pipe nommé Windows / socket Unix)
+cargo run -p hakille-daemon -- --serve
+
+# Terminal 2 : shell desktop
+cargo run -p hakille-ui-desktop --bin hakille-desktop -- --show
+```
+
+Saisir un prompt irréversible (`transférer 25 EUR à Awa`, `supprime /vfs/notes.txt`). Le démon renvoie d'abord `HudReply`, puis `Presence(DecisionRequired)` et `ShowCard`. Le panneau 720×360 affiche le coût, la sortie de données, la réversibilité et la provenance.
+
+- `Entrée` maintenue **600 ms** : approuver (un simple appui est refusé avec un avertissement).
+- `R` : refuser.
+- `Échap` : masquer sans décider ; la carte reste en attente et revient au prochain affichage.
+- AccessKit : les boutons 40/41/42 valent décision explicite.
+
+L'approbation ou le refus produit une entrée d'audit (`ActionCardApproved` / `ActionCardRejected`) **avant** l'accusé `CardDecisionAck`. Aucun effet métier n'est exécuté : le plan reste sec. Les boutons visuels ne sont pas encore cliquables à la souris ; le clavier est le chemin exercé, et l'arbre AccessKit est testé sans validation par un lecteur d'écran réel.
+
+Le jeton IPC est écrit dans `%LOCALAPPDATA%\Hakille\ipc.token` (Windows) ou sous `XDG_RUNTIME_DIR/hakille/ipc.token` (Unix) ; il n'est jamais journalisé.
+
 ---
 
 ## 5. Dépannage & Configuration
@@ -142,6 +165,8 @@ Le premier tour inclut en plus le **chargement lazy du GGUF** (~10-60 s). Consei
 | `HAKILLE_QWEN_GGUF` | Chemin explicite du GGUF Qwen (prioritaire sur le dossier modèles). | `models/qwen2.5-0.5b-instruct-q4_k_m.gguf` |
 | `HAKILLE_QWEN_TOKENIZER` | Chemin explicite du `tokenizer.json` Qwen (prioritaire). | `models/tokenizer.json` |
 | `HAKILLE_UI_FONT` | Police TTF/TTC prioritaire du shell desktop `hakille-desktop` (liste vide = texte non rendu, jamais de faux glyphes). | polices système de l'OS |
+| `HAKILLE_IPC_ENDPOINT` | Endpoint IPC explicite (`\\.\pipe\nom` sous Windows, chemin de socket sous Unix). À réserver aux tests ou à une instance isolée. | pipe/socket Hakille standard |
+| `HAKILLE_IPC_TOKEN_FILE` | Chemin du jeton IPC partagé entre le démon et le desktop. | `%LOCALAPPDATA%\Hakille\ipc.token` ou `XDG_RUNTIME_DIR/hakille/ipc.token` |
 
 Le fast-path de 100 ms (`docs/COGNITION.md`) reste **l'invariant produit** ; le budget aligné est la configuration de production pour un vrai décodeur LLM local. Sans lui, un prompt réel échouait avec `Stage budget exceeded for 'inference' (elapsed ... > max 100 ms)` ; désormais un tour réel de ~30 s passe.
 

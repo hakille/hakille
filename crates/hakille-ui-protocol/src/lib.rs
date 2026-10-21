@@ -191,6 +191,14 @@ pub enum KernelToUi {
     StatusReply {
         status: StatusDto,
     },
+    /// Accusé d'une décision de carte : la décision a été auditée avant
+    /// l'accusé. `audit_id` est l'identifiant réel de l'entrée de journal.
+    /// Aucun effet métier n'est impliqué par ce message.
+    CardDecisionAck {
+        card_id: u64,
+        approved: bool,
+        audit_id: String,
+    },
 }
 
 /// Message UI → noyau versionné : champ `version` transporté sur le fil
@@ -382,6 +390,11 @@ mod tests {
                     state: "Idle".into(),
                     memory_count: 3,
                 },
+            },
+            KernelToUi::CardDecisionAck {
+                card_id: 7,
+                approved: true,
+                audit_id: "018f0000-0000-7000-8000-000000000004".into(),
             },
         ];
         for r in replies {

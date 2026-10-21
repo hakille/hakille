@@ -10,17 +10,23 @@
 //! les données proviennent des API réelles (journal, graphe, orchestrateurs,
 //! compteurs), jamais d'une liste inventée.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use hakille_audit::entry::AuditEntry;
 use hakille_audit::journal::AuditJournal;
 use hakille_ipc::{ErrorCode, Frame, FrameBody};
-use hakille_kernel::orchestrator::CognitiveOrchestrator;
+use hakille_kernel::orchestrator::{ActionCardPreview, CognitiveOrchestrator};
 use hakille_metrics::{BoundedInitiativeTracker, ContinuityTracker, GeneralityTracker};
 use hakille_ui::{CostCounter, MemoryViewerPanel, PresenceIndicator};
-use hakille_ui_protocol::{JournalEntryDto, KernelToUi, MemoryRowDto, StatusDto, UiToKernel};
+use hakille_ui_protocol::{
+    ActionCard, DataExit, JournalEntryDto, KernelToUi, MemoryRowDto, Money, Provenance, StatusDto,
+    UiToKernel,
+};
 
-use crate::{audit_memory_event, persist_memory_to, run_turn_core, turn_error_hint};
+use crate::{
+    audit_action_with_id, audit_memory_event, persist_memory_to, run_turn_core, turn_error_hint,
+};
 
 /// Plafond de lignes renvoyées par consultation (marge sous `MAX_FRAME_BYTES`
 /// et réponse rapide — le HUD peut redemander).
@@ -110,6 +116,86 @@ fn recall_rows(
         .collect()
 }
 
+/// Mappe le DTO du noyau vers le contrat UI. Aucun champ n'est inventé :
+/// le coût vient du plan, la provenance est Hakille, les données restent
+/// locales et la carte est irréversible par construction.
+fn card_from_preview(id: u64, preview: ActionCardPreview) -> ActionCard {
+    ActionCard {
+        id,
+        verb: preview.verb,
+        object: preview.object,
+        reason: preview.reason,
+        cost: Money {
+            micros: preview
+                .cost_cents
+                .min((i64::MAX as u64) / 10_000)
+                .saturating_mul(10_000) as i64,
+            currency: preview.currency,
+        },
+        data_exit: if preview.data_exit_local {
+            DataExit::Local
+        } else {
+            DataExit::Cloud {
+                provider: "non précisé".to_string(),
+            }
+        },
+        reversible: preview.reversible,
+        provenance: Provenance::Hakille,
+    }
+}
+
+/// Décision de carte : l'audit signé est écrit AVANT le retrait de la carte
+/// et avant l'accusé. En cas d'échec d'audit, la carte reste en attente et le
+/// HUD reçoit un refus explicite. Aucun effet métier n'est exécuté ici : le
+/// plan reste sec, ce que l'accusé rappelle.
+fn decide_card(
+    pending_cards: &mut HashMap<u64, ActionCard>,
+    audit_journal: &AuditJournal,
+    card_id: u64,
+    approved: bool,
+) -> KernelToUi {
+    let Some(card) = pending_cards.get(&card_id).cloned() else {
+        return KernelToUi::Toast {
+            text: format!("carte #{card_id} inconnue ou déjà traitée — aucune décision"),
+        };
+    };
+    let action_type = if approved {
+        "ActionCardApproved"
+    } else {
+        "ActionCardRejected"
+    };
+    let verb = if approved { "approuvée" } else { "refusée" };
+    let description = format!(
+        "Carte #{} {verb} : {} {} (plan sec, aucune exécution)",
+        card.id, card.verb, card.object
+    );
+    match audit_action_with_id(
+        audit_journal,
+        action_type,
+        description,
+        serde_json::json!({
+            "card_id": card.id,
+            "verb": card.verb,
+            "object": card.object,
+            "reversible": card.reversible,
+            "effect": "none",
+        }),
+        false,
+    ) {
+        Ok(audit_id) => {
+            pending_cards.remove(&card_id);
+            KernelToUi::CardDecisionAck {
+                card_id,
+                approved,
+                audit_id,
+            }
+        }
+        Err(e) => KernelToUi::Toast {
+            text: format!("décision refusée — audit indisponible: {e}"),
+        },
+    }
+}
+
 /// Boucle serveur : jeton neuf écrit pour le HUD, écoute sur l'endpoint local,
 /// un client à la fois. Ne retourne jamais en marche normale (sauf erreur de
 /// bind : message explicite + `Err`, jamais de serveur silencieux).
@@ -139,6 +225,9 @@ pub async fn run_serve(
     println!("IPC: token file {}", token_path.display());
     println!("IPC: prêt — en attente du HUD (hakille-desktop)");
 
+    // Les cartes en attente sont liées à la session du HUD ; l'identifiant
+    // reste monotone entre reconnexions pour ne jamais réutiliser un id.
+    let mut next_card_id: u64 = 1;
     loop {
         let mut stream = match listener.accept().await {
             Ok(stream) => stream,
@@ -155,6 +244,7 @@ pub async fn run_serve(
             continue;
         }
         println!("IPC: client connecté");
+        let mut pending_cards: HashMap<u64, ActionCard> = HashMap::new();
         serve_client(
             &mut stream,
             orchestrator,
@@ -165,6 +255,8 @@ pub async fn run_serve(
             generality_tracker,
             audit_journal,
             memory_path,
+            &mut pending_cards,
+            &mut next_card_id,
         )
         .await;
         println!("IPC: client déconnecté — en attente du prochain HUD");
@@ -184,6 +276,8 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     generality_tracker: &mut GeneralityTracker,
     audit_journal: &AuditJournal,
     memory_path: &std::path::Path,
+    pending_cards: &mut HashMap<u64, ActionCard>,
+    next_card_id: &mut u64,
 ) {
     loop {
         let frame = match hakille_ipc::transport::read_frame(stream).await {
@@ -195,6 +289,7 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
             }
         };
         let id = frame.id;
+        let mut followups: Vec<Frame> = Vec::new();
         let is_turn = matches!(
             &frame.body,
             FrameBody::Request {
@@ -242,6 +337,65 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                                 "IPC: requête servie (id={id}, {latency_ms}ms, coût {}¢)",
                                 outcome.cost_cents
                             );
+                            // Le noyau a détecté une action irréversible et
+                            // produit un plan sec. On expose une carte réelle
+                            // au HUD, après audit de la proposition.
+                            if outcome.routing_used.starts_with("Plan/Dry-run")
+                                && let Some(preview) =
+                                    CognitiveOrchestrator::action_card_preview(&query)
+                            {
+                                let card = card_from_preview(*next_card_id, preview);
+                                let proposed = audit_action_with_id(
+                                    audit_journal,
+                                    "ActionCardProposed",
+                                    format!(
+                                        "Carte #{} proposée : {} {} (plan sec, aucune exécution)",
+                                        card.id, card.verb, card.object
+                                    ),
+                                    serde_json::json!({
+                                        "card_id": card.id,
+                                        "verb": card.verb,
+                                        "object": card.object,
+                                        "reversible": card.reversible,
+                                    }),
+                                    true,
+                                );
+                                match proposed {
+                                    Ok(_) => {
+                                        *next_card_id = (*next_card_id).saturating_add(1);
+                                        pending_cards.insert(card.id, card.clone());
+                                        // La présence daemon reflète elle aussi
+                                        // l'attente de décision, pas seulement
+                                        // l'état local du HUD.
+                                        presence
+                                            .set_state(hakille_ui::PresenceState::DecisionRequired);
+                                        println!(
+                                            "IPC: carte #{} proposée (id={id}, 1 en attente)",
+                                            card.id
+                                        );
+                                        followups.push(Frame::reply(
+                                            0,
+                                            KernelToUi::Presence(
+                                                hakille_ui_protocol::PresenceState::DecisionRequired,
+                                            ),
+                                        ));
+                                        followups.push(Frame::reply(0, KernelToUi::ShowCard(card)));
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "IPC: carte non présentée (id={id}) — audit indisponible: {e}"
+                                        );
+                                        followups.push(Frame::reply(
+                                            0,
+                                            KernelToUi::Toast {
+                                                text: format!(
+                                                    "carte non présentée — audit indisponible: {e}"
+                                                ),
+                                            },
+                                        ));
+                                    }
+                                }
+                            }
                             if outcome.non_empty {
                                 let validation = match &outcome.persistence_warning {
                                     Some(warning) => {
@@ -280,6 +434,56 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                         }
                     }
                 }
+            }
+            FrameBody::Request {
+                message: UiToKernel::Approve { card_id },
+            } => {
+                let reply = decide_card(pending_cards, audit_journal, card_id, true);
+                match &reply {
+                    KernelToUi::CardDecisionAck { audit_id, .. } => {
+                        presence.set_state(hakille_ui::PresenceState::Idle);
+                        println!(
+                            "IPC: carte #{card_id} approuvée — décision auditée [{audit_id}] (aucune exécution)"
+                        );
+                    }
+                    KernelToUi::Toast { text } => {
+                        eprintln!("IPC: approbation carte #{card_id} refusée — {text}");
+                    }
+                    _ => {}
+                }
+                Frame::reply(id, reply)
+            }
+            FrameBody::Request {
+                message: UiToKernel::Reject { card_id },
+            } => {
+                let reply = decide_card(pending_cards, audit_journal, card_id, false);
+                match &reply {
+                    KernelToUi::CardDecisionAck { audit_id, .. } => {
+                        presence.set_state(hakille_ui::PresenceState::Idle);
+                        println!(
+                            "IPC: carte #{card_id} refusée — décision auditée [{audit_id}] (aucune exécution)"
+                        );
+                    }
+                    KernelToUi::Toast { text } => {
+                        eprintln!("IPC: refus carte #{card_id} non enregistré — {text}");
+                    }
+                    _ => {}
+                }
+                Frame::reply(id, reply)
+            }
+            FrameBody::Request {
+                message: UiToKernel::Edit { card_id },
+            } => {
+                eprintln!(
+                    "IPC: édition carte #{card_id} non supportée — aucune mutation, carte conservée"
+                );
+                Frame::reply(
+                    id,
+                    KernelToUi::Toast {
+                        text: "modification de carte non supportée — aucune mutation ; validez ou refusez"
+                            .into(),
+                    },
+                )
             }
             FrameBody::Request {
                 message: UiToKernel::JournalRequest { limit },
@@ -436,9 +640,19 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                 Frame::error(id, ErrorCode::BadFrame, "trame inattendue côté serveur")
             }
         };
-        if is_turn {
+        let card_shown = followups.iter().any(|frame| {
+            matches!(
+                &frame.body,
+                FrameBody::Reply {
+                    message: KernelToUi::ShowCard(_),
+                    ..
+                }
+            )
+        });
+        if is_turn && !card_shown {
             // Le tour est terminé (succès ou échec) : la présence revient à
-            // l'état de veille avant la réponse finale.
+            // l'état de veille avant la réponse finale. Une carte conserve au
+            // contraire l'état DecisionRequired.
             let idle = Frame::reply(
                 0,
                 KernelToUi::Presence(hakille_ui_protocol::PresenceState::Idle),
@@ -451,6 +665,12 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         if let Err(e) = hakille_ipc::transport::write_frame(stream, &response).await {
             eprintln!("IPC: écriture échouée (id={id}) — {e}; retour à l'écoute");
             return;
+        }
+        for followup in followups {
+            if let Err(e) = hakille_ipc::transport::write_frame(stream, &followup).await {
+                eprintln!("IPC: trame de suivi non écrite (id={id}) — {e}; retour à l'écoute");
+                return;
+            }
         }
     }
 }
@@ -533,6 +753,29 @@ mod tests {
         let ghost = recall_rows(&graph, &["inconnu".to_string()], 10);
         assert_eq!(ghost[0].id, "", "jamais d'id inventé");
         assert_eq!(ghost[0].source, "recall");
+    }
+
+    #[test]
+    fn card_from_preview_maps_real_fields_and_never_cloud() {
+        let card = card_from_preview(
+            42,
+            ActionCardPreview {
+                verb: "Confirmer".into(),
+                object: "Virement : 25 EUR".into(),
+                reason: "irréversible".into(),
+                cost_cents: 2500,
+                currency: "EUR".into(),
+                reversible: false,
+                data_exit_local: true,
+                provenance_label: "Hakille — plan sec".into(),
+            },
+        );
+        assert_eq!(card.id, 42);
+        assert_eq!(card.cost.display(), "25.00 EUR");
+        assert!(matches!(card.data_exit, DataExit::Local));
+        assert!(!card.reversible);
+        assert!(matches!(card.provenance, Provenance::Hakille));
+        assert!(card.reason.contains("irréversible"));
     }
 
     #[test]

@@ -136,15 +136,15 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agen
 - [`hakille-constitution`](crates/hakille-constitution) : Les 10 règles constitutionnelles machine-vérifiables, gouvernance d'amendement par quorum et batterie de tests éthiques.
 - [`hakille-design`](crates/hakille-design) : Design system Rust — marque (`brand.rs`), jetons, cartes d'action, bandes de provenance, silence et présence vocale.
 - [`hakille-ui`](crates/hakille-ui) : Indicateur de présence ambiant à 6 états (Idle/Listening/Acting/Speaking/DecisionRequired/Urgent, voir `presence.rs:90-99`), HUD Spotlight éphémère (`Ctrl+Alt+Space`, alias `Alt+Space`), sélecteur dynamique de canal (seuil bruit 65 dB), budget de silence proactif et compteur financier System 2 en direct.
-- [`hakille-ui-protocol`](crates/hakille-ui-protocol) : Protocole UI ↔ noyau versionné (messages typés, négociation de version, schéma golden `schema_snapshot.json`).
+- [`hakille-ui-protocol`](crates/hakille-ui-protocol) : Protocole UI ↔ noyau versionné (messages typés, négociation de version, schéma golden `schema_snapshot.json`) ; extension additive v1 `ShowCard`/`CardDecisionAck`.
 - [`hakille-ui-model`](crates/hakille-ui-model) : Modèle de snapshot et d'état de l'interface, découplé du rendu.
 - [`hakille-ui-shell`](crates/hakille-ui-shell) : Shell d'interface (vues, pont noyau ↔ UI, composition des cartes et de la présence).
 - [`hakille-ui-platform`](crates/hakille-ui-platform) : Abstraction plateforme pour fenêtres, icône de zone de notification et intégration système.
-- [`hakille-ui-desktop`](crates/hakille-ui-desktop) : Rendu desktop (scène, texte multi-script, accessibilité, runtime) sous forme d'application native.
+- [`hakille-ui-desktop`](crates/hakille-ui-desktop) : Rendu desktop (scène, texte multi-script, accessibilité, runtime) sous forme d'application native ; carte d'action 720×360, décision clavier/AccessKit et accusé d'audit réel.
 - [`hakille-metrics`](crates/hakille-metrics) : Tableau de bord des 3 métriques cardinales (Continuité, Initiative Bornée, Généralité Pratique) et détecteur de dérive des valeurs éthiques.
 - [`hakille-ipc`](crates/hakille-ipc) : Transport IPC local (named pipe Windows, socket Unix) pour les clients du démon ; pas de TCP exposé.
 - [`hakille-spikes`](crates/hakille-spikes) : Spikes techniques isolés (arbre de rendu S1, rendu S2, accessibilité S3) utilisés pour valider l'UI avant intégration.
-- [`hakille-daemon`](crates/hakille-daemon) : Démon système exécutable orchestrant l'ensemble de la pile avec invite interactive REPL et inspection approfondie.
+- [`hakille-daemon`](crates/hakille-daemon) : Démon système exécutable orchestrant l'ensemble de la pile avec invite interactive REPL, mode `--serve` IPC et cartes d'action auditées.
 
 ### 5. Agents Métier (`agents/` — manifests déclaratifs)
 - `mail` : Gestion des courriels sous capability déclarée `Filesystem` + `Network`.
@@ -225,6 +225,29 @@ cargo xtask tokens --check
 cargo xtask tokens export-swift   # target/tokens/HakilleTokens.swift
 cargo xtask tokens export-kotlin  # target/tokens/HakilleTokens.kt
 cargo xtask tokens export-css     # target/tokens/hakille-tokens.css
+```
+
+### Cartes d'action (démon → desktop)
+
+Le flux de décision est implémenté et a été rejoué en smoke IPC local puis en smoke réel avec la fenêtre desktop (2026-10-21) :
+
+1. le démon reçoit un prompt irréversible (`transférer 25 EUR à Awa`, `supprime /vfs/notes.txt`, etc.) ;
+2. le noyau produit un **plan sec** (`Plan/Dry-run`, zéro exécution) ;
+3. le démon répond `HudReply`, puis `Presence(DecisionRequired)` et `ShowCard` avec une carte réelle (coût, sortie de données, réversibilité, provenance) ;
+4. le desktop ouvre le panneau 720×360. `Entrée` maintenue **600 ms** approuve, `R` refuse, `Échap` masque sans décider ; les nœuds AccessKit 40/41/42 valent décision explicite ;
+5. chaque proposition (`ActionCardProposed`), approbation (`ActionCardApproved`) ou refus (`ActionCardRejected`) est auditée avant l'accusé `CardDecisionAck`.
+
+Limites explicites : **une approbation n'exécute encore aucune action métier** ; elle enregistre seulement une décision auditée. Les boutons visuels ne sont pas cliquables à la souris en v1 : le clavier est le chemin réellement exercé en GUI, et AccessKit est couvert par l'arbre et les tests unitaires mais pas encore validé avec un lecteur d'écran réel. La carte n'est retirée qu'après l'accusé d'audit ; si l'audit échoue, elle reste en attente.
+
+```bash
+# Vérifier les cartes sans lancer l'interface graphique
+cargo test -p hakille-kernel action_card_preview_tests
+cargo test -p hakille-daemon card_
+cargo test -p hakille-ui-desktop card_
+
+# Smoke manuel : démon IPC puis desktop
+cargo run -p hakille-daemon -- --serve
+cargo run -p hakille-ui-desktop --bin hakille-desktop -- --show
 ```
 
 Dans l'invite interactive (`hakille>`) :

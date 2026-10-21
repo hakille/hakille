@@ -3,11 +3,14 @@
 //! S2 : présence, carte, journal virtualisé 100k lignes ≥120fps défilement,
 //! frame p95 ≤8ms. GPU absent → erreur explicite, jamais fenêtre vide silencieuse.
 
+use crate::components::{self, PrimitiveCtx};
 use crate::scene::{Color, DrawCmd, Rect, Scene, SceneRenderer, WEIGHT_NORMAL};
 use crate::text::ellipsize;
+use crate::theme::Theme;
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
 use hakille_design::generated::{color as tokens, ty};
 use hakille_ui_model::snapshot::{HUD_HEIGHT, HUD_WIDTH};
+use hakille_ui_protocol::{ActionCard, DataExit, Provenance};
 use std::sync::OnceLock;
 use thiserror::Error;
 
@@ -627,6 +630,18 @@ pub fn hud_scene(snap: &hakille_ui_model::StableSnapshot, theme_dark: bool) -> S
             Color::from_hex(p.text1),
             query,
         );
+    } else {
+        let placeholder = ellipsize("Demander à Hakille…", label_max, |t| {
+            measure_ui_text(t, body_px)
+        });
+        s.text_weighted(
+            text_x,
+            BODY_BASELINE,
+            body_px,
+            body_weight,
+            Color::from_hex(p.text2),
+            placeholder,
+        );
     }
     if let Some(caption) = caption {
         let width = measure_ui_text_weighted(&caption, caption_px, body_weight);
@@ -771,6 +786,146 @@ pub fn consult_scene(
         ellipsize(&view.footer, text_width, |t| measure_ui_text(t, 11.0)),
     );
     s
+}
+
+/// Scène de décision : HUD 64 px + panneau 720×360 contenant la carte
+/// d'action réelle reçue du démon. Les boutons visuels sont complétés par les
+/// raccourcis clavier et l'arbre AccessKit (l'état de focus vit hors scène).
+pub fn card_scene(
+    snap: &hakille_ui_model::StableSnapshot,
+    card: &ActionCard,
+    notice: Option<&str>,
+    theme_dark: bool,
+) -> Scene {
+    let p = hud_palette(theme_dark);
+    let grid = ty::LAYOUT_GRID_PT_BASE as f32;
+    let radius = ty::LAYOUT_RADIUS_CARD as f32;
+    let w = HUD_WIDTH as f32;
+    let panel_top = HUD_HEIGHT as f32 + grid;
+    let panel = Rect::new(
+        grid,
+        panel_top,
+        w - 2.0 * grid,
+        CONSULT_HEIGHT as f32 - panel_top - grid,
+    )
+    .rounded(radius);
+
+    let mut s = hud_scene(snap, theme_dark);
+    s.height = CONSULT_HEIGHT;
+
+    s.shadow(
+        Rect::new(
+            panel.x + grid * 2.0,
+            panel.y + grid * 2.0,
+            (panel.w - grid * 4.0).max(0.0),
+            (panel.h - grid * 4.0).max(0.0),
+        ),
+        grid * 4.0,
+        Color::rgb(0, 0, 0).with_alpha(if theme_dark { 150 } else { 70 }),
+    );
+    s.fill(panel, Color::from_hex(p.line));
+    s.fill(
+        Rect::new(panel.x + 1.0, panel.y + 1.0, panel.w - 2.0, panel.h - 2.0)
+            .rounded((radius - 1.0).max(0.0)),
+        Color::from_hex(p.surface1),
+    );
+
+    let left = panel.x + grid * 2.0;
+    let right = panel.x + panel.w - grid * 2.0;
+    let text_width = (right - left).max(1.0);
+    let text1 = Color::from_hex(p.text1);
+    let text2 = Color::from_hex(p.text2);
+
+    s.text_weighted(
+        left,
+        panel.y + 26.0,
+        18.0,
+        ty::TYPE_BODY_STRONG_WEIGHT as u16,
+        text1,
+        "Décision requise",
+    );
+    s.text(
+        left,
+        panel.y + 44.0,
+        12.0,
+        text2,
+        ellipsize(
+            "Carte proposée par le démon — aucun effet avant une décision auditée",
+            text_width,
+            |t| measure_ui_text(t, 12.0),
+        ),
+    );
+
+    let data = match &card.data_exit {
+        DataExit::Local => "Local".to_string(),
+        DataExit::Cloud { provider } => format!("Cloud: {provider}"),
+    };
+    let provenance = match &card.provenance {
+        Provenance::Hakille => "Hakille".to_string(),
+        Provenance::VerifiedSkill { publisher, name } => format!("{publisher}/{name}"),
+        Provenance::External => "Externe".to_string(),
+    };
+    let theme = if theme_dark {
+        Theme::dark()
+    } else {
+        Theme::light()
+    };
+    let ctx = PrimitiveCtx::new(theme);
+    let card_rect = Rect::new(panel.x + 8.0, panel.y + 54.0, panel.w - 16.0, 190.0).rounded(radius);
+    components::ActionCard {
+        verb: truncate_chars(&card.verb, 24),
+        object: truncate_chars(&card.object, 68),
+        reason: truncate_chars(&card.reason, 92),
+        cost: card.cost.display(),
+        data,
+        reversible: if card.reversible {
+            "Annulable".to_string()
+        } else {
+            "Définitif".to_string()
+        },
+        needs_hold: !card.reversible,
+        is_external: matches!(card.provenance, Provenance::External),
+        provenance: provenance.clone(),
+        rect: card_rect,
+    }
+    .draw(&mut s, &ctx);
+
+    let hint = notice.unwrap_or(
+        "Entrée maintenue 600 ms = valider · R = refuser · Échap = masquer · AccessKit = décision explicite",
+    );
+    let hint_color = if notice.is_some() {
+        Color::from_hex(p.braise)
+    } else {
+        text2
+    };
+    s.text(
+        left,
+        panel.y + panel.h - 24.0,
+        10.0,
+        hint_color,
+        ellipsize(hint, text_width, |t| measure_ui_text(t, 10.0)),
+    );
+    s.text(
+        left,
+        panel.y + panel.h - 10.0,
+        10.0,
+        text2,
+        ellipsize(
+            &format!("Source : {provenance} — plan sec, aucune exécution métier"),
+            text_width,
+            |t| measure_ui_text(t, 10.0),
+        ),
+    );
+    s
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 #[cfg(test)]
@@ -920,6 +1075,18 @@ mod tests {
     }
 
     #[test]
+    fn empty_hud_shows_actionable_placeholder() {
+        let snap = snapshot_with_query("");
+        let scene = hud_scene(&snap, true);
+        assert!(
+            scene.cmds.iter().any(
+                |cmd| matches!(cmd, DrawCmd::GlyphRun { text, .. } if text.contains("Hakille"))
+            ),
+            "un HUD vide doit rester compréhensible, jamais une barre noire muette"
+        );
+    }
+
+    #[test]
     fn hud_query_ellipsis_never_exceeds_zone() {
         let query = "m".repeat(600);
         let snap = snapshot_with_query(&query);
@@ -1051,6 +1218,61 @@ mod tests {
                 .iter()
                 .any(|cmd| matches!(cmd, DrawCmd::GlyphRun { text, .. } if text == "…")),
             "le contenu tronqué doit être signalé, jamais coupé en silence"
+        );
+    }
+
+    #[test]
+    fn card_scene_renders_real_card_and_decision_chrome() {
+        let snap = snapshot_with_state(4, false);
+        let card = ActionCard {
+            id: 7,
+            verb: "Confirmer".into(),
+            object: "Virement : 25 EUR".into(),
+            reason: "Action irréversible détectée par le noyau".into(),
+            cost: hakille_ui_protocol::Money::from_cents(2500, "EUR"),
+            data_exit: DataExit::Local,
+            reversible: false,
+            provenance: Provenance::Hakille,
+        };
+        let scene = card_scene(&snap, &card, None, true);
+        assert_eq!(scene.width, HUD_WIDTH);
+        assert_eq!(scene.height, CONSULT_HEIGHT);
+        let texts: Vec<&str> = scene
+            .cmds
+            .iter()
+            .filter_map(|cmd| match cmd {
+                DrawCmd::GlyphRun { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("Décision requise")));
+        assert!(texts.iter().any(|t| t.contains("Confirmer Virement")));
+        assert!(texts.iter().any(|t| t.contains("25.00 EUR")));
+        assert!(texts.iter().any(|t| t.contains("maintenir 600 ms")));
+        assert!(texts.iter().any(|t| t.contains("Source : Hakille")));
+        assert!(texts.iter().any(|t| t.contains("aucune exécution")));
+
+        let notice_scene = card_scene(
+            &snap,
+            &card,
+            Some("appui trop court — maintenir 600 ms pour valider, ou refuser"),
+            true,
+        );
+        let notice_texts: Vec<&str> = notice_scene
+            .cmds
+            .iter()
+            .filter_map(|cmd| match cmd {
+                DrawCmd::GlyphRun { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            notice_texts.iter().any(|t| t.contains("appui trop court")),
+            "l'appui trop court doit être visible sur la carte"
+        );
+        assert!(
+            !notice_texts.iter().any(|t| t.contains("AccessKit =")),
+            "le rappel d'accessibilité cède la place au message d'erreur"
         );
     }
 

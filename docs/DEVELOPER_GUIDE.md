@@ -221,6 +221,47 @@ cargo run -p hakille-daemon -- --prompt "Planifier une réunion demain matin à 
 cargo run -p hakille-daemon -- --eval-prompt "Planifier une réunion demain matin à 10h"
 ```
 
+### 4.4. Cartes d'action (daemon → desktop)
+
+Le flux de décision est réparti ainsi :
+
+| Couche | Fichier | Rôle |
+| :--- | :--- | :--- |
+| Noyau | `crates/hakille-kernel/src/orchestrator.rs` | `is_irreversible_prompt`, `action_card_preview` ; plan + dry-run, aucune mutation. |
+| Protocole | `crates/hakille-ui-protocol/src/lib.rs` | Ajout additif v1 : `KernelToUi::ShowCard(ActionCard)` et `KernelToUi::CardDecisionAck`. |
+| Démon | `crates/hakille-daemon/src/ipc.rs` | `card_from_preview`, `decide_card`, cartes en attente par session, `next_card_id` monotone, audits `ActionCardProposed/Approved/Rejected`. |
+| Modèle UI | `crates/hakille-ui-model/src/events.rs` | Conversion de l'accusé en toast honnête. |
+| Desktop | `crates/hakille-ui-desktop/src/app.rs` | État `pending_card`, panneau `Card`, décision et retrait sur accusé. |
+| Rendu | `crates/hakille-ui-desktop/src/renderer.rs` | `card_scene` 720×360 + composant `ActionCard`. |
+| AccessKit | `crates/hakille-ui-desktop/src/a11y.rs` | Arbre de carte, nœuds 40 (Valider), 41 (Modifier), 42 (Refuser). |
+| Hôte | `crates/hakille-ui-desktop/src/bin/desktop.rs` | `Entrée` maintenue 600 ms, `R`, `Échap`, activation AccessKit et envoi IPC. |
+
+Invariants :
+
+1. Une carte n'est proposée que si le prompt est irréversible ; un prompt sûr ne crée aucune carte.
+2. `ActionCardProposed` est audité avant `ShowCard` ; `ActionCardApproved`/`ActionCardRejected` est audité avant `CardDecisionAck`.
+3. Si l'audit échoue, la carte reste en attente et un toast explicite est renvoyé.
+4. Le HUD ne retire la carte qu'à la réception de `CardDecisionAck` avec l'UUID réel de l'audit.
+5. Palier actuel : **aucun effet métier** après approbation ; le plan reste sec.
+6. `Edit` est refusé explicitement par le démon ; il ne mute rien.
+7. Les boutons visuels ne sont pas cliquables à la souris ; le clavier est le chemin exercé en GUI. L'arbre AccessKit est testé, mais son activation n'a pas encore été validée avec un lecteur d'écran réel.
+
+Commandes de vérification :
+
+```bash
+cargo test -p hakille-kernel action_card_preview_tests
+cargo test -p hakille-daemon card_
+cargo test -p hakille-ui-desktop card_
+cargo test -p hakille-ui-protocol --locked
+```
+
+Deux smokes réels ont été exécutés le 2026-10-21 avec un démon isolé (`--serve`, endpoint et jeton temporaires) :
+
+- **IPC headless** : `HudReply` → `Presence(DecisionRequired)` → `ShowCard` pour `transferer 25 EUR a Awa` (coût 25,00 EUR), approbation auditée, puis `ShowCard` pour `supprime /vfs/notes.txt` (coût 0) et refus audité ; les entrées `ActionCardProposed`, `ActionCardApproved` et `ActionCardRejected` ont été relues via `JournalRequest`.
+- **Fenêtre winit réelle** : HUD 720×64 avec placeholder, carte 720×360 après soumission, appui court refusé avec avertissement visible, maintien de `Entrée` 800 ms → approbation auditée, puis `R` sur une seconde carte → refus audité. Les deux UUID d'audit ont été retrouvés dans le journal via un client headless après fermeture du desktop.
+
+Ces smokes ne sont pas automatisés en CI. Les tests unitaires couvrent le mapping, les audits, l'état UI et le rendu de scène ; l'activation AccessKit par un lecteur d'écran réel et les clics souris restent non vérifiés.
+
 ---
 
 ## 5. Agents de Référence et Runtime WASM (état réel)

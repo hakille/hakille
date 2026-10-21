@@ -77,6 +77,16 @@ impl From<KernelToUi> for KernelEvent {
             KernelToUi::StatusReply { status } => Self::Toast {
                 text: format!("statut : {} — {}", status.model, status.cost),
             },
+            KernelToUi::CardDecisionAck {
+                card_id,
+                approved,
+                audit_id,
+            } => Self::Toast {
+                text: format!(
+                    "carte #{card_id} {} — décision auditée [{audit_id}] (aucun effet métier)",
+                    if approved { "approuvée" } else { "refusée" }
+                ),
+            },
         }
     }
 }

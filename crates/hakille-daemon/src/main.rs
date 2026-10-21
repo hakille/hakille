@@ -3508,8 +3508,28 @@ fn audit_action_with_reversibility(
     parameters: serde_json::Value,
     reversible: bool,
 ) -> Result<(), String> {
+    audit_action_with_id(
+        audit_journal,
+        action_type,
+        description,
+        parameters,
+        reversible,
+    )
+    .map(|_| ())
+}
+
+/// Variante qui renvoie l'identifiant réel de l'entrée signée, pour les
+/// décisions qui doivent être acquittées au HUD avec leur preuve d'audit.
+pub(crate) fn audit_action_with_id(
+    audit_journal: &AuditJournal,
+    action_type: &str,
+    description: String,
+    parameters: serde_json::Value,
+    reversible: bool,
+) -> Result<String, String> {
+    let entry_id = EntryId(uuid::Uuid::now_v7());
     let entry = AuditEntry {
-        id: EntryId(uuid::Uuid::now_v7()),
+        id: entry_id.clone(),
         timestamp: Timestamp::now(),
         actor: ActorId::Kernel,
         action: ActionRecord {
@@ -3534,8 +3554,8 @@ fn audit_action_with_reversibility(
     };
     audit_journal
         .append(entry)
-        .map(|_| ())
-        .map_err(|e| format!("entrée d'audit non écrite: {e}"))
+        .map_err(|e| format!("entrée d'audit non écrite: {e}"))?;
+    Ok(entry_id.0.to_string())
 }
 
 /// Sauvegarde le graphe de mémoire vers `path` (écriture atomique).

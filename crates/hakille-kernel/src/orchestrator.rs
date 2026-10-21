@@ -30,6 +30,23 @@ pub struct OrchestratorResult {
     pub estimated_cost_cents: Option<u64>,
 }
 
+/// Données structurées d'une carte d'action issue du chemin plan/dry-run.
+///
+/// Le noyau ne dépend pas du protocole UI : le daemon mappe ce DTO vers
+/// `hakille_ui_protocol::ActionCard`. `reversible=false` et
+/// `data_exit_local=true` sont explicites : aucune exécution, aucun transfert.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActionCardPreview {
+    pub verb: String,
+    pub object: String,
+    pub reason: String,
+    pub cost_cents: u64,
+    pub currency: String,
+    pub reversible: bool,
+    pub data_exit_local: bool,
+    pub provenance_label: String,
+}
+
 pub struct CognitiveOrchestrator {
     pub fabric: CognitiveFabric,
     pub router: CognitiveRouter,
@@ -396,13 +413,12 @@ impl CognitiveOrchestrator {
                 Self::extract_path(prompt).unwrap_or_else(|| "<cible non précisée>".to_string());
             plan.add_step(
                 format!(
-                    "{} : {} sur {}",
+                    "{} : {}",
                     if is_deletion {
                         "Suppression"
                     } else {
                         "Écriture"
                     },
-                    goal,
                     target
                 ),
                 CapabilityScope::Filesystem,
@@ -416,7 +432,8 @@ impl CognitiveOrchestrator {
             DryRunSimulator::simulate_file_mutation(&target, is_deletion, 2048, 0)
         };
         let warning = report.warning.clone().unwrap_or_else(|| {
-            "Verrou plan : confirmation humaine requise (pas irréversible).".to_string()
+            "Verrou plan : confirmation humaine explicite requise — aucun effet exécuté."
+                .to_string()
         });
         let (cost_pastille, data_pastille) = if report.action_type == "WalletPayment" {
             (
@@ -504,6 +521,45 @@ impl CognitiveOrchestrator {
                 short
             )
         }
+    }
+
+    /// Version structurée de [`Self::plan_preview`] pour une carte UI.
+    ///
+    /// Le prompt n'est pas journalisé ici : le daemon décide de l'audit. Le
+    /// DTO ne contient que les champs affichés à l'utilisateur et des
+    /// constantes honnêtes (local, irréversible, zéro exécution).
+    pub fn action_card_preview(prompt: &str) -> Option<ActionCardPreview> {
+        if !Self::is_irreversible_prompt(prompt) {
+            return None;
+        }
+        let (plan, report, _) = Self::build_plan_card("card-preview", prompt);
+        let is_payment = report.action_type == "WalletPayment";
+        let cost_cents = if is_payment {
+            // Même repli que le plan sec (1000 = 10,00 EUR) : la carte ne
+            // prétend jamais qu'un montant absent vaut zéro.
+            Self::extract_amount_cents(prompt).unwrap_or(1000)
+        } else {
+            0
+        };
+        let object = plan
+            .steps
+            .first()
+            .map(|step| step.description.clone())
+            .unwrap_or_else(|| prompt.chars().take(140).collect());
+        let reason = report.warning.clone().unwrap_or_else(|| {
+            "Action irréversible détectée — confirmation humaine explicite requise ; aucun effet exécuté."
+                .to_string()
+        });
+        Some(ActionCardPreview {
+            verb: "Confirmer".to_string(),
+            object,
+            reason,
+            cost_cents,
+            currency: "EUR".to_string(),
+            reversible: false,
+            data_exit_local: true,
+            provenance_label: "Hakille — plan sec (aucune exécution)".to_string(),
+        })
     }
 
     /// Directive de priorité dérivée du niveau de confiance (mission priority) :
@@ -2038,5 +2094,55 @@ mod proactivity_tests {
 
         // Re-scan : déduplication (déjà posées).
         assert_eq!(orch.scan_curiosity(&[]), 0);
+    }
+}
+
+#[cfg(test)]
+mod action_card_preview_tests {
+    use super::CognitiveOrchestrator;
+
+    #[test]
+    fn safe_prompt_has_no_card() {
+        assert!(CognitiveOrchestrator::action_card_preview("résume ma journée").is_none());
+    }
+
+    #[test]
+    fn payment_prompt_builds_local_irreversible_card_with_amount() {
+        let card = CognitiveOrchestrator::action_card_preview("transférer 25 EUR à Awa")
+            .expect("paiement = carte");
+        assert_eq!(card.verb, "Confirmer");
+        assert!(!card.reversible, "un virement reste irréversible");
+        assert!(card.data_exit_local, "dry-run local, aucun transfert cloud");
+        assert_eq!(card.cost_cents, 2500);
+        assert_eq!(card.currency, "EUR");
+        assert!(
+            card.object.contains("Virement"),
+            "objet réel: {}",
+            card.object
+        );
+        assert!(
+            card.provenance_label.contains("aucune exécution"),
+            "provenance honnête: {}",
+            card.provenance_label
+        );
+    }
+
+    #[test]
+    fn deletion_prompt_builds_file_card_without_invented_amount() {
+        let card = CognitiveOrchestrator::action_card_preview("supprime /vfs/notes.txt")
+            .expect("suppression = carte");
+        assert_eq!(card.cost_cents, 0, "aucun coût monétaire inventé");
+        assert_eq!(
+            card.object, "Suppression : /vfs/notes.txt",
+            "objet lisible sans répéter la consigne"
+        );
+        assert!(!card.reversible);
+    }
+
+    #[test]
+    fn missing_amount_uses_plan_fallback_not_zero() {
+        let card = CognitiveOrchestrator::action_card_preview("transférer de l'argent à Awa")
+            .expect("paiement = carte");
+        assert_eq!(card.cost_cents, 1000, "même repli que le plan sec");
     }
 }
