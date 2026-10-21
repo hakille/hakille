@@ -1,4 +1,4 @@
-# Sécurité, Capabilities & Attestation Matérielle
+# Sécurité, Capabilities & Attestation de Plateforme (état réel)
 
 Ce document décrit le modèle de sécurité et les mécanismes cryptographiques d'Hakille.
 
@@ -70,17 +70,18 @@ pub struct AuditEntry {
 
 ---
 
-## 4. Attestation Matérielle (TPM / Secure Enclave)
+## 4. Attestation de Plateforme (état réel)
 
 Sur des systèmes de bureau, des ordinateurs portables ou des téléphones, le système d'exploitation hôte ou un attaquant physique pourrait tenter de falsifier les journaux.
 
-Chaque implémentation du trait `Substrate` génère une attestation matérielle :
-- **Windows** : Utilisation du TPM 2.0 et de Virtualization-Based Security (VBS).
-- **Linux** : Utilisation du TPM / IMA (Integrity Measurement Architecture).
-- **macOS** : Utilisation de la Secure Enclave matérielle d'Apple Silicon.
-- **Redox OS** : Schemes d'enclave matérielle directe.
+**État réel v1 :** chaque implémentation de `Substrate::attest` renvoie une
+signature locale de développement avec un identifiant de plateforme. Il n'y a
+pas de citation TPM 2.0, VBS, IMA, Secure Enclave ni de mesure de démarrage
+sécurisé. L'attestation ne prouve donc pas l'intégrité matérielle.
 
-Le cluster de mémoire distribué (`TiKV` / réplication fédérée) rejette formellement toute entrée de journal ou delta de graphe non signé par une enclave matérielle certifiée.
+Le cluster `TiKV` n'est pas déployé : la synchronisation mobile est locale
+(shadow-sync). Aucun cluster ne rejette aujourd'hui de journal faute de preuve
+matérielle. Un ancrage TPM/Enclave réel reste un travail suivi.
 
 ---
 
@@ -97,6 +98,6 @@ Lorsque le système est autorisé à engager des transactions autonomes (réserv
 
 ## 6. Crépuscule Numérique & Effacement Cryptographique
 
-Hakille garantit le droit absolu à l'effacement et la souveraineté post-mortem :
-- **Effacement Cryptographique Immédiat** : Le graphe de mémoire est chiffré au repos via ChaCha20-Poly1305. La suppression totale détruit définitivement la clé de déchiffrement contenue dans l'enclave, rendant l'intégralité des données mathématiquement irrécupérable, même si les blocs physiques persistent sur le disque.
-- **Mode Héritage Explicite** : L'utilisateur peut configurer de son vivant des pactes de succession chiffrés pour autoriser certains bénéficiaires désignés à accéder à des partitions choisies du graphe.
+Hakille vise l'effacement et la souveraineté post-mortem, avec des limites explicites en v1 :
+- **Effacement des entrées, pas effacement cryptographique du graphe** : le graphe `redb` local n'est **pas chiffré au repos** ; supprimer un triplet retire l'entrée logique, sans garantie de rémanence physique. Les gabarits biométriques, eux, sont chiffrés via ChaCha20-Poly1305, mais la destruction de clé dans une enclave matérielle n'est pas implémentée.
+- **Mode Héritage Explicite** : le principe de pactes de succession chiffrés est spécifié, mais aucun parcours de bout en bout vérifié n'est exposé dans le démon v1.

@@ -1,6 +1,6 @@
 # Spécification des Modèles Fondations et Runtimes d'Inférence
 
-> **Bandeau d'honnêteté (inférence RÉELLE, golden-testée) : artefacts vérifiés (présence + SHA-256 + headers) ET exécution locale réelle — forwards `ort` (Silero VAD, SenseVoice CTC, CAM++ 192-d, MiniLM 384-d WordPiece), décodage Candle Qwen 2.5 Q4_K_M + KV-cache, RVQ Mimi sur vrais codebooks, TTS formantique Klatt, grounding par vision classique (Sobel + NCC). Limites explicites : pas de modèle neuronal Moshi 7,6B (duplex RVQ/VAD v1, `MoshiEngine::is_simulated() == true`), pas de forward VLM UI-TARS (grounding CV, pas de VLA), pas de beam search ASR, TTS non-neural (checkpoint CosyVoice2/NeuTTS non provisionné), diarisation par clustering CAM++ (checkpoint Nemotron non provisionné). Latences mesurées sur poste (voir goldens), sinon marquées catalogue amont.**
+> **Bandeau d'honnêteté : artefacts vérifiés (présence + SHA-256 + headers) et exécution locale réelle lorsque les fichiers sont provisionnés — forwards `ort` (Silero VAD, SenseVoice CTC, CAM++ 192-d, MiniLM 384-d WordPiece), décodage Candle Qwen 2.5 Q4_K_M + KV-cache, RVQ Mimi nearest-L2 sur vrais codebooks, TTS formantique Klatt, grounding par vision classique (Sobel + NCC). Limites explicites : pas de décodeur neural Mimi complet ni de modèle Moshi 7,6B (`MoshiEngine::is_simulated() == true`, statut Mimi `SIMULÉ`), pas de forward VLM UI-TARS (grounding CV, pas de VLA), pas de beam search ASR, TTS non-neural (checkpoint CosyVoice2/NeuTTS non provisionné), diarisation par clustering CAM++ (checkpoint Nemotron non provisionné). Latences mesurées sur poste (voir goldens), sinon marquées catalogue amont.**
 
 > *"Zéro runtime Python en production : du tenseur brut au code machine natif via Candle, ONNX Runtime et des parseurs binaires GGUF purs."*
 
@@ -120,7 +120,7 @@ Les entrées suivantes sont des références amont **hors catalogue local** : au
 
 - **VibeVoice-ASR (8.3B)** — hors catalogue local (transcription longue durée 60 min : intention seulement).
 - **Nemotron-3-Diarization (100M)** — hors catalogue local (diarisation 8 locuteurs : intention seulement ; la diarisation locale réelle = clustering agglomératif d'embeddings CAM++ réels, voir `audio/diarization.rs`).
-- **Kyutai Moshi 7.6B (dialogue)** — hors catalogue local ; le codec **Mimi** (`moshi-mimi-s2s`) est EXÉCUTÉ en réel (RVQ nearest-L2 sur les vrais codebooks + overlap-add) et le duplex texte-voix est réel (RVQ + TTS formantique) ; le décodeur neuronal Moshi 7.6B n'est pas provisionné.
+- **Kyutai Moshi 7.6B (dialogue)** — hors catalogue local ; le codec **Mimi** (`moshi-mimi-s2s`) fait un **RVQ nearest-L2 sur les vrais codebooks + overlap-add**, sans encodeur/décodeur neural complet (statut `SIMULÉ`) ; le duplex texte-voix local combine ce RVQ et le TTS formantique. Le décodeur neuronal Moshi 7.6B n'est pas provisionné.
 - **Qwen3-8B** — hors catalogue local ; **Qwen2.5-0.5B-Instruct Q4_K_M** est EXÉCUTÉ en réel (forward Candle + KV-cache + sampling T/top-p + ChatML, golden `2+2=4`).
 - **UI-TARS-7B-DPO** — hors catalogue local ; **UI-TARS-2B-SFT Q4_K_M** est inspecté (headers) sans forward VLM ; le grounding GUI est RÉEL par vision classique (Sobel + composantes connexes + NCC), la planification texte passe par Qwen.
 

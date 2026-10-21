@@ -391,9 +391,12 @@ impl ModelProvisioner {
         let vad_path = self.artifact_path("silero_vad.onnx");
         let campplus_path = self.artifact_path("campplus_zh_en_16k_advanced.onnx");
         let minilm_path = self.artifact_path("all-minilm-l6-v2.onnx");
+        let qwen_tokenizer_path = self.artifact_path("tokenizer.json");
+        let minilm_tokenizer_path = self.artifact_path("minilm_tokenizer.json");
 
         let required = [
             (&qwen_path, "Qwen2.5 0.5B GGUF"),
+            (&qwen_tokenizer_path, "Qwen tokenizer.json"),
             (&ui_tars_path, "UI-TARS 2B GGUF"),
             (&mimi_path, "Mimi Safetensors"),
             (&tokens_path, "SenseVoice Vocabulary tokens.txt"),
@@ -401,6 +404,7 @@ impl ModelProvisioner {
             (&vad_path, "Silero VAD ONNX"),
             (&campplus_path, "CAM++ Speaker ID ONNX"),
             (&minilm_path, "All-MiniLM-L6-v2 ONNX"),
+            (&minilm_tokenizer_path, "MiniLM tokenizer.json"),
         ];
 
         for (path, label) in &required {

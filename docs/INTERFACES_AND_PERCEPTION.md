@@ -142,7 +142,7 @@ pub struct SituationalState {
 
 ## 7. Moteur Vocal Full-Duplex et Détection d'Interruption (*Barge-In*)
 
-Dans [`crates/hakille-voice`](../crates/hakille-voice), le dialogue vocal s'affranchit de l'alternance rigide des tours de parole grâce à Kyutai Moshi et au codec Mimi :
+La **cible** de [`crates/hakille-voice`](../crates/hakille-voice) est un dialogue full-duplex sans alternance rigide, via Kyutai Moshi et le codec Mimi :
 
 ```
 Microphone  ──► [ Codec Mimi (80ms) ] ──► [ Moshi Temporal Transformer ] ──► [ Codec Mimi ] ──► Haut-Parleurs
@@ -150,6 +150,10 @@ Microphone  ──► [ Codec Mimi (80ms) ] ──► [ Moshi Temporal Transform
                         │                                                            ▼
                         └───────── [ BargeInDetector (Interruption) ] ───────────────┘
 ```
+
+En v1, le codec Mimi est un RVQ nearest-L2 sur codebooks réels, sans décodeur
+neural complet, et Moshi n'est pas provisionné (`is_simulated() == true`). Le
+Barge-In et le TTS formantique, eux, sont exécutés localement.
 
 ### Le Détecteur de Barge-In (`BargeInDetector`)
 Pendant que le système parle :

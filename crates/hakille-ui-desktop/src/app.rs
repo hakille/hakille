@@ -9,17 +9,27 @@
 
 use crate::daemon_bridge::RealDaemonBridge;
 use crate::kernel_bridge::KernelBridge;
-use crate::renderer::hud_scene;
+use crate::renderer::{
+    CONSULT_HEIGHT, ConsultLine, ConsultLineKind, ConsultView, consult_scene, hud_scene,
+};
 use crate::runtime::FrameBudget;
 use crate::scene::{Color, DrawCmd, Scene};
 use hakille_ui::{CostCounter, EphemeralHud, HudState, PresenceIndicator, SilenceBudgetTracker};
-use hakille_ui_model::snapshot::EVAPORATE_MS;
+use hakille_ui_model::snapshot::{EVAPORATE_MS, HUD_HEIGHT, HUD_WIDTH};
 use hakille_ui_model::{KernelEvent, StableSnapshot, UiEvent};
 use hakille_ui_protocol::{JournalEntryDto, KernelToUi, MemoryRowDto, StatusDto};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 /// Longueur maximale de la requête HUD (octets UTF-8).
 pub const MAX_QUERY_BYTES: usize = 512;
+
+/// Seuil au-delà duquel une réponse est rendue dans le panneau étendu :
+/// une seule ligne du HUD (≈ 100 caractères) ne suffit plus.
+pub const EXPAND_RESPONSE_CHARS: usize = 120;
+
+/// Nombre de lignes demandées lors d'une consultation (le serveur plafonne).
+pub const CONSULT_LIMIT: usize = 50;
 
 /// Entrées de la machine (clavier, IME, hotkey, horloge, AccessKit).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +43,12 @@ pub enum HudInput {
     Backspace,
     Enter,
     Escape,
+    /// Ouvre le panneau de consultation du journal (F1).
+    ShowJournal,
+    /// Ouvre le panneau mémoire (F2).
+    ShowMemory,
+    /// Ouvre le panneau statut (F3).
+    ShowStatus,
     /// Frame due (minuterie d'animation — voir `FrameBudget`).
     Tick,
     /// Demande de focus sur le champ requête (AccessKit focus/click).
@@ -53,8 +69,55 @@ pub enum HudAction {
     RequestFrameIn(Duration),
     /// Soumission de la requête au pont noyau (l'hôte appelle `submit_query`).
     Submit { query: String },
+    /// Redimensionne la fenêtre logique (HUD 64 px ou panneau 360 px).
+    ResizeWindow { width: u32, height: u32 },
+    /// Consultation additive v1 : dernières entrées du journal.
+    RequestJournal { limit: usize },
+    /// Consultation additive v1 : vue mémoire ou rappel.
+    RequestMemory { query: Option<String>, limit: usize },
+    /// Statut minimal du démon.
+    RequestStatus,
     /// Quitte la boucle d'événements.
     Quit,
+}
+
+/// Panneau de consultation affiché sous le HUD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelKind {
+    None,
+    Response,
+    Journal,
+    Memory,
+    Status,
+}
+
+fn map_presence(state: hakille_ui_protocol::PresenceState) -> hakille_ui::PresenceState {
+    match state {
+        hakille_ui_protocol::PresenceState::Idle => hakille_ui::PresenceState::Idle,
+        hakille_ui_protocol::PresenceState::Listening => hakille_ui::PresenceState::Listening,
+        hakille_ui_protocol::PresenceState::Acting => hakille_ui::PresenceState::Acting,
+        hakille_ui_protocol::PresenceState::Speaking => hakille_ui::PresenceState::Speaking,
+        hakille_ui_protocol::PresenceState::DecisionRequired => {
+            hakille_ui::PresenceState::DecisionRequired
+        }
+        hakille_ui_protocol::PresenceState::Urgent => hakille_ui::PresenceState::Urgent,
+    }
+}
+
+/// Compose la réponse et son éventuel coût sans jamais afficher « 0¢ »
+/// quand le coût est nul (une alerte de persistance n'est pas un coût).
+fn compose_reply(response: String, validation: Option<(String, u64)>) -> String {
+    match validation {
+        Some((description, cost_cents)) if cost_cents > 0 => {
+            format!("{response}  —  {description}: {cost_cents}¢")
+        }
+        Some((description, _)) => format!("{response}  —  {description}"),
+        None => response,
+    }
+}
+
+fn response_is_long(text: &str) -> bool {
+    text.chars().count() > EXPAND_RESPONSE_CHARS || text.contains('\n')
 }
 
 /// Ligne auxiliaire sous la requête : réponse du noyau ou refus honnête.
@@ -95,6 +158,11 @@ pub struct HudApp {
     last_remember_id: Option<String>,
     /// Confirmation de consultation (non-erreur) affichée sous la requête.
     data_notice: Option<String>,
+    /// Requêtes saisies alors que l'IPC n'était pas encore connecté : elles
+    /// partent dans l'ordre à la connexion, jamais perdues silencieusement.
+    queued_queries: VecDeque<String>,
+    /// Panneau actif sous le HUD (`None` : HUD compact 720×64).
+    panel: PanelKind,
 }
 
 impl HudApp {
@@ -130,6 +198,8 @@ impl HudApp {
             last_status: None,
             last_remember_id: None,
             data_notice: None,
+            queued_queries: VecDeque::new(),
+            panel: PanelKind::None,
         }
     }
 
@@ -169,10 +239,18 @@ impl HudApp {
         None
     }
 
-    /// Scène HUD : `hud_scene` + ligne auxiliaire (réponse/refus) si présente.
+    /// Panneau actif sous le HUD.
+    pub fn panel(&self) -> PanelKind {
+        self.panel
+    }
+
+    /// Scène HUD : compacte, ou étendue quand un panneau est ouvert.
     pub fn scene(&self) -> Scene {
         let snap = self.snapshot();
         let dark = !snap.light_mode;
+        if self.panel != PanelKind::None {
+            return consult_scene(&snap, &self.consult_view(), dark);
+        }
         let mut scene = hud_scene(&snap, dark);
         if let Some(aux) = self.aux_notice() {
             // La requête remonte d'une ligne pour laisser la place à la réponse.
@@ -192,6 +270,134 @@ impl HudApp {
             scene.text(56.0, 56.0, 12.0, color, aux.text);
         }
         scene
+    }
+
+    /// Contenu texte du panneau actif. Aucune donnée inventée : une liste
+    /// vide dit explicitement qu'il faut interroger le démon.
+    pub fn consult_view(&self) -> ConsultView {
+        let footer = "Échap fermer  ·  F1 Journal  ·  F2 Mémoire  ·  F3 Statut".to_string();
+        match self.panel {
+            PanelKind::Journal => {
+                let mut lines = Vec::new();
+                if self.journal_entries.is_empty() {
+                    lines.push(ConsultLine::new(
+                        "Aucune entrée reçue. F1 interroge le démon ; sans connexion, rien n'est inventé.",
+                        ConsultLineKind::Muted,
+                    ));
+                } else {
+                    for entry in self.journal_entries.iter().take(12) {
+                        let stamp: String = entry.timestamp.chars().take(16).collect();
+                        lines.push(ConsultLine::new(
+                            format!("{}  ·  {}", stamp.replace('T', " "), entry.action),
+                            ConsultLineKind::Strong,
+                        ));
+                        lines.push(ConsultLine::new(
+                            entry.summary.clone(),
+                            ConsultLineKind::Normal,
+                        ));
+                        lines.push(ConsultLine::new(String::new(), ConsultLineKind::Muted));
+                    }
+                }
+                ConsultView {
+                    title: "Journal d'audit".into(),
+                    subtitle: format!(
+                        "{} entrée(s) — chaîne signée, plus récentes d'abord",
+                        self.journal_entries.len()
+                    ),
+                    lines,
+                    footer,
+                }
+            }
+            PanelKind::Memory => {
+                let mut lines = Vec::new();
+                if self.memory_rows.is_empty() {
+                    lines.push(ConsultLine::new(
+                        "Aucune ligne reçue. F2 interroge le démon ; la mémoire n'est pas simulée ici.",
+                        ConsultLineKind::Muted,
+                    ));
+                } else {
+                    for row in self.memory_rows.iter().take(12) {
+                        lines.push(ConsultLine::new(row.text.clone(), ConsultLineKind::Normal));
+                        let short_id: String = row.id.chars().take(8).collect();
+                        let tags = if row.tags.is_empty() {
+                            "—".to_string()
+                        } else {
+                            row.tags.join(" · ")
+                        };
+                        lines.push(ConsultLine::new(
+                            format!("{short_id}  ·  {tags}  ·  {}", row.source),
+                            ConsultLineKind::Muted,
+                        ));
+                        lines.push(ConsultLine::new(String::new(), ConsultLineKind::Muted));
+                    }
+                }
+                ConsultView {
+                    title: "Mémoire souveraine".into(),
+                    subtitle: format!("{} ligne(s) reçue(s)", self.memory_rows.len()),
+                    lines,
+                    footer,
+                }
+            }
+            PanelKind::Status => {
+                let lines = match &self.last_status {
+                    Some(status) => vec![
+                        ConsultLine::new(
+                            format!("Modèle : {}", status.model),
+                            ConsultLineKind::Strong,
+                        ),
+                        ConsultLine::new(
+                            format!("État : {}", status.state),
+                            ConsultLineKind::Normal,
+                        ),
+                        ConsultLine::new(
+                            format!("Coût : {}", status.cost),
+                            ConsultLineKind::Normal,
+                        ),
+                        ConsultLine::new(
+                            format!("Mémoire : {} triplet(s)", status.memory_count),
+                            ConsultLineKind::Normal,
+                        ),
+                    ],
+                    None => vec![ConsultLine::new(
+                        "Aucun statut reçu. F3 interroge le démon ; aucune valeur n'est inventée.",
+                        ConsultLineKind::Muted,
+                    )],
+                };
+                ConsultView {
+                    title: "Statut du démon".into(),
+                    subtitle: "Modèle, coût et mémoire réellement rapportés".into(),
+                    lines,
+                    footer,
+                }
+            }
+            PanelKind::Response | PanelKind::None => {
+                let aux = self.aux_notice();
+                let lines = match &aux {
+                    Some(aux) => vec![ConsultLine::new(
+                        aux.text.clone(),
+                        if aux.error {
+                            ConsultLineKind::Error
+                        } else {
+                            ConsultLineKind::Normal
+                        },
+                    )],
+                    None => vec![ConsultLine::new(
+                        "Aucune réponse disponible.",
+                        ConsultLineKind::Muted,
+                    )],
+                };
+                ConsultView {
+                    title: "Réponse du démon".into(),
+                    subtitle: if self.pending_query.is_some() {
+                        "Requête en cours…".into()
+                    } else {
+                        "Dernière réponse reçue".into()
+                    },
+                    lines,
+                    footer,
+                }
+            }
+        }
     }
 
     /// Dernières entrées de journal reçues (`JournalRequest`).
@@ -294,13 +500,21 @@ impl HudApp {
                 }
             }
             HudInput::Escape => self.escape(),
+            HudInput::ShowJournal => self.open_panel(PanelKind::Journal),
+            HudInput::ShowMemory => self.open_panel(PanelKind::Memory),
+            HudInput::ShowStatus => self.open_panel(PanelKind::Status),
             HudInput::Tick => self.tick(),
             HudInput::FocusQuery => {
                 if self.visible {
                     vec![HudAction::Redraw]
                 } else {
                     self.show();
-                    vec![HudAction::ShowWindow, HudAction::Redraw]
+                    let mut actions = vec![HudAction::ShowWindow];
+                    if self.panel != PanelKind::None {
+                        actions.push(self.resize_action(true));
+                    }
+                    actions.push(HudAction::Redraw);
+                    actions
                 }
             }
             HudInput::Close => vec![HudAction::Quit],
@@ -317,39 +531,18 @@ impl HudApp {
                 response,
                 validation,
             })) => {
-                self.notice = None;
-                match validation {
-                    Some((description, cost_cents)) => {
-                        // La réponse ne doit jamais être perdue : coût en
-                        // suffixe honnête (aucune action à approuver pour un
-                        // tour déjà exécuté — pas de carte trompeuse).
-                        self.hud.set_streaming(
-                            query,
-                            format!("{response}  —  {description}: {cost_cents}¢"),
-                            true,
-                        );
-                    }
-                    None => self.hud.set_streaming(query, response, true),
-                }
-                vec![HudAction::Redraw]
+                let text = compose_reply(response, validation);
+                self.display_turn(query, text, false)
             }
-            Ok(Some(KernelEvent::Toast { text })) => {
-                self.notice = None;
-                self.hud.set_streaming(query, text, true);
-                vec![HudAction::Redraw]
-            }
+            Ok(Some(KernelEvent::Toast { text })) => self.display_turn(query, text, false),
             Ok(Some(other)) => {
                 let msg = format!("réponse noyau inattendue: {other:?}");
-                self.notice = Some(msg.clone());
-                self.hud.set_streaming(query, msg, true);
-                vec![HudAction::Redraw]
+                self.display_turn(query, msg, true)
             }
             Ok(None) => Vec::new(),
             Err(e) => {
                 let msg = e.to_string();
-                self.notice = Some(msg.clone());
-                self.hud.set_streaming(query, msg, true);
-                vec![HudAction::Redraw]
+                self.display_turn(query, msg, true)
             }
         }
     }
@@ -357,80 +550,58 @@ impl HudApp {
     /// Requête réellement envoyée au démon (IPC) : attente affichée, réponse
     /// à venir par `on_kernel_reply` — la machine reste pure.
     pub fn on_submit_sent(&mut self, query: String) -> Vec<HudAction> {
+        let was_expanded = self.panel != PanelKind::None;
         self.pending_query = Some(query.clone());
         self.notice = None;
         self.data_notice = None;
+        self.panel = PanelKind::None;
         self.hud
             .set_streaming(query, "En attente de réponse du démon…", false);
-        vec![HudAction::Redraw]
-    }
-
-    /// Réponse asynchrone du démon — même logique que les branches `Ok` de
-    /// `submit_query`. Fenêtre masquée : mémorisée (`unseen_reply`), zéro
-    /// frame (`Presence` reste un no-op pur).
-    pub fn on_kernel_reply(&mut self, msg: KernelToUi) -> Vec<HudAction> {
-        if matches!(msg, KernelToUi::Presence(_)) {
+        if !self.visible {
             return Vec::new();
         }
-        // Consultation additive v1 : stockée telle quelle, sans toucher à la
-        // requête HUD en vol (`pending_query`).
-        match msg {
-            KernelToUi::JournalReply { entries } => {
-                let count = entries.len();
-                self.journal_entries = entries;
-                self.data_reply_actions(format!("journal : {count} entrée(s)"))
-            }
-            KernelToUi::MemoryReply { rows } => {
-                let count = rows.len();
-                self.memory_rows = rows;
-                self.data_reply_actions(format!("mémoire : {count} ligne(s)"))
-            }
-            KernelToUi::MemoryRememberAck { id } => {
-                self.last_remember_id = Some(id.clone());
-                self.data_reply_actions(format!("mémoire enregistrée [{id}]"))
-            }
-            KernelToUi::StatusReply { status } => {
-                let label = format!("statut : {} — {}", status.model, status.cost);
-                self.last_status = Some(status);
-                self.data_reply_actions(label)
-            }
-            msg => self.on_turn_reply(msg),
+        let mut actions = Vec::new();
+        if was_expanded {
+            actions.push(self.resize_action(false));
+        }
+        actions.push(HudAction::Redraw);
+        actions
+    }
+
+    /// Requête saisie avant le handshake IPC : mise en file, jamais perdue.
+    /// Elle partira automatiquement à `on_ipc_connected`.
+    pub fn on_query_queued(&mut self, query: String) -> Vec<HudAction> {
+        self.queued_queries.push_back(query.clone());
+        self.notice = None;
+        self.data_notice = None;
+        self.panel = PanelKind::None;
+        self.hud.set_streaming(
+            query,
+            format!(
+                "Démon non connecté — requête en file ({}). Elle partira à la connexion.",
+                self.queued_queries.len()
+            ),
+            false,
+        );
+        if self.visible {
+            vec![HudAction::Redraw]
+        } else {
+            Vec::new()
         }
     }
 
-    /// Réponse d'un tour HUD (HudReply/Toast) — chemin historique inchangé.
-    fn on_turn_reply(&mut self, msg: KernelToUi) -> Vec<HudAction> {
-        let query = self.pending_query.take().unwrap_or_default();
-        match msg {
-            KernelToUi::HudReply {
-                response,
-                validation,
-            } => {
-                self.notice = None;
-                match validation {
-                    Some((description, cost_cents)) => {
-                        // La réponse ne doit jamais être perdue : coût en
-                        // suffixe honnête (aucune action à approuver pour un
-                        // tour déjà exécuté — pas de carte trompeuse).
-                        self.hud.set_streaming(
-                            query,
-                            format!("{response}  —  {description}: {cost_cents}¢"),
-                            true,
-                        );
-                    }
-                    None => self.hud.set_streaming(query, response, true),
-                }
-            }
-            KernelToUi::Toast { text } => {
-                self.notice = None;
-                self.hud.set_streaming(query, text, true);
-            }
-            other => {
-                let msg = format!("réponse noyau inattendue: {other:?}");
-                self.notice = Some(msg.clone());
-                self.hud.set_streaming(query, msg, true);
-            }
+    /// Handshake IPC (re)établi : envoie la plus ancienne requête en attente.
+    pub fn on_ipc_connected(&mut self) -> Vec<HudAction> {
+        match self.queued_queries.pop_front() {
+            Some(query) => vec![HudAction::Submit { query }],
+            None => Vec::new(),
         }
+    }
+
+    /// Consultation demandée alors que l'IPC n'est pas disponible : refus
+    /// honnête, le panneau reste ouvert avec son contenu éventuellement vide.
+    pub fn on_ipc_unavailable(&mut self, what: &str) -> Vec<HudAction> {
+        self.notice = Some(format!("démon non connecté — {what} impossible"));
         if self.visible {
             vec![HudAction::Redraw]
         } else {
@@ -439,13 +610,161 @@ impl HudApp {
         }
     }
 
-    /// Consultation : confirmation affichable (non-erreur), redraw si visible.
-    fn data_reply_actions(&mut self, notice: String) -> Vec<HudAction> {
+    /// Réponse asynchrone du démon — même logique que les branches `Ok` de
+    /// `submit_query`. Fenêtre masquée : mémorisée (`unseen_reply`), zéro
+    /// frame.
+    pub fn on_kernel_reply(&mut self, msg: KernelToUi) -> Vec<HudAction> {
+        match msg {
+            KernelToUi::Presence(state) => {
+                self.presence.set_state(map_presence(state));
+                if self.visible {
+                    vec![HudAction::Redraw]
+                } else {
+                    Vec::new()
+                }
+            }
+            KernelToUi::JournalReply { entries } => {
+                let count = entries.len();
+                self.journal_entries = entries;
+                self.data_reply_actions(PanelKind::Journal, format!("journal : {count} entrée(s)"))
+            }
+            KernelToUi::MemoryReply { rows } => {
+                let count = rows.len();
+                self.memory_rows = rows;
+                self.data_reply_actions(PanelKind::Memory, format!("mémoire : {count} ligne(s)"))
+            }
+            KernelToUi::MemoryRememberAck { id } => {
+                self.last_remember_id = Some(id.clone());
+                self.notice_actions(format!("mémoire enregistrée [{id}]"))
+            }
+            KernelToUi::StatusReply { status } => {
+                let label = format!("statut : {} — {}", status.model, status.cost);
+                self.last_status = Some(status);
+                self.data_reply_actions(PanelKind::Status, label)
+            }
+            msg => self.on_turn_reply(msg),
+        }
+    }
+
+    /// Réponse d'un tour HUD (HudReply/Toast) — affichage compact ou étendu.
+    fn on_turn_reply(&mut self, msg: KernelToUi) -> Vec<HudAction> {
+        let query = self.pending_query.take().unwrap_or_default();
+        match msg {
+            KernelToUi::HudReply {
+                response,
+                validation,
+            } => {
+                let text = compose_reply(response, validation);
+                self.display_turn(query, text, false)
+            }
+            KernelToUi::Toast { text } => self.display_turn(query, text, false),
+            other => {
+                let msg = format!("réponse noyau inattendue: {other:?}");
+                self.display_turn(query, msg, true)
+            }
+        }
+    }
+
+    /// Affiche un tour finalisé. Une réponse longue (ou multi-ligne) ouvre
+    /// automatiquement le panneau 720×360 ; une réponse courte referme un
+    /// panneau précédent pour revenir au HUD 720×64.
+    fn display_turn(&mut self, query: String, text: String, error: bool) -> Vec<HudAction> {
+        let long = response_is_long(&text);
+        if error {
+            self.notice = Some(text.clone());
+        } else {
+            self.notice = None;
+        }
+        self.hud.set_streaming(query, text, true);
+        self.presence.set_state(hakille_ui::PresenceState::Idle);
+        let was_expanded = self.panel != PanelKind::None;
+        self.panel = if long {
+            PanelKind::Response
+        } else {
+            PanelKind::None
+        };
+        let mut actions = Vec::new();
+        if self.visible {
+            if long || was_expanded {
+                actions.push(self.resize_action(long));
+            }
+            actions.push(HudAction::Redraw);
+        } else {
+            self.unseen_reply = true;
+        }
+        if let Some(next) = self.queued_queries.pop_front() {
+            actions.push(HudAction::Submit { query: next });
+        }
+        actions
+    }
+
+    /// Consultation : ouvre le panneau, confirmation non-erreur, resize + redraw.
+    fn data_reply_actions(&mut self, kind: PanelKind, notice: String) -> Vec<HudAction> {
+        self.data_notice = Some(notice);
+        self.panel = kind;
+        if self.visible {
+            vec![self.resize_action(true), HudAction::Redraw]
+        } else {
+            self.unseen_reply = true;
+            Vec::new()
+        }
+    }
+
+    /// Accusé/confirmation sans changement de panneau.
+    fn notice_actions(&mut self, notice: String) -> Vec<HudAction> {
         self.data_notice = Some(notice);
         if self.visible {
             vec![HudAction::Redraw]
         } else {
+            self.unseen_reply = true;
             Vec::new()
+        }
+    }
+
+    /// Ouvre (ou referme si déjà actif) un panneau de consultation et émet la
+    /// requête IPC correspondante. Sans connexion, l'hôte appellera
+    /// `on_ipc_unavailable` — le panneau reste honnêtement vide.
+    fn open_panel(&mut self, kind: PanelKind) -> Vec<HudAction> {
+        if self.panel == kind {
+            return self.close_panel();
+        }
+        self.panel = kind;
+        self.data_notice = None;
+        let mut actions = Vec::new();
+        if !self.visible {
+            self.visible = true;
+            self.hud.open_prompt();
+            actions.push(HudAction::ShowWindow);
+        }
+        actions.push(self.resize_action(true));
+        actions.push(match kind {
+            PanelKind::Journal => HudAction::RequestJournal {
+                limit: CONSULT_LIMIT,
+            },
+            PanelKind::Memory => HudAction::RequestMemory {
+                query: None,
+                limit: CONSULT_LIMIT,
+            },
+            PanelKind::Status => HudAction::RequestStatus,
+            PanelKind::Response | PanelKind::None => HudAction::Redraw,
+        });
+        actions.push(HudAction::Redraw);
+        actions
+    }
+
+    fn close_panel(&mut self) -> Vec<HudAction> {
+        self.panel = PanelKind::None;
+        if self.visible {
+            vec![self.resize_action(false), HudAction::Redraw]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn resize_action(&self, expanded: bool) -> HudAction {
+        HudAction::ResizeWindow {
+            width: HUD_WIDTH,
+            height: if expanded { CONSULT_HEIGHT } else { HUD_HEIGHT },
         }
     }
 
@@ -460,6 +779,7 @@ impl HudApp {
         // État final : sinon l'animation d'attente tournerait sans fin alors
         // qu'aucune réponse ne viendra (aucune frame fantôme).
         self.hud.set_streaming(query, cancel.to_string(), true);
+        self.presence.set_state(hakille_ui::PresenceState::Idle);
         if self.visible {
             vec![HudAction::Redraw]
         } else {
@@ -474,7 +794,11 @@ impl HudApp {
             vec![HudAction::HideWindow]
         } else {
             self.show();
-            let mut actions = vec![HudAction::ShowWindow, HudAction::Redraw];
+            let mut actions = vec![HudAction::ShowWindow];
+            if self.panel != PanelKind::None {
+                actions.push(self.resize_action(true));
+            }
+            actions.push(HudAction::Redraw);
             if self.needs_animation() {
                 actions.push(HudAction::RequestFrameIn(self.frame_interval()));
             }
@@ -500,6 +824,7 @@ impl HudApp {
         self.visible = false;
         self.notice = None;
         self.data_notice = None;
+        self.panel = PanelKind::None;
         self.evaporate_remaining_ms = 0;
         self.hud.dismiss();
     }
@@ -507,6 +832,11 @@ impl HudApp {
     fn escape(&mut self) -> Vec<HudAction> {
         if !self.visible {
             return Vec::new();
+        }
+        // Premier Échap : referme le panneau étendu et revient au HUD compact.
+        // Le second applique la sémantique existante (évaporation/veille).
+        if self.panel != PanelKind::None {
+            return self.close_panel();
         }
         let has_text = match self.hud.state() {
             HudState::Prompting { query, .. } => !query.is_empty(),
@@ -865,19 +1195,21 @@ mod tests {
     }
 
     #[test]
-    fn presence_reply_is_noop_no_redraw() {
+    fn presence_reacts_without_resolving_pending_query() {
         let mut app = shown(false);
         app.on_submit_sent("statut".into());
-        let actions = app.on_kernel_reply(KernelToUi::Presence(PresenceState::Listening));
-        assert!(actions.is_empty(), "présence : zéro frame");
+        let actions = app.on_kernel_reply(KernelToUi::Presence(PresenceState::Acting));
+        assert_eq!(actions, vec![HudAction::Redraw]);
+        assert_eq!(app.presence.state(), hakille_ui::PresenceState::Acting);
         assert_eq!(
             app.snapshot().hud_response,
             "En attente de réponse du démon…",
             "la requête reste en vol après une présence"
         );
-        assert!(app.needs_animation(), "attente encore animée");
+        assert!(app.needs_animation(), "présence Acting animée");
         let actions = app.on_kernel_disconnected();
         assert_eq!(actions, vec![HudAction::Redraw]);
+        assert_eq!(app.presence.state(), hakille_ui::PresenceState::Idle);
     }
 
     #[test]
@@ -891,7 +1223,17 @@ mod tests {
                 summary: "tour servi".into(),
             }],
         });
-        assert_eq!(actions, vec![HudAction::Redraw]);
+        assert_eq!(
+            actions,
+            vec![
+                HudAction::ResizeWindow {
+                    width: 720,
+                    height: 360
+                },
+                HudAction::Redraw
+            ]
+        );
+        assert_eq!(app.panel(), PanelKind::Journal);
         assert_eq!(app.journal_entries().len(), 1);
         assert_eq!(app.journal_entries()[0].id, "e-1");
         assert_eq!(app.journal_entries()[0].action, "CognitiveTurn");
@@ -944,7 +1286,17 @@ mod tests {
                 memory_count: 3,
             },
         });
-        assert_eq!(actions, vec![HudAction::Redraw]);
+        assert_eq!(
+            actions,
+            vec![
+                HudAction::ResizeWindow {
+                    width: 720,
+                    height: 360
+                },
+                HudAction::Redraw
+            ]
+        );
+        assert_eq!(app.panel(), PanelKind::Status);
         let status = app.last_status().expect("statut stocké");
         assert_eq!(status.state, "Idle");
         assert_eq!(status.memory_count, 3);
@@ -956,7 +1308,16 @@ mod tests {
         let mut app = shown(false);
         app.on_submit_sent("statut".into());
         let actions = app.on_kernel_reply(KernelToUi::JournalReply { entries: vec![] });
-        assert_eq!(actions, vec![HudAction::Redraw]);
+        assert_eq!(
+            actions,
+            vec![
+                HudAction::ResizeWindow {
+                    width: 720,
+                    height: 360
+                },
+                HudAction::Redraw
+            ]
+        );
         assert_eq!(
             app.snapshot().hud_response,
             "En attente de réponse du démon…",
@@ -964,5 +1325,167 @@ mod tests {
         );
         let actions = app.on_kernel_disconnected();
         assert_eq!(actions, vec![HudAction::Redraw]);
+    }
+
+    #[test]
+    fn long_response_opens_360_panel_and_escape_closes_it() {
+        let mut app = shown(false);
+        app.on_submit_sent("raconte".into());
+        let long = "ligne très longue ".repeat(20);
+        let actions = app.on_kernel_reply(KernelToUi::HudReply {
+            response: long,
+            validation: None,
+        });
+        assert!(actions.contains(&HudAction::ResizeWindow {
+            width: 720,
+            height: 360
+        }));
+        assert!(actions.contains(&HudAction::Redraw));
+        assert_eq!(app.panel(), PanelKind::Response);
+        assert_eq!(app.scene().height, CONSULT_HEIGHT);
+
+        let actions = app.handle(HudInput::Escape);
+        assert_eq!(
+            actions,
+            vec![
+                HudAction::ResizeWindow {
+                    width: 720,
+                    height: 64
+                },
+                HudAction::Redraw
+            ]
+        );
+        assert_eq!(app.panel(), PanelKind::None);
+        assert_eq!(app.scene().height, HUD_HEIGHT);
+    }
+
+    #[test]
+    fn short_turn_after_expanded_response_returns_to_compact_hud() {
+        let mut app = shown(false);
+        let _ = app.on_submit_sent("long".into());
+        let _ = app.on_kernel_reply(KernelToUi::HudReply {
+            response: "x".repeat(EXPAND_RESPONSE_CHARS + 1),
+            validation: None,
+        });
+        assert_eq!(app.panel(), PanelKind::Response);
+        let actions = app.on_submit_sent("court".into());
+        assert_eq!(
+            actions,
+            vec![
+                HudAction::ResizeWindow {
+                    width: 720,
+                    height: 64
+                },
+                HudAction::Redraw
+            ]
+        );
+        assert_eq!(app.panel(), PanelKind::None);
+    }
+
+    #[test]
+    fn f_keys_open_consultation_panels_and_emit_real_requests() {
+        let mut app = shown(false);
+
+        let actions = app.handle(HudInput::ShowJournal);
+        assert!(actions.contains(&HudAction::ResizeWindow {
+            width: 720,
+            height: 360
+        }));
+        assert!(actions.contains(&HudAction::RequestJournal {
+            limit: CONSULT_LIMIT
+        }));
+        assert_eq!(app.panel(), PanelKind::Journal);
+        assert!(
+            app.consult_view()
+                .lines
+                .iter()
+                .any(|line| line.text.contains("Aucune entrée reçue"))
+        );
+
+        let actions = app.handle(HudInput::ShowMemory);
+        assert!(actions.contains(&HudAction::RequestMemory {
+            query: None,
+            limit: CONSULT_LIMIT
+        }));
+        assert_eq!(app.panel(), PanelKind::Memory);
+
+        let actions = app.handle(HudInput::ShowStatus);
+        assert!(actions.contains(&HudAction::RequestStatus));
+        assert_eq!(app.panel(), PanelKind::Status);
+        assert!(
+            app.consult_view()
+                .lines
+                .iter()
+                .any(|line| line.text.contains("Aucun statut reçu"))
+        );
+
+        // Re-appuyer sur F3 referme le panneau et restaure le HUD compact.
+        let actions = app.handle(HudInput::ShowStatus);
+        assert_eq!(
+            actions,
+            vec![
+                HudAction::ResizeWindow {
+                    width: 720,
+                    height: 64
+                },
+                HudAction::Redraw
+            ]
+        );
+        assert_eq!(app.panel(), PanelKind::None);
+    }
+
+    #[test]
+    fn queries_before_handshake_are_queued_then_sent_in_order() {
+        let mut app = shown(false);
+        let actions = app.on_query_queued("premier".into());
+        assert_eq!(actions, vec![HudAction::Redraw]);
+        assert!(app.snapshot().hud_response.contains("file (1)"));
+        app.on_query_queued("second".into());
+        assert!(app.snapshot().hud_response.contains("file (2)"));
+
+        assert_eq!(
+            app.on_ipc_connected(),
+            vec![HudAction::Submit {
+                query: "premier".into()
+            }]
+        );
+        assert_eq!(
+            app.on_ipc_connected(),
+            vec![HudAction::Submit {
+                query: "second".into()
+            }]
+        );
+        assert!(app.on_ipc_connected().is_empty());
+    }
+
+    #[test]
+    fn ipc_unavailable_is_an_honest_error_not_an_empty_success() {
+        let mut app = shown(false);
+        let actions = app.on_ipc_unavailable("journal");
+        assert_eq!(actions, vec![HudAction::Redraw]);
+        let aux = app.aux_notice().expect("refus IPC affiché");
+        assert!(aux.error);
+        assert!(aux.text.contains("démon non connecté"));
+    }
+
+    #[test]
+    fn hidden_long_reply_expands_on_next_show() {
+        let mut app = shown(false);
+        app.on_submit_sent("raconte".into());
+        app.handle(HudInput::HotkeyToggle);
+        let actions = app.on_kernel_reply(KernelToUi::HudReply {
+            response: "x".repeat(EXPAND_RESPONSE_CHARS + 1),
+            validation: None,
+        });
+        assert!(actions.is_empty(), "masqué : aucune frame");
+        assert_eq!(app.panel(), PanelKind::Response);
+
+        let actions = app.handle(HudInput::HotkeyToggle);
+        assert!(actions.contains(&HudAction::ShowWindow));
+        assert!(actions.contains(&HudAction::ResizeWindow {
+            width: 720,
+            height: 360
+        }));
+        assert_eq!(app.scene().height, CONSULT_HEIGHT);
     }
 }

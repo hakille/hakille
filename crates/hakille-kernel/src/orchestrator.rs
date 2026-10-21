@@ -1465,12 +1465,15 @@ impl CognitiveOrchestrator {
 
         // --- Contradiction interne quand zone limite ---
         // `InternalContradiction` = zone limite du ConfidenceEngine : on
-        // critique la réponse contre les faits mémoire (jamais silencieux).
+        // critique l'intention utilisateur ET la réponse contre les faits
+        // mémoire. Le prompt est indispensable : une demande « conserve »
+        // contredit un fait « supprime » même si la réponse générée est vide.
         if conf_decision == ConfidenceDecision::InternalContradiction {
             let contra_start = Instant::now();
+            let critique_text = format!("{prompt}\n{response}");
             match self
                 .contradiction_engine
-                .critique(&response, &relevant_facts)
+                .critique(&critique_text, &relevant_facts)
             {
                 Ok(analysis) => {
                     tracing::info!(

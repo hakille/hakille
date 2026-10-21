@@ -10,15 +10,15 @@ Ce document constitue la référence exhaustive de la couche de confiance et de 
 
 Hakille intègre ses propres primitives cryptographiques formellement prouvées :
 
-- **Signatures Numériques Ed25519** : Utilisées pour signer chaque entrée d'audit, chaque passeport d'agent WASM et chaque négociation inter-machines. Clé publique 32 octets, signature 64 octets.
+- **Signatures Numériques Ed25519** : Utilisées pour signer chaque entrée d'audit et les négociations inter-machines. Les manifests d'agents prévoient un passeport, mais aucun agent WASM n'est exécuté en v1. Clé publique 32 octets, signature 64 octets.
 - **Chiffrement au Repos Authentifié ChaCha20-Poly1305 (AEAD)** : Les gabarits biométriques et les secrets d'authentification sont chiffrés avec des nonces aléatoires de 96 bits et une clé dérivée de l'enclave matérielle (nuance : graphe `redb` en clair — `crates/hakille-memory/src/storage/edge.rs:89-134` sans chiffrement ; gabarits chiffrés — `crates/hakille-auth/src/enrollment.rs:72-75` ; clés éphémères par boot, TPM/DPAPI suivi — `crates/hakille-daemon/src/main.rs:315-316`).
-- **Attestation Matérielle Distribuée** : À chaque démarrage, le `Substrate` génère une attestation cryptographique signée par le module TPM 2.0 (Windows/Linux) ou l'Apple Secure Enclave (macOS), garantissant au cluster TiKV que le nœud n'a pas été altéré (état réel : signature dev locale, pas une preuve TPM — `crates/hakille-daemon/src/main.rs:300`, tracked ; TiKV non déployé, shadow-sync local seul — `crates/hakille-substrate-mobile/src/shadow.rs:153,199-202`).
+- **Attestation de Plateforme (état réel)** : au démarrage, `Substrate::attest` produit une signature **locale de développement** avec un identifiant de plateforme. Elle ne cite ni TPM 2.0, ni VBS, ni IMA, ni Secure Enclave, et ne constitue pas une preuve d'intégrité matérielle. Le cluster TiKV n'est pas déployé (shadow-sync local seulement — `crates/hakille-substrate-mobile/src/shadow.rs:153,199-202`). Un vrai ancrage TPM/Enclave reste un travail suivi.
 
 ---
 
 ## 2. Le Système de Sécurité par Capabilities Biscuit
 
-Hakille rejette le modèle d'autorisation traditionnel de type liste de contrôle d'accès (ACL) ou permissions booléennes statiques ("oui/non pour toute la session"). Toute action exige un **jeton cryptographique Biscuit**.
+Hakille rejette le modèle d'autorisation traditionnel de type liste de contrôle d'accès (ACL) ou permissions booléennes statiques ("oui/non pour toute la session"). Les actions médiées par le noyau et les substrats exigent un **jeton cryptographique Biscuit**. Les clients IPC s'authentifient avec un jeton de session local ; l'exécution d'agents WASM, qui utiliserait des jetons délégués, n'est pas branchée en v1.
 
 ```
    [ Enclave Biométrique TPM / Secure Enclave ]
@@ -107,9 +107,11 @@ Toute action physique ou délibération cognitive est consignée de manière ind
 
 ---
 
-## 5. Matrice d'Isolation des Bacs à Sable OS
+## 5. Matrice d'Isolation des Bacs à Sable OS (cible)
 
-Chaque système d'exploitation applique un confinement matériel et système impénétrable pour les agents WASM :
+La matrice décrit la **cible** de confinement. En v1, aucun agent WASM n'est
+exécuté par le démon ; les mécanismes ci-dessous sont partiels ou simulés, comme
+le détaille la note d'état réel. Aucun confinement n'est « impénétrable » :
 
 | OS Cible | Mécanisme Principal | Primitives de Confinement | Comportement en cas de Violation |
 | :--- | :--- | :--- | :--- |

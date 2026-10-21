@@ -357,12 +357,12 @@ impl AuditJournal {
         let id_bytes = id.0.as_bytes().to_vec();
         let entry_bytes = serde_json::to_vec(&entry).map_err(JournalError::Serialization)?;
 
-        // Compute new hash
+        // Compute new hash. Les ancres en mémoire ne sont avancées qu'APRÈS
+        // le commit redb : un échec de commit ne doit jamais laisser le
+        // journal en mémoire pointer vers une entrée qui n'existe pas.
         let new_hash = Self::chain_hash(&entry).map_err(JournalError::Serialization)?;
-        *last_hash_lock = new_hash.clone();
-
         let cur_seq = *seq_lock;
-        *seq_lock += 1;
+        let next_seq = cur_seq + 1;
 
         let write_txn = self.db.begin_write().map_err(JournalError::Transaction)?;
         {
@@ -384,13 +384,19 @@ impl AuditJournal {
                 .open_table(META_TABLE)
                 .map_err(JournalError::Table)?;
             meta_table
-                .insert(b"seq".as_slice(), seq_lock.to_be_bytes().as_slice())
+                .insert(b"seq".as_slice(), next_seq.to_be_bytes().as_slice())
                 .map_err(JournalError::Storage)?;
             meta_table
                 .insert(b"last_hash".as_slice(), new_hash.as_slice())
                 .map_err(JournalError::Storage)?;
         }
         write_txn.commit().map_err(JournalError::Commit)?;
+
+        // Commit réussi : on peut publier les nouvelles ancres. Les verrous
+        // restent tenus jusqu'ici pour que toute lecture/écriture concurrente
+        // voie soit l'ancien état complet, soit le nouveau.
+        *last_hash_lock = new_hash;
+        *seq_lock = next_seq;
 
         // Maintient les index secondaires en mémoire.
         {

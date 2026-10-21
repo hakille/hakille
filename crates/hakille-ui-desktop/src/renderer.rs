@@ -28,6 +28,80 @@ pub enum GpuStatus {
     Failed(String),
 }
 
+/// Hauteur logique du panneau de consultation (HUD 64 px + contenu lisible).
+pub const CONSULT_HEIGHT: u32 = 360;
+
+/// Rôle visuel d'une ligne du panneau (jamais de couleur codée en dur par
+/// l'appelant : le thème reste la seule source).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsultLineKind {
+    Normal,
+    Muted,
+    Strong,
+    Error,
+    Braise,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultLine {
+    pub text: String,
+    pub kind: ConsultLineKind,
+}
+
+impl ConsultLine {
+    pub fn new(text: impl Into<String>, kind: ConsultLineKind) -> Self {
+        Self {
+            text: text.into(),
+            kind,
+        }
+    }
+}
+
+/// Contenu du panneau multi-ligne : journal, mémoire, statut ou réponse
+/// longue. Le renderer ne connaît aucun type métier, seulement du texte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsultView {
+    pub title: String,
+    pub subtitle: String,
+    pub lines: Vec<ConsultLine>,
+    pub footer: String,
+}
+
+/// Découpe un texte en lignes tenant dans `max_width` (mots, sauts `\n`
+/// préservés). Les mots trop longs sont laissés tels quels puis ellipsés au
+/// rendu — jamais de panne ni de dépassement.
+pub fn wrap_ui_text(text: &str, size: f32, max_width: f32) -> Vec<String> {
+    let max_width = max_width.max(1.0);
+    let mut out = Vec::new();
+    for paragraph in text.split('\n') {
+        if paragraph.trim().is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            let candidate = if line.is_empty() {
+                word.to_string()
+            } else {
+                format!("{line} {word}")
+            };
+            if line.is_empty() || measure_ui_text(&candidate, size) <= max_width {
+                line = candidate;
+            } else {
+                out.push(std::mem::take(&mut line));
+                line = word.to_string();
+            }
+        }
+        if !line.is_empty() {
+            out.push(line);
+        }
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
 /// Renderer logiciel — pixels CPU déterministes, golden tests.
 #[derive(Debug, Default)]
 pub struct SoftwareRenderer {
@@ -568,6 +642,137 @@ pub fn hud_scene(snap: &hakille_ui_model::StableSnapshot, theme_dark: bool) -> S
     s
 }
 
+/// Scène étendue : HUD 64 px conservé en haut + panneau de consultation
+/// multi-ligne (journal, mémoire, statut, réponse longue). Le panneau est
+/// volontairement lisible (14 px, interligne 20 px), jamais une ligne de
+/// 12 px tronquée.
+pub fn consult_scene(
+    snap: &hakille_ui_model::StableSnapshot,
+    view: &ConsultView,
+    theme_dark: bool,
+) -> Scene {
+    let p = hud_palette(theme_dark);
+    let grid = ty::LAYOUT_GRID_PT_BASE as f32;
+    let radius = ty::LAYOUT_RADIUS_CARD as f32;
+    let strong_weight = ty::TYPE_BODY_STRONG_WEIGHT as u16;
+    let w = HUD_WIDTH as f32;
+    let panel_top = HUD_HEIGHT as f32 + grid;
+    let panel = Rect::new(
+        grid,
+        panel_top,
+        w - 2.0 * grid,
+        CONSULT_HEIGHT as f32 - panel_top - grid,
+    )
+    .rounded(radius);
+
+    let mut s = hud_scene(snap, theme_dark);
+    s.height = CONSULT_HEIGHT;
+
+    // Ombre puis bordure 1 px et surface : même langage que le HUD.
+    s.shadow(
+        Rect::new(
+            panel.x + grid * 2.0,
+            panel.y + grid * 2.0,
+            (panel.w - grid * 4.0).max(0.0),
+            (panel.h - grid * 4.0).max(0.0),
+        ),
+        grid * 4.0,
+        Color::rgb(0, 0, 0).with_alpha(if theme_dark { 150 } else { 70 }),
+    );
+    s.fill(panel, Color::from_hex(p.line));
+    s.fill(
+        Rect::new(panel.x + 1.0, panel.y + 1.0, panel.w - 2.0, panel.h - 2.0)
+            .rounded((radius - 1.0).max(0.0)),
+        Color::from_hex(p.surface1),
+    );
+
+    let left = panel.x + grid * 2.0;
+    let right = panel.x + panel.w - grid * 2.0;
+    let text_width = (right - left).max(1.0);
+    let text1 = Color::from_hex(p.text1);
+    let text2 = Color::from_hex(p.text2);
+    let braise = Color::from_hex(p.braise);
+    let error = Color::from_hex(0xFF5A5A);
+
+    s.text_weighted(
+        left,
+        panel.y + 28.0,
+        18.0,
+        strong_weight,
+        text1,
+        ellipsize(&view.title, text_width, |t| {
+            measure_ui_text_weighted(t, 18.0, strong_weight)
+        }),
+    );
+    s.text(
+        left,
+        panel.y + 48.0,
+        12.0,
+        text2,
+        ellipsize(&view.subtitle, text_width, |t| measure_ui_text(t, 12.0)),
+    );
+    s.fill(
+        Rect::new(left, panel.y + 60.0, text_width, 1.0),
+        Color::from_hex(p.line),
+    );
+
+    let content_top = panel.y + 84.0;
+    let footer_y = panel.y + panel.h - 16.0;
+    let line_height = 20.0;
+    let max_lines = (((footer_y - 16.0 - content_top) / line_height).floor()).max(0.0) as usize;
+
+    let mut wrapped: Vec<ConsultLine> = Vec::new();
+    for line in &view.lines {
+        for text in wrap_ui_text(&line.text, 14.0, text_width) {
+            wrapped.push(ConsultLine {
+                text,
+                kind: line.kind,
+            });
+        }
+    }
+    let truncated = wrapped.len() > max_lines;
+    if truncated && max_lines > 0 {
+        wrapped.truncate(max_lines - 1);
+        wrapped.push(ConsultLine::new("…", ConsultLineKind::Muted));
+    } else {
+        wrapped.truncate(max_lines);
+    }
+
+    for (index, line) in wrapped.iter().enumerate() {
+        let color = match line.kind {
+            ConsultLineKind::Normal | ConsultLineKind::Strong => text1,
+            ConsultLineKind::Muted => text2,
+            ConsultLineKind::Error => error,
+            ConsultLineKind::Braise => braise,
+        };
+        let weight = if line.kind == ConsultLineKind::Strong {
+            strong_weight
+        } else {
+            WEIGHT_NORMAL
+        };
+        let text = ellipsize(&line.text, text_width, |t| {
+            measure_ui_text_weighted(t, 14.0, weight)
+        });
+        s.text_weighted(
+            left,
+            content_top + index as f32 * line_height + 14.0,
+            14.0,
+            weight,
+            color,
+            text,
+        );
+    }
+
+    s.text(
+        left,
+        footer_y,
+        11.0,
+        text2,
+        ellipsize(&view.footer, text_width, |t| measure_ui_text(t, 11.0)),
+    );
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,6 +985,73 @@ mod tests {
             assert!(v >= prev, "monotone");
             prev = v;
         }
+    }
+
+    #[test]
+    fn wrap_ui_text_respects_width_and_preserves_paragraphs() {
+        let text = "mot ".repeat(80) + "\n\nfin";
+        let lines = wrap_ui_text(&text, 14.0, 240.0);
+        assert!(lines.len() > 2);
+        for line in &lines {
+            if line.split_whitespace().count() > 1 {
+                assert!(
+                    measure_ui_text(line, 14.0) <= 240.0 + 0.01,
+                    "ligne trop large: {line:?}"
+                );
+            }
+        }
+        assert!(lines.iter().any(|line| line.is_empty()), "saut préservé");
+        assert_eq!(lines.last().map(String::as_str), Some("fin"));
+    }
+
+    #[test]
+    fn consult_scene_renders_360_panel_with_title_and_content() {
+        let snap = snapshot_with_state(2, false);
+        let view = ConsultView {
+            title: "Journal d'audit".into(),
+            subtitle: "3 entrées".into(),
+            lines: vec![
+                ConsultLine::new("CognitiveTurn · 2026-10-21", ConsultLineKind::Strong),
+                ConsultLine::new("Tour servi au HUD", ConsultLineKind::Normal),
+            ],
+            footer: "Échap fermer".into(),
+        };
+        let scene = consult_scene(&snap, &view, true);
+        assert_eq!(scene.height, CONSULT_HEIGHT);
+        assert_eq!(scene.width, HUD_WIDTH);
+        assert!(scene.cmds.iter().any(
+            |cmd| matches!(cmd, DrawCmd::GlyphRun { text, .. } if text.contains("Journal d'audit"))
+        ));
+        assert!(scene.cmds.iter().any(|cmd| matches!(
+            cmd,
+            DrawCmd::GlyphRun { text, .. } if text.contains("Tour servi au HUD")
+        )));
+        assert!(scene.cmds.iter().any(|cmd| matches!(
+            cmd,
+            DrawCmd::GlyphRun { text, .. } if text.contains("Échap fermer")
+        )));
+    }
+
+    #[test]
+    fn consult_scene_truncates_overflow_with_explicit_ellipsis() {
+        let snap = snapshot_with_state(0, false);
+        let view = ConsultView {
+            title: "Mémoire".into(),
+            subtitle: String::new(),
+            lines: (0..100)
+                .map(|i| ConsultLine::new(format!("fait numéro {i}"), ConsultLineKind::Normal))
+                .collect(),
+            footer: String::new(),
+        };
+        let scene = consult_scene(&snap, &view, true);
+        assert_eq!(scene.height, CONSULT_HEIGHT);
+        assert!(
+            scene
+                .cmds
+                .iter()
+                .any(|cmd| matches!(cmd, DrawCmd::GlyphRun { text, .. } if text == "…")),
+            "le contenu tronqué doit être signalé, jamais coupé en silence"
+        );
     }
 
     #[test]

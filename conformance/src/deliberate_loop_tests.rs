@@ -101,14 +101,9 @@ async fn test_deliberate_loop_irreversible_delete_card_en() {
     assert_eq!(res.confidence_decision, ConfidenceDecision::ProposeAndWait);
 }
 
-// TODO conformance-slow: assertion obsolète — la décision attendue
-// `InternalContradiction` exige que `InternalContradictionEngine::critique`
-// détecte « conserve » vs « supprime », mais l'orchestrateur critique la
-// RÉPONSE LLM (`critique(&response, ...)`, orchestrator.rs:1388) et non le
-// prompt : la réponse réelle Qwen (S1 greedy, 8 tokens) est un refus sans ce
-// vocabulaire, donc `has_contradiction=false` et la décision est honnêtement
-// redressée en `AutoExecute`. Vérifié en release le 2026-10-18 ; ne pas forcer
-// l'assertion (orchestrateur hors périmètre de cette passe budget/timeouts).
+// La critique couvre désormais le prompt ET la réponse : « Conserve » doit
+// être détecté face au fait mémorisé « supprime », même si Qwen répond un
+// refus générique. Test lent (décodage Qwen CPU réel).
 #[tokio::test]
 #[ignore = "slow: tour complet avec décodage Qwen CPU réel (minutes en debug) ; gate lente `-- --ignored`"]
 async fn test_deliberate_loop_fr_contradiction_penalty_applied() {

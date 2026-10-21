@@ -76,6 +76,7 @@ Le démon affiche les six étapes d'initialisation :
   Tier: Native
   Compute Backends: [Cuda, Vulkan, Cpu]
   Hardware Attestation: Windows-Substrate-Host (Valid)
+  NOTE: attestation is a local dev signature, NOT a TPM/VBS hardware proof (tracked work).
 
 [2/6] Loading Versioned Constitution & Security Primitives...
   Constitution Version: 1.0.0
@@ -86,13 +87,13 @@ Le démon affiche les six étapes d'initialisation :
   User Identity: 01a10ce2-402c-770c-be2b-daf41914e258 (Initialized)
   CRDT State: 0 tombstones, vector clock ready
 
-[4/6] Bootstrapping Perception Pipeline & Moshi Voice Engine...
+[4/6] Bootstrapping Inference Models & Cognitive Pipeline...
   Audio Pipeline: 16kHz continuous capture buffer ready
-  SenseVoice-Small: Multi-task transcription & acoustic events loaded
-  Moshi: Full-duplex speech-to-speech engine ready (160ms theoretical latency)
+  SenseVoice-Small: mel + LFR + forward ort + CTC greedy — real ASR, measured confidence
+  Voice/GUI: Mimi RVQ nearest-L2, TTS formantique Klatt, grounding CV — pas de Moshi neural ni de forward VLM
 
-[5/6] Spawning Sandboxed WASM Agent Registry...
-  Registered 5 reference WASM agents with strict Biscuit scopes
+[5/6] Registering Reference Agent Manifests...
+  Registered 5 reference agent manifests (scopes déclarés ; aucun binaire .wasm chargé ni exécuté)
 
 [6/6] Linking Cognitive Fabric & Orchestrator...
   Cognitive Fabric: System 1 / System 2 dynamic router online
@@ -109,7 +110,7 @@ hakille>
 ### Commandes Interactives Disponibles
 - `:status` : Vérifie l'état de présence (`Idle`, `Listening`, `Acting`), le tier actif et les dépenses courantes.
 - `:metrics` : Affiche les 3 métriques cardinales (Continuité, Respect d'initiative bornée, Généralité pratique) et l'audit de dérive éthique.
-- `:agents` : Affiche les agents WASM enregistrés et leurs restrictions de capabilities.
+- `:agents` : Affiche les manifests d'agents et leurs capabilities déclarées ; précise qu'aucun binaire `.wasm` n'est exécuté.
 - `:cost` : Affiche le montant cumulé consommé pour les inférences lourdes System 2.
 - `:help` : Affiche l'aide des commandes.
 - `:exit` : Décharge les modèles et clôture proprement le démon.

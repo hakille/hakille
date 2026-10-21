@@ -21,7 +21,7 @@ Inspiré des neurosciences cognitives (Kahneman) et adapté aux contraintes de s
                                             │
                      ┌──────────────────────┴──────────────────────┐
                      │ Complexité ≤ Seuil                          │ Complexité > Seuil
-                     ▼ (< 100 ms)                                  ▼ (< 1200 ms)
+                     ▼ (< 100 ms cible)                            ▼ (< 1200 ms cible)
         ┌──────────────────────────────┐              ┌──────────────────────────────┐
         │          SYSTÈME 1           │              │          SYSTÈME 2           │
         │ - Modèle local 3-7B / GGUF   │              │ - Raisonnement lourd / VLM   │
@@ -55,11 +55,11 @@ Pour préserver la fluidité de la conversation sans introduire de silences dér
 | **3. Transcription (ASR)** | SenseVoice-Small | **< 50 ms** | 80 ms |
 | **4. Diarisation & Biométrie** | Nemotron-3 + CAM++ | **< 25 ms** | 40 ms |
 | **5. Résolution Mémorielle** | redb SPO + recherche brute-force (HNSW non branché, `vector/edge.rs:22-34`) | **< 15 ms** | 30 ms |
-| **6. Raisonnement Système 1** | Qwen 7B Q4 / Candle | **< 100 ms** | 150 ms |
+| **6. Raisonnement Système 1** | Qwen 2.5 0.5B Q4 / Candle (7B = cible) | **< 100 ms (cible)** | 150 ms |
 | **7. Raisonnement Système 2** | Modèle Distant / BYOM | **< 1200 ms** | 2000 ms |
 | **8. Synthèse Vocale (TTS)** | Moshi (Mimi) / CosyVoice2 | **< 80-150 ms** | 200 ms |
 
-> Écart honnête : cette table vise les étages perceptifs ; le budget pipeline exécutable est `PipelineBudgetConfig` (perception 60 / routing 20 / inférence 100 / action 40 / total 220 ms, mapping `memory_extract|recall|context_record`→perception etc., `crates/hakille-kernel/src/budget.rs:14-24,54-68`).
+> Écart honnête : cette table est une **cible produit**, pas une mesure. Le budget pipeline exécutable est `PipelineBudgetConfig` (perception 60 / routing 20 / inférence 100 / action 40 / total 220 ms, mapping `memory_extract|recall|context_record`→perception etc., `crates/hakille-kernel/src/budget.rs:14-24,54-68`). Au démarrage, le démon l'aligne sur le timeout LLM (défaut 600 s) parce qu'un tour Qwen CPU réel dépasse largement 100 ms. Les budgets d'ASR/TTS ci-dessus ne sont pas garantis sur toutes les machines.
 
 ---
 

@@ -204,6 +204,38 @@ mod tests {
         let statuses = provisioner.list_all_status();
         assert_eq!(statuses.len(), catalog.len());
 
+        // Les tokenizers réels font partie du catalogue : sans eux, Qwen et
+        // MiniLM ne peuvent pas exécuter un forward, donc ils sont essentiels.
+        let qwen = catalog
+            .iter()
+            .find(|entry| entry.id == "qwen2.5-0.5b-instruct-q4km")
+            .expect("Qwen au catalogue");
+        let qwen_tok = qwen
+            .auxiliary_artifacts
+            .iter()
+            .find(|artifact| artifact.filename == "tokenizer.json")
+            .expect("tokenizer.json Qwen au catalogue");
+        assert!(qwen_tok.is_essential);
+        assert_eq!(
+            qwen_tok.sha256_checksum.as_deref(),
+            Some("c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539")
+        );
+
+        let minilm = catalog
+            .iter()
+            .find(|entry| entry.id == "all-minilm-l6-v2")
+            .expect("MiniLM au catalogue");
+        let minilm_tok = minilm
+            .auxiliary_artifacts
+            .iter()
+            .find(|artifact| artifact.filename == "minilm_tokenizer.json")
+            .expect("minilm_tokenizer.json au catalogue");
+        assert!(minilm_tok.is_essential);
+        assert_eq!(
+            minilm_tok.sha256_checksum.as_deref(),
+            Some("be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037")
+        );
+
         // Test SHA-256 verification utility
         let test_file = temp_dir.join("test_sha256.bin");
         let _ = std::fs::create_dir_all(&temp_dir);
@@ -236,10 +268,12 @@ mod tests {
         };
 
         // Le dossier `models/` est versionné avec seulement `.gitkeep` : sa
-        // présence ne suffit pas. On ne lance le test que si les 8 artefacts
-        // réels sont là, sinon on l'annonce explicitement et on passe.
+        // présence ne suffit pas. On ne lance le test que si les 10 artefacts
+        // réels (8 modèles + 2 tokenizers) sont là, sinon on l'annonce
+        // explicitement et on passe.
         let required = [
             "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            "tokenizer.json",
             "ui-tars-2b-sft-q4_k_m.gguf",
             "mimi_candle.safetensors",
             "tokens.txt",
@@ -247,6 +281,7 @@ mod tests {
             "silero_vad.onnx",
             "campplus_zh_en_16k_advanced.onnx",
             "all-minilm-l6-v2.onnx",
+            "minilm_tokenizer.json",
         ];
         if let Some(missing) = required
             .iter()

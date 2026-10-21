@@ -121,10 +121,17 @@ impl ModelCatalog {
                     sha256_checksum: Some("6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452".to_string()),
                     is_essential: true,
                 },
-                auxiliary_artifacts: vec![],
+                auxiliary_artifacts: vec![ModelArtifact {
+                    filename: "minilm_tokenizer.json".to_string(),
+                    primary_url: "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json".to_string(),
+                    fallback_url: None,
+                    size_bytes: 466_247,
+                    sha256_checksum: Some("be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037".to_string()),
+                    is_essential: true,
+                }],
                 expected_ram_mb: 90,
                 expected_vram_mb: 0,
-                description: "High-speed semantic embedding generation for KnowledgeGraph HNSW vector queries.".to_string(),
+                description: "384-dim sentence embeddings for sovereign memory recall (ONNX forward).".to_string(),
             },
 
             // 4. SenseVoice-Small INT8 (Front-End Multi-Task ASR)
@@ -176,10 +183,17 @@ impl ModelCatalog {
                     sha256_checksum: Some("74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db".to_string()),
                     is_essential: true,
                 },
-                auxiliary_artifacts: vec![],
+                auxiliary_artifacts: vec![ModelArtifact {
+                    filename: "tokenizer.json".to_string(),
+                    primary_url: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/tokenizer.json".to_string(),
+                    fallback_url: None,
+                    size_bytes: 7_031_645,
+                    sha256_checksum: Some("c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539".to_string()),
+                    is_essential: true,
+                }],
                 expected_ram_mb: 550,
                 expected_vram_mb: 500,
-                description: "Sub-100ms local reasoning engine for conversation turns and intention routing.".to_string(),
+                description: "Local Qwen 2.5 0.5B Q4_K_M GGUF reasoning via Candle; CPU latency is measured, never promised.".to_string(),
             },
 
             // 6. UI-TARS 2B SFT Q4_K_M (GUI Computer-Use Agent)
@@ -202,7 +216,7 @@ impl ModelCatalog {
                 auxiliary_artifacts: vec![],
                 expected_ram_mb: 1_800,
                 expected_vram_mb: 1_600,
-                description: "Vision-Language-Action agent for direct desktop and mobile GUI interaction without OS hooks.".to_string(),
+                description: "UI-TARS GGUF inspected locally; no VLM forward is wired yet (GUI actions use classical vision).".to_string(),
             },
 
             // 7. Kyutai Mimi Streaming Neural Codec (Candle Native S2S)
@@ -225,7 +239,7 @@ impl ModelCatalog {
                 auxiliary_artifacts: vec![],
                 expected_ram_mb: 450,
                 expected_vram_mb: 400,
-                description: "24kHz causal streaming neural audio codec running natively in pure Rust via Candle.".to_string(),
+                description: "Mimi RVQ codebooks with deterministic projection; neural encoder/decoder not wired yet.".to_string(),
             },
         ]
     }
