@@ -109,10 +109,23 @@ mod tests {
             "Display dimensions must be positive integers"
         );
 
-        let capture = WindowsScreenCapturer::capture_primary_display();
-        assert_eq!(capture.width, w as u32);
-        assert_eq!(capture.height, h as u32);
-        assert_eq!(capture.data.len(), (w * h * 4) as usize);
+        // HONNÊTETÉ : une capture impossible est un ÉCHEC EXPLICITE, jamais
+        // une frame fabriquée. Le test accepte donc les deux issues
+        // honnêtes : capture réelle, ou refus documenté.
+        match WindowsScreenCapturer::capture_primary_display() {
+            Ok(capture) => {
+                assert_eq!(capture.width, w as u32);
+                assert_eq!(capture.height, h as u32);
+                assert_eq!(capture.data.len(), (w * h * 4) as usize);
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("capture d'écran"),
+                    "refus explicite attendu, obtenu : {msg}"
+                );
+            }
+        }
 
         // Test input injection
         let click = InputAction::Click {

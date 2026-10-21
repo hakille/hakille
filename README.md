@@ -9,7 +9,7 @@
 
 [![Rust Version](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](.github/workflows/ci.yml)
-[![Conformance](https://img.shields.io/badge/conformance-66%20fast%20%2B7%20slow%20ignored-yellow.svg)](.github/workflows/ci.yml)
+[![Conformance](https://img.shields.io/badge/conformance-66%20fast%20%2B12%20slow%20ignored-yellow.svg)](.github/workflows/ci.yml)
 [![Security](https://img.shields.io/badge/security-Biscuit%20Capabilities-red.svg)]()
 [![No Python](https://img.shields.io/badge/python-0%25%20(Pure%20Rust)-purple.svg)]()
 
@@ -105,7 +105,7 @@ Hakille n'est ni une application de chat, ni un wrapper d'API, ni un agent promp
 
 ## 📦 Structure du Workspace (31 Crates + 5 Agents + Conformance)
 
-Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agents WASM de référence réellement exécutés**, **5 manifests métier déclaratifs**, une suite de conformité exhaustive (73 tests : 66 fast + 7 slow ignorés, voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
+Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agents WASM de référence réellement exécutés**, **5 manifests métier déclaratifs**, une suite de conformité exhaustive (78 tests : 66 fast + 12 slow ignorés — 7 dans `conformance`, 5 dans `hakille-kernel` — voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
 
 ### 1. Fondations & Substrates OS
 - [`hakille-core`](crates/hakille-core) : Primitives cryptographiques (Ed25519, ChaCha20Poly1305), jetons Biscuit, types temporels, bus de messages typés (`Message`) et niveaux de confiance (`TrustLevel`).
@@ -199,7 +199,7 @@ cargo check --workspace
 # Exécuter l'intégralité des tests unitaires et d'intégration
 cargo test --workspace
 
-# Exécuter la suite de conformité formelle (73 tests : 66 fast verts + 7 slow ignorés, voir CI)
+# Exécuter la suite de conformité formelle (78 tests : 66 fast verts + 12 slow ignorés, voir CI)
 cargo xtask conformance
 # Gate lente hebdo (décodage Qwen CPU réel) :
 cargo xtask conformance-slow
@@ -234,10 +234,20 @@ Le flux de décision est implémenté et a été rejoué en smoke IPC local puis
 1. le démon reçoit un prompt irréversible (`transférer 25 EUR à Awa`, `supprime /vfs/notes.txt`, etc.) ;
 2. le noyau produit un **plan sec** (`Plan/Dry-run`, zéro exécution) ;
 3. le démon répond `HudReply`, puis `Presence(DecisionRequired)` et `ShowCard` avec une carte réelle (coût, sortie de données, réversibilité, provenance) ;
-4. le desktop ouvre le panneau 720×360. `Entrée` maintenue **600 ms** approuve, `R` refuse, `Échap` masque sans décider ; les nœuds AccessKit 40/41/42 valent décision explicite ;
+4. le desktop ouvre le panneau 720×360. `Entrée` maintenue **600 ms** approuve, `R` refuse, `Échap` masque sans décider ; les nœuds AccessKit 40/41/42 valent décision explicite ; **les trois boutons de la carte sont cliquables à la souris** (maintien 600 ms conservé pour une carte définitive) ;
 5. chaque proposition (`ActionCardProposed`), approbation (`ActionCardApproved`) ou refus (`ActionCardRejected`) est auditée avant l'accusé `CardDecisionAck`.
 
-Limites explicites : **une approbation n'exécute encore aucune action métier** ; elle enregistre seulement une décision auditée. Les boutons visuels ne sont pas cliquables à la souris en v1 : le clavier est le chemin réellement exercé en GUI, et AccessKit est couvert par l'arbre et les tests unitaires mais pas encore validé avec un lecteur d'écran réel. La carte n'est retirée qu'après l'accusé d'audit ; si l'audit échoue, elle reste en attente.
+Limites explicites : **une approbation n'exécute encore aucune action métier** ; elle enregistre seulement une décision auditée. AccessKit est couvert par l'arbre et les tests unitaires mais pas encore validé avec un lecteur d'écran réel. La carte n'est retirée qu'après l'accusé d'audit ; si l'audit échoue, elle reste en attente.
+
+### Fenêtre desktop : fond transparent et déplaçable
+
+- Le fond n'est **plus un rectangle noir** : sous Windows, la fenêtre est passée en couche Win32 (`WS_EX_LAYERED` + clé couleur) et le fond peint (`0x010101`) devient réellement transparent — le bureau transparaît. Sur les autres plateformes, le fond reste opaque : la limite est **annoncée** (`SMOKE transparency=...`), jamais un noir silencieux.
+- La fenêtre est **déplaçable à la souris** : glisser la barre du HUD (ou l'en-tête du panneau) déplace la fenêtre. Pendant une décision de carte, seule la barre du HUD et l'en-tête restent déplaçables — jamais les boutons.
+- Pendant un tour, le HUD affiche l'attente **avec le temps réel écoulé** (« En attente de réponse du démon… Ns ») et la saisie est verrouillée : pas de second tour concurrent.
+
+### Voix : timeline de visèmes (approximation documentée)
+
+`hakille-voice` expose désormais `FormantStream::viseme_timeline()` : une timeline de **visèmes phonémiques** (A, E, I, O, U, M/B/P, F/V, L, neutre, silence) dérivée de la **source phonémique réelle** du TTS formantique. C'est une approximation documentée (la coarticulation n'est pas modélisée), **pas** du lip-sync image par image ; l'invariant « somme des durées == durée de l'audio » est vérifié par test, donc la timeline ne peut pas diverger du son.
 
 ```bash
 # Vérifier les cartes sans lancer l'interface graphique
@@ -290,7 +300,7 @@ Pour explorer chaque sous-système en profondeur, consultez les guides dédiés 
 - 🤖 [**Modèles Fondations & Runtimes d'Inférence**](docs/MODELS.md) : Spécifications des 7 modèles, parseurs binaires GGUF v3 / Safetensors / ONNX et registre LRU VRAM.
 - 🛡️ [**Sécurité, Capabilities & Gouvernance**](docs/SECURITY_AND_GOVERNANCE.md) : Jetons Biscuit, Registre de Consentement, Journal chaîné Ed25519, Constitution et Anti-Spoofing.
 - 👁️ [**Interfaces Ambiantes & Perception**](docs/INTERFACES_AND_PERCEPTION.md) : Présence discrète, HUD Spotlight éphémère, Sélecteur de Canal, Budget de Silence, World Model et moteur vocal duplex (RVQ/VAD v1).
-- [**Guide du Développeur & Manuel d'Ingénierie**](docs/DEVELOPER_GUIDE.md) : Guide pas à pas de compilation, suite de conformance 66 fast + 7 slow, commandes CLI REPL et état réel du runtime d'agents (2 agents de référence exécutés, 5 manifests métier déclaratifs).
+- [**Guide du Développeur & Manuel d'Ingénierie**](docs/DEVELOPER_GUIDE.md) : Guide pas à pas de compilation, suite de conformance 66 fast + 12 slow, commandes CLI REPL et état réel du runtime d'agents (2 agents de référence exécutés, 5 manifests métier déclaratifs).
 - 📋 [**Index des Décisions d'Architecture (ADRs)**](adr/) : Historique et justifications des choix techniques fondamentaux.
 
 ---

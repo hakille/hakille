@@ -81,10 +81,15 @@ impl From<KernelToUi> for KernelEvent {
                 card_id,
                 approved,
                 audit_id,
+                effect,
             } => Self::Toast {
                 text: format!(
-                    "carte #{card_id} {} — décision auditée [{audit_id}] (aucun effet métier)",
-                    if approved { "approuvée" } else { "refusée" }
+                    "carte #{card_id} {} — décision auditée [{audit_id}]{}",
+                    if approved { "approuvée" } else { "refusée" },
+                    match effect {
+                        Some(e) => format!(" — {e}"),
+                        None => " (aucun effet)".to_string(),
+                    }
                 ),
             },
         }

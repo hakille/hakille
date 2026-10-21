@@ -567,7 +567,7 @@ impl Substrate for WindowsSubstrate {
             hakille_core::CapabilityAction::Read,
         )?;
         // Real screen capture using native Win32 GDI APIs
-        Ok(WindowsScreenCapturer::capture_primary_display())
+        WindowsScreenCapturer::capture_primary_display()
     }
 
     async fn inject_input(&self, action: InputAction, cap: &CapabilityToken) -> Result<()> {

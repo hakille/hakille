@@ -2,11 +2,13 @@ pub mod barge_in;
 pub mod codec;
 pub mod moshi;
 pub mod tts;
+pub mod viseme;
 
 pub use barge_in::*;
 pub use codec::*;
 pub use moshi::*;
 pub use tts::*;
+pub use viseme::*;
 
 #[cfg(test)]
 mod tests {

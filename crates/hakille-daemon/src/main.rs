@@ -149,6 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let progress = Some(make_cli_progress_callback());
 
+                let mut failures: Vec<String> = Vec::new();
                 if let Some(mut model_id) = target_model_id {
                     // Match exact id or fuzzy/prefix against catalog
                     if provisioner.catalog().iter().all(|m| m.id != model_id)
@@ -168,7 +169,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             model_id,
                             path.display()
                         ),
-                        Err(e) => eprintln!("✗ Failed to provision '{}': {}", model_id, e),
+                        Err(e) => {
+                            eprintln!("✗ Failed to provision '{}': {}", model_id, e);
+                            failures.push(model_id);
+                        }
                     }
                 } else if let Some(tier) = target_tier {
                     println!("\n[Provisioning Tier: {:?}]", tier);
@@ -179,7 +183,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!();
                         match res {
                             Ok(path) => println!("✓ Installed: {}", path.display()),
-                            Err(e) => eprintln!("✗ Failed for {}: {}", m.id, e),
+                            Err(e) => {
+                                eprintln!("✗ Failed for {}: {}", m.id, e);
+                                failures.push(m.id.clone());
+                            }
                         }
                     }
                 } else {
@@ -190,9 +197,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!();
                         match res {
                             Ok(path) => println!("✓ Installed: {}", path.display()),
-                            Err(e) => eprintln!("✗ Failed for {}: {}", m.id, e),
+                            Err(e) => {
+                                eprintln!("✗ Failed for {}: {}", m.id, e);
+                                failures.push(m.id.clone());
+                            }
                         }
                     }
+                }
+                // ÉCHEC EXPLICITE : un téléchargement raté doit faire
+                // ÉCHOUER le processus (une CI qui « passe » sans modèle
+                // ne testerait rien — succès simulé).
+                if !failures.is_empty() {
+                    return Err(format!(
+                        "provisionnement incomplet : {} modèle(s) en échec : {}",
+                        failures.len(),
+                        failures.join(", ")
+                    )
+                    .into());
                 }
                 return Ok(());
             }
@@ -202,6 +223,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  Directory: {}", provisioner.cache_dir().display());
                 println!("============================================================");
 
+                let mut corrupted: Vec<String> = Vec::new();
                 let statuses = provisioner.list_all_status();
                 for s in statuses {
                     if !s.is_installed {
@@ -211,10 +233,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match provisioner.verify_integrity(&s.entry) {
                         Ok(true) => println!("• {:<28} [INTEGRITY OK - Hash Verified]", s.entry.id),
                         Ok(false) => {
-                            println!("• {:<28} [CORRUPTED OR CHECKSUM MISMATCH]", s.entry.id)
+                            println!("• {:<28} [CORRUPTED OR CHECKSUM MISMATCH]", s.entry.id);
+                            corrupted.push(s.entry.id.clone());
                         }
-                        Err(e) => println!("• {:<28} [VERIFICATION ERROR: {}]", s.entry.id, e),
+                        Err(e) => {
+                            println!("• {:<28} [VERIFICATION ERROR: {}]", s.entry.id, e);
+                            corrupted.push(s.entry.id.clone());
+                        }
                     }
+                }
+                // ÉCHEC EXPLICITE : un artefact corrompu doit faire ÉCHOUER
+                // le processus, jamais passer inaperçu.
+                if !corrupted.is_empty() {
+                    return Err(format!(
+                        "intégrité vérifiée : {} artefact(s) corrompu(s) : {}",
+                        corrupted.len(),
+                        corrupted.join(", ")
+                    )
+                    .into());
                 }
                 return Ok(());
             }
@@ -419,7 +455,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // F3 : la clé racine de capabilities est épinglée dès la construction.
     // Sans cela, `revert_with_cap` refuse (fail-closed) et l'audit ne peut
     // pas vérifier les tokens au point d'effet.
-    let audit_journal = AuditJournal::new_with_root(
+    let mut audit_journal = AuditJournal::new_with_root(
         journal_path_str,
         signing_keypair.signing_key.clone(),
         authority.root_public_key(),
@@ -856,8 +892,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut continuity_tracker,
             &mut bounded_initiative,
             &mut generality_tracker,
-            &audit_journal,
+            &mut audit_journal,
             &memory_snapshot,
+            &mut outbox,
+            &data_dir,
         )
         .await;
     }
@@ -1713,32 +1751,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "Intentions GUI ancrées sur capture réelle (vision classique ; VLM non exécuté) pour tâche : '{}'...",
                     task
                 );
-                // Ancrage fail-closed : capture réelle → régions mesurées →
-                // intentions. Sans région mesurée, `predict_grounded_on_frame`
-                // renvoie Wait (aucun clic inventé au centre de l'écran).
-                let capture = WindowsScreenCapturer::capture_primary_display();
-                let (screen_w, screen_h) = (capture.width, capture.height);
-                let intentions = match gui_agent.predict_grounded_on_frame(
-                    task,
-                    &capture.data,
-                    screen_w,
-                    screen_h,
-                ) {
-                    Ok(intentions) => intentions,
-                    Err(e) => {
-                        eprintln!("  Ancrage impossible : {e} — aucune action exécutée.");
-                        Vec::new()
-                    }
-                };
-                println!("  Predicted {} GUI intentions:", intentions.len());
-                for (i, intent) in intentions.iter().enumerate() {
-                    println!("    {}. {:?}", i + 1, intent);
-                    match gui_agent
-                        .execute_intention(&substrate, intent, &gui_input_cap, screen_w, screen_h)
-                        .await
-                    {
-                        Ok(msg) => println!("       -> Succès: {}", msg),
-                        Err(e) => eprintln!("       -> Échec: {}", e),
+                // Ancrage fail-closed : capture RÉELLE → régions mesurées →
+                // intentions. Sans capture (écran indisponible), aucune
+                // intention n'est produite et rien n'est exécuté — le REPL,
+                // lui, reste vivant.
+                'gui_action: {
+                    let capture = match WindowsScreenCapturer::capture_primary_display() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!(
+                                "  Capture d'écran impossible : {e} — aucune action exécutée."
+                            );
+                            break 'gui_action;
+                        }
+                    };
+                    let (screen_w, screen_h) = (capture.width, capture.height);
+                    let intentions = match gui_agent.predict_grounded_on_frame(
+                        task,
+                        &capture.data,
+                        screen_w,
+                        screen_h,
+                    ) {
+                        Ok(intentions) => intentions,
+                        Err(e) => {
+                            eprintln!("  Ancrage impossible : {e} — aucune action exécutée.");
+                            Vec::new()
+                        }
+                    };
+                    println!("  Predicted {} GUI intentions:", intentions.len());
+                    for (i, intent) in intentions.iter().enumerate() {
+                        println!("    {}. {:?}", i + 1, intent);
+                        match gui_agent
+                            .execute_intention(
+                                &substrate,
+                                intent,
+                                &gui_input_cap,
+                                screen_w,
+                                screen_h,
+                            )
+                            .await
+                        {
+                            Ok(msg) => println!("       -> Succès: {}", msg),
+                            Err(e) => eprintln!("       -> Échec: {}", e),
+                        }
                     }
                 }
             }
@@ -3285,7 +3340,8 @@ fn load_outbox(data_dir: &std::path::Path) -> Outbox {
     outbox
 }
 
-fn save_outbox(data_dir: &std::path::Path, outbox: &Outbox) {
+/// Persiste la file d'envoi (snapshot JSON pretty, écriture atomique).
+pub(crate) fn save_outbox(data_dir: &std::path::Path, outbox: &Outbox) {
     let path = outbox_file_path(data_dir);
     match serde_json::to_vec_pretty(outbox.list()) {
         Ok(json) => {

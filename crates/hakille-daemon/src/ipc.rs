@@ -18,6 +18,7 @@ use hakille_audit::journal::AuditJournal;
 use hakille_ipc::{ErrorCode, Frame, FrameBody};
 use hakille_kernel::orchestrator::{ActionCardPreview, CognitiveOrchestrator};
 use hakille_metrics::{BoundedInitiativeTracker, ContinuityTracker, GeneralityTracker};
+use hakille_sync::{Outbox, OutboxEntry};
 use hakille_ui::{CostCounter, MemoryViewerPanel, PresenceIndicator};
 use hakille_ui_protocol::{
     ActionCard, DataExit, JournalEntryDto, KernelToUi, MemoryRowDto, Money, Provenance, StatusDto,
@@ -25,7 +26,8 @@ use hakille_ui_protocol::{
 };
 
 use crate::{
-    audit_action_with_id, audit_memory_event, persist_memory_to, run_turn_core, turn_error_hint,
+    audit_action_with_id, audit_memory_event, persist_memory_to, run_turn_core, save_outbox,
+    turn_error_hint,
 };
 
 /// Plafond de lignes renvoyées par consultation (marge sous `MAX_FRAME_BYTES`
@@ -146,11 +148,18 @@ fn card_from_preview(id: u64, preview: ActionCardPreview) -> ActionCard {
 
 /// Décision de carte : l'audit signé est écrit AVANT le retrait de la carte
 /// et avant l'accusé. En cas d'échec d'audit, la carte reste en attente et le
-/// HUD reçoit un refus explicite. Aucun effet métier n'est exécuté ici : le
-/// plan reste sec, ce que l'accusé rappelle.
+/// HUD reçoit un refus explicite.
+///
+/// EFFET RÉEL : une carte **approuvée** est mise en file dans l'outbox
+/// durable (`<data_dir>/outbox.json`, file idempotente et revalidable). Ce
+/// n'est PAS une exécution métier — les agents métier ne sont pas encore
+/// exécutables — mais c'est un effet durable, visible (`:outbox`) et audité,
+/// au lieu d'un « aucun effet » muet. Le refus, lui, ne produit aucun effet.
 fn decide_card(
     pending_cards: &mut HashMap<u64, ActionCard>,
     audit_journal: &AuditJournal,
+    outbox: &mut Outbox,
+    data_dir: &std::path::Path,
     card_id: u64,
     approved: bool,
 ) -> KernelToUi {
@@ -165,8 +174,37 @@ fn decide_card(
         "ActionCardRejected"
     };
     let verb = if approved { "approuvée" } else { "refusée" };
+
+    // Effet réel, calculé AVANT l'audit : l'entrée de journal doit décrire ce
+    // qui a réellement eu lieu, pas une intention.
+    let (effect_kind, effect_detail) = if approved {
+        let dedup_key = format!(
+            "card#{}|{}|{}",
+            card.id,
+            card.verb.to_lowercase(),
+            card.object.to_lowercase()
+        );
+        let entry = OutboxEntry::new(&card.verb, &card.object, &dedup_key);
+        let added = outbox.enqueue(entry);
+        if added {
+            // Persistance crash-safe : l'effet doit survivre au redémarrage.
+            save_outbox(data_dir, outbox);
+            (
+                "outbox_enqueued",
+                Some(format!("action mise en file (clé {dedup_key})")),
+            )
+        } else {
+            (
+                "outbox_already_queued",
+                Some(format!("action déjà en file (clé {dedup_key})")),
+            )
+        }
+    } else {
+        ("none", None)
+    };
+
     let description = format!(
-        "Carte #{} {verb} : {} {} (plan sec, aucune exécution)",
+        "Carte #{} {verb} : {} {} (effet : {effect_kind})",
         card.id, card.verb, card.object
     );
     match audit_action_with_id(
@@ -178,7 +216,7 @@ fn decide_card(
             "verb": card.verb,
             "object": card.object,
             "reversible": card.reversible,
-            "effect": "none",
+            "effect": effect_kind,
         }),
         false,
     ) {
@@ -188,11 +226,26 @@ fn decide_card(
                 card_id,
                 approved,
                 audit_id,
+                effect: effect_detail,
             }
         }
-        Err(e) => KernelToUi::Toast {
-            text: format!("décision refusée — audit indisponible: {e}"),
-        },
+        Err(e) => {
+            // L'audit a échoué : on ANNULE l'effet mis en file (la décision
+            // n'est pas validée, donc rien ne doit être durable).
+            if approved {
+                let dedup_key = format!(
+                    "card#{}|{}|{}",
+                    card.id,
+                    card.verb.to_lowercase(),
+                    card.object.to_lowercase()
+                );
+                outbox.remove(&dedup_key);
+                save_outbox(data_dir, outbox);
+            }
+            KernelToUi::Toast {
+                text: format!("décision refusée — audit indisponible: {e}"),
+            }
+        }
     }
 }
 
@@ -207,8 +260,10 @@ pub async fn run_serve(
     continuity_tracker: &mut ContinuityTracker,
     bounded_initiative: &mut BoundedInitiativeTracker,
     generality_tracker: &mut GeneralityTracker,
-    audit_journal: &AuditJournal,
+    audit_journal: &mut AuditJournal,
     memory_path: &std::path::Path,
+    outbox: &mut Outbox,
+    data_dir: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = hakille_ipc::transport::default_endpoint();
     let token_path = hakille_ipc::transport::default_token_path();
@@ -255,6 +310,8 @@ pub async fn run_serve(
             generality_tracker,
             audit_journal,
             memory_path,
+            outbox,
+            data_dir,
             &mut pending_cards,
             &mut next_card_id,
         )
@@ -274,8 +331,10 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     continuity_tracker: &mut ContinuityTracker,
     bounded_initiative: &mut BoundedInitiativeTracker,
     generality_tracker: &mut GeneralityTracker,
-    audit_journal: &AuditJournal,
+    audit_journal: &mut AuditJournal,
     memory_path: &std::path::Path,
+    outbox: &mut Outbox,
+    data_dir: &std::path::Path,
     pending_cards: &mut HashMap<u64, ActionCard>,
     next_card_id: &mut u64,
 ) {
@@ -438,12 +497,22 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
             FrameBody::Request {
                 message: UiToKernel::Approve { card_id },
             } => {
-                let reply = decide_card(pending_cards, audit_journal, card_id, true);
+                let reply = decide_card(
+                    pending_cards,
+                    audit_journal,
+                    outbox,
+                    data_dir,
+                    card_id,
+                    true,
+                );
                 match &reply {
-                    KernelToUi::CardDecisionAck { audit_id, .. } => {
+                    KernelToUi::CardDecisionAck {
+                        audit_id, effect, ..
+                    } => {
                         presence.set_state(hakille_ui::PresenceState::Idle);
                         println!(
-                            "IPC: carte #{card_id} approuvée — décision auditée [{audit_id}] (aucune exécution)"
+                            "IPC: carte #{card_id} approuvée — décision auditée [{audit_id}] — {}",
+                            effect.as_deref().unwrap_or("aucun effet")
                         );
                     }
                     KernelToUi::Toast { text } => {
@@ -456,12 +525,19 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
             FrameBody::Request {
                 message: UiToKernel::Reject { card_id },
             } => {
-                let reply = decide_card(pending_cards, audit_journal, card_id, false);
+                let reply = decide_card(
+                    pending_cards,
+                    audit_journal,
+                    outbox,
+                    data_dir,
+                    card_id,
+                    false,
+                );
                 match &reply {
                     KernelToUi::CardDecisionAck { audit_id, .. } => {
                         presence.set_state(hakille_ui::PresenceState::Idle);
                         println!(
-                            "IPC: carte #{card_id} refusée — décision auditée [{audit_id}] (aucune exécution)"
+                            "IPC: carte #{card_id} refusée — décision auditée [{audit_id}] (aucun effet)"
                         );
                     }
                     KernelToUi::Toast { text } => {
@@ -753,6 +829,104 @@ mod tests {
         let ghost = recall_rows(&graph, &["inconnu".to_string()], 10);
         assert_eq!(ghost[0].id, "", "jamais d'id inventé");
         assert_eq!(ghost[0].source, "recall");
+    }
+
+    #[test]
+    fn approved_card_produces_a_real_durable_effect_and_audits_it() {
+        use ed25519_dalek::SigningKey;
+
+        let dir = std::env::temp_dir().join(format!("hakille_card_{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).expect("dossier de test");
+        let db_path = dir.join("audit.redb");
+        let journal = AuditJournal::new(
+            db_path.to_str().expect("chemin utf8"),
+            SigningKey::from_bytes(&[7u8; 32]),
+        )
+        .expect("journal de test");
+
+        let mut cards: HashMap<u64, ActionCard> = HashMap::new();
+        cards.insert(
+            42,
+            ActionCard {
+                id: 42,
+                verb: "Transférer".into(),
+                object: "25 EUR à Awa".into(),
+                reason: "demande explicite".into(),
+                cost: Money::from_cents(2500, "EUR"),
+                data_exit: DataExit::Local,
+                reversible: false,
+                provenance: Provenance::Hakille,
+            },
+        );
+        let mut outbox = Outbox::new();
+
+        let reply = decide_card(&mut cards, &journal, &mut outbox, &dir, 42, true);
+        let KernelToUi::CardDecisionAck {
+            approved,
+            audit_id,
+            effect,
+            ..
+        } = reply
+        else {
+            panic!("un accusé audité est attendu, pas un refus");
+        };
+        assert!(approved);
+        assert!(!audit_id.is_empty(), "UUID d'audit réel");
+
+        // EFFET RÉEL : l'action approuvée est en file, durable et idempotente.
+        assert_eq!(outbox.len(), 1, "l'action approuvée est en file");
+        let entry = &outbox.list()[0];
+        assert_eq!(entry.verb, "Transférer");
+        assert!(entry.dedup_key.contains("card#42"));
+        assert!(
+            effect
+                .as_deref()
+                .unwrap_or_default()
+                .contains("mise en file"),
+            "l'accusé rapporte l'effet réel : {effect:?}"
+        );
+        // Persistance : le fichier d'envoi existe et contient l'entrée.
+        let outbox_file = dir.join("outbox.json");
+        assert!(outbox_file.is_file(), "effet durable sur disque");
+        let persisted = std::fs::read_to_string(&outbox_file).expect("lecture outbox");
+        assert!(persisted.contains("Transférer"), "entrée persistée");
+
+        // L'AUDIT décrit l'effet réel (pas un "aucun effet" mensonger).
+        let entries = journal.all_entries().expect("entrées d'audit");
+        let approved_entry = entries
+            .iter()
+            .find(|e| e.action.action_type == "ActionCardApproved")
+            .expect("entrée d'approbation");
+        assert_eq!(
+            approved_entry.action.parameters.get("effect"),
+            Some(&serde_json::json!("outbox_enqueued"))
+        );
+        let audit_id_debug = format!("{:?}", approved_entry.id);
+        assert!(
+            audit_id_debug.contains(&audit_id),
+            "l'accusé porte l'identifiant réel de l'entrée auditée : {audit_id_debug} vs {audit_id}"
+        );
+
+        // Refus : AUCUN effet, et l'audit le dit.
+        cards.insert(
+            43,
+            ActionCard {
+                id: 43,
+                verb: "Supprimer".into(),
+                object: "/vfs/notes.txt".into(),
+                reason: "irréversible".into(),
+                cost: Money::from_cents(0, "EUR"),
+                data_exit: DataExit::Local,
+                reversible: false,
+                provenance: Provenance::Hakille,
+            },
+        );
+        let reply = decide_card(&mut cards, &journal, &mut outbox, &dir, 43, false);
+        let KernelToUi::CardDecisionAck { effect, .. } = reply else {
+            panic!("un accusé de refus est attendu");
+        };
+        assert!(effect.is_none(), "un refus ne produit aucun effet");
+        assert_eq!(outbox.len(), 1, "la file n'a pas changé");
     }
 
     #[test]

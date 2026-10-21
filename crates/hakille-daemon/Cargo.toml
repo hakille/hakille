@@ -44,3 +44,8 @@ bytes = { workspace = true }
 async-trait = { workspace = true }
 tempfile = "3"
 sha2 = { workspace = true }
+
+[dev-dependencies]
+# Clé de signature de test pour le journal d'audit (aucune clé réelle n'est
+# versionnée : la clé de test est un motif fixe, sans valeur de production).
+ed25519-dalek = { workspace = true }

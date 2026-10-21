@@ -54,6 +54,14 @@ impl Rect {
         self.radius = r;
         self
     }
+
+    /// `true` si le point (x, y) est à l'intérieur du rectangle.
+    ///
+    /// Utilisé par le hit-test souris du desktop (boutons de carte) : les
+    /// bornes sont exclusives à droite et en bas, comme un pixel.
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
+    }
 }
 
 /// Graisse normale — miroir de `hakille_design::generated::ty::TYPE_BODY_WEIGHT`.

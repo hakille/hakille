@@ -193,11 +193,16 @@ pub enum KernelToUi {
     },
     /// Accusé d'une décision de carte : la décision a été auditée avant
     /// l'accusé. `audit_id` est l'identifiant réel de l'entrée de journal.
-    /// Aucun effet métier n'est impliqué par ce message.
+    /// `effect` décrit l'effet RÉEL produit par la décision (ex. mise en file
+    /// durable) ; `None` = aucun effet. Aucun effet métier n'est impliqué
+    /// par ce message : le champ ne fait que rapporter ce que le noyau a
+    /// réellement fait, jamais une promesse.
     CardDecisionAck {
         card_id: u64,
         approved: bool,
         audit_id: String,
+        #[serde(default)]
+        effect: Option<String>,
     },
 }
 
@@ -395,6 +400,7 @@ mod tests {
                 card_id: 7,
                 approved: true,
                 audit_id: "018f0000-0000-7000-8000-000000000004".into(),
+                effect: Some("action mise en file".into()),
             },
         ];
         for r in replies {
