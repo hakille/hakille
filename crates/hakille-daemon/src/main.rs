@@ -629,47 +629,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 5. Initialize Action Agents Layer
     println!("\n[5/6] Registering Agent Manifests & WASM Runtime...");
     let mut agent_registry = AgentRegistry::new();
-    let declarative_business_agents = [
+    // Les manifestes sont chargés depuis les FICHIERS RÉELS des crates
+    // `agents/*` (inclus à la compilation) : une divergence entre le dépôt et
+    // le binaire est impossible, et un manifeste invalide fait échouer le boot
+    // au lieu d'être remplacé par une valeur codée en dur.
+    const BUSINESS_MANIFESTS: [(&str, &str); 5] = [
         (
-            "agent-mail",
-            "Mail Agent",
-            vec![CapabilityScope::Network, CapabilityScope::Filesystem],
+            "agents/mail/agent.toml",
+            include_str!("../../../agents/mail/agent.toml"),
         ),
         (
-            "agent-calendar",
-            "Calendar Agent",
-            vec![CapabilityScope::Filesystem],
+            "agents/calendar/agent.toml",
+            include_str!("../../../agents/calendar/agent.toml"),
         ),
         (
-            "agent-code",
-            "Code Agent",
-            vec![CapabilityScope::Filesystem],
+            "agents/code/agent.toml",
+            include_str!("../../../agents/code/agent.toml"),
         ),
         (
-            "agent-home",
-            "Smart Home Agent",
-            vec![CapabilityScope::Network, CapabilityScope::Sensor],
+            "agents/home/agent.toml",
+            include_str!("../../../agents/home/agent.toml"),
         ),
         (
-            "agent-wallet-readonly",
-            "Wallet ReadOnly",
-            vec![CapabilityScope::Wallet],
+            "agents/wallet-readonly/agent.toml",
+            include_str!("../../../agents/wallet-readonly/agent.toml"),
         ),
     ];
-    for (id, name, caps) in declarative_business_agents {
-        agent_registry.register(AgentManifest {
-            id: id.to_string(),
-            name: name.to_string(),
-            version: "0.1.0".to_string(),
-            description: format!(
-                "Declarative business manifest (no WASM binary provisioned): {}",
-                name
-            ),
-            required_capabilities: caps,
-        })?;
+    for (source_name, source) in BUSINESS_MANIFESTS {
+        let manifest = AgentManifest::from_toml(source)
+            .map_err(|e| format!("manifeste {source_name} invalide : {e}"))?;
+        agent_registry.register(manifest)?;
     }
     println!(
-        "  Registered {} declarative business agent manifests (scopes déclarés, aucun binaire métier fourni)",
+        "  Registered {} declarative business agent manifests depuis agents/*/agent.toml (scopes déclarés, aucun binaire métier fourni)",
         agent_registry.list_agents().len()
     );
 

@@ -12,6 +12,68 @@ pub struct AgentManifest {
     pub required_capabilities: Vec<CapabilityScope>,
 }
 
+/// Manifeste tel qu'écrit dans `agents/<nom>/agent.toml` (source unique de
+/// vérité des cinq crates déclaratifs).
+///
+/// Volontairement strict (`deny_unknown_fields`) : un champ mal orthographié
+/// doit ÉCHOUER au chargement, pas produire un manifeste silencieusement
+/// incomplet (une capability oubliée serait un affaiblissement silencieux).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentManifestFile {
+    id: String,
+    name: String,
+    version: String,
+    description: String,
+    required_capabilities: Vec<CapabilityScope>,
+    isolated: bool,
+    /// Métadonnée du manifeste (aucun effet d'exécution ici : le registre
+    /// n'applique pas encore `read_only` aux agents).
+    #[serde(default, rename = "read_only")]
+    _read_only: bool,
+}
+
+impl AgentManifest {
+    /// Charge un manifeste depuis le TOML RÉEL (`agents/<nom>/agent.toml`).
+    ///
+    /// Fail-closed, jamais de valeur inventée :
+    /// - TOML illisible, champ inconnu ou capability inconnue → erreur ;
+    /// - manifeste non `isolated` → refus (exécution hors bac à sable
+    ///   interdite) ;
+    /// - id/nom vides ou version invalide → refus.
+    pub fn from_toml(source: &str) -> Result<Self> {
+        let file: AgentManifestFile = toml::from_str(source).map_err(|e| {
+            HakilleError::SerializationError(format!("manifeste d'agent illisible : {e}"))
+        })?;
+        if !file.isolated {
+            return Err(HakilleError::CapabilityDenied(format!(
+                "manifeste '{}' refusé : isolated=false (exécution hors bac à sable interdite)",
+                file.id
+            )));
+        }
+        let manifest = Self {
+            id: file.id,
+            name: file.name,
+            version: file.version,
+            description: file.description,
+            required_capabilities: file.required_capabilities,
+        };
+        if manifest.id.trim().is_empty() {
+            return Err(HakilleError::CapabilityDenied(
+                "manifeste d'agent refusé : id vide".to_string(),
+            ));
+        }
+        if manifest.name.trim().is_empty() {
+            return Err(HakilleError::CapabilityDenied(format!(
+                "manifeste '{}' refusé : nom vide",
+                manifest.id
+            )));
+        }
+        AgentRegistry::validate_version(&manifest.version)?;
+        Ok(manifest)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AgentStatus {
     Installed,
@@ -240,5 +302,100 @@ impl AgentRegistry {
 impl Default for AgentRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Les manifestes RÉELS des crates `agents/*` (source unique de vérité).
+    const MAIL: &str = include_str!("../../../agents/mail/agent.toml");
+    const WALLET: &str = include_str!("../../../agents/wallet-readonly/agent.toml");
+
+    #[test]
+    fn real_agent_toml_files_are_loaded_with_their_declared_scopes() {
+        let mail = AgentManifest::from_toml(MAIL).expect("manifeste mail réel");
+        assert_eq!(mail.id, "agent-mail");
+        assert_eq!(mail.name, "Mail Agent");
+        assert_eq!(mail.version, "0.1.0");
+        assert_eq!(
+            mail.required_capabilities,
+            vec![CapabilityScope::Network, CapabilityScope::Filesystem],
+            "les capabilities déclarées dans le fichier réel sont reprises telles quelles"
+        );
+
+        let wallet = AgentManifest::from_toml(WALLET).expect("manifeste wallet réel");
+        assert_eq!(wallet.id, "agent-wallet-readonly");
+        assert_eq!(wallet.required_capabilities, vec![CapabilityScope::Wallet]);
+    }
+
+    #[test]
+    fn non_isolated_manifest_is_refused() {
+        let source = r#"
+id = "agent-x"
+name = "X"
+version = "0.1.0"
+description = "test"
+required_capabilities = ["Filesystem"]
+isolated = false
+"#;
+        let err = AgentManifest::from_toml(source).expect_err("non isolé doit être refusé");
+        assert!(err.to_string().contains("isolated"), "{err}");
+    }
+
+    #[test]
+    fn unknown_capability_or_unknown_field_is_refused() {
+        // Capability inconnue : jamais ignorée en silence.
+        let unknown_cap = r#"
+id = "agent-x"
+name = "X"
+version = "0.1.0"
+description = "test"
+required_capabilities = ["Teleportation"]
+isolated = true
+"#;
+        assert!(
+            AgentManifest::from_toml(unknown_cap).is_err(),
+            "une capability inconnue doit être refusée"
+        );
+
+        // Champ mal orthographié : refus explicite, pas de manifeste partiel
+        // (une capability perdue serait un affaiblissement silencieux).
+        let typo = r#"
+id = "agent-x"
+name = "X"
+version = "0.1.0"
+description = "test"
+required_capabilites = ["Filesystem"]
+isolated = true
+"#;
+        assert!(
+            AgentManifest::from_toml(typo).is_err(),
+            "un champ inconnu doit être refusé"
+        );
+    }
+
+    #[test]
+    fn empty_or_invalid_manifest_fields_are_refused() {
+        let empty_id = r#"
+id = "  "
+name = "X"
+version = "0.1.0"
+description = "test"
+required_capabilities = []
+isolated = true
+"#;
+        assert!(AgentManifest::from_toml(empty_id).is_err());
+
+        let bad_version = r#"
+id = "agent-x"
+name = "X"
+version = "pas-une-version"
+description = "test"
+required_capabilities = []
+isolated = true
+"#;
+        assert!(AgentManifest::from_toml(bad_version).is_err());
     }
 }

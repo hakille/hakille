@@ -154,10 +154,14 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agen
 - `wallet-readonly` : Inspection des soldes et autorisations budgétaires.
 
 > Ces crates exposent des fonctions natives et des tests unitaires ; leurs
-> `agent.toml` ne sont pas chargés dynamiquement par le démon et aucun binaire
-> métier `.wasm` n'est versionné. Les scopes déclarés ne sont donc pas encore
-> appliqués par un bac à sable en exécution. Les deux agents de référence
-> (`echo-agent`, `count-agent`) sont, eux, réellement exécutés par le démon.
+> `agent.toml` **sont chargés par le démon** (inclus à la compilation : le
+> binaire et les fichiers du dépôt ne peuvent pas diverger ; un manifeste
+> invalide, non isolé ou avec une capability inconnue fait échouer le boot).
+> Aucun binaire métier `.wasm` n'est versionné : le bac à sable à zéro import
+> hôte ne donne donc aucune capability aux agents, et les scopes déclarés sont
+> un **manifeste d'intention**, pas une autorisation en exécution. Les deux
+> agents de référence (`echo-agent`, `count-agent`) sont, eux, réellement
+> exécutés par le démon.
 
 ---
 
