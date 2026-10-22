@@ -49,6 +49,7 @@ cargo deny check bans sources advisories    # cargo-deny à installer
 - Effet d'une carte approuvée : l'action est **mise en file dans l'outbox durable** (`<data_dir>/outbox.json`, idempotent, revalidable) et l'audit enregistre `effect: "outbox_enqueued"`. Ce n'est **pas** une exécution métier (les agents métier ne sont pas exécutables) : ne jamais dire « exécuté ».
 - Le desktop : fond transparent réel sous Windows (fenêtre en couche Win32 + clé couleur `0x010101`) ; la fenêtre est déplaçable (barre du HUD / en-tête de panneau) ; pendant un tour, l'attente affiche le temps réel écoulé et la saisie est verrouillée (pas de second tour concurrent).
 - Le `timeout` de `system1.rs` est doublé d'une **échéance dure dans le moteur** (`generate_with_deadline`) : à l'échéance, le décodage s'arrête et libère le verrou (plus de génération « zombie » qui bloque les requêtes suivantes).
+- Streaming de la réponse : le démon installe le callback global de `hakille_inference` pendant le tour et pousse chaque delta en trame `KernelToUi::TokenDelta` (id 0) ; le HUD cumule le texte et le **remplace** par la réponse finale (`HudReply`, qui reste la référence). Le callback global doit être retiré même en cas d'erreur.
 
 ## Contrat d'honnêteté (non négociable)
 

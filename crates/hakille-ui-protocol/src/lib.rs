@@ -196,6 +196,14 @@ pub enum KernelToUi {
         response: String,
         validation: Option<(String, u64)>,
     },
+    /// Delta de token : la réponse en cours de génération (additif v1).
+    ///
+    /// `text` est le MEILLEUR EFFORT d'affichage (décodage incrémental) ; le
+    /// texte final de `HudReply` reste la référence. Le HUD doit donc
+    /// REMPLACER son texte cumulé par la réponse finale quand elle arrive.
+    TokenDelta {
+        text: String,
+    },
     /// Message transitoire honnête (erreur, refus, information).
     Toast {
         text: String,

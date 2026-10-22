@@ -43,6 +43,10 @@ pub enum KernelEvent {
         response: String,
         validation: Option<(String, u64)>,
     },
+    /// Delta de token (réponse en cours de génération).
+    TokenDelta {
+        text: String,
+    },
     Toast {
         text: String,
     },
@@ -61,6 +65,7 @@ impl From<KernelToUi> for KernelEvent {
                 response,
                 validation,
             },
+            KernelToUi::TokenDelta { text } => Self::TokenDelta { text },
             KernelToUi::Toast { text } => Self::Toast { text },
             // Extension additive v1 (consultation) : le modèle d'événements
             // historique n'a pas de variantes dédiées — repli honnête en toast,
@@ -127,6 +132,7 @@ impl From<KernelEvent> for KernelToUi {
                 validation,
             },
             KernelEvent::Toast { text } => Self::Toast { text },
+            KernelEvent::TokenDelta { text } => Self::TokenDelta { text },
         }
     }
 }

@@ -237,6 +237,8 @@ pub struct HudApp {
     waiting_since: Option<Instant>,
     /// Dernier temps d'attente affiché (évite un redraw par frame).
     waiting_shown_secs: u64,
+    /// Texte reçu en streaming (deltas de tokens) pendant le tour en cours.
+    streamed_text: String,
     /// Réponse/notice arrivée fenêtre masquée : à afficher à la prochaine
     /// ouverture, jamais de frame en veille entre-temps.
     unseen_reply: bool,
@@ -296,6 +298,7 @@ impl HudApp {
             pending_query: None,
             waiting_since: None,
             waiting_shown_secs: 0,
+            streamed_text: String::new(),
             unseen_reply: false,
             journal_entries: Vec::new(),
             memory_rows: Vec::new(),
@@ -841,6 +844,7 @@ impl HudApp {
         self.pending_query = Some(query.clone());
         self.waiting_since = Some(Instant::now());
         self.waiting_shown_secs = 0;
+        self.streamed_text.clear();
         self.notice = None;
         self.data_notice = None;
         self.panel = PanelKind::None;
@@ -1052,6 +1056,20 @@ impl HudApp {
                     Vec::new()
                 }
             }
+            KernelToUi::TokenDelta { text } => {
+                // STREAMING : le texte apparaît au fil de l'eau. La réponse
+                // finale (HudReply) remplacera ce texte (c'est la référence).
+                self.streamed_text.push_str(&text);
+                let streamed = self.streamed_text.clone();
+                if let Some(query) = self.pending_query.clone() {
+                    self.hud.set_streaming(query, streamed, false);
+                }
+                if self.visible {
+                    vec![HudAction::Redraw]
+                } else {
+                    Vec::new()
+                }
+            }
             KernelToUi::ShowCard(card) => self.show_card(card),
             KernelToUi::CardDecisionAck {
                 card_id,
@@ -1136,8 +1154,9 @@ impl HudApp {
     /// panneau précédent pour revenir au HUD 720×64.
     fn display_turn(&mut self, query: String, text: String, error: bool) -> Vec<HudAction> {
         let long = response_is_long(&text);
-        // Le tour est terminé : plus de chrono d'attente.
+        // Le tour est terminé : plus de chrono d'attente, plus de flux.
         self.waiting_since = None;
+        self.streamed_text.clear();
         if error {
             self.notice = Some(text.clone());
         } else {
@@ -1696,6 +1715,35 @@ mod tests {
         );
         // Une seconde connexion ne rejoue rien (pas de boucle).
         assert!(app.on_ipc_connected().is_empty());
+    }
+
+    #[test]
+    fn streamed_tokens_are_accumulated_then_replaced_by_the_final_reply() {
+        let mut app = shown(false);
+        app.on_submit_sent("salut".into());
+        // Deltas : le texte apparaît au fil de l'eau.
+        for delta in ["Bon", "jour", " à tous"] {
+            let actions = app.on_kernel_reply(KernelToUi::TokenDelta {
+                text: delta.to_string(),
+            });
+            assert!(actions.contains(&HudAction::Redraw));
+        }
+        let snap = app.snapshot();
+        assert_eq!(snap.hud_response, "Bonjour à tous");
+        assert!(
+            snap.hud_streaming,
+            "la réponse reste en cours (streaming) : {}",
+            snap.hud_response
+        );
+        // La réponse FINALE remplace le texte cumulé (c'est la référence).
+        let actions = app.on_kernel_reply(KernelToUi::HudReply {
+            response: "Bonjour à tous, comment vas-tu ?".into(),
+            validation: None,
+        });
+        assert!(actions.contains(&HudAction::Redraw));
+        let snap = app.snapshot();
+        assert_eq!(snap.hud_response, "Bonjour à tous, comment vas-tu ?");
+        assert!(!snap.hud_streaming, "la réponse finale n'est plus un flux");
     }
 
     #[test]

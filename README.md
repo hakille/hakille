@@ -244,6 +244,7 @@ Limites explicites : **une approbation n'exécute encore aucune action métier**
 - Le fond n'est **plus un rectangle noir** : sous Windows, la fenêtre est passée en couche Win32 (`WS_EX_LAYERED` + clé couleur) et le fond peint (`0x010101`) devient réellement transparent — le bureau transparaît. Sur les autres plateformes, le fond reste opaque : la limite est **annoncée** (`SMOKE transparency=...`), jamais un noir silencieux.
 - La fenêtre est **déplaçable à la souris** : glisser la barre du HUD (ou l'en-tête du panneau) déplace la fenêtre. Pendant une décision de carte, seule la barre du HUD et l'en-tête restent déplaçables — jamais les boutons.
 - Pendant un tour, le HUD affiche l'attente **avec le temps réel écoulé** (« En attente de réponse du démon… Ns ») et la saisie est verrouillée : pas de second tour concurrent.
+- La réponse **arrive en streaming** : les tokens réellement produits par le moteur sont poussés au HUD pendant la génération (`TokenDelta`), et la réponse finale la remplace (c'est la référence). On ne passe plus plusieurs minutes devant un HUD muet.
 
 ### Agents réels depuis le HUD (F4)
 

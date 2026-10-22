@@ -445,19 +445,51 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                     Frame::error(id, ErrorCode::BadFrame, "requête vide refusée")
                 } else {
                     let started = Instant::now();
-                    match run_turn_core(
-                        orchestrator,
-                        presence,
-                        cost_counter,
-                        continuity_tracker,
-                        bounded_initiative,
-                        generality_tracker,
-                        audit_journal,
-                        memory_path,
-                        &query,
-                    )
-                    .await
-                    {
+                    // STREAMING : les tokens réellement produits par le
+                    // moteur sont poussés au HUD pendant le tour (au lieu
+                    // d'attendre la fin). Le texte final de `HudReply` reste
+                    // la référence ; le HUD le remplace quand il arrive.
+                    let (delta_tx, mut delta_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                    hakille_inference::set_token_stream_callback(Some(Box::new(
+                        move |event: &hakille_inference::TokenEvent| {
+                            if !event.text_delta.is_empty() {
+                                let _ = delta_tx.send(event.text_delta.clone());
+                            }
+                        },
+                    )));
+                    let turn_result = {
+                        // Le tour est épinglé dans un bloc : le future (et
+                        // ses emprises mutables) est lâché avant la suite.
+                        let turn = run_turn_core(
+                            orchestrator,
+                            presence,
+                            cost_counter,
+                            continuity_tracker,
+                            bounded_initiative,
+                            generality_tracker,
+                            audit_journal,
+                            memory_path,
+                            &query,
+                        );
+                        tokio::pin!(turn);
+                        loop {
+                            tokio::select! {
+                                result = &mut turn => break result,
+                                maybe_delta = delta_rx.recv() => {
+                                    let Some(delta) = maybe_delta else { continue };
+                                    let frame = Frame::reply(0, KernelToUi::TokenDelta { text: delta });
+                                    if let Err(e) = hakille_ipc::transport::write_frame(stream, &frame).await {
+                                        eprintln!("IPC: delta non écrit (id={id}) — {e}");
+                                        break Err("écriture du flux impossible".into());
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    // Le callback global est TOUJOURS retiré (chemin Ok ET
+                    // Err) : jamais de fuite vers le tour suivant.
+                    hakille_inference::clear_token_stream_callback();
+                    match turn_result {
                         Ok(outcome) => {
                             let latency_ms = started.elapsed().as_millis();
                             println!(
