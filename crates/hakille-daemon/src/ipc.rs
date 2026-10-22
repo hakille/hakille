@@ -1,4 +1,4 @@
-//! Mode `--serve` : serveur IPC local (pipe nommé Windows / socket Unix)
+﻿//! Mode `--serve` : serveur IPC local (pipe nommé Windows / socket Unix)
 //! exposant le contrat `hakille-ipc` au HUD desktop, sans REPL.
 //!
 //! Un seul client à la fois, requêtes servies séquentiellement. Aucun succès
@@ -18,14 +18,16 @@ use hakille_audit::journal::AuditJournal;
 use hakille_ipc::{ErrorCode, Frame, FrameBody};
 use hakille_kernel::orchestrator::{ActionCardPreview, CognitiveOrchestrator};
 use hakille_metrics::{BoundedInitiativeTracker, ContinuityTracker, GeneralityTracker};
+use hakille_sync::{Outbox, OutboxEntry};
 use hakille_ui::{CostCounter, MemoryViewerPanel, PresenceIndicator};
 use hakille_ui_protocol::{
-    ActionCard, DataExit, JournalEntryDto, KernelToUi, MemoryRowDto, Money, Provenance, StatusDto,
-    UiToKernel,
+    ActionCard, AgentDto, DataExit, JournalEntryDto, KernelToUi, MemoryRowDto, Money, Provenance,
+    StatusDto, UiToKernel,
 };
 
 use crate::{
-    audit_action_with_id, audit_memory_event, persist_memory_to, run_turn_core, turn_error_hint,
+    audit_action_with_id, audit_memory_event, persist_memory_to, run_turn_core, save_outbox,
+    turn_error_hint,
 };
 
 /// Plafond de lignes renvoyées par consultation (marge sous `MAX_FRAME_BYTES`
@@ -144,29 +146,94 @@ fn card_from_preview(id: u64, preview: ActionCardPreview) -> ActionCard {
     }
 }
 
+/// Carte proposée par le démon, en attente de décision.
+///
+/// Le PLAN D'EXÉCUTION est conservé avec la carte : à l'approbation, le
+/// démon doit savoir QUOI exécuter (et l'auditer), pas seulement afficher un
+/// libellé.
+#[derive(Debug, Clone)]
+struct PendingCard {
+    card: ActionCard,
+    plan: hakille_kernel::planner::ExecutionPlan,
+}
+
 /// Décision de carte : l'audit signé est écrit AVANT le retrait de la carte
 /// et avant l'accusé. En cas d'échec d'audit, la carte reste en attente et le
-/// HUD reçoit un refus explicite. Aucun effet métier n'est exécuté ici : le
-/// plan reste sec, ce que l'accusé rappelle.
+/// HUD reçoit un refus explicite.
+///
+/// EFFET RÉEL : une carte **approuvée** est mise en file dans l'outbox
+/// durable (`<data_dir>/outbox.json`, file idempotente et revalidable). Ce
+/// n'est PAS une exécution métier — les agents métier ne sont pas encore
+/// exécutables — mais c'est un effet durable, visible (`:outbox`) et audité,
+/// au lieu d'un « aucun effet » muet. Le refus, lui, ne produit aucun effet.
 fn decide_card(
-    pending_cards: &mut HashMap<u64, ActionCard>,
+    pending_cards: &mut HashMap<u64, PendingCard>,
     audit_journal: &AuditJournal,
+    outbox: &mut Outbox,
+    data_dir: &std::path::Path,
     card_id: u64,
     approved: bool,
 ) -> KernelToUi {
-    let Some(card) = pending_cards.get(&card_id).cloned() else {
+    let Some(pending) = pending_cards.get(&card_id).cloned() else {
         return KernelToUi::Toast {
             text: format!("carte #{card_id} inconnue ou déjà traitée — aucune décision"),
         };
     };
+    let card = pending.card;
+    let plan = pending.plan;
     let action_type = if approved {
         "ActionCardApproved"
     } else {
         "ActionCardRejected"
     };
     let verb = if approved { "approuvée" } else { "refusée" };
+
+    // Effet réel, calculé AVANT l'audit : l'entrée de journal doit décrire ce
+    // qui a réellement eu lieu, pas une intention. L'action mise en file
+    // PORTE le plan approuvé (étapes + risque) : un exécuteur futur saura
+    // quoi faire.
+    let (effect_kind, effect_detail) = if approved {
+        let dedup_key = format!(
+            "card#{}|{}|{}",
+            card.id,
+            card.verb.to_lowercase(),
+            card.object.to_lowercase()
+        );
+        let steps = plan
+            .steps
+            .iter()
+            .map(|s| s.description.clone())
+            .collect::<Vec<_>>()
+            .join(" → ");
+        let queued_object = format!(
+            "{} [plan {} : {} étape(s), risque {:?} : {}]",
+            card.object,
+            plan.plan_id,
+            plan.steps.len(),
+            plan.estimated_risk,
+            steps
+        );
+        let entry = OutboxEntry::new(&card.verb, &queued_object, &dedup_key);
+        let added = outbox.enqueue(entry);
+        if added {
+            // Persistance crash-safe : l'effet doit survivre au redémarrage.
+            save_outbox(data_dir, outbox);
+            (
+                "outbox_enqueued",
+                Some(format!("action mise en file (clé {dedup_key})")),
+            )
+        } else {
+            (
+                "outbox_already_queued",
+                Some(format!("action déjà en file (clé {dedup_key})")),
+            )
+        }
+    } else {
+        ("none", None)
+    };
+
     let description = format!(
-        "Carte #{} {verb} : {} {} (plan sec, aucune exécution)",
+        "Carte #{} {verb} : {} {} (effet : {effect_kind})",
         card.id, card.verb, card.object
     );
     match audit_action_with_id(
@@ -178,7 +245,10 @@ fn decide_card(
             "verb": card.verb,
             "object": card.object,
             "reversible": card.reversible,
-            "effect": "none",
+            "effect": effect_kind,
+            "plan_id": plan.plan_id,
+            "plan_steps": plan.steps.len(),
+            "plan_risk": format!("{:?}", plan.estimated_risk),
         }),
         false,
     ) {
@@ -188,12 +258,85 @@ fn decide_card(
                 card_id,
                 approved,
                 audit_id,
+                effect: effect_detail,
             }
         }
-        Err(e) => KernelToUi::Toast {
-            text: format!("décision refusée — audit indisponible: {e}"),
-        },
+        Err(e) => {
+            // L'audit a échoué : on ANNULE l'effet mis en file (la décision
+            // n'est pas validée, donc rien ne doit être durable).
+            if approved {
+                let dedup_key = format!(
+                    "card#{}|{}|{}",
+                    card.id,
+                    card.verb.to_lowercase(),
+                    card.object.to_lowercase()
+                );
+                outbox.remove(&dedup_key);
+                save_outbox(data_dir, outbox);
+            }
+            KernelToUi::Toast {
+                text: format!("décision refusée — audit indisponible: {e}"),
+            }
+        }
     }
+}
+
+/// Exécute un agent WASM réel et renvoie la réponse protocole.
+///
+/// Isolé du transport pour être testable directement (le contrat est le
+/// même : sortie JSON réelle + empreintes SHA-256, jamais de sortie inventée).
+fn run_agent_request(
+    runtime: &mut crate::agent_runtime::ReferenceAgentRuntime,
+    name: &str,
+    input_json: &str,
+) -> Result<KernelToUi, String> {
+    let run = runtime.run(name, input_json).map_err(|e| e.to_string())?;
+    Ok(KernelToUi::AgentRunReply {
+        name: run.agent,
+        output_json: run.output,
+        duration_ms: run.duration_ms as u64,
+        input_sha256: run.input_sha256,
+        output_sha256: run.output_sha256,
+    })
+}
+
+/// Liste honnête des agents exposés au HUD.
+///
+/// `artifact_present = true` UNIQUEMENT pour un agent réellement exécutable
+/// (binaire WASM vérifié, hash connu). Les manifests métier déclaratifs sont
+/// listés avec `artifact_present = false` : le HUD ne peut pas les présenter
+/// comme opérationnels.
+fn agent_dtos(
+    runtime: Option<&crate::agent_runtime::ReferenceAgentRuntime>,
+    registry: &hakille_agents::AgentRegistry,
+) -> Vec<AgentDto> {
+    let mut out: Vec<AgentDto> = registry
+        .list_agents()
+        .iter()
+        .map(|m| AgentDto {
+            id: m.id.clone(),
+            name: m.name.clone(),
+            required_caps: m
+                .required_capabilities
+                .iter()
+                .map(|c| format!("{c:?}"))
+                .collect(),
+            artifact_present: false,
+            sha256: String::new(),
+        })
+        .collect();
+    if let Some(runtime) = runtime {
+        for agent in runtime.agents() {
+            out.push(AgentDto {
+                id: agent.name.clone(),
+                name: agent.name.clone(),
+                required_caps: Vec::new(),
+                artifact_present: true,
+                sha256: agent.sha256.clone(),
+            });
+        }
+    }
+    out
 }
 
 /// Boucle serveur : jeton neuf écrit pour le HUD, écoute sur l'endpoint local,
@@ -207,8 +350,14 @@ pub async fn run_serve(
     continuity_tracker: &mut ContinuityTracker,
     bounded_initiative: &mut BoundedInitiativeTracker,
     generality_tracker: &mut GeneralityTracker,
-    audit_journal: &AuditJournal,
+    audit_journal: &mut AuditJournal,
     memory_path: &std::path::Path,
+    outbox: &mut Outbox,
+    data_dir: &std::path::Path,
+    agent_runtime: Option<
+        std::sync::Arc<std::sync::Mutex<crate::agent_runtime::ReferenceAgentRuntime>>,
+    >,
+    agent_registry: &hakille_agents::AgentRegistry,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = hakille_ipc::transport::default_endpoint();
     let token_path = hakille_ipc::transport::default_token_path();
@@ -244,7 +393,7 @@ pub async fn run_serve(
             continue;
         }
         println!("IPC: client connecté");
-        let mut pending_cards: HashMap<u64, ActionCard> = HashMap::new();
+        let mut pending_cards: HashMap<u64, PendingCard> = HashMap::new();
         serve_client(
             &mut stream,
             orchestrator,
@@ -255,6 +404,10 @@ pub async fn run_serve(
             generality_tracker,
             audit_journal,
             memory_path,
+            outbox,
+            data_dir,
+            agent_runtime.as_ref(),
+            agent_registry,
             &mut pending_cards,
             &mut next_card_id,
         )
@@ -274,9 +427,15 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     continuity_tracker: &mut ContinuityTracker,
     bounded_initiative: &mut BoundedInitiativeTracker,
     generality_tracker: &mut GeneralityTracker,
-    audit_journal: &AuditJournal,
+    audit_journal: &mut AuditJournal,
     memory_path: &std::path::Path,
-    pending_cards: &mut HashMap<u64, ActionCard>,
+    outbox: &mut Outbox,
+    data_dir: &std::path::Path,
+    agent_runtime: Option<
+        &std::sync::Arc<std::sync::Mutex<crate::agent_runtime::ReferenceAgentRuntime>>,
+    >,
+    agent_registry: &hakille_agents::AgentRegistry,
+    pending_cards: &mut HashMap<u64, PendingCard>,
     next_card_id: &mut u64,
 ) {
     loop {
@@ -318,19 +477,51 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                     Frame::error(id, ErrorCode::BadFrame, "requête vide refusée")
                 } else {
                     let started = Instant::now();
-                    match run_turn_core(
-                        orchestrator,
-                        presence,
-                        cost_counter,
-                        continuity_tracker,
-                        bounded_initiative,
-                        generality_tracker,
-                        audit_journal,
-                        memory_path,
-                        &query,
-                    )
-                    .await
-                    {
+                    // STREAMING : les tokens réellement produits par le
+                    // moteur sont poussés au HUD pendant le tour (au lieu
+                    // d'attendre la fin). Le texte final de `HudReply` reste
+                    // la référence ; le HUD le remplace quand il arrive.
+                    let (delta_tx, mut delta_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                    hakille_inference::set_token_stream_callback(Some(Box::new(
+                        move |event: &hakille_inference::TokenEvent| {
+                            if !event.text_delta.is_empty() {
+                                let _ = delta_tx.send(event.text_delta.clone());
+                            }
+                        },
+                    )));
+                    let turn_result = {
+                        // Le tour est épinglé dans un bloc : le future (et
+                        // ses emprises mutables) est lâché avant la suite.
+                        let turn = run_turn_core(
+                            orchestrator,
+                            presence,
+                            cost_counter,
+                            continuity_tracker,
+                            bounded_initiative,
+                            generality_tracker,
+                            audit_journal,
+                            memory_path,
+                            &query,
+                        );
+                        tokio::pin!(turn);
+                        loop {
+                            tokio::select! {
+                                result = &mut turn => break result,
+                                maybe_delta = delta_rx.recv() => {
+                                    let Some(delta) = maybe_delta else { continue };
+                                    let frame = Frame::reply(0, KernelToUi::TokenDelta { text: delta });
+                                    if let Err(e) = hakille_ipc::transport::write_frame(stream, &frame).await {
+                                        eprintln!("IPC: delta non écrit (id={id}) — {e}");
+                                        break Err("écriture du flux impossible".into());
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    // Le callback global est TOUJOURS retiré (chemin Ok ET
+                    // Err) : jamais de fuite vers le tour suivant.
+                    hakille_inference::clear_token_stream_callback();
+                    match turn_result {
                         Ok(outcome) => {
                             let latency_ms = started.elapsed().as_millis();
                             println!(
@@ -341,8 +532,8 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                             // produit un plan sec. On expose une carte réelle
                             // au HUD, après audit de la proposition.
                             if outcome.routing_used.starts_with("Plan/Dry-run")
-                                && let Some(preview) =
-                                    CognitiveOrchestrator::action_card_preview(&query)
+                                && let Some((preview, plan)) =
+                                    CognitiveOrchestrator::action_card_with_plan(&query)
                             {
                                 let card = card_from_preview(*next_card_id, preview);
                                 let proposed = audit_action_with_id(
@@ -363,7 +554,13 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                                 match proposed {
                                     Ok(_) => {
                                         *next_card_id = (*next_card_id).saturating_add(1);
-                                        pending_cards.insert(card.id, card.clone());
+                                        pending_cards.insert(
+                                            card.id,
+                                            PendingCard {
+                                                card: card.clone(),
+                                                plan,
+                                            },
+                                        );
                                         // La présence daemon reflète elle aussi
                                         // l'attente de décision, pas seulement
                                         // l'état local du HUD.
@@ -438,12 +635,22 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
             FrameBody::Request {
                 message: UiToKernel::Approve { card_id },
             } => {
-                let reply = decide_card(pending_cards, audit_journal, card_id, true);
+                let reply = decide_card(
+                    pending_cards,
+                    audit_journal,
+                    outbox,
+                    data_dir,
+                    card_id,
+                    true,
+                );
                 match &reply {
-                    KernelToUi::CardDecisionAck { audit_id, .. } => {
+                    KernelToUi::CardDecisionAck {
+                        audit_id, effect, ..
+                    } => {
                         presence.set_state(hakille_ui::PresenceState::Idle);
                         println!(
-                            "IPC: carte #{card_id} approuvée — décision auditée [{audit_id}] (aucune exécution)"
+                            "IPC: carte #{card_id} approuvée — décision auditée [{audit_id}] — {}",
+                            effect.as_deref().unwrap_or("aucun effet")
                         );
                     }
                     KernelToUi::Toast { text } => {
@@ -456,12 +663,19 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
             FrameBody::Request {
                 message: UiToKernel::Reject { card_id },
             } => {
-                let reply = decide_card(pending_cards, audit_journal, card_id, false);
+                let reply = decide_card(
+                    pending_cards,
+                    audit_journal,
+                    outbox,
+                    data_dir,
+                    card_id,
+                    false,
+                );
                 match &reply {
                     KernelToUi::CardDecisionAck { audit_id, .. } => {
                         presence.set_state(hakille_ui::PresenceState::Idle);
                         println!(
-                            "IPC: carte #{card_id} refusée — décision auditée [{audit_id}] (aucune exécution)"
+                            "IPC: carte #{card_id} refusée — décision auditée [{audit_id}] (aucun effet)"
                         );
                     }
                     KernelToUi::Toast { text } => {
@@ -623,6 +837,112 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                 println!("IPC: statut servi (id={id})");
                 Frame::reply(id, KernelToUi::StatusReply { status })
             }
+            FrameBody::Request {
+                message: UiToKernel::AgentListRequest,
+            } => {
+                // Liste HONNÊTE : `artifact_present` distingue un agent
+                // réellement exécutable d'un manifeste déclaratif.
+                let guard = agent_runtime.as_ref().and_then(|r| r.lock().ok());
+                let agents = agent_dtos(guard.as_deref(), agent_registry);
+                drop(guard);
+                println!("IPC: agents listés (id={id}, {} agent(s))", agents.len());
+                Frame::reply(id, KernelToUi::AgentListReply { agents })
+            }
+            FrameBody::Request {
+                message: UiToKernel::AgentRunRequest { name, input_json },
+            } => {
+                // Exécution RÉELLE dans le bac à sable (fuel/timeout/mémoire
+                // bornés). Le runtime est bloquant (Wasmtime) : on le sort du
+                // runtime async pour ne pas figer le serveur IPC.
+                let agent_name = name.clone();
+                let input = input_json.clone();
+                let reply = match agent_runtime.as_ref() {
+                    Some(runtime) => {
+                        // Le runtime est bloquant (Wasmtime) : on le sort du
+                        // runtime async pour ne pas figer le serveur IPC.
+                        let runtime = std::sync::Arc::clone(runtime);
+                        let outcome = tokio::task::spawn_blocking(move || {
+                            let mut guard = runtime
+                                .lock()
+                                .map_err(|_| "verrou du runtime d'agents empoisonné".to_string())?;
+                            run_agent_request(&mut guard, &agent_name, &input)
+                        })
+                        .await;
+                        match outcome {
+                            Ok(Ok(KernelToUi::AgentRunReply {
+                                name: agent,
+                                output_json,
+                                duration_ms,
+                                input_sha256,
+                                output_sha256,
+                            })) => {
+                                // Audit : on journalise le RÉSULTAT (empreintes,
+                                // jamais la charge utile complète).
+                                let audit = audit_action_with_id(
+                                    audit_journal,
+                                    "WasmAgentRunCompleted",
+                                    format!("Agent {agent} exécuté ({duration_ms} ms)"),
+                                    serde_json::json!({
+                                        "agent": agent,
+                                        "duration_ms": duration_ms,
+                                        "input_sha256": input_sha256,
+                                        "output_sha256": output_sha256,
+                                    }),
+                                    false,
+                                );
+                                match audit {
+                                    Ok(audit_id) => {
+                                        println!(
+                                            "IPC: agent {agent} exécuté ({duration_ms} ms) — audit [{audit_id}]"
+                                        );
+                                        KernelToUi::AgentRunReply {
+                                            name: agent,
+                                            output_json,
+                                            duration_ms,
+                                            input_sha256,
+                                            output_sha256,
+                                        }
+                                    }
+                                    Err(e) => {
+                                        // Audit indisponible : l'exécution a eu
+                                        // lieu mais n'est pas prouvable → on le dit.
+                                        eprintln!(
+                                            "IPC: agent {agent} exécuté mais audit indisponible: {e}"
+                                        );
+                                        KernelToUi::Toast {
+                                            text: format!(
+                                                "agent {agent} exécuté mais audit indisponible: {e} — résultat non accusé"
+                                            ),
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(Ok(other)) => other,
+                            Ok(Err(e)) => {
+                                eprintln!("IPC: exécution d'agent échouée ({name}) — {e}");
+                                KernelToUi::Toast {
+                                    text: format!("agent {name} : {e}"),
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("IPC: tâche d'exécution d'agent interrompue — {e}");
+                                KernelToUi::Toast {
+                                    text: format!("exécution d'agent interrompue : {e}"),
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        eprintln!(
+                            "IPC: exécution d'agent refusée (id={id}) — runtime indisponible"
+                        );
+                        KernelToUi::Toast {
+                            text: "runtime d'agents indisponible — aucun agent exécuté".into(),
+                        }
+                    }
+                };
+                Frame::reply(id, reply)
+            }
             FrameBody::Request { .. } => {
                 eprintln!("IPC: message non supporté (id={id}) — refus explicite");
                 Frame::reply(
@@ -753,6 +1073,222 @@ mod tests {
         let ghost = recall_rows(&graph, &["inconnu".to_string()], 10);
         assert_eq!(ghost[0].id, "", "jamais d'id inventé");
         assert_eq!(ghost[0].source, "recall");
+    }
+
+    #[test]
+    fn agent_execution_returns_the_real_wasm_output() {
+        // Preuve d'exécution RÉELLE : le binaire WASM tourne dans le bac à
+        // sable et sa sortie JSON est rapportée telle quelle.
+        let dir = std::env::temp_dir().join(format!("hakille_run_{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).expect("dossier de test");
+        let mut runtime = crate::agent_runtime::ReferenceAgentRuntime::provision(&dir)
+            .expect("runtime d'agents provisionné");
+
+        let reply = run_agent_request(&mut runtime, "echo-agent", "{\"msg\":\"bonjour\"}")
+            .expect("exécution réelle");
+        let KernelToUi::AgentRunReply {
+            name,
+            output_json,
+            duration_ms,
+            input_sha256,
+            output_sha256,
+        } = reply
+        else {
+            panic!("réponse d'exécution attendue");
+        };
+        assert_eq!(name, "echo-agent");
+        assert!(
+            output_json.contains("bonjour"),
+            "la sortie réelle contient l'entrée : {output_json}"
+        );
+        assert_eq!(input_sha256.len(), 64);
+        assert_eq!(output_sha256.len(), 64);
+        assert!(duration_ms < 60_000, "exécution bornée : {duration_ms} ms");
+
+        // Un agent inconnu est REFUSÉ explicitement (jamais de sortie inventée).
+        let err = run_agent_request(&mut runtime, "agent-mail", "{}")
+            .expect_err("agent sans binaire refusé");
+        assert!(err.contains("agent-mail"), "{err}");
+    }
+
+    #[test]
+    fn agent_list_is_honest_between_real_and_declarative_agents() {
+        use hakille_agents::{AgentManifest, AgentRegistry};
+        use hakille_core::CapabilityScope;
+
+        // Un manifeste DÉCLARATIF : jamais présenté comme exécutable.
+        let mut registry = AgentRegistry::new();
+        registry
+            .register(AgentManifest {
+                id: "agent-mail".into(),
+                name: "Mail Agent".into(),
+                version: "0.1.0".into(),
+                description: "manifest déclaratif".into(),
+                required_capabilities: vec![CapabilityScope::Network],
+            })
+            .expect("manifest enregistré");
+        let without_runtime = agent_dtos(None, &registry);
+        assert_eq!(without_runtime.len(), 1);
+        assert!(!without_runtime[0].artifact_present);
+        assert!(without_runtime[0].sha256.is_empty());
+        assert_eq!(without_runtime[0].required_caps.len(), 1);
+
+        // Avec un runtime réel : les agents de référence sont exécutables.
+        let dir = std::env::temp_dir().join(format!("hakille_agents_{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).expect("dossier de test");
+        let runtime = crate::agent_runtime::ReferenceAgentRuntime::provision(&dir)
+            .expect("runtime d'agents provisionné");
+        let with_runtime = agent_dtos(Some(&runtime), &registry);
+        let real: Vec<&AgentDto> = with_runtime.iter().filter(|a| a.artifact_present).collect();
+        assert_eq!(
+            real.len(),
+            runtime.agents().len(),
+            "chaque agent chargé est exécutable, avec son SHA-256"
+        );
+        assert!(real.iter().all(|a| a.sha256.len() == 64));
+        assert!(
+            with_runtime
+                .iter()
+                .any(|a| a.id == "agent-mail" && !a.artifact_present),
+            "le manifeste déclaratif reste marqué non exécutable"
+        );
+    }
+
+    /// Plan d'exécution de test : une étape irréversible (même forme que le
+    /// plan réel produit par le noyau).
+    fn test_plan() -> hakille_kernel::planner::ExecutionPlan {
+        use hakille_core::{CapabilityAction, CapabilityScope};
+        use hakille_kernel::planner::{ExecutionPlan, PlannedStep};
+        let mut plan = ExecutionPlan::new("card-preview", "transférer 25 EUR à Awa");
+        plan.steps.push(PlannedStep {
+            step_id: 1,
+            description: "transférer 25 EUR à Awa".to_string(),
+            required_scope: CapabilityScope::Wallet,
+            required_action: CapabilityAction::Execute,
+            is_irreversible: true,
+            fallback_strategy: None,
+        });
+        plan.requires_human_confirmation = true;
+        plan
+    }
+
+    #[test]
+    fn approved_card_produces_a_real_durable_effect_and_audits_it() {
+        use ed25519_dalek::SigningKey;
+
+        let dir = std::env::temp_dir().join(format!("hakille_card_{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).expect("dossier de test");
+        let db_path = dir.join("audit.redb");
+        let journal = AuditJournal::new(
+            db_path.to_str().expect("chemin utf8"),
+            SigningKey::from_bytes(&[7u8; 32]),
+        )
+        .expect("journal de test");
+
+        let mut cards: HashMap<u64, PendingCard> = HashMap::new();
+        cards.insert(
+            42,
+            PendingCard {
+                card: ActionCard {
+                    id: 42,
+                    verb: "Transférer".into(),
+                    object: "25 EUR à Awa".into(),
+                    reason: "demande explicite".into(),
+                    cost: Money::from_cents(2500, "EUR"),
+                    data_exit: DataExit::Local,
+                    reversible: false,
+                    provenance: Provenance::Hakille,
+                },
+                plan: test_plan(),
+            },
+        );
+        let mut outbox = Outbox::new();
+
+        let reply = decide_card(&mut cards, &journal, &mut outbox, &dir, 42, true);
+        let KernelToUi::CardDecisionAck {
+            approved,
+            audit_id,
+            effect,
+            ..
+        } = reply
+        else {
+            panic!("un accusé audité est attendu, pas un refus");
+        };
+        assert!(approved);
+        assert!(!audit_id.is_empty(), "UUID d'audit réel");
+
+        // EFFET RÉEL : l'action approuvée est en file, durable et idempotente.
+        assert_eq!(outbox.len(), 1, "l'action approuvée est en file");
+        let entry = &outbox.list()[0];
+        assert_eq!(entry.verb, "Transférer");
+        assert!(entry.dedup_key.contains("card#42"));
+        assert!(
+            entry.object.contains("plan card-preview"),
+            "l'action en file PORTE le plan approuvé : {}",
+            entry.object
+        );
+        assert!(
+            entry.object.contains("transférer 25 EUR à Awa"),
+            "l'étape du plan est dans l'action : {}",
+            entry.object
+        );
+        assert!(
+            effect
+                .as_deref()
+                .unwrap_or_default()
+                .contains("mise en file"),
+            "l'accusé rapporte l'effet réel : {effect:?}"
+        );
+        // Persistance : le fichier d'envoi existe et contient l'entrée.
+        let outbox_file = dir.join("outbox.json");
+        assert!(outbox_file.is_file(), "effet durable sur disque");
+        let persisted = std::fs::read_to_string(&outbox_file).expect("lecture outbox");
+        assert!(persisted.contains("Transférer"), "entrée persistée");
+
+        // L'AUDIT décrit l'effet réel (pas un "aucun effet" mensonger).
+        let entries = journal.all_entries().expect("entrées d'audit");
+        let approved_entry = entries
+            .iter()
+            .find(|e| e.action.action_type == "ActionCardApproved")
+            .expect("entrée d'approbation");
+        assert_eq!(
+            approved_entry.action.parameters.get("effect"),
+            Some(&serde_json::json!("outbox_enqueued"))
+        );
+        assert_eq!(
+            approved_entry.action.parameters.get("plan_steps"),
+            Some(&serde_json::json!(1)),
+            "l'audit porte le plan approuvé"
+        );
+        let audit_id_debug = format!("{:?}", approved_entry.id);
+        assert!(
+            audit_id_debug.contains(&audit_id),
+            "l'accusé porte l'identifiant réel de l'entrée auditée : {audit_id_debug} vs {audit_id}"
+        );
+
+        // Refus : AUCUN effet, et l'audit le dit.
+        cards.insert(
+            43,
+            PendingCard {
+                card: ActionCard {
+                    id: 43,
+                    verb: "Supprimer".into(),
+                    object: "/vfs/notes.txt".into(),
+                    reason: "irréversible".into(),
+                    cost: Money::from_cents(0, "EUR"),
+                    data_exit: DataExit::Local,
+                    reversible: false,
+                    provenance: Provenance::Hakille,
+                },
+                plan: test_plan(),
+            },
+        );
+        let reply = decide_card(&mut cards, &journal, &mut outbox, &dir, 43, false);
+        let KernelToUi::CardDecisionAck { effect, .. } = reply else {
+            panic!("un accusé de refus est attendu");
+        };
+        assert!(effect.is_none(), "un refus ne produit aucun effet");
+        assert_eq!(outbox.len(), 1, "la file n'a pas changé");
     }
 
     #[test]

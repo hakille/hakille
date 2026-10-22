@@ -17,7 +17,9 @@ use crate::scene::{Color, DrawCmd, Scene};
 use hakille_ui::{CostCounter, EphemeralHud, HudState, PresenceIndicator, SilenceBudgetTracker};
 use hakille_ui_model::snapshot::{EVAPORATE_MS, HUD_HEIGHT, HUD_WIDTH};
 use hakille_ui_model::{KernelEvent, StableSnapshot, UiEvent};
-use hakille_ui_protocol::{ActionCard, JournalEntryDto, KernelToUi, MemoryRowDto, StatusDto};
+use hakille_ui_protocol::{
+    ActionCard, AgentDto, JournalEntryDto, KernelToUi, MemoryRowDto, StatusDto,
+};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -49,6 +51,9 @@ pub enum HudInput {
     ShowMemory,
     /// Ouvre le panneau statut (F3).
     ShowStatus,
+    /// Ouvre le panneau des agents (F4) : liste des agents réellement
+    /// exécutables vs manifests déclaratifs.
+    ShowAgents,
     /// Frame due (minuterie d'animation — voir `FrameBudget`).
     Tick,
     /// Demande de focus sur le champ requête (AccessKit focus/click).
@@ -87,6 +92,14 @@ pub enum HudAction {
     },
     /// Statut minimal du démon.
     RequestStatus,
+    /// Liste des agents exposés par le démon (additif v1).
+    RequestAgents,
+    /// Exécution d'un agent WASM réel (additif v1) : entrée JSON → sortie
+    /// JSON. Le démon refuse tout agent sans binaire vérifié.
+    RunAgent {
+        name: String,
+        input_json: String,
+    },
     /// Décision explicite sur la carte en attente (jamais un effet local :
     /// le démon revérifie et audite avant tout accusé).
     ApproveCard {
@@ -111,7 +124,28 @@ pub enum PanelKind {
     Journal,
     Memory,
     Status,
+    /// Liste des agents (exécutables vs déclaratifs).
+    Agents,
     Card,
+}
+
+/// Action de demande de donnée pour un panneau de consultation.
+///
+/// SOURCE UNIQUE : utilisée à l'ouverture du panneau ET au rejeu après
+/// connexion (une demande perdue laisserait un panneau vide).
+pub fn panel_request_action(kind: PanelKind) -> HudAction {
+    match kind {
+        PanelKind::Journal => HudAction::RequestJournal {
+            limit: CONSULT_LIMIT,
+        },
+        PanelKind::Memory => HudAction::RequestMemory {
+            query: None,
+            limit: CONSULT_LIMIT,
+        },
+        PanelKind::Status => HudAction::RequestStatus,
+        PanelKind::Agents => HudAction::RequestAgents,
+        PanelKind::Card | PanelKind::Response | PanelKind::None => HudAction::Redraw,
+    }
 }
 
 fn map_presence(state: hakille_ui_protocol::PresenceState) -> hakille_ui::PresenceState {
@@ -143,12 +177,40 @@ fn response_is_long(text: &str) -> bool {
     text.chars().count() > EXPAND_RESPONSE_CHARS || text.contains('\n')
 }
 
+/// Message d'attente affiché pendant qu'un tour est en vol.
+///
+/// Honnête : le temps écoulé est réel (mesuré, pas estimé) et la cause
+/// habituelle de l'attente (décodage Qwen CPU-local, premier tour = chargement
+/// du modèle) est explicitée plutôt que laissée dans le vide.
+pub fn waiting_text(elapsed_secs: u64) -> String {
+    format!(
+        "En attente de réponse du démon… {elapsed_secs}s (Qwen CPU local ; 1er tour = chargement du modèle)"
+    )
+}
+
 /// Ligne auxiliaire sous la requête : réponse du noyau ou refus honnête.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuxNotice {
     pub text: String,
     /// `true` ssi refus/erreur (rendu en rouge, jamais en braise).
     pub error: bool,
+}
+
+/// Cible d'un clic souris dans la fenêtre (coordonnées logiques de scène).
+///
+/// Machine pure : le desktop ne fait qu'exécuter la cible renvoyée.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerTarget {
+    /// Zone neutre : aucune action.
+    None,
+    /// Zone de déplacement de la fenêtre.
+    Drag,
+    /// Bouton « Valider » de la carte d'action.
+    CardValidate,
+    /// Bouton « Modifier » de la carte d'action.
+    CardEdit,
+    /// Bouton « Refuser » de la carte d'action.
+    CardReject,
 }
 
 /// Machine à états du shell HUD desktop.
@@ -171,6 +233,12 @@ pub struct HudApp {
     started: Instant,
     /// Requête réellement envoyée au démon, réponse pas encore reçue (IPC).
     pending_query: Option<String>,
+    /// Instant de début de l'attente d'une réponse (temps écoulé affiché).
+    waiting_since: Option<Instant>,
+    /// Dernier temps d'attente affiché (évite un redraw par frame).
+    waiting_shown_secs: u64,
+    /// Texte reçu en streaming (deltas de tokens) pendant le tour en cours.
+    streamed_text: String,
     /// Réponse/notice arrivée fenêtre masquée : à afficher à la prochaine
     /// ouverture, jamais de frame en veille entre-temps.
     unseen_reply: bool,
@@ -180,6 +248,15 @@ pub struct HudApp {
     memory_rows: Vec<MemoryRowDto>,
     /// Dernier statut reçu du démon.
     last_status: Option<StatusDto>,
+    /// Panneau dont la donnée n'a pas pu être demandée (démon absent) : la
+    /// demande est REJOUÉE à la connexion, sinon le panneau resterait vide
+    /// pour toujours.
+    pending_panel_request: Option<PanelKind>,
+    /// Agents listés par le démon (additif v1) : `artifact_present` distingue
+    /// un agent réellement exécutable d'un manifeste déclaratif.
+    agents: Vec<AgentDto>,
+    /// Dernière exécution d'agent rapportée par le démon (nom, sortie, durée).
+    last_agent_run: Option<(String, String, u64)>,
     /// Dernier identifiant de fait mémorisé (accusé `MemoryRemember`).
     last_remember_id: Option<String>,
     /// Confirmation de consultation (non-erreur) affichée sous la requête.
@@ -219,10 +296,16 @@ impl HudApp {
             evaporate_remaining_ms: 0,
             started: Instant::now(),
             pending_query: None,
+            waiting_since: None,
+            waiting_shown_secs: 0,
+            streamed_text: String::new(),
             unseen_reply: false,
             journal_entries: Vec::new(),
             memory_rows: Vec::new(),
             last_status: None,
+            pending_panel_request: None,
+            agents: Vec::new(),
+            last_agent_run: None,
             last_remember_id: None,
             data_notice: None,
             queued_queries: VecDeque::new(),
@@ -271,6 +354,57 @@ impl HudApp {
         self.panel
     }
 
+    /// Hauteur logique de la scène courante (64 compact, 360 étendu).
+    pub fn scene_height(&self) -> u32 {
+        if self.panel != PanelKind::None {
+            CONSULT_HEIGHT
+        } else {
+            HUD_HEIGHT
+        }
+    }
+
+    /// Cible d'un clic (coordonnées logiques de scène, origine en haut-gauche).
+    ///
+    /// Règles :
+    /// - une carte ouverte expose ses trois boutons (clic réel) et n'est
+    ///   **jamais** une zone de déplacement (on ne bouge pas la fenêtre
+    ///   pendant une décision) ;
+    /// - le panneau de consultation n'est déplaçable que par son en-tête ;
+    /// - le HUD compact est intégralement une poignée de déplacement.
+    pub fn pointer_target(&self, x: f32, y: f32) -> PointerTarget {
+        let panel_top = HUD_HEIGHT as f32 + crate::renderer::LAYOUT_GRID;
+        let theme_dark = !self.snapshot().light_mode;
+        if self.pending_card.is_some() {
+            let buttons = crate::renderer::card_buttons(theme_dark);
+            if buttons.validate.contains(x, y) {
+                return PointerTarget::CardValidate;
+            }
+            if buttons.edit.contains(x, y) {
+                return PointerTarget::CardEdit;
+            }
+            if buttons.reject.contains(x, y) {
+                return PointerTarget::CardReject;
+            }
+            // En-tête au-dessus de la carte : seule zone déplaçable.
+            if y >= panel_top && y < crate::renderer::card_rect().y {
+                return PointerTarget::Drag;
+            }
+            return PointerTarget::None;
+        }
+        if self.panel != PanelKind::None {
+            // En-tête du panneau de consultation (avant le contenu).
+            if y >= panel_top && y < panel_top + 84.0 {
+                return PointerTarget::Drag;
+            }
+            return PointerTarget::None;
+        }
+        if y >= 0.0 && y < HUD_HEIGHT as f32 {
+            PointerTarget::Drag
+        } else {
+            PointerTarget::None
+        }
+    }
+
     /// Carte d'action réelle en attente, si le démon en a proposé une.
     pub fn pending_card(&self) -> Option<&ActionCard> {
         self.pending_card.as_ref()
@@ -310,7 +444,8 @@ impl HudApp {
     /// Contenu texte du panneau actif. Aucune donnée inventée : une liste
     /// vide dit explicitement qu'il faut interroger le démon.
     pub fn consult_view(&self) -> ConsultView {
-        let footer = "Échap fermer  ·  F1 Journal  ·  F2 Mémoire  ·  F3 Statut".to_string();
+        let footer =
+            "Échap fermer  ·  F1 Journal  ·  F2 Mémoire  ·  F3 Statut  ·  F4 Agents".to_string();
         match self.panel {
             PanelKind::Journal => {
                 let mut lines = Vec::new();
@@ -440,6 +575,47 @@ impl HudApp {
                     footer,
                 }
             }
+            PanelKind::Agents => {
+                let mut lines: Vec<ConsultLine> = Vec::new();
+                for agent in &self.agents {
+                    let etat = if agent.artifact_present {
+                        "exécutable (WASM vérifié)".to_string()
+                    } else {
+                        "déclaratif (aucun binaire)".to_string()
+                    };
+                    let sha = if agent.sha256.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [sha256 {}…]", &agent.sha256[..agent.sha256.len().min(12)])
+                    };
+                    lines.push(ConsultLine::new(
+                        format!("{} — {etat}{sha}", agent.name),
+                        if agent.artifact_present {
+                            ConsultLineKind::Strong
+                        } else {
+                            ConsultLineKind::Muted
+                        },
+                    ));
+                }
+                if lines.is_empty() {
+                    lines.push(ConsultLine::new(
+                        "Aucun agent listé par le démon.",
+                        ConsultLineKind::Muted,
+                    ));
+                }
+                if let Some((name, output, ms)) = &self.last_agent_run {
+                    lines.push(ConsultLine::new(
+                        format!("Dernière exécution : {name} ({ms} ms) → {output}"),
+                        ConsultLineKind::Normal,
+                    ));
+                }
+                ConsultView {
+                    title: "Agents".into(),
+                    subtitle: "Exécutables (WASM réel) vs manifests déclaratifs".into(),
+                    lines,
+                    footer,
+                }
+            }
             PanelKind::Response | PanelKind::None => {
                 let aux = self.aux_notice();
                 let lines = match &aux {
@@ -522,6 +698,18 @@ impl HudApp {
         {
             return Vec::new();
         }
+        // Un tour est EN VOL (réponse attendue du démon) : la frappe ne doit
+        // pas réécrire la requête. Sans ce garde-fou, une lettre tapée pendant
+        // l'attente remettait le HUD en mode saisie (`open_prompt`) et
+        // pouvait déclencher un SECOND tour concurrent.
+        if self.pending_query.is_some()
+            && matches!(
+                &input,
+                HudInput::Char(_) | HudInput::ImeCommit(_) | HudInput::Backspace | HudInput::Enter
+            )
+        {
+            return Vec::new();
+        }
         match input {
             HudInput::HotkeyToggle => self.toggle_visibility(),
             HudInput::Char(c) => {
@@ -572,6 +760,27 @@ impl HudApp {
                         let q = query.trim().to_string();
                         if q.is_empty() {
                             Vec::new()
+                        } else if let Some(rest) = q.strip_prefix(":agent ") {
+                            // Commande LOCALE : exécution d'un agent WASM réel
+                            // via le démon (`:agent <nom> <json>`). Le HUD
+                            // n'invente rien : il transmet, le démon décide.
+                            let mut parts = rest.splitn(2, ' ');
+                            let name = parts.next().unwrap_or_default().trim().to_string();
+                            let input_json = parts.next().unwrap_or("{}").trim().to_string();
+                            if name.is_empty() {
+                                self.notice = Some("usage : :agent <nom> <json>".into());
+                                vec![HudAction::Redraw]
+                            } else {
+                                self.hud.open_prompt();
+                                vec![HudAction::RunAgent {
+                                    name,
+                                    input_json: if input_json.is_empty() {
+                                        "{}".to_string()
+                                    } else {
+                                        input_json
+                                    },
+                                }]
+                            }
                         } else {
                             vec![HudAction::Submit { query: q }]
                         }
@@ -583,6 +792,7 @@ impl HudApp {
             HudInput::ShowJournal => self.open_panel(PanelKind::Journal),
             HudInput::ShowMemory => self.open_panel(PanelKind::Memory),
             HudInput::ShowStatus => self.open_panel(PanelKind::Status),
+            HudInput::ShowAgents => self.open_panel(PanelKind::Agents),
             HudInput::Tick => self.tick(),
             HudInput::FocusQuery => {
                 if self.visible {
@@ -632,11 +842,13 @@ impl HudApp {
     pub fn on_submit_sent(&mut self, query: String) -> Vec<HudAction> {
         let was_expanded = self.panel != PanelKind::None;
         self.pending_query = Some(query.clone());
+        self.waiting_since = Some(Instant::now());
+        self.waiting_shown_secs = 0;
+        self.streamed_text.clear();
         self.notice = None;
         self.data_notice = None;
         self.panel = PanelKind::None;
-        self.hud
-            .set_streaming(query, "En attente de réponse du démon…", false);
+        self.hud.set_streaming(query, waiting_text(0), false);
         if !self.visible {
             return Vec::new();
         }
@@ -674,7 +886,27 @@ impl HudApp {
     pub fn on_ipc_connected(&mut self) -> Vec<HudAction> {
         match self.queued_queries.pop_front() {
             Some(query) => vec![HudAction::Submit { query }],
-            None => Vec::new(),
+            None => match self.pending_panel_request.take() {
+                // La donnée du panneau était demandée AVANT la connexion :
+                // on la redemande (sinon le panneau resterait vide).
+                Some(kind) => vec![panel_request_action(kind)],
+                None => Vec::new(),
+            },
+        }
+    }
+
+    /// Demande de panneau impossible (démon absent) : le HUD le signale ET
+    /// garde la demande pour la rejouer à la prochaine connexion.
+    pub fn on_panel_request_failed(&mut self, kind: PanelKind) -> Vec<HudAction> {
+        self.pending_panel_request = Some(kind);
+        // Refus explicite (erreur) : l'utilisateur doit voir que la donnée
+        // n'a PAS été inventée.
+        self.notice = Some("démon non connecté — données réelles du démon requises".to_string());
+        if self.visible {
+            vec![HudAction::Redraw]
+        } else {
+            self.unseen_reply = true;
+            Vec::new()
         }
     }
 
@@ -764,6 +996,7 @@ impl HudApp {
         card_id: u64,
         approved: bool,
         audit_id: &str,
+        effect: Option<&str>,
     ) -> Vec<HudAction> {
         if self.pending_card.as_ref().map(|c| c.id) != Some(card_id) {
             return self.notice_actions(format!(
@@ -774,8 +1007,14 @@ impl HudApp {
         self.pending_actions = 0;
         self.presence.set_state(hakille_ui::PresenceState::Idle);
         let short: String = audit_id.chars().take(8).collect();
+        // L'effet est celui RÉELLEMENT produit par le démon (mis en file
+        // durable, ou aucun effet si refus). Le HUD ne l'invente jamais.
+        let effect_text = match effect {
+            Some(e) => format!(" ; effet : {e}"),
+            None => " ; aucun effet".to_string(),
+        };
         self.data_notice = Some(format!(
-            "carte #{card_id} {} — décision auditée [{short}] ; aucune exécution métier",
+            "carte #{card_id} {} — décision auditée [{short}]{effect_text}",
             if approved { "approuvée" } else { "refusée" }
         ));
         let was_expanded = self.panel != PanelKind::None;
@@ -817,12 +1056,27 @@ impl HudApp {
                     Vec::new()
                 }
             }
+            KernelToUi::TokenDelta { text } => {
+                // STREAMING : le texte apparaît au fil de l'eau. La réponse
+                // finale (HudReply) remplacera ce texte (c'est la référence).
+                self.streamed_text.push_str(&text);
+                let streamed = self.streamed_text.clone();
+                if let Some(query) = self.pending_query.clone() {
+                    self.hud.set_streaming(query, streamed, false);
+                }
+                if self.visible {
+                    vec![HudAction::Redraw]
+                } else {
+                    Vec::new()
+                }
+            }
             KernelToUi::ShowCard(card) => self.show_card(card),
             KernelToUi::CardDecisionAck {
                 card_id,
                 approved,
                 audit_id,
-            } => self.on_card_decision_ack(card_id, approved, &audit_id),
+                effect,
+            } => self.on_card_decision_ack(card_id, approved, &audit_id, effect.as_deref()),
             KernelToUi::JournalReply { entries } => {
                 let count = entries.len();
                 self.journal_entries = entries;
@@ -841,6 +1095,36 @@ impl HudApp {
                 let label = format!("statut : {} — {}", status.model, status.cost);
                 self.last_status = Some(status);
                 self.data_reply_actions(PanelKind::Status, label)
+            }
+            KernelToUi::AgentListReply { agents } => {
+                // Liste HONNÊTE : on affiche ce que le démon a réellement
+                // (exécutable vs déclaratif). Aucune capability inventée.
+                let count = agents.len();
+                let real = agents.iter().filter(|a| a.artifact_present).count();
+                self.agents = agents;
+                self.data_reply_actions(
+                    PanelKind::Agents,
+                    format!("agents : {count} listé(s), {real} réellement exécutable(s)"),
+                )
+            }
+            KernelToUi::AgentRunReply {
+                name,
+                output_json,
+                duration_ms,
+                input_sha256,
+                output_sha256,
+            } => {
+                // Sortie RÉELLE rapportée par le démon (jamais simulée ici).
+                self.last_agent_run = Some((name.clone(), output_json.clone(), duration_ms));
+                self.data_notice = Some(format!(
+                    "agent {name} — {duration_ms} ms — sortie {output_json} (in {input_sha256} / out {output_sha256})"
+                ));
+                if self.visible {
+                    vec![HudAction::Redraw]
+                } else {
+                    self.unseen_reply = true;
+                    Vec::new()
+                }
             }
             msg => self.on_turn_reply(msg),
         }
@@ -870,6 +1154,9 @@ impl HudApp {
     /// panneau précédent pour revenir au HUD 720×64.
     fn display_turn(&mut self, query: String, text: String, error: bool) -> Vec<HudAction> {
         let long = response_is_long(&text);
+        // Le tour est terminé : plus de chrono d'attente, plus de flux.
+        self.waiting_since = None;
+        self.streamed_text.clear();
         if error {
             self.notice = Some(text.clone());
         } else {
@@ -937,17 +1224,7 @@ impl HudApp {
             actions.push(HudAction::ShowWindow);
         }
         actions.push(self.resize_action(true));
-        actions.push(match kind {
-            PanelKind::Journal => HudAction::RequestJournal {
-                limit: CONSULT_LIMIT,
-            },
-            PanelKind::Memory => HudAction::RequestMemory {
-                query: None,
-                limit: CONSULT_LIMIT,
-            },
-            PanelKind::Status => HudAction::RequestStatus,
-            PanelKind::Card | PanelKind::Response | PanelKind::None => HudAction::Redraw,
-        });
+        actions.push(panel_request_action(kind));
         actions.push(HudAction::Redraw);
         actions
     }
@@ -972,6 +1249,8 @@ impl HudApp {
     /// d'annulation, aucune réponse ne viendra plus).
     pub fn on_kernel_disconnected(&mut self) -> Vec<HudAction> {
         let had_card = self.pending_card.take().is_some();
+        // Plus aucune réponse ne viendra : le chrono d'attente s'arrête.
+        self.waiting_since = None;
         if had_card {
             self.pending_actions = 0;
             self.panel = PanelKind::None;
@@ -1096,6 +1375,9 @@ impl HudApp {
         if !self.visible {
             return Vec::new();
         }
+        // Temps d'attente : une seule mise à jour par seconde, le texte
+        // reste stable entre deux ticks (pas de redraw par frame).
+        let elapsed_update = self.refresh_waiting_text();
         if self.evaporate_remaining_ms > 0 {
             let step = self.frame_interval().as_millis().max(1) as u32;
             self.evaporate_remaining_ms = self.evaporate_remaining_ms.saturating_sub(step);
@@ -1108,14 +1390,36 @@ impl HudApp {
                 HudAction::RequestFrameIn(self.frame_interval()),
             ];
         }
-        if self.budget.poll(Instant::now(), self.needs_animation()) {
+        let mut actions = if self.budget.poll(Instant::now(), self.needs_animation()) {
             vec![
                 HudAction::Redraw,
                 HudAction::RequestFrameIn(self.frame_interval()),
             ]
         } else {
             Vec::new()
+        };
+        if elapsed_update && !actions.contains(&HudAction::Redraw) {
+            actions.push(HudAction::Redraw);
         }
+        actions
+    }
+
+    /// Met à jour le texte d'attente (temps réel écoulé). `true` si le texte
+    /// a changé et qu'un redraw est donc nécessaire.
+    fn refresh_waiting_text(&mut self) -> bool {
+        let Some(start) = self.waiting_since else {
+            return false;
+        };
+        let secs = start.elapsed().as_secs();
+        if secs == self.waiting_shown_secs {
+            return false;
+        }
+        self.waiting_shown_secs = secs;
+        let Some(query) = self.pending_query.clone() else {
+            return false;
+        };
+        self.hud.set_streaming(query, waiting_text(secs), false);
+        true
     }
 
     fn ensure_prompt(&mut self) {
@@ -1316,9 +1620,207 @@ mod tests {
     }
 
     #[test]
+    fn agent_command_is_sent_to_the_daemon_not_to_the_llm() {
+        let mut app = shown(false);
+        type_text(&mut app, ":agent echo-agent {\"msg\":\"bonjour\"}");
+        let actions = app.handle(HudInput::Enter);
+        assert_eq!(
+            actions,
+            vec![HudAction::RunAgent {
+                name: "echo-agent".to_string(),
+                input_json: "{\"msg\":\"bonjour\"}".to_string(),
+            }],
+            "une commande agent ne part JAMAIS dans le LLM"
+        );
+        // Le champ est vidé : la commande ne reste pas dans le HUD.
+        assert_eq!(app.snapshot().hud_query, "");
+    }
+
+    #[test]
+    fn agent_list_reply_distinguishes_real_and_declarative_agents() {
+        let mut app = shown(false);
+        let actions = app.on_kernel_reply(KernelToUi::AgentListReply {
+            agents: vec![
+                AgentDto {
+                    id: "echo-agent".into(),
+                    name: "echo-agent".into(),
+                    required_caps: vec![],
+                    artifact_present: true,
+                    sha256: "a".repeat(64),
+                },
+                AgentDto {
+                    id: "agent-mail".into(),
+                    name: "Mail Agent".into(),
+                    required_caps: vec!["Network".into()],
+                    artifact_present: false,
+                    sha256: String::new(),
+                },
+            ],
+        });
+        assert!(actions.contains(&HudAction::ResizeWindow {
+            width: 720,
+            height: 360
+        }));
+        let view = app.consult_view();
+        let texte: String = view.lines.iter().map(|l| l.text.clone()).collect();
+        assert!(texte.contains("echo-agent"), "{texte}");
+        assert!(texte.contains("exécutable"), "{texte}");
+        assert!(texte.contains("déclaratif"), "{texte}");
+    }
+
+    #[test]
+    fn agent_run_reply_shows_the_real_output() {
+        let mut app = shown(false);
+        let actions = app.on_kernel_reply(KernelToUi::AgentRunReply {
+            name: "echo-agent".into(),
+            output_json: "{\"echo\":\"bonjour\"}".into(),
+            duration_ms: 7,
+            input_sha256: "b".repeat(64),
+            output_sha256: "c".repeat(64),
+        });
+        assert!(actions.contains(&HudAction::Redraw));
+        let notice = app.aux_notice().expect("sortie d'agent affichée");
+        assert!(notice.text.contains("echo-agent"), "{}", notice.text);
+        assert!(
+            notice.text.contains("{\"echo\":\"bonjour\"}"),
+            "{}",
+            notice.text
+        );
+    }
+
+    #[test]
+    fn panel_request_failed_is_replayed_on_connection() {
+        // Un panneau demandé AVANT la connexion ne doit pas rester vide
+        // pour toujours : la demande est rejouée à la connexion.
+        let mut app = shown(false);
+        let actions = app.handle(HudInput::ShowMemory);
+        assert!(actions.contains(&HudAction::RequestMemory {
+            query: None,
+            limit: CONSULT_LIMIT,
+        }));
+        // Le démon est absent : la demande échoue, le HUD le signale.
+        let actions = app.on_panel_request_failed(PanelKind::Memory);
+        assert!(actions.contains(&HudAction::Redraw));
+        let aux = app.aux_notice().expect("refus affiché");
+        assert!(aux.error, "le refus doit être visible");
+        assert!(aux.text.contains("non connecté"), "{}", aux.text);
+        // À la connexion, la demande est rejouée.
+        let actions = app.on_ipc_connected();
+        assert!(
+            actions.contains(&HudAction::RequestMemory {
+                query: None,
+                limit: CONSULT_LIMIT,
+            }),
+            "la demande doit être rejouée : {actions:?}"
+        );
+        // Une seconde connexion ne rejoue rien (pas de boucle).
+        assert!(app.on_ipc_connected().is_empty());
+    }
+
+    #[test]
+    fn streamed_tokens_are_accumulated_then_replaced_by_the_final_reply() {
+        let mut app = shown(false);
+        app.on_submit_sent("salut".into());
+        // Deltas : le texte apparaît au fil de l'eau.
+        for delta in ["Bon", "jour", " à tous"] {
+            let actions = app.on_kernel_reply(KernelToUi::TokenDelta {
+                text: delta.to_string(),
+            });
+            assert!(actions.contains(&HudAction::Redraw));
+        }
+        let snap = app.snapshot();
+        assert_eq!(snap.hud_response, "Bonjour à tous");
+        assert!(
+            snap.hud_streaming,
+            "la réponse reste en cours (streaming) : {}",
+            snap.hud_response
+        );
+        // La réponse FINALE remplace le texte cumulé (c'est la référence).
+        let actions = app.on_kernel_reply(KernelToUi::HudReply {
+            response: "Bonjour à tous, comment vas-tu ?".into(),
+            validation: None,
+        });
+        assert!(actions.contains(&HudAction::Redraw));
+        let snap = app.snapshot();
+        assert_eq!(snap.hud_response, "Bonjour à tous, comment vas-tu ?");
+        assert!(!snap.hud_streaming, "la réponse finale n'est plus un flux");
+    }
+
+    #[test]
     fn close_quits() {
         let mut app = app(false, false);
         assert_eq!(app.handle(HudInput::Close), vec![HudAction::Quit]);
+    }
+
+    #[test]
+    fn typing_during_a_pending_turn_never_starts_a_second_turn() {
+        let mut app = shown(false);
+        app.on_submit_sent("combien".into());
+        // Une frappe pendant l'attente ne doit ni réécrire la requête ni
+        // remettre le HUD en mode saisie (source du double tour concurrent).
+        assert!(app.handle(HudInput::Char('x')).is_empty());
+        assert!(app.handle(HudInput::Backspace).is_empty());
+        assert!(app.handle(HudInput::Enter).is_empty());
+        let snap = app.snapshot();
+        assert_eq!(snap.hud_query, "combien");
+        assert!(
+            snap.hud_response
+                .starts_with("En attente de réponse du démon…"),
+            "l'attente reste affichée : {}",
+            snap.hud_response
+        );
+    }
+
+    #[test]
+    fn waiting_text_is_explicit_about_the_real_wait() {
+        let text = waiting_text(42);
+        assert!(text.contains("42s"), "temps écoulé réel : {text}");
+        assert!(
+            text.contains("Qwen CPU local"),
+            "la cause de l'attente est annoncée : {text}"
+        );
+    }
+
+    #[test]
+    fn reply_clears_the_waiting_chrono() {
+        let mut app = shown(false);
+        app.on_submit_sent("statut".into());
+        assert!(app.snapshot().hud_response.contains("En attente"));
+        app.on_kernel_reply(KernelToUi::HudReply {
+            response: "ok".into(),
+            validation: None,
+        });
+        let snap = app.snapshot();
+        assert_eq!(snap.hud_response, "ok");
+        assert!(!snap.hud_response.contains("En attente"));
+    }
+
+    #[test]
+    fn pointer_target_exposes_card_buttons_and_drag_zones() {
+        let mut app = shown(false);
+        // HUD compact : toute la barre est une poignée de déplacement.
+        assert_eq!(app.pointer_target(300.0, 30.0), PointerTarget::Drag);
+        assert_eq!(app.pointer_target(300.0, 200.0), PointerTarget::None);
+
+        // Carte ouverte : les trois boutons sont cliquables, le corps non.
+        app.on_kernel_reply(KernelToUi::ShowCard(test_card(7)));
+        let buttons = crate::renderer::card_buttons(true);
+        assert_eq!(
+            app.pointer_target(buttons.validate.x + 2.0, buttons.validate.y + 2.0),
+            PointerTarget::CardValidate
+        );
+        assert_eq!(
+            app.pointer_target(buttons.edit.x + 2.0, buttons.edit.y + 2.0),
+            PointerTarget::CardEdit
+        );
+        assert_eq!(
+            app.pointer_target(buttons.reject.x + 2.0, buttons.reject.y + 2.0),
+            PointerTarget::CardReject
+        );
+        // On ne bouge pas la fenêtre pendant une décision.
+        assert_eq!(app.pointer_target(300.0, 300.0), PointerTarget::None);
+        // L'en-tête de la carte reste une zone de déplacement.
+        assert_eq!(app.pointer_target(300.0, 80.0), PointerTarget::Drag);
     }
 
     #[test]
@@ -1437,10 +1939,12 @@ mod tests {
         let actions = app.on_kernel_reply(KernelToUi::Presence(PresenceState::Acting));
         assert_eq!(actions, vec![HudAction::Redraw]);
         assert_eq!(app.presence.state(), hakille_ui::PresenceState::Acting);
-        assert_eq!(
-            app.snapshot().hud_response,
-            "En attente de réponse du démon…",
-            "la requête reste en vol après une présence"
+        assert!(
+            app.snapshot()
+                .hud_response
+                .starts_with("En attente de réponse du démon…"),
+            "la requête reste en vol après une présence : {}",
+            app.snapshot().hud_response
         );
         assert!(app.needs_animation(), "présence Acting animée");
         let actions = app.on_kernel_disconnected();
@@ -1554,10 +2058,12 @@ mod tests {
                 HudAction::Redraw
             ]
         );
-        assert_eq!(
-            app.snapshot().hud_response,
-            "En attente de réponse du démon…",
-            "la consultation ne doit pas clore la requête en vol"
+        assert!(
+            app.snapshot()
+                .hud_response
+                .starts_with("En attente de réponse du démon…"),
+            "la consultation ne doit pas clore la requête en vol : {}",
+            app.snapshot().hud_response
         );
         let actions = app.on_kernel_disconnected();
         assert_eq!(actions, vec![HudAction::Redraw]);
@@ -1758,7 +2264,12 @@ mod tests {
         assert_eq!(app.snapshot().presence_state, 2, "Acting pendant l'audit");
         assert_eq!(app.pending_card().map(|c| c.id), Some(9));
 
-        let actions = app.on_card_decision_ack(9, true, "018f0000-aaaa-bbbb-cccc-000000000009");
+        let actions = app.on_card_decision_ack(
+            9,
+            true,
+            "018f0000-aaaa-bbbb-cccc-000000000009",
+            Some("action mise en file (clé card#9)"),
+        );
         assert!(actions.contains(&HudAction::ResizeWindow {
             width: 720,
             height: 64
@@ -1769,14 +2280,18 @@ mod tests {
         assert_eq!(app.scene().height, HUD_HEIGHT);
         let notice = app.aux_notice().expect("accusé affiché");
         assert!(notice.text.contains("décision auditée"));
-        assert!(notice.text.contains("aucune exécution"));
+        assert!(
+            notice.text.contains("action mise en file"),
+            "l'effet réel est affiché tel quel : {}",
+            notice.text
+        );
     }
 
     #[test]
     fn unmatched_card_ack_never_clears_the_pending_card() {
         let mut app = shown(false);
         app.on_kernel_reply(KernelToUi::ShowCard(test_card(11)));
-        let actions = app.on_card_decision_ack(12, true, "uuid");
+        let actions = app.on_card_decision_ack(12, true, "uuid", None);
         assert!(actions.contains(&HudAction::Redraw));
         assert_eq!(app.pending_card().map(|c| c.id), Some(11));
         let notice = app.aux_notice().expect("accusé ignoré signalé");

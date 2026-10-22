@@ -529,6 +529,15 @@ impl CognitiveOrchestrator {
     /// DTO ne contient que les champs affichés à l'utilisateur et des
     /// constantes honnêtes (local, irréversible, zéro exécution).
     pub fn action_card_preview(prompt: &str) -> Option<ActionCardPreview> {
+        Self::action_card_with_plan(prompt).map(|(preview, _plan)| preview)
+    }
+
+    /// Carte d'action **+ plan d'exécution** correspondant.
+    ///
+    /// Garder seulement la carte d'affichage perd le plan : à l'approbation,
+    /// le démon ne saurait plus QUOI exécuter. Cette variante expose le plan
+    /// pour qu'il puisse être conservé, audité et mis en file.
+    pub fn action_card_with_plan(prompt: &str) -> Option<(ActionCardPreview, ExecutionPlan)> {
         if !Self::is_irreversible_prompt(prompt) {
             return None;
         }
@@ -550,16 +559,19 @@ impl CognitiveOrchestrator {
             "Action irréversible détectée — confirmation humaine explicite requise ; aucun effet exécuté."
                 .to_string()
         });
-        Some(ActionCardPreview {
-            verb: "Confirmer".to_string(),
-            object,
-            reason,
-            cost_cents,
-            currency: "EUR".to_string(),
-            reversible: false,
-            data_exit_local: true,
-            provenance_label: "Hakille — plan sec (aucune exécution)".to_string(),
-        })
+        Some((
+            ActionCardPreview {
+                verb: "Confirmer".to_string(),
+                object,
+                reason,
+                cost_cents,
+                currency: "EUR".to_string(),
+                reversible: false,
+                data_exit_local: true,
+                provenance_label: "Hakille — plan sec (aucune exécution)".to_string(),
+            },
+            plan,
+        ))
     }
 
     /// Directive de priorité dérivée du niveau de confiance (mission priority) :

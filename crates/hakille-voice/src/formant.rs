@@ -2177,6 +2177,23 @@ impl FormantStream {
         self.total
     }
 
+    /// Timeline de visèmes dérivée de la timeline phonémique RÉELLE.
+    ///
+    /// Les visèmes sont **phonémiques** (coarticulation non modélisée) : la
+    /// timeline est donc cohérente PAR CONSTRUCTION avec l'audio synthétisé
+    /// (même source), et l'invariant « somme des durées == total_samples »
+    /// est vérifié par test.
+    pub fn viseme_timeline(&self) -> Vec<crate::viseme::VisemeFrame> {
+        self.tl
+            .iter()
+            .map(|p| crate::viseme::VisemeFrame {
+                viseme: crate::viseme::viseme_for_phoneme(p.sym),
+                start_sample: p.start,
+                len_samples: p.len,
+            })
+            .collect()
+    }
+
     fn phoneme_at(&self, pos: usize) -> Option<&TimedPh> {
         // Recherche dichotomique sur les débuts.
         let mut lo = 0usize;
@@ -2334,6 +2351,34 @@ pub fn estimate_f0_autocorr(samples: &[f32], sample_rate: u32) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_viseme_timeline_is_consistent_with_the_synthesized_audio() {
+        // INVARIANT FORT : la timeline de visèmes couvre EXACTEMENT l'audio
+        // produit (pas de dérive possible entre visèmes et son).
+        let v = FormantVoice::default();
+        let text = "Bonjour, voici votre synthèse du jour.";
+        let stream = FormantStream::new(text, &v);
+        let timeline = stream.viseme_timeline();
+        assert!(!timeline.is_empty(), "une timeline est produite");
+        let sum: usize = timeline.iter().map(|f| f.len_samples).sum();
+        assert_eq!(
+            sum,
+            stream.total_samples(),
+            "la somme des durées de visèmes == durée totale de l'audio"
+        );
+        // Les visèmes ne sont jamais « inconnus » pour un texte réel.
+        assert!(
+            timeline
+                .iter()
+                .all(|f| f.viseme != crate::viseme::Viseme::Unknown),
+            "aucun phonème réel ne doit être non cartographié"
+        );
+        // Un texte vide ne produit AUCUNE timeline (pas de visème inventé).
+        let vide = FormantStream::new("", &v);
+        assert!(vide.viseme_timeline().is_empty());
+        assert_eq!(vide.total_samples(), 0);
+    }
 
     #[test]
     fn test_duree_proportionnelle_aux_phonemes() {

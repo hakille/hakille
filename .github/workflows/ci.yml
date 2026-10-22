@@ -91,17 +91,31 @@ jobs:
         run: cargo deny check bans sources advisories
 
   conformance-slow:
-    # Gate lente hebdo : 7 tests ignorés (décodage Qwen CPU réel, minutes en
-    # debug). Fast gate (66 tests) reste dans check-test via `xtask conformance`.
-    # Tant que les 7 slow ne sont pas verts en nightly, la suite fast est la
+    # Gate lente hebdo : 12 tests ignorés (décodage Qwen CPU réel, minutes en
+    # debug) — 7 dans `conformance`, 5 dans `hakille-kernel`. Fast gate
+    # (66 tests) reste dans check-test via `xtask conformance`.
+    # Tant que les 12 slow ne sont pas verts en nightly, la suite fast est la
     # référence CI ; voir xtask conformance-slow.
+    # ATTENTION : ces tests exigent le GGUF Qwen + son tokenizer (~475 Mo) :
+    # sans provisionnement, ils ÉCHOUENT (ils ne SKIP pas) — c'est voulu,
+    # un « slow » vert sans modèle ne testerait rien.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.95"
+      - name: cache des modèles (clé = hash du catalogue)
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: models-qwen-${{ hashFiles('crates/hakille-inference/src/catalog.rs') }}
+      - name: provision Qwen (GGUF + tokenizer, ~475 Mo)
+        run: cargo run -p hakille-daemon -- models download --model qwen2.5-0.5b-instruct-q4km
+      - name: vérification d'intégrité des artefacts
+        run: cargo run -p hakille-daemon -- models verify
       - name: conformance slow (ignored real-inference)
         run: cargo run -p xtask -- conformance-slow
 

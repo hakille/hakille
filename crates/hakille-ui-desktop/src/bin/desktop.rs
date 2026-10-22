@@ -5,21 +5,25 @@
 //! `--authorized` = pont `LocalAuthorized` simulé ; `--smoke` = auto-test
 //! (event loop réel + fenêtre cachée + surface softbuffer + 1 rendu) puis sort.
 //!
-//! Limite documentée : softbuffer 0.4 ne compose pas la transparence (fenêtre
-//! noire avec `transparent=true`) → override honnête `transparent=false`.
+//! Transparence : softbuffer écrit en XRGB (pas d'alpha), donc la fenêtre
+//! Windows est passée en **couche Win32 avec clé couleur** : le fond peint
+//! (0x010101) devient transparent et le bureau transparaît au lieu d'un
+//! rectangle noir. Sur les autres plateformes, le fond reste opaque (limite
+//! assumée et annoncée, jamais un « noir silencieux »).
 
 use accesskit_winit::{
     Adapter as AccessKitAdapter, Event as AccessKitEvent, WindowEvent as AccessKitWindowEvent,
 };
 use hakille_ipc::transport;
 use hakille_ui_desktop::a11y::ActionCardA11y;
-use hakille_ui_desktop::app::{HudAction, HudApp, HudInput};
+use hakille_ui_desktop::app::{HudAction, HudApp, HudInput, PanelKind, PointerTarget};
 use hakille_ui_desktop::runtime::WinitConfig;
 use hakille_ui_desktop::scene::Scene;
 use hakille_ui_desktop::{
     FrameBudget, IpcClient, SceneRenderer, SoftwareRenderer, build_action_card_tree,
     build_shell_tree,
 };
+use hakille_ui_model::snapshot::HUD_WIDTH;
 use hakille_ui_platform::hotkey::{HakilleHotkey, HotkeyEvent};
 use hakille_ui_protocol::{ActionCard, DataExit, KernelToUi, Provenance, UiToKernel};
 use std::num::NonZeroU32;
@@ -27,8 +31,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
-use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
+use winit::dpi::{LogicalSize, PhysicalPosition};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
@@ -111,12 +115,74 @@ impl From<AccessKitEvent> for AppEvent {
     }
 }
 
+/// Active la transparence réelle de la fenêtre (Windows uniquement).
+///
+/// Softbuffer écrit des pixels XRGB : l'alpha n'existe pas. On passe donc la
+/// fenêtre en **couche Win32** (`WS_EX_LAYERED`) avec une **clé couleur**
+/// égale au fond peint exact (`0x010101`) : ces pixels disparaissent
+/// totalement, le bureau transparaît. Le contenu (HUD, panneau, carte) n'est
+/// jamais de cette couleur, donc rien n'est troué par accident.
+///
+/// IMPORTANT : winit **réapplique les styles** de la fenêtre à chaque
+/// changement d'état (afficher/masquer, redimensionner…) et efface alors
+/// `WS_EX_LAYERED`. Cette fonction doit donc être rappelée après chaque
+/// opération de ce type — sinon la clé couleur redevient inopérante et le
+/// fond repasse opaque.
+///
+/// Retourne `true` si la transparence est RÉELLEMENT active.
+fn enable_transparency(window: &Arc<Window>) -> bool {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{COLORREF, HWND};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GWL_EXSTYLE, GetWindowLongPtrW, LWA_COLORKEY, SetLayeredWindowAttributes,
+            SetWindowLongPtrW, WS_EX_LAYERED,
+        };
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        let Ok(handle) = window.window_handle() else {
+            eprintln!("hakille-desktop: handle de fenêtre indisponible — transparence désactivée");
+            return false;
+        };
+        let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+            eprintln!("hakille-desktop: handle non-Win32 — transparence désactivée");
+            return false;
+        };
+        let hwnd = HWND(win32.hwnd.get() as *mut core::ffi::c_void);
+        // WS_EX_LAYERED : la fenêtre est composée par le gestionnaire Win32.
+        let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+        if style & WS_EX_LAYERED.0 as isize == 0 {
+            unsafe {
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED.0 as isize);
+            }
+        }
+        // Clé couleur = fond peint exact (COLORREF 0x00BBGGRR → RGB 1,1,1).
+        let key = COLORREF(0x0001_0101);
+        match unsafe { SetLayeredWindowAttributes(hwnd, key, 0, LWA_COLORKEY) } {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("hakille-desktop: transparence refusée par l'OS ({e}) — fond opaque");
+                false
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // Pas de transparence composée sur les autres plateformes : le fond
+        // reste opaque et c'est ANNONCÉ (jamais un noir silencieux).
+        let _ = window;
+        false
+    }
+}
+
 /// Présentation logicielle : contexte, surface, renderer.
 struct Present {
     _context: softbuffer::Context<Arc<Window>>,
     surface: softbuffer::Surface<Arc<Window>, Arc<Window>>,
     renderer: SoftwareRenderer,
     size: (u32, u32),
+    /// `true` ssi la fenêtre est réellement en couche (transparence active).
+    transparent_window: bool,
 }
 
 impl Present {
@@ -133,11 +199,19 @@ impl Present {
                 NonZeroU32::new(h).expect("h >= 1"),
             )
             .map_err(|e| format!("resize: {e}"))?;
+        // Transparence : softbuffer écrit en XRGB (pas d'alpha). On passe donc
+        // la fenêtre en couche Win32 avec une CLÉ COULEUR : le fond peint
+        // (0x010101) devient totalement transparent, le bureau transparaît
+        // au lieu d'afficher un rectangle noir.
+        let transparent_window = enable_transparency(window);
+        let renderer =
+            SoftwareRenderer::new(w, h, true).with_transparent_backdrop(transparent_window);
         Ok(Self {
             _context: context,
             surface,
-            renderer: SoftwareRenderer::new(w, h, true),
+            renderer,
             size: (w, h),
+            transparent_window,
         })
     }
 
@@ -162,11 +236,7 @@ impl Present {
     /// de rendu réel pour `--smoke` (encrage > 0 ⇒ formes/glyphes peints).
     fn render(&mut self, scene: &Scene) -> Result<(u32, usize), String> {
         let rgba = self.renderer.paint(scene);
-        let (bg_r, bg_g, bg_b) = if scene.theme_dark {
-            (0x0B, 0x0C, 0x0F)
-        } else {
-            (0xF6, 0xF4, 0xF0)
-        };
+        let (bg_r, bg_g, bg_b) = self.renderer.backdrop_rgb(scene.theme_dark);
         let ink = rgba
             .chunks_exact(4)
             .filter(|c| c[0] != bg_r || c[1] != bg_g || c[2] != bg_b)
@@ -209,6 +279,14 @@ struct WindowState {
 }
 
 impl WindowState {
+    /// Réarme la transparence après une opération susceptible de réécrire
+    /// les styles de fenêtre (winit les recalcule à chaque changement d'état).
+    fn reapply_transparency(&self) {
+        if self.present.transparent_window {
+            enable_transparency(&self.window);
+        }
+    }
+
     /// Arbre AccessKit complet : la carte remplace le HUD (une seule décision
     /// ouverte), sinon focus sur le champ requête si le HUD est visible.
     fn tree(&self, core: &HudApp) -> accesskit::TreeUpdate {
@@ -238,6 +316,10 @@ struct DesktopApp {
     pending_frame_at: Option<Instant>,
     /// Début de l'appui sur Entrée pour une carte irréversible (≥600 ms).
     card_hold_start: Option<Instant>,
+    /// Début de l'appui **souris** sur « Valider » (carte irréversible).
+    card_mouse_hold_start: Option<Instant>,
+    /// Position courante du pointeur (coordonnées physiques).
+    cursor: Option<PhysicalPosition<f64>>,
     frames_rendered: u64,
     code: u8,
     hotkey_status: String,
@@ -249,7 +331,10 @@ impl DesktopApp {
         &self,
         event_loop: &ActiveEventLoop,
     ) -> Result<(Arc<Window>, AccessKitAdapter), String> {
-        // Transparence désactivée : softbuffer ne compose pas l'alpha (noir).
+        // `transparent=false` pour winit : softbuffer écrit en XRGB, donc
+        // l'alpha serait ignoré (fenêtre noire). La transparence réelle est
+        // obtenue autrement : fenêtre en couche Win32 + clé couleur
+        // (voir `enable_transparency`), activée juste après la création.
         let config = WinitConfig {
             transparent: false,
             ..WinitConfig::default()
@@ -272,6 +357,10 @@ impl DesktopApp {
             ws.window.set_visible(true);
             ws.window.set_ime_allowed(true);
             ws.window.focus_window();
+            // winit vient de réappliquer les styles de fenêtre (il efface
+            // `WS_EX_LAYERED`) : on réarme la clé couleur, sinon le fond
+            // repasse opaque.
+            ws.reapply_transparency();
         }
     }
 
@@ -332,6 +421,9 @@ impl DesktopApp {
                         let _ = ws
                             .window
                             .request_inner_size(LogicalSize::new(width as f64, height as f64));
+                        // Un redimensionnement peut réécrire les styles : on
+                        // réarme la clé couleur (transparence).
+                        ws.reapply_transparency();
                     }
                 }
                 HudAction::Submit { query } => {
@@ -384,7 +476,7 @@ impl DesktopApp {
                         .as_ref()
                         .is_some_and(|ipc| ipc.request_journal(limit));
                     if !sent {
-                        let actions = self.core.on_ipc_unavailable("journal");
+                        let actions = self.core.on_panel_request_failed(PanelKind::Journal);
                         self.apply(actions, event_loop);
                     }
                 }
@@ -394,14 +486,31 @@ impl DesktopApp {
                         .as_ref()
                         .is_some_and(|ipc| ipc.request_memory(query, limit));
                     if !sent {
-                        let actions = self.core.on_ipc_unavailable("mémoire");
+                        let actions = self.core.on_panel_request_failed(PanelKind::Memory);
                         self.apply(actions, event_loop);
                     }
                 }
                 HudAction::RequestStatus => {
                     let sent = self.ipc.as_ref().is_some_and(|ipc| ipc.request_status());
                     if !sent {
-                        let actions = self.core.on_ipc_unavailable("statut");
+                        let actions = self.core.on_panel_request_failed(PanelKind::Status);
+                        self.apply(actions, event_loop);
+                    }
+                }
+                HudAction::RequestAgents => {
+                    let sent = self.ipc.as_ref().is_some_and(|ipc| ipc.request_agents());
+                    if !sent {
+                        let actions = self.core.on_panel_request_failed(PanelKind::Agents);
+                        self.apply(actions, event_loop);
+                    }
+                }
+                HudAction::RunAgent { name, input_json } => {
+                    let sent = self
+                        .ipc
+                        .as_ref()
+                        .is_some_and(|ipc| ipc.run_agent(name.clone(), input_json.clone()));
+                    if !sent {
+                        let actions = self.core.on_ipc_unavailable("exécution d'agent");
                         self.apply(actions, event_loop);
                     }
                 }
@@ -448,9 +557,12 @@ impl DesktopApp {
                     "SMOKE hotkey_default_requested={} (repli Alt+Space possible, non exposé par le contrat)",
                     hakille_ui_platform::hotkey::default_hotkey_label()
                 );
-                println!(
-                    "SMOKE note=transparent=false (limite softbuffer 0.4, jamais de noir silencieux)"
-                );
+                let transparency = if ws.present.transparent_window {
+                    "colorkey(layered Win32) — fond transparent, bureau visible"
+                } else {
+                    "opaque (plateforme sans transparence composée — limite assumée, annoncée)"
+                };
+                println!("SMOKE transparency={transparency}");
                 self.code = 0;
             }
             Err(e) => {
@@ -462,6 +574,75 @@ impl DesktopApp {
             }
         }
         event_loop.exit();
+    }
+
+    /// Position du pointeur en coordonnées LOGIQUES de scène (720 × hauteur).
+    fn logical_point(&self) -> Option<(f32, f32)> {
+        let pos = self.cursor?;
+        let ws = self.window.as_ref()?;
+        let size = ws.window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return None;
+        }
+        let scene_h = self.core.scene_height() as f64;
+        let x = pos.x * (HUD_WIDTH as f64 / size.width as f64);
+        let y = pos.y * (scene_h / size.height as f64);
+        Some((x as f32, y as f32))
+    }
+
+    /// Appui gauche : bouton de carte (si une carte est ouverte) sinon
+    /// déplacement de la fenêtre. La cible est calculée par la machine pure
+    /// (`HudApp::pointer_target`) : l'hôte n'invente aucune zone.
+    fn on_left_press(&mut self, event_loop: &ActiveEventLoop) {
+        let Some((x, y)) = self.logical_point() else {
+            return;
+        };
+        let target = self.core.pointer_target(x, y);
+        let card = self.core.pending_card().map(|c| (c.id, c.reversible));
+        match target {
+            PointerTarget::CardValidate => {
+                let Some((id, reversible)) = card else { return };
+                if reversible {
+                    // Carte annulable : validation immédiate (comme Entrée).
+                    self.apply(vec![HudAction::ApproveCard { card_id: id }], event_loop);
+                } else {
+                    // Carte définitive : le maintien 600 ms reste obligatoire.
+                    self.card_mouse_hold_start = Some(Instant::now());
+                }
+            }
+            PointerTarget::CardEdit => {
+                let Some((id, _)) = card else { return };
+                self.apply(vec![HudAction::EditCard { card_id: id }], event_loop);
+            }
+            PointerTarget::CardReject => {
+                let Some((id, _)) = card else { return };
+                self.apply(vec![HudAction::RejectCard { card_id: id }], event_loop);
+            }
+            PointerTarget::Drag => {
+                if let Some(ws) = self.window.as_ref()
+                    && let Err(e) = ws.window.drag_window()
+                {
+                    eprintln!("hakille-desktop: déplacement de fenêtre refusé : {e}");
+                }
+            }
+            PointerTarget::None => {}
+        }
+    }
+
+    /// Relâchement gauche : fin du maintien 600 ms sur « Valider ».
+    fn on_left_release(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(started) = self.card_mouse_hold_start.take() else {
+            return;
+        };
+        if started.elapsed() >= CARD_HOLD {
+            if let Some(card) = self.core.pending_card() {
+                let card_id = card.id;
+                self.apply(vec![HudAction::ApproveCard { card_id }], event_loop);
+            }
+        } else {
+            let actions = self.core.on_card_hold_too_short();
+            self.apply(actions, event_loop);
+        }
     }
 }
 
@@ -655,6 +836,7 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                             Key::Named(NamedKey::F1) => inputs.push(HudInput::ShowJournal),
                             Key::Named(NamedKey::F2) => inputs.push(HudInput::ShowMemory),
                             Key::Named(NamedKey::F3) => inputs.push(HudInput::ShowStatus),
+                            Key::Named(NamedKey::F4) => inputs.push(HudInput::ShowAgents),
                             _ => {
                                 if let Some(text) = text {
                                     for c in text.chars() {
@@ -672,6 +854,17 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
             WindowEvent::Ime(Ime::Commit(text)) => inputs.push(HudInput::ImeCommit(text)),
             // Pas de préédition affichée (limite documentée : IME simple seulement).
             WindowEvent::Ime(Ime::Preedit(..)) => {}
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = Some(position);
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => match state {
+                ElementState::Pressed => self.on_left_press(event_loop),
+                ElementState::Released => self.on_left_release(event_loop),
+            },
             _ => {}
         }
         for input in inputs {
@@ -786,6 +979,8 @@ fn main() -> ExitCode {
         window: None,
         pending_frame_at: None,
         card_hold_start: None,
+        card_mouse_hold_start: None,
+        cursor: None,
         frames_rendered: 0,
         code: 0,
         hotkey_status,

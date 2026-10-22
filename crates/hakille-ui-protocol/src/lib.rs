@@ -112,6 +112,23 @@ pub struct StatusDto {
     pub memory_count: u64,
 }
 
+/// Description d'un agent exposable au HUD.
+///
+/// `artifact_present` = `true` ssi un binaire WASM exécutable est présent et
+/// vérifié (SHA-256). Un agent déclaratif est listé avec
+/// `artifact_present = false` : jamais de faux « opérationnel ».
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AgentDto {
+    pub id: String,
+    pub name: String,
+    /// Scopes déclarés par l'agent (jamais présentés comme appliqués).
+    pub required_caps: Vec<String>,
+    /// `true` ssi l'agent est RÉELLEMENT exécutable (binaire vérifié).
+    pub artifact_present: bool,
+    /// SHA-256 du binaire (vide si l'agent n'a pas de binaire).
+    pub sha256: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum UiToKernel {
     Approve {
@@ -157,6 +174,14 @@ pub enum UiToKernel {
     },
     /// Statut minimal du démon (modèle, coût, état).
     StatusRequest,
+    /// Liste des agents exposés par le démon (additif v1).
+    AgentListRequest,
+    /// Exécution d'un agent WASM réel (additif v1) : entrée JSON → sortie
+    /// JSON. Le démon refuse tout agent sans binaire exécutable.
+    AgentRunRequest {
+        name: String,
+        input_json: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -170,6 +195,14 @@ pub enum KernelToUi {
     HudReply {
         response: String,
         validation: Option<(String, u64)>,
+    },
+    /// Delta de token : la réponse en cours de génération (additif v1).
+    ///
+    /// `text` est le MEILLEUR EFFORT d'affichage (décodage incrémental) ; le
+    /// texte final de `HudReply` reste la référence. Le HUD doit donc
+    /// REMPLACER son texte cumulé par la réponse finale quand elle arrive.
+    TokenDelta {
+        text: String,
     },
     /// Message transitoire honnête (erreur, refus, information).
     Toast {
@@ -191,13 +224,37 @@ pub enum KernelToUi {
     StatusReply {
         status: StatusDto,
     },
+    /// Réponse `AgentListRequest` : agents exposés par le démon.
+    ///
+    /// HONNÊTETÉ : `artifact_present` distingue un agent RÉELLEMENT exécutable
+    /// (binaire WASM vérifié) d'un manifeste déclaratif. Aucun statut
+    /// « opérationnel » n'est annoncé pour un agent sans binaire.
+    AgentListReply {
+        agents: Vec<AgentDto>,
+    },
+    /// Réponse `AgentRunRequest` : exécution réelle dans le bac à sable.
+    ///
+    /// Les empreintes SHA-256 portent sur l'entrée et la sortie : le journal
+    /// peut prouver CE QUI a été exécuté sans conserver la charge utile.
+    AgentRunReply {
+        name: String,
+        output_json: String,
+        duration_ms: u64,
+        input_sha256: String,
+        output_sha256: String,
+    },
     /// Accusé d'une décision de carte : la décision a été auditée avant
     /// l'accusé. `audit_id` est l'identifiant réel de l'entrée de journal.
-    /// Aucun effet métier n'est impliqué par ce message.
+    /// `effect` décrit l'effet RÉEL produit par la décision (ex. mise en file
+    /// durable) ; `None` = aucun effet. Aucun effet métier n'est impliqué
+    /// par ce message : le champ ne fait que rapporter ce que le noyau a
+    /// réellement fait, jamais une promesse.
     CardDecisionAck {
         card_id: u64,
         approved: bool,
         audit_id: String,
+        #[serde(default)]
+        effect: Option<String>,
     },
 }
 
@@ -337,6 +394,52 @@ mod tests {
     }
 
     #[test]
+    fn test_agents_extension_roundtrip_v1() {
+        // Extension additive v1 (agents) : liste + exécution réelle.
+        // La version reste 1, le schéma golden existant ne change pas.
+        let requests = [
+            UiToKernel::AgentListRequest,
+            UiToKernel::AgentRunRequest {
+                name: "echo-agent".into(),
+                input_json: "{\"msg\":\"bonjour\"}".into(),
+            },
+        ];
+        for m in requests {
+            let msg = UiMessage::new(m.clone());
+            assert!(msg.check().is_ok());
+            let json = serde_json::to_string(&msg).unwrap();
+            let back: UiMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.inner, m);
+            assert!(back.check().is_ok());
+        }
+        let replies = [
+            KernelToUi::AgentListReply {
+                agents: vec![AgentDto {
+                    id: "echo-agent".into(),
+                    name: "echo-agent".into(),
+                    required_caps: vec![],
+                    artifact_present: true,
+                    sha256: "a".repeat(64),
+                }],
+            },
+            KernelToUi::AgentRunReply {
+                name: "echo-agent".into(),
+                output_json: "{\"echo\":\"bonjour\"}".into(),
+                duration_ms: 7,
+                input_sha256: "b".repeat(64),
+                output_sha256: "c".repeat(64),
+            },
+        ];
+        for r in replies {
+            let msg = KernelMessage::new(r.clone());
+            assert!(msg.check().is_ok());
+            let json = serde_json::to_string(&msg).unwrap();
+            let back: KernelMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.inner, r);
+        }
+    }
+
+    #[test]
     fn test_consultation_extension_roundtrip_v1() {
         // Extension additive v1 (consultation) : journal, mémoire, remember,
         // statut — la version reste 1, le schéma existant ne change pas.
@@ -395,6 +498,7 @@ mod tests {
                 card_id: 7,
                 approved: true,
                 audit_id: "018f0000-0000-7000-8000-000000000004".into(),
+                effect: Some("action mise en file".into()),
             },
         ];
         for r in replies {

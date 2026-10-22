@@ -94,9 +94,22 @@ async fn test_cross_substrate_screen_capture_conformance() {
         .unwrap();
 
     let win = WindowsSubstrate::new();
-    let win_screen = win.capture_screen(&cap).await.unwrap();
-    assert!(win_screen.width > 0 && win_screen.height > 0);
-    assert!(!win_screen.data.is_empty());
+    // CONTRAT HONNÊTE : le substrat Windows refuse explicitement la capture
+    // hors Windows (aucune frame fabriquée n'est acceptable). Sous Windows,
+    // la capture est réelle (dimensions non nulles, pixels présents).
+    match win.capture_screen(&cap).await {
+        Ok(win_screen) => {
+            assert!(win_screen.width > 0 && win_screen.height > 0);
+            assert!(!win_screen.data.is_empty());
+        }
+        Err(e) => {
+            let message = e.to_string();
+            assert!(
+                message.contains("capture d'écran") || message.contains("capture d'"),
+                "refus explicite attendu, obtenu : {message}"
+            );
+        }
+    }
 
     let lin = LinuxSubstrate::new();
     let lin_screen = lin.capture_screen(&cap).await.unwrap();

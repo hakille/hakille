@@ -112,7 +112,18 @@ pub struct SoftwareRenderer {
     pub height: u32,
     pub dark: bool,
     pub frames: u64,
+    /// Fond du frame rendu en **clé couleur** : la fenêtre Windows en couche
+    /// (`WS_EX_LAYERED` + `LWA_COLORKEY`) retire exactement cette couleur,
+    /// donc le bureau transparaît au lieu d'afficher un rectangle noir.
+    pub transparent_backdrop: bool,
 }
+
+/// Couleur de fond « clé » du mode transparent (0x010101).
+///
+/// Volontairement quasi noire mais **non nulle** : une clé 0x000000
+/// rendrait transparents les pixels de contenu réellement noirs, alors que
+/// 0x010101 ne touche que le fond peint.
+pub const TRANSPARENT_KEY_RGB: (u8, u8, u8) = (0x01, 0x01, 0x01);
 
 impl SoftwareRenderer {
     pub fn new(width: u32, height: u32, dark: bool) -> Self {
@@ -121,6 +132,25 @@ impl SoftwareRenderer {
             height,
             dark,
             frames: 0,
+            transparent_backdrop: false,
+        }
+    }
+
+    /// Active le fond « clé couleur » (transparence réelle de la fenêtre).
+    pub fn with_transparent_backdrop(mut self, transparent: bool) -> Self {
+        self.transparent_backdrop = transparent;
+        self
+    }
+
+    /// Couleur de fond effective du frame (thème ou clé de transparence).
+    pub fn backdrop_rgb(&self, theme_dark: bool) -> (u8, u8, u8) {
+        if self.transparent_backdrop {
+            return TRANSPARENT_KEY_RGB;
+        }
+        if theme_dark {
+            rgb_channels(tokens::COLOR_SURFACE_0_DARK)
+        } else {
+            rgb_channels(tokens::COLOR_SURFACE_0_LIGHT)
         }
     }
 
@@ -131,11 +161,7 @@ impl SoftwareRenderer {
         let w = scene.width.max(1) as usize;
         let h = scene.height.max(1) as usize;
         let mut px = vec![0u8; w * h * 4];
-        let (br, bg, bb) = if scene.theme_dark {
-            rgb_channels(tokens::COLOR_SURFACE_0_DARK)
-        } else {
-            rgb_channels(tokens::COLOR_SURFACE_0_LIGHT)
-        };
+        let (br, bg, bb) = self.backdrop_rgb(scene.theme_dark);
         for chunk in px.chunks_exact_mut(4) {
             chunk[0] = br;
             chunk[1] = bg;
@@ -788,6 +814,34 @@ pub fn consult_scene(
     s
 }
 
+/// Marge de grille des scènes (px logiques).
+pub const LAYOUT_GRID: f32 = ty::LAYOUT_GRID_PT_BASE as f32;
+
+/// Rectangle de la carte d'action dans la scène 720×360.
+///
+/// SOURCE UNIQUE : utilisée par `card_scene` (rendu) ET par le hit-test
+/// souris du desktop. Ne jamais dupliquer ces nombres ailleurs.
+pub fn card_rect() -> Rect {
+    let grid = ty::LAYOUT_GRID_PT_BASE as f32;
+    let radius = ty::LAYOUT_RADIUS_CARD as f32;
+    let panel_top = HUD_HEIGHT as f32 + grid;
+    let panel_w = HUD_WIDTH as f32 - 2.0 * grid;
+    Rect::new(grid + 8.0, panel_top + 54.0, panel_w - 16.0, 190.0).rounded(radius)
+}
+
+/// Rectangles des trois boutons de la carte (source unique du hit-test).
+///
+/// La hauteur vient du thème de la scène : c'est EXACTEMENT la hauteur
+/// peinte par `components::ActionCard::draw`.
+pub fn card_buttons(theme_dark: bool) -> components::CardButtons {
+    let theme = if theme_dark {
+        Theme::dark()
+    } else {
+        Theme::light()
+    };
+    components::card_buttons(card_rect(), theme.button_height())
+}
+
 /// Scène de décision : HUD 64 px + panneau 720×360 contenant la carte
 /// d'action réelle reçue du démon. Les boutons visuels sont complétés par les
 /// raccourcis clavier et l'arbre AccessKit (l'état de focus vit hors scène).
@@ -871,7 +925,7 @@ pub fn card_scene(
         Theme::light()
     };
     let ctx = PrimitiveCtx::new(theme);
-    let card_rect = Rect::new(panel.x + 8.0, panel.y + 54.0, panel.w - 16.0, 190.0).rounded(radius);
+    let card_rect = card_rect();
     components::ActionCard {
         verb: truncate_chars(&card.verb, 24),
         object: truncate_chars(&card.object, 68),
@@ -999,6 +1053,42 @@ mod tests {
         let b = r.paint(&s);
         assert_eq!(a, b);
         assert_eq!(a.len(), 720 * 64 * 4);
+    }
+
+    #[test]
+    fn opaque_backdrop_keeps_the_theme_surface() {
+        let mut r = SoftwareRenderer::new(720, 64, true);
+        let s = Scene::new(720, 64, true);
+        let px = r.paint(&s);
+        // 0x0B0C0F = COLOR_SURFACE_0_DARK (fond opaque historique).
+        assert_eq!(&px[0..3], &[0x0B, 0x0C, 0x0F]);
+        assert_eq!(r.backdrop_rgb(true), (0x0B, 0x0C, 0x0F));
+    }
+
+    #[test]
+    fn transparent_backdrop_paints_the_exact_color_key() {
+        let mut r = SoftwareRenderer::new(720, 64, true).with_transparent_backdrop(true);
+        let s = Scene::new(720, 64, true);
+        let px = r.paint(&s);
+        // Le fond peint DOIT être exactement la clé couleur de la fenêtre
+        // Win32 en couche, sinon le bureau ne transparaît pas.
+        assert_eq!(&px[0..3], &[0x01, 0x01, 0x01]);
+        assert_eq!(r.backdrop_rgb(true), TRANSPARENT_KEY_RGB);
+        assert_eq!(r.backdrop_rgb(false), TRANSPARENT_KEY_RGB);
+    }
+
+    #[test]
+    fn card_buttons_match_the_drawn_geometry() {
+        // Le hit-test souris et le rendu partagent la même géométrie.
+        let buttons = card_buttons(true);
+        let card = card_rect();
+        assert!(buttons.validate.contains(card.x + 20.0, card.y + 110.0));
+        assert!(!buttons.validate.contains(card.x + 220.0, card.y + 110.0));
+        assert!(buttons.edit.contains(card.x + 230.0, card.y + 110.0));
+        assert!(buttons.reject.contains(card.x + 360.0, card.y + 110.0));
+        // Les trois boutons ne se chevauchent pas.
+        assert!(buttons.validate.x + buttons.validate.w <= buttons.edit.x);
+        assert!(buttons.edit.x + buttons.edit.w <= buttons.reject.x);
     }
 
     #[test]

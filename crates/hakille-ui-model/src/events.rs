@@ -43,6 +43,10 @@ pub enum KernelEvent {
         response: String,
         validation: Option<(String, u64)>,
     },
+    /// Delta de token (réponse en cours de génération).
+    TokenDelta {
+        text: String,
+    },
     Toast {
         text: String,
     },
@@ -61,6 +65,7 @@ impl From<KernelToUi> for KernelEvent {
                 response,
                 validation,
             },
+            KernelToUi::TokenDelta { text } => Self::TokenDelta { text },
             KernelToUi::Toast { text } => Self::Toast { text },
             // Extension additive v1 (consultation) : le modèle d'événements
             // historique n'a pas de variantes dédiées — repli honnête en toast,
@@ -77,14 +82,36 @@ impl From<KernelToUi> for KernelEvent {
             KernelToUi::StatusReply { status } => Self::Toast {
                 text: format!("statut : {} — {}", status.model, status.cost),
             },
+            KernelToUi::AgentListReply { agents } => {
+                let real = agents.iter().filter(|a| a.artifact_present).count();
+                Self::Toast {
+                    text: format!(
+                        "agents : {} listé(s), {real} réellement exécutable(s)",
+                        agents.len()
+                    ),
+                }
+            }
+            KernelToUi::AgentRunReply {
+                name,
+                duration_ms,
+                output_json,
+                ..
+            } => Self::Toast {
+                text: format!("agent {name} — {duration_ms} ms — {output_json}"),
+            },
             KernelToUi::CardDecisionAck {
                 card_id,
                 approved,
                 audit_id,
+                effect,
             } => Self::Toast {
                 text: format!(
-                    "carte #{card_id} {} — décision auditée [{audit_id}] (aucun effet métier)",
-                    if approved { "approuvée" } else { "refusée" }
+                    "carte #{card_id} {} — décision auditée [{audit_id}]{}",
+                    if approved { "approuvée" } else { "refusée" },
+                    match effect {
+                        Some(e) => format!(" — {e}"),
+                        None => " (aucun effet)".to_string(),
+                    }
                 ),
             },
         }
@@ -105,6 +132,7 @@ impl From<KernelEvent> for KernelToUi {
                 validation,
             },
             KernelEvent::Toast { text } => Self::Toast { text },
+            KernelEvent::TokenDelta { text } => Self::TokenDelta { text },
         }
     }
 }

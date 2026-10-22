@@ -151,16 +151,27 @@ Le décodeur Qwen 2.5 0.5B Q4_K_M est CPU-only en v1 (les backends CUDA/Metal so
 
 | Mode | Commande | Durée du tour |
 | :--- | :--- | :--- |
-| Debug | `cargo run -p hakille-daemon` | ~478 s |
+| Debug | `cargo run -p hakille-daemon` | ~478 s (avant optimisation des dépendances) |
+| Debug (dépendances optimisées) | `cargo run -p hakille-daemon` | ~25 s de décodage (69 tokens de prompt + 2 générés, mesuré) |
 | Release | `cargo run -p hakille-daemon --release` | ~24 s |
 
-Le premier tour inclut en plus le **chargement lazy du GGUF** (~10-60 s). Conseil : `cargo run -p hakille-daemon --release` pour tout usage réel. Sur GPU (CUDA/Metal), ce sera bien plus rapide une fois ces backends actifs.
+Depuis le commit d'optimisation, le profil `dev` compile **candle / candle-nn /
+candle-transformers / tokenizers** en `opt-level = 3` (voir `Cargo.toml`) : le
+décodage CPU est ~15× plus rapide en debug, sans toucher au code du workspace.
+Le premier tour inclut en plus le **chargement lazy du GGUF** (~10-60 s) et le
+boot du démon ; `cargo run -p hakille-daemon --release` reste la voie la plus
+rapide pour un usage réel. Sur GPU (CUDA/Metal), ce sera bien plus rapide une
+fois ces backends actifs.
+
+Levier supplémentaire : `HAKILLE_QWEN_MAX_TOKENS=16` raccourcit la réponse
+(donc le délai). Valeur invalide : ignorée, défaut conservé + `warn!`.
 
 ### Variables d'environnement utiles
 
 | Variable | Effet | Défaut |
 | :--- | :--- | :--- |
 | `HAKILLE_QWEN_TIMEOUT_MS` | Timeout LLM effectif (System 1/2, `crates/hakille-kernel/src/system1.rs`). Le budget pipeline du boot en dérive : `max_inference = timeout + 30 s`, `max_total = timeout + 60 s` (autres étages inchangés : perception 60 ms, routing 20 ms, action 40 ms). | `600000` (10 min) |
+| `HAKILLE_QWEN_MAX_TOKENS` | Nombre maximal de tokens générés par tour (réponse plus courte ⇒ délai plus court). Valeur invalide ou nulle : ignorée, défaut conservé + `warn!`. | `64` (8 en test) |
 | `HAKILLE_MODELS_DIR` | Dossier des modèles, prioritaire sur la découverte automatique (`./models`, puis remontée depuis le CWD — voir `docs/models_and_inference.md`). | `./models` |
 | `HAKILLE_QWEN_GGUF` | Chemin explicite du GGUF Qwen (prioritaire sur le dossier modèles). | `models/qwen2.5-0.5b-instruct-q4_k_m.gguf` |
 | `HAKILLE_QWEN_TOKENIZER` | Chemin explicite du `tokenizer.json` Qwen (prioritaire). | `models/tokenizer.json` |

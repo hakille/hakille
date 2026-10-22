@@ -26,12 +26,44 @@ pub struct System1Engine {
 /// en debug — ne pas réduire sans mesurer).
 pub const DEFAULT_LLM_TIMEOUT_MS: u64 = 600_000;
 
+/// Nombre de tokens générés par défaut (production).
+pub const DEFAULT_MAX_TOKENS: usize = 64;
+/// Nombre de tokens générés en test (rapide, toujours réel).
+pub const TEST_MAX_TOKENS: usize = 8;
+
 fn resolve_llm_timeout_ms(configured: u64) -> u64 {
     std::env::var("HAKILLE_QWEN_TIMEOUT_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|v| *v > 0)
         .unwrap_or(configured)
+}
+
+/// Nombre maximal de tokens générés par tour.
+///
+/// `HAKILLE_QWEN_MAX_TOKENS` permet de raccourcir la réponse (donc le délai)
+/// sans toucher au code. Une valeur invalide ou nulle est IGNORÉE (on
+/// garde le défaut) et journalisée : jamais de panique, jamais de silence.
+fn resolve_max_tokens() -> usize {
+    let default = if cfg!(test) {
+        TEST_MAX_TOKENS
+    } else {
+        DEFAULT_MAX_TOKENS
+    };
+    match std::env::var("HAKILLE_QWEN_MAX_TOKENS") {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(v) if v > 0 => v,
+            _ => {
+                tracing::warn!(
+                    value = %raw,
+                    default,
+                    "HAKILLE_QWEN_MAX_TOKENS invalide — valeur par défaut conservée"
+                );
+                default
+            }
+        },
+        Err(_) => default,
+    }
 }
 
 impl System1Engine {
@@ -125,25 +157,34 @@ impl System1Engine {
         // CPU, ChatML réel, sampling greedy T=0 déterministe pour le fast-path).
         // AUCUN gabarit : si le moteur est indisponible (GGUF/tokenizer absent,
         // timeout, forward en échec) → Err HONNÊTE, jamais de phrase de secours.
-        // `cfg!(test)` : 8 tokens (rapide, toujours réel) ; prod : 64.
-        let max_tokens = if cfg!(test) { 8 } else { 64 };
+        let max_tokens = resolve_max_tokens();
         let timeout_ms = self.llm_timeout_ms();
         let prompt_owned = prompt.to_string();
+        // Échéance DURRE transmise au moteur : le décodage s'arrête lui-même à
+        // l'échéance. Le `tokio::time::timeout` externe reste un filet de
+        // sécurité, mais il ne peut plus laisser une génération « zombie »
+        // tourner en arrière-plan (elle garderait le verrou du moteur et
+        // ferait attendre toutes les requêtes suivantes).
+        let deadline =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms));
         let handle = tokio::task::spawn_blocking(move || {
             let mut engine = hakille_inference::global_qwen_engine()?;
-            engine.generate(&prompt_owned, max_tokens, 0.0, 1.0)
+            engine.generate_with_deadline(&prompt_owned, max_tokens, 0.0, 1.0, deadline)
         });
-        let gen_out = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), handle)
-            .await
-            .map_err(|_| {
-                HakilleError::InferenceError(format!(
-                    "System1 LLM timeout après {} ms (décodage CPU Qwen 0.5B Q4_K_M ; augmentez HAKILLE_QWEN_TIMEOUT_MS)",
-                    timeout_ms
-                ))
-            })?
-            .map_err(|e| {
-                HakilleError::InferenceError(format!("System1 tâche LLM interrompue : {}", e))
-            })??;
+        let gen_out = tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms.saturating_add(30_000)),
+            handle,
+        )
+        .await
+        .map_err(|_| {
+            HakilleError::InferenceError(format!(
+                "System1 LLM timeout après {} ms (décodage CPU Qwen 0.5B Q4_K_M ; augmentez HAKILLE_QWEN_TIMEOUT_MS)",
+                timeout_ms
+            ))
+        })?
+        .map_err(|e| {
+            HakilleError::InferenceError(format!("System1 tâche LLM interrompue : {}", e))
+        })??;
 
         // Vide honnête : le moteur a loggé `warn!` (EOS immédiat) ; on propage
         // vide sans inventer (jamais de gabarit de secours).

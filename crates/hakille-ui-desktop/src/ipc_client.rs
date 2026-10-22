@@ -135,11 +135,25 @@ impl IpcClient {
         self.submit(UiToKernel::StatusRequest)
     }
 
+    /// Liste des agents exposés par le démon (additif v1) : la réponse
+    /// distingue les agents réellement exécutables des manifests déclaratifs.
+    pub fn request_agents(&self) -> bool {
+        self.submit(UiToKernel::AgentListRequest)
+    }
+
+    /// Exécution d'un agent WASM réel (additif v1) : entrée JSON → sortie
+    /// JSON. Le démon refuse tout agent sans binaire vérifié.
+    pub fn run_agent(&self, name: impl Into<String>, input_json: impl Into<String>) -> bool {
+        self.submit(UiToKernel::AgentRunRequest {
+            name: name.into(),
+            input_json: input_json.into(),
+        })
+    }
+
     /// Décision de carte : le démon audite avant d'accuser réception.
     pub fn approve_card(&self, card_id: u64) -> bool {
         self.submit(UiToKernel::Approve { card_id })
     }
-
     pub fn reject_card(&self, card_id: u64) -> bool {
         self.submit(UiToKernel::Reject { card_id })
     }
@@ -383,6 +397,137 @@ mod tests {
                 validation: None,
             }
         );
+
+        server.join().expect("thread serveur");
+        drop(client);
+        let _ = std::fs::remove_dir_all(&dir);
+        cleanup_endpoint(&endpoint);
+    }
+
+    #[test]
+    fn agent_requests_travel_over_the_real_transport() {
+        // Preuve du trajet complet : liste + exécution d'agent passent par
+        // le transport réel (pipe nommé) et reviennent au HUD.
+        let endpoint = unique_endpoint("agents");
+        let dir = unique_temp_dir("agents");
+        let token_path = dir.join("ipc.token");
+        write_token_file(&token_path, TOKEN).expect("écriture jeton");
+
+        let server_endpoint = endpoint.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime serveur");
+            runtime.block_on(async move {
+                let listener = IpcListener::bind(&server_endpoint).await.expect("bind");
+                ready_tx.send(()).expect("signal serveur prêt");
+                let mut stream = listener.accept().await.expect("accept");
+                server_handshake(&mut stream, TOKEN)
+                    .await
+                    .expect("handshake serveur");
+
+                // 1. Liste des agents.
+                let request = read_frame(&mut stream)
+                    .await
+                    .expect("lecture requête")
+                    .expect("trame requête");
+                assert!(
+                    matches!(
+                        &request.body,
+                        FrameBody::Request {
+                            message: UiToKernel::AgentListRequest,
+                            ..
+                        }
+                    ),
+                    "requête attendue : {:?}",
+                    request.body
+                );
+                let reply = Frame::reply(
+                    request.id,
+                    KernelToUi::AgentListReply {
+                        agents: vec![hakille_ui_protocol::AgentDto {
+                            id: "echo-agent".into(),
+                            name: "echo-agent".into(),
+                            required_caps: vec![],
+                            artifact_present: true,
+                            sha256: "a".repeat(64),
+                        }],
+                    },
+                );
+                write_frame(&mut stream, &reply)
+                    .await
+                    .expect("écriture réponse");
+
+                // 2. Exécution d'un agent.
+                let request = read_frame(&mut stream)
+                    .await
+                    .expect("lecture requête")
+                    .expect("trame requête");
+                let FrameBody::Request {
+                    message: UiToKernel::AgentRunRequest { name, input_json },
+                } = &request.body
+                else {
+                    panic!("requête d'exécution attendue : {:?}", request.body);
+                };
+                assert_eq!(name, "echo-agent");
+                assert_eq!(input_json, "{\"msg\":\"bonjour\"}");
+                let reply = Frame::reply(
+                    request.id,
+                    KernelToUi::AgentRunReply {
+                        name: name.clone(),
+                        output_json: "{\"echo\":\"bonjour\"}".into(),
+                        duration_ms: 3,
+                        input_sha256: "b".repeat(64),
+                        output_sha256: "c".repeat(64),
+                    },
+                );
+                write_frame(&mut stream, &reply)
+                    .await
+                    .expect("écriture réponse");
+            });
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("serveur prêt");
+
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        let (gone_tx, _gone_rx) = std::sync::mpsc::channel();
+        let client = IpcClient::spawn_with(
+            endpoint.clone(),
+            token_path,
+            move |msg| {
+                let _ = reply_tx.send(msg);
+            },
+            move || {
+                let _ = gone_tx.send(());
+            },
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !client.connected() {
+            assert!(Instant::now() < deadline, "client jamais connecté");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(client.request_agents());
+        let list = reply_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("liste des agents");
+        let KernelToUi::AgentListReply { agents } = list else {
+            panic!("liste attendue");
+        };
+        assert_eq!(agents.len(), 1);
+        assert!(agents[0].artifact_present);
+
+        assert!(client.run_agent("echo-agent", "{\"msg\":\"bonjour\"}"));
+        let run = reply_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("résultat d'exécution");
+        let KernelToUi::AgentRunReply { output_json, .. } = run else {
+            panic!("résultat d'exécution attendu");
+        };
+        assert_eq!(output_json, "{\"echo\":\"bonjour\"}");
 
         server.join().expect("thread serveur");
         drop(client);

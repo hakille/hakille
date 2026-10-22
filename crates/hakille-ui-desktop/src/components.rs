@@ -391,6 +391,31 @@ impl Presence {
 }
 
 // ---- 11. ActionCard ----
+
+/// Rectangles des trois boutons d'une carte d'action.
+///
+/// SOURCE UNIQUE : utilisée par le rendu (`ActionCard::draw`) ET par le
+/// hit-test souris du desktop. Ne jamais dupliquer ces nombres ailleurs.
+#[derive(Debug, Clone, Copy)]
+pub struct CardButtons {
+    pub validate: Rect,
+    pub edit: Rect,
+    pub reject: Rect,
+}
+
+/// Positions des trois boutons pour une carte de rectangle donné.
+///
+/// `height` vient du THÈME (`theme.button_height()`) : le hit-test souris et
+/// le rendu doivent partager exactement la même hauteur.
+pub fn card_buttons(card_rect: Rect, height: f32) -> CardButtons {
+    let vy = card_rect.y + 100.0;
+    CardButtons {
+        validate: Rect::new(card_rect.x + 16.0, vy, 200.0, height),
+        edit: Rect::new(card_rect.x + 224.0, vy, 120.0, height),
+        reject: Rect::new(card_rect.x + 352.0, vy, 120.0, height),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ActionCard {
     pub verb: String,
@@ -412,6 +437,10 @@ impl ActionCard {
         } else {
             "Valider".to_string()
         }
+    }
+    /// Rectangles des boutons (source unique avec le rendu).
+    pub fn buttons(&self, height: f32) -> CardButtons {
+        card_buttons(self.rect, height)
     }
     pub fn draw(&self, scene: &mut Scene, ctx: &PrimitiveCtx) {
         Surface { rect: self.rect }.draw(scene, ctx);
@@ -448,23 +477,23 @@ impl ActionCard {
                 self.rect.y + 62.0,
             );
         }
-        let vy = self.rect.y + 100.0;
+        let buttons = card_buttons(self.rect, ctx.theme.button_height());
         Button {
             label: self.validate_label(),
             braise: true,
-            rect: Rect::new(self.rect.x + 16.0, vy, 200.0, 44.0),
+            rect: buttons.validate,
         }
         .draw(scene, ctx);
         Button {
             label: "Modifier".into(),
             braise: false,
-            rect: Rect::new(self.rect.x + 224.0, vy, 120.0, 44.0),
+            rect: buttons.edit,
         }
         .draw(scene, ctx);
         Button {
             label: "Refuser".into(),
             braise: false,
-            rect: Rect::new(self.rect.x + 352.0, vy, 120.0, 44.0),
+            rect: buttons.reject,
         }
         .draw(scene, ctx);
         if self.is_external {

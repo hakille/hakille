@@ -24,6 +24,11 @@ accesskit = "0.24"
 accesskit_winit = "0.33"
 ab_glyph = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+# Fenêtre en couche Win32 (WS_EX_LAYERED + clé couleur) : fond réellement
+# transparent, sans dépendre d'un composeur d'alpha (softbuffer écrit XRGB).
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 [features]
 default = []
 gpu = []

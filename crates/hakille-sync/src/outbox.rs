@@ -93,6 +93,18 @@ impl Outbox {
         }
     }
 
+    /// Retire une entrée par clé d'idempotence.
+    ///
+    /// Utilisé pour **annuler un effet** dont la validation a échoué
+    /// (ex. : audit indisponible après la mise en file d'une carte
+    /// approuvée) : rien ne doit rester durable si la décision n'a pas
+    /// été validée.
+    pub fn remove(&mut self, dedup_key: &str) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|e| e.dedup_key != dedup_key);
+        self.entries.len() != before
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }

@@ -597,6 +597,33 @@ impl QwenEngine {
             temperature,
             top_p,
             &mut |_| {},
+            None,
+        )
+    }
+
+    /// Génération réelle avec **échéance dure** (deadline).
+    ///
+    /// Le deadline est vérifié avant le préfill et à chaque token poussé :
+    /// à l'échéance, la génération **s'arrête** et renvoie une erreur
+    /// explicite. C'est ce qui supprime le « zombie » : une génération qui
+    /// continue de tourner après un timeout asyncio garde le verrou global
+    /// du moteur et fait attendre toutes les requêtes suivantes.
+    pub fn generate_with_deadline(
+        &mut self,
+        user_prompt: &str,
+        max_tokens: usize,
+        temperature: f64,
+        top_p: f64,
+        deadline: Option<Instant>,
+    ) -> Result<GenerateOutput> {
+        self.generate_core(
+            user_prompt,
+            None,
+            max_tokens,
+            temperature,
+            top_p,
+            &mut |_| {},
+            deadline,
         )
     }
 
@@ -625,6 +652,7 @@ impl QwenEngine {
             temperature,
             top_p,
             on_token,
+            None,
         )
     }
 
@@ -632,6 +660,11 @@ impl QwenEngine {
     ///
     /// Le streaming est un MEILLEUR EFFORT : le texte FINAL reste décodé en
     /// one-shot (`tokenizer.decode` de toute la séquence), chemin inchangé.
+    ///
+    /// `deadline` : échéance dure. Vérifiée avant le préfill et à chaque
+    /// token ; dépassée ⇒ erreur explicite (le verrou moteur est relâché
+    /// normalement, aucune génération ne continue en arrière-plan).
+    #[allow(clippy::too_many_arguments)]
     fn generate_core(
         &mut self,
         user_prompt: &str,
@@ -640,6 +673,7 @@ impl QwenEngine {
         temperature: f64,
         top_p: f64,
         on_token: &mut dyn FnMut(&TokenEvent),
+        deadline: Option<Instant>,
     ) -> Result<GenerateOutput> {
         if max_tokens == 0 {
             return Err(HakilleError::InferenceError(
@@ -707,6 +741,17 @@ impl QwenEngine {
         // KV-cache : reset entre conversations (pas de fuite inter-requêtes).
         self.model.clear_kv_cache();
 
+        // Échéance dure : si elle est déjà dépassée, on ne démarre aucun
+        // forward (pas de CPU gaspillé, erreur immédiate et honnête).
+        if let Some(limit) = deadline
+            && Instant::now() >= limit
+        {
+            return Err(HakilleError::InferenceError(format!(
+                "échéance de génération dépassée avant le préfill ({} token(s) de prompt)",
+                prompt_ids.len()
+            )));
+        }
+
         // Préfill : forward complet du prompt à pos 0 (seuls les logits du
         // dernier token sont utilisés, cf. `ModelWeights::forward`).
         let input = Tensor::new(prompt_ids.clone(), &self.device)
@@ -734,6 +779,18 @@ impl QwenEngine {
         let mut stream_state = StreamDecodeState::default();
         // Boucle autoregressive : 1 token → forward(pos) → sample → stop EOS.
         for index in 0..max_tokens {
+            // Échéance dure : on arrête ICI, pas après un timeout externe.
+            // Sans ce garde-fou, le décodage continuerait en arrière-plan et
+            // garderait le verrou moteur (requêtes suivantes bloquées).
+            if let Some(limit) = deadline
+                && Instant::now() >= limit
+            {
+                return Err(HakilleError::InferenceError(format!(
+                    "échéance de génération dépassée après {} token(s) ({} ms écoulés)",
+                    generated.len(),
+                    start.elapsed().as_millis()
+                )));
+            }
             if next_token == self.eos_im_end_id || next_token == self.eos_text_id {
                 break;
             }

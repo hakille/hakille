@@ -2,7 +2,7 @@
 
 > *"De la compilation à la conformité formelle : bâtir et étendre un système d'exploitation cognitif en Rust pur."*
 
-Ce document constitue le guide de référence complet pour les développeurs, contributeurs et intégrateurs d'Hakille. Il détaille la configuration de l'environnement de développement, la compilation du monorepo, la suite de tests formelle (73 tests : 66 fast verts + 7 slow ignorés en gate hebdo, voir [CI](../.github/workflows/ci.yml)), l'utilisation approfondie du CLI interactif (`hakille-daemon`), l'état réel des agents de référence et du runtime WASM (2 agents de référence exécutés, 5 manifests métier déclaratifs), et l'implémentation de nouveaux backends `Substrate`.
+Ce document constitue le guide de référence complet pour les développeurs, contributeurs et intégrateurs d'Hakille. Il détaille la configuration de l'environnement de développement, la compilation du monorepo, la suite de tests formelle (78 tests : 66 fast verts + 12 slow ignorés en gate hebdo — 7 dans `conformance`, 5 dans `hakille-kernel` — voir [CI](../.github/workflows/ci.yml)), l'utilisation approfondie du CLI interactif (`hakille-daemon`), l'état réel des agents de référence et du runtime WASM (2 agents de référence exécutés, 5 manifests métier déclaratifs), et l'implémentation de nouveaux backends `Substrate`.
 
 ---
 
@@ -74,7 +74,7 @@ cargo xtask conformance
 # ou directement :
 cargo test -p conformance
 ```
-La suite `conformance` exécute **73 tests (66 fast verts en CI + 7 slow ignorés en gate hebdo `cargo xtask conformance-slow`)** couvrant l'ensemble des 6 couches :
+La suite `conformance` exécute **66 tests fast verts en CI** ; le gate hebdo `cargo xtask conformance-slow` ajoute **12 tests ignorés** (7 dans `conformance`, 5 dans `hakille-kernel` : décodage Qwen CPU réel). L'ensemble couvre les 6 couches :
 1. `test_conformance_anti_spoofing_and_guest_manager` : Validation de l'heuristique de vivacité vocale (non certifiée) et expiration des invités.
 2. `test_conformance_consent_registry_and_quota_enforcement` : Vérification du registre de consentement et auto-révocation des quotas.
 3. `test_conformance_self_model_and_simulator` : Introspection du Self-Model et simulation d'action à blanc.
