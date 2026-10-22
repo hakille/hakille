@@ -1231,6 +1231,10 @@ impl HudApp {
 
     fn close_panel(&mut self) -> Vec<HudAction> {
         self.panel = PanelKind::None;
+        // Une demande de données non envoyée n'a plus lieu d'être rejouée :
+        // sans ce nettoyage, fermer le panneau puis se reconnecter enverrait
+        // une requête fantôme pour un panneau qui n'est plus ouvert.
+        self.pending_panel_request = None;
         if self.visible {
             vec![self.resize_action(false), HudAction::Redraw]
         } else {
@@ -1744,6 +1748,27 @@ mod tests {
         let snap = app.snapshot();
         assert_eq!(snap.hud_response, "Bonjour à tous, comment vas-tu ?");
         assert!(!snap.hud_streaming, "la réponse finale n'est plus un flux");
+    }
+
+    #[test]
+    fn closing_the_panel_cancels_the_pending_data_request() {
+        // Un panneau refermé AVANT la connexion ne doit pas relancer sa
+        // requête à la connexion (requête fantôme pour un panneau fermé).
+        let mut app = shown(false);
+        app.handle(HudInput::ShowAgents);
+        app.on_panel_request_failed(PanelKind::Agents);
+        // F4 à nouveau : le panneau se referme.
+        let actions = app.handle(HudInput::ShowAgents);
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, HudAction::ResizeWindow { .. })),
+            "la fermeture redimensionne le HUD : {actions:?}"
+        );
+        assert!(
+            app.on_ipc_connected().is_empty(),
+            "aucune requête ne doit être rejouée pour un panneau fermé"
+        );
     }
 
     #[test]
