@@ -1,4 +1,4 @@
-# AGENTS.md — Hakille
+﻿# AGENTS.md — Hakille
 
 Monorepo Rust (31 crates + 5 crates d'agents + `conformance` + `xtask`), édition 2024,
 MSRV/toolchain **1.95** (épinglé par `rust-toolchain.toml`).
@@ -33,7 +33,7 @@ cargo deny check bans sources advisories    # cargo-deny à installer
 - `models/` est **gitignoré** (~2,36 Go) : les tests qui exigent un artefact doivent `SKIP: artefact de modèle absent` ou échouer explicitement. Ne jamais commiter `models/`.
 - `crates/hakille-design/src/generated.rs` est **généré** : la source unique est `tokens/*.toml`. Modifier les tokens → `cargo xtask tokens` (regénère le fichier) ; ne jamais éditer `generated.rs` à la main.
 - `crates/hakille-ui-protocol/src/schema_snapshot.json` est un **golden** : tout changement de message du protocole fait échouer `test_schema_snapshot_stable`, qui exige de mettre à jour le golden **et** `PROTOCOL_VERSION`.
-- Le fond noir de la fenêtre desktop est une **limite assumée** : softbuffer 0.4 ne compose pas l'alpha, donc `transparent=false` est forcé dans `bin/desktop.rs` (et `Present` ignore l'alpha). Ce n'est pas un bug de rendu.
+- Le fond de la fenêtre desktop : sur **Windows**, la fenêtre est passée en couche Win32 (`WS_EX_LAYERED` + clé couleur `0x010101`) → fond réellement transparent. winit **réécrit les styles** à chaque changement d'état (afficher/redimensionner) et efface `WS_EX_LAYERED` : il faut donc **réappliquer** la clé couleur après chaque `set_visible`/resize (`WindowState::reapply_transparency`). Ailleurs, le fond reste opaque (limite annoncée dans `SMOKE transparency=...`).
 - Accents : PowerShell affiche le contenu UTF-8 en mojibake (artefact de console, pas de fichier corrompu). Ne pas « corriger » l'encodage des fichiers.
 
 ## Architecture (points d'entrée réels)
@@ -46,7 +46,8 @@ cargo deny check bans sources advisories    # cargo-deny à installer
 - Agents : la source WAT des agents de référence est **embarquée** dans `crates/hakille-agents/src/wasm_runner.rs`, compilée à l'exécution par le crate `wat` et matérialisée content-addressed (sha256) dans `<data_dir>/agents` (un artefact corrompu doit être refusé, test existant). Les 5 crates `agents/*` sont **déclaratifs** : leur `agent.toml` n'est pas chargé par le démon, aucun `.wasm` métier n'est livré, `spawn_sandboxed` n'est pas branché. Ne pas les présenter comme exécutés.
 - Contrat agents IPC (additif v1) : `UiToKernel::AgentListRequest` / `AgentRunRequest` → `KernelToUi::AgentListReply` / `AgentRunReply`. `AgentDto.artifact_present` distingue l'agent réellement exécutable du manifest déclaratif ; une liste de Capability n'est jamais inventée. Le runtime est `Arc<Mutex<ReferenceAgentRuntime>>` (l'exécution Wasmtime est bloquante → `spawn_blocking`). Cote HUD : `F4` ouvre le panneau, `:agent <nom> <json>` exécute un agent.
 - Cartes d'action : le démon propose `ShowCard` → le desktop décide (Entrée **maintenue 600 ms** approuve, `R` refuse, `Échap` masque ; nœuds AccessKit 40/41/42 ; les 3 boutons sont cliquables à la souris, la souris respecte le maintien 600 ms) → le démon **re-vérifie et audite** avant `CardDecisionAck` (UUID d'audit réel, champ `effect` = effet réellement produit).
-- Effet d'une carte approuvée : l'action est **mise en file dans l'outbox durable** (`<data_dir>/outbox.json`, idempotent, revalidable) et l'audit enregistre `effect: "outbox_enqueued"`. Ce n'est **pas** une exécution métier (les agents métier ne sont pas exécutables) : ne jamais dire « exécuté ».
+- Effet d'une carte approuvée : l'action est **mise en file dans l'outbox durable** (`<data_dir>/outbox.json`, idempotente, revalidable) **avec le plan d'exécution approuvé** (étapes + risque) ; l'audit enregistre `effect: "outbox_enqueued"` + `plan_id`/`plan_steps`/`plan_risk`. Ce n'est **pas** une exécution métier (les agents métier ne sont pas exécutables) : ne jamais dire « exécuté ».
+- Le plan est conservé par carte (`PendingCard { card, plan }`) : `CognitiveOrchestrator::action_card_with_plan` expose la carte ET le plan (la seule carte d'affichage perdait le plan : à l'approbation, on ne savait plus quoi exécuter).
 - Le desktop : fond transparent réel sous Windows (fenêtre en couche Win32 + clé couleur `0x010101`) ; la fenêtre est déplaçable (barre du HUD / en-tête de panneau) ; pendant un tour, l'attente affiche le temps réel écoulé et la saisie est verrouillée (pas de second tour concurrent).
 - Le `timeout` de `system1.rs` est doublé d'une **échéance dure dans le moteur** (`generate_with_deadline`) : à l'échéance, le décodage s'arrête et libère le verrou (plus de génération « zombie » qui bloque les requêtes suivantes).
 - Streaming de la réponse : le démon installe le callback global de `hakille_inference` pendant le tour et pousse chaque delta en trame `KernelToUi::TokenDelta` (id 0) ; le HUD cumule le texte et le **remplace** par la réponse finale (`HudReply`, qui reste la référence). Le callback global doit être retiré même en cas d'erreur.

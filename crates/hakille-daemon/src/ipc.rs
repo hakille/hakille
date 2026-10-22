@@ -1,4 +1,4 @@
-//! Mode `--serve` : serveur IPC local (pipe nommé Windows / socket Unix)
+﻿//! Mode `--serve` : serveur IPC local (pipe nommé Windows / socket Unix)
 //! exposant le contrat `hakille-ipc` au HUD desktop, sans REPL.
 //!
 //! Un seul client à la fois, requêtes servies séquentiellement. Aucun succès
@@ -146,6 +146,17 @@ fn card_from_preview(id: u64, preview: ActionCardPreview) -> ActionCard {
     }
 }
 
+/// Carte proposée par le démon, en attente de décision.
+///
+/// Le PLAN D'EXÉCUTION est conservé avec la carte : à l'approbation, le
+/// démon doit savoir QUOI exécuter (et l'auditer), pas seulement afficher un
+/// libellé.
+#[derive(Debug, Clone)]
+struct PendingCard {
+    card: ActionCard,
+    plan: hakille_kernel::planner::ExecutionPlan,
+}
+
 /// Décision de carte : l'audit signé est écrit AVANT le retrait de la carte
 /// et avant l'accusé. En cas d'échec d'audit, la carte reste en attente et le
 /// HUD reçoit un refus explicite.
@@ -156,18 +167,20 @@ fn card_from_preview(id: u64, preview: ActionCardPreview) -> ActionCard {
 /// exécutables — mais c'est un effet durable, visible (`:outbox`) et audité,
 /// au lieu d'un « aucun effet » muet. Le refus, lui, ne produit aucun effet.
 fn decide_card(
-    pending_cards: &mut HashMap<u64, ActionCard>,
+    pending_cards: &mut HashMap<u64, PendingCard>,
     audit_journal: &AuditJournal,
     outbox: &mut Outbox,
     data_dir: &std::path::Path,
     card_id: u64,
     approved: bool,
 ) -> KernelToUi {
-    let Some(card) = pending_cards.get(&card_id).cloned() else {
+    let Some(pending) = pending_cards.get(&card_id).cloned() else {
         return KernelToUi::Toast {
             text: format!("carte #{card_id} inconnue ou déjà traitée — aucune décision"),
         };
     };
+    let card = pending.card;
+    let plan = pending.plan;
     let action_type = if approved {
         "ActionCardApproved"
     } else {
@@ -176,7 +189,9 @@ fn decide_card(
     let verb = if approved { "approuvée" } else { "refusée" };
 
     // Effet réel, calculé AVANT l'audit : l'entrée de journal doit décrire ce
-    // qui a réellement eu lieu, pas une intention.
+    // qui a réellement eu lieu, pas une intention. L'action mise en file
+    // PORTE le plan approuvé (étapes + risque) : un exécuteur futur saura
+    // quoi faire.
     let (effect_kind, effect_detail) = if approved {
         let dedup_key = format!(
             "card#{}|{}|{}",
@@ -184,7 +199,21 @@ fn decide_card(
             card.verb.to_lowercase(),
             card.object.to_lowercase()
         );
-        let entry = OutboxEntry::new(&card.verb, &card.object, &dedup_key);
+        let steps = plan
+            .steps
+            .iter()
+            .map(|s| s.description.clone())
+            .collect::<Vec<_>>()
+            .join(" → ");
+        let queued_object = format!(
+            "{} [plan {} : {} étape(s), risque {:?} : {}]",
+            card.object,
+            plan.plan_id,
+            plan.steps.len(),
+            plan.estimated_risk,
+            steps
+        );
+        let entry = OutboxEntry::new(&card.verb, &queued_object, &dedup_key);
         let added = outbox.enqueue(entry);
         if added {
             // Persistance crash-safe : l'effet doit survivre au redémarrage.
@@ -217,6 +246,9 @@ fn decide_card(
             "object": card.object,
             "reversible": card.reversible,
             "effect": effect_kind,
+            "plan_id": plan.plan_id,
+            "plan_steps": plan.steps.len(),
+            "plan_risk": format!("{:?}", plan.estimated_risk),
         }),
         false,
     ) {
@@ -361,7 +393,7 @@ pub async fn run_serve(
             continue;
         }
         println!("IPC: client connecté");
-        let mut pending_cards: HashMap<u64, ActionCard> = HashMap::new();
+        let mut pending_cards: HashMap<u64, PendingCard> = HashMap::new();
         serve_client(
             &mut stream,
             orchestrator,
@@ -403,7 +435,7 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         &std::sync::Arc<std::sync::Mutex<crate::agent_runtime::ReferenceAgentRuntime>>,
     >,
     agent_registry: &hakille_agents::AgentRegistry,
-    pending_cards: &mut HashMap<u64, ActionCard>,
+    pending_cards: &mut HashMap<u64, PendingCard>,
     next_card_id: &mut u64,
 ) {
     loop {
@@ -500,8 +532,8 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                             // produit un plan sec. On expose une carte réelle
                             // au HUD, après audit de la proposition.
                             if outcome.routing_used.starts_with("Plan/Dry-run")
-                                && let Some(preview) =
-                                    CognitiveOrchestrator::action_card_preview(&query)
+                                && let Some((preview, plan)) =
+                                    CognitiveOrchestrator::action_card_with_plan(&query)
                             {
                                 let card = card_from_preview(*next_card_id, preview);
                                 let proposed = audit_action_with_id(
@@ -522,7 +554,13 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                                 match proposed {
                                     Ok(_) => {
                                         *next_card_id = (*next_card_id).saturating_add(1);
-                                        pending_cards.insert(card.id, card.clone());
+                                        pending_cards.insert(
+                                            card.id,
+                                            PendingCard {
+                                                card: card.clone(),
+                                                plan,
+                                            },
+                                        );
                                         // La présence daemon reflète elle aussi
                                         // l'attente de décision, pas seulement
                                         // l'état local du HUD.
@@ -1116,6 +1154,24 @@ mod tests {
         );
     }
 
+    /// Plan d'exécution de test : une étape irréversible (même forme que le
+    /// plan réel produit par le noyau).
+    fn test_plan() -> hakille_kernel::planner::ExecutionPlan {
+        use hakille_core::{CapabilityAction, CapabilityScope};
+        use hakille_kernel::planner::{ExecutionPlan, PlannedStep};
+        let mut plan = ExecutionPlan::new("card-preview", "transférer 25 EUR à Awa");
+        plan.steps.push(PlannedStep {
+            step_id: 1,
+            description: "transférer 25 EUR à Awa".to_string(),
+            required_scope: CapabilityScope::Wallet,
+            required_action: CapabilityAction::Execute,
+            is_irreversible: true,
+            fallback_strategy: None,
+        });
+        plan.requires_human_confirmation = true;
+        plan
+    }
+
     #[test]
     fn approved_card_produces_a_real_durable_effect_and_audits_it() {
         use ed25519_dalek::SigningKey;
@@ -1129,18 +1185,21 @@ mod tests {
         )
         .expect("journal de test");
 
-        let mut cards: HashMap<u64, ActionCard> = HashMap::new();
+        let mut cards: HashMap<u64, PendingCard> = HashMap::new();
         cards.insert(
             42,
-            ActionCard {
-                id: 42,
-                verb: "Transférer".into(),
-                object: "25 EUR à Awa".into(),
-                reason: "demande explicite".into(),
-                cost: Money::from_cents(2500, "EUR"),
-                data_exit: DataExit::Local,
-                reversible: false,
-                provenance: Provenance::Hakille,
+            PendingCard {
+                card: ActionCard {
+                    id: 42,
+                    verb: "Transférer".into(),
+                    object: "25 EUR à Awa".into(),
+                    reason: "demande explicite".into(),
+                    cost: Money::from_cents(2500, "EUR"),
+                    data_exit: DataExit::Local,
+                    reversible: false,
+                    provenance: Provenance::Hakille,
+                },
+                plan: test_plan(),
             },
         );
         let mut outbox = Outbox::new();
@@ -1164,6 +1223,16 @@ mod tests {
         assert_eq!(entry.verb, "Transférer");
         assert!(entry.dedup_key.contains("card#42"));
         assert!(
+            entry.object.contains("plan card-preview"),
+            "l'action en file PORTE le plan approuvé : {}",
+            entry.object
+        );
+        assert!(
+            entry.object.contains("transférer 25 EUR à Awa"),
+            "l'étape du plan est dans l'action : {}",
+            entry.object
+        );
+        assert!(
             effect
                 .as_deref()
                 .unwrap_or_default()
@@ -1186,6 +1255,11 @@ mod tests {
             approved_entry.action.parameters.get("effect"),
             Some(&serde_json::json!("outbox_enqueued"))
         );
+        assert_eq!(
+            approved_entry.action.parameters.get("plan_steps"),
+            Some(&serde_json::json!(1)),
+            "l'audit porte le plan approuvé"
+        );
         let audit_id_debug = format!("{:?}", approved_entry.id);
         assert!(
             audit_id_debug.contains(&audit_id),
@@ -1195,15 +1269,18 @@ mod tests {
         // Refus : AUCUN effet, et l'audit le dit.
         cards.insert(
             43,
-            ActionCard {
-                id: 43,
-                verb: "Supprimer".into(),
-                object: "/vfs/notes.txt".into(),
-                reason: "irréversible".into(),
-                cost: Money::from_cents(0, "EUR"),
-                data_exit: DataExit::Local,
-                reversible: false,
-                provenance: Provenance::Hakille,
+            PendingCard {
+                card: ActionCard {
+                    id: 43,
+                    verb: "Supprimer".into(),
+                    object: "/vfs/notes.txt".into(),
+                    reason: "irréversible".into(),
+                    cost: Money::from_cents(0, "EUR"),
+                    data_exit: DataExit::Local,
+                    reversible: false,
+                    provenance: Provenance::Hakille,
+                },
+                plan: test_plan(),
             },
         );
         let reply = decide_card(&mut cards, &journal, &mut outbox, &dir, 43, false);

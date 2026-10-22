@@ -237,7 +237,7 @@ Le flux de décision est implémenté et a été rejoué en smoke IPC local puis
 4. le desktop ouvre le panneau 720×360. `Entrée` maintenue **600 ms** approuve, `R` refuse, `Échap` masque sans décider ; les nœuds AccessKit 40/41/42 valent décision explicite ; **les trois boutons de la carte sont cliquables à la souris** (maintien 600 ms conservé pour une carte définitive) ;
 5. chaque proposition (`ActionCardProposed`), approbation (`ActionCardApproved`) ou refus (`ActionCardRejected`) est auditée avant l'accusé `CardDecisionAck`.
 
-Limites explicites : **une approbation n'exécute encore aucune action métier** ; elle enregistre seulement une décision auditée. AccessKit est couvert par l'arbre et les tests unitaires mais pas encore validé avec un lecteur d'écran réel. La carte n'est retirée qu'après l'accusé d'audit ; si l'audit échoue, elle reste en attente.
+Limites explicites : **une approbation n'exécute encore aucune action métier** ; l'effet réel est la **mise en file durable de l'action approuvée** (outbox idempotente et persistée, avec le plan d'exécution et son risque dans l'entrée de journal et dans l'objet mis en file). AccessKit est couvert par l'arbre et les tests unitaires mais pas encore validé avec un lecteur d'écran réel. La carte n'est retirée qu'après l'accusé d'audit ; si l'audit échoue, elle reste en attente.
 
 ### Fenêtre desktop : fond transparent et déplaçable
 
