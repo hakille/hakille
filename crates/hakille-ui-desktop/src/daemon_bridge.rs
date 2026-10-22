@@ -101,6 +101,11 @@ impl KernelStub for RealDaemonBridge {
                 | UiToKernel::StatusRequest => {
                     self.require_daemon("données réelles du démon requises")
                 }
+                // Extension additive v1 (agents) : sans démon, aucun agent
+                // réel n'est disponible — refus explicite.
+                UiToKernel::AgentListRequest | UiToKernel::AgentRunRequest { .. } => {
+                    self.require_daemon("runtime d'agents réel requis")
+                }
             };
         }
         // LocalAuthorized : le noyau (simulé ici) revérifie puis journalise.
@@ -161,6 +166,13 @@ impl KernelStub for RealDaemonBridge {
             | UiToKernel::StatusRequest => Ok(KernelToUi::Toast {
                 text: "données réelles requises — démon non branché (pont simulé)".into(),
             }),
+            // Extension additive v1 (agents) : le pont simulé n'exécute AUCUN
+            // agent — refus explicite (jamais de sortie inventée).
+            UiToKernel::AgentListRequest | UiToKernel::AgentRunRequest { .. } => {
+                Ok(KernelToUi::Toast {
+                    text: "runtime d'agents réel requis — démon non branché (pont simulé)".into(),
+                })
+            }
         }
     }
 }

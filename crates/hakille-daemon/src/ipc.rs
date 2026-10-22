@@ -21,8 +21,8 @@ use hakille_metrics::{BoundedInitiativeTracker, ContinuityTracker, GeneralityTra
 use hakille_sync::{Outbox, OutboxEntry};
 use hakille_ui::{CostCounter, MemoryViewerPanel, PresenceIndicator};
 use hakille_ui_protocol::{
-    ActionCard, DataExit, JournalEntryDto, KernelToUi, MemoryRowDto, Money, Provenance, StatusDto,
-    UiToKernel,
+    ActionCard, AgentDto, DataExit, JournalEntryDto, KernelToUi, MemoryRowDto, Money, Provenance,
+    StatusDto, UiToKernel,
 };
 
 use crate::{
@@ -249,6 +249,64 @@ fn decide_card(
     }
 }
 
+/// Exécute un agent WASM réel et renvoie la réponse protocole.
+///
+/// Isolé du transport pour être testable directement (le contrat est le
+/// même : sortie JSON réelle + empreintes SHA-256, jamais de sortie inventée).
+fn run_agent_request(
+    runtime: &mut crate::agent_runtime::ReferenceAgentRuntime,
+    name: &str,
+    input_json: &str,
+) -> Result<KernelToUi, String> {
+    let run = runtime.run(name, input_json).map_err(|e| e.to_string())?;
+    Ok(KernelToUi::AgentRunReply {
+        name: run.agent,
+        output_json: run.output,
+        duration_ms: run.duration_ms as u64,
+        input_sha256: run.input_sha256,
+        output_sha256: run.output_sha256,
+    })
+}
+
+/// Liste honnête des agents exposés au HUD.
+///
+/// `artifact_present = true` UNIQUEMENT pour un agent réellement exécutable
+/// (binaire WASM vérifié, hash connu). Les manifests métier déclaratifs sont
+/// listés avec `artifact_present = false` : le HUD ne peut pas les présenter
+/// comme opérationnels.
+fn agent_dtos(
+    runtime: Option<&crate::agent_runtime::ReferenceAgentRuntime>,
+    registry: &hakille_agents::AgentRegistry,
+) -> Vec<AgentDto> {
+    let mut out: Vec<AgentDto> = registry
+        .list_agents()
+        .iter()
+        .map(|m| AgentDto {
+            id: m.id.clone(),
+            name: m.name.clone(),
+            required_caps: m
+                .required_capabilities
+                .iter()
+                .map(|c| format!("{c:?}"))
+                .collect(),
+            artifact_present: false,
+            sha256: String::new(),
+        })
+        .collect();
+    if let Some(runtime) = runtime {
+        for agent in runtime.agents() {
+            out.push(AgentDto {
+                id: agent.name.clone(),
+                name: agent.name.clone(),
+                required_caps: Vec::new(),
+                artifact_present: true,
+                sha256: agent.sha256.clone(),
+            });
+        }
+    }
+    out
+}
+
 /// Boucle serveur : jeton neuf écrit pour le HUD, écoute sur l'endpoint local,
 /// un client à la fois. Ne retourne jamais en marche normale (sauf erreur de
 /// bind : message explicite + `Err`, jamais de serveur silencieux).
@@ -264,6 +322,10 @@ pub async fn run_serve(
     memory_path: &std::path::Path,
     outbox: &mut Outbox,
     data_dir: &std::path::Path,
+    agent_runtime: Option<
+        std::sync::Arc<std::sync::Mutex<crate::agent_runtime::ReferenceAgentRuntime>>,
+    >,
+    agent_registry: &hakille_agents::AgentRegistry,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = hakille_ipc::transport::default_endpoint();
     let token_path = hakille_ipc::transport::default_token_path();
@@ -312,6 +374,8 @@ pub async fn run_serve(
             memory_path,
             outbox,
             data_dir,
+            agent_runtime.as_ref(),
+            agent_registry,
             &mut pending_cards,
             &mut next_card_id,
         )
@@ -335,6 +399,10 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     memory_path: &std::path::Path,
     outbox: &mut Outbox,
     data_dir: &std::path::Path,
+    agent_runtime: Option<
+        &std::sync::Arc<std::sync::Mutex<crate::agent_runtime::ReferenceAgentRuntime>>,
+    >,
+    agent_registry: &hakille_agents::AgentRegistry,
     pending_cards: &mut HashMap<u64, ActionCard>,
     next_card_id: &mut u64,
 ) {
@@ -699,6 +767,112 @@ async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                 println!("IPC: statut servi (id={id})");
                 Frame::reply(id, KernelToUi::StatusReply { status })
             }
+            FrameBody::Request {
+                message: UiToKernel::AgentListRequest,
+            } => {
+                // Liste HONNÊTE : `artifact_present` distingue un agent
+                // réellement exécutable d'un manifeste déclaratif.
+                let guard = agent_runtime.as_ref().and_then(|r| r.lock().ok());
+                let agents = agent_dtos(guard.as_deref(), agent_registry);
+                drop(guard);
+                println!("IPC: agents listés (id={id}, {} agent(s))", agents.len());
+                Frame::reply(id, KernelToUi::AgentListReply { agents })
+            }
+            FrameBody::Request {
+                message: UiToKernel::AgentRunRequest { name, input_json },
+            } => {
+                // Exécution RÉELLE dans le bac à sable (fuel/timeout/mémoire
+                // bornés). Le runtime est bloquant (Wasmtime) : on le sort du
+                // runtime async pour ne pas figer le serveur IPC.
+                let agent_name = name.clone();
+                let input = input_json.clone();
+                let reply = match agent_runtime.as_ref() {
+                    Some(runtime) => {
+                        // Le runtime est bloquant (Wasmtime) : on le sort du
+                        // runtime async pour ne pas figer le serveur IPC.
+                        let runtime = std::sync::Arc::clone(runtime);
+                        let outcome = tokio::task::spawn_blocking(move || {
+                            let mut guard = runtime
+                                .lock()
+                                .map_err(|_| "verrou du runtime d'agents empoisonné".to_string())?;
+                            run_agent_request(&mut guard, &agent_name, &input)
+                        })
+                        .await;
+                        match outcome {
+                            Ok(Ok(KernelToUi::AgentRunReply {
+                                name: agent,
+                                output_json,
+                                duration_ms,
+                                input_sha256,
+                                output_sha256,
+                            })) => {
+                                // Audit : on journalise le RÉSULTAT (empreintes,
+                                // jamais la charge utile complète).
+                                let audit = audit_action_with_id(
+                                    audit_journal,
+                                    "WasmAgentRunCompleted",
+                                    format!("Agent {agent} exécuté ({duration_ms} ms)"),
+                                    serde_json::json!({
+                                        "agent": agent,
+                                        "duration_ms": duration_ms,
+                                        "input_sha256": input_sha256,
+                                        "output_sha256": output_sha256,
+                                    }),
+                                    false,
+                                );
+                                match audit {
+                                    Ok(audit_id) => {
+                                        println!(
+                                            "IPC: agent {agent} exécuté ({duration_ms} ms) — audit [{audit_id}]"
+                                        );
+                                        KernelToUi::AgentRunReply {
+                                            name: agent,
+                                            output_json,
+                                            duration_ms,
+                                            input_sha256,
+                                            output_sha256,
+                                        }
+                                    }
+                                    Err(e) => {
+                                        // Audit indisponible : l'exécution a eu
+                                        // lieu mais n'est pas prouvable → on le dit.
+                                        eprintln!(
+                                            "IPC: agent {agent} exécuté mais audit indisponible: {e}"
+                                        );
+                                        KernelToUi::Toast {
+                                            text: format!(
+                                                "agent {agent} exécuté mais audit indisponible: {e} — résultat non accusé"
+                                            ),
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(Ok(other)) => other,
+                            Ok(Err(e)) => {
+                                eprintln!("IPC: exécution d'agent échouée ({name}) — {e}");
+                                KernelToUi::Toast {
+                                    text: format!("agent {name} : {e}"),
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("IPC: tâche d'exécution d'agent interrompue — {e}");
+                                KernelToUi::Toast {
+                                    text: format!("exécution d'agent interrompue : {e}"),
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        eprintln!(
+                            "IPC: exécution d'agent refusée (id={id}) — runtime indisponible"
+                        );
+                        KernelToUi::Toast {
+                            text: "runtime d'agents indisponible — aucun agent exécuté".into(),
+                        }
+                    }
+                };
+                Frame::reply(id, reply)
+            }
             FrameBody::Request { .. } => {
                 eprintln!("IPC: message non supporté (id={id}) — refus explicite");
                 Frame::reply(
@@ -829,6 +1003,85 @@ mod tests {
         let ghost = recall_rows(&graph, &["inconnu".to_string()], 10);
         assert_eq!(ghost[0].id, "", "jamais d'id inventé");
         assert_eq!(ghost[0].source, "recall");
+    }
+
+    #[test]
+    fn agent_execution_returns_the_real_wasm_output() {
+        // Preuve d'exécution RÉELLE : le binaire WASM tourne dans le bac à
+        // sable et sa sortie JSON est rapportée telle quelle.
+        let dir = std::env::temp_dir().join(format!("hakille_run_{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).expect("dossier de test");
+        let mut runtime = crate::agent_runtime::ReferenceAgentRuntime::provision(&dir)
+            .expect("runtime d'agents provisionné");
+
+        let reply = run_agent_request(&mut runtime, "echo-agent", "{\"msg\":\"bonjour\"}")
+            .expect("exécution réelle");
+        let KernelToUi::AgentRunReply {
+            name,
+            output_json,
+            duration_ms,
+            input_sha256,
+            output_sha256,
+        } = reply
+        else {
+            panic!("réponse d'exécution attendue");
+        };
+        assert_eq!(name, "echo-agent");
+        assert!(
+            output_json.contains("bonjour"),
+            "la sortie réelle contient l'entrée : {output_json}"
+        );
+        assert_eq!(input_sha256.len(), 64);
+        assert_eq!(output_sha256.len(), 64);
+        assert!(duration_ms < 60_000, "exécution bornée : {duration_ms} ms");
+
+        // Un agent inconnu est REFUSÉ explicitement (jamais de sortie inventée).
+        let err = run_agent_request(&mut runtime, "agent-mail", "{}")
+            .expect_err("agent sans binaire refusé");
+        assert!(err.contains("agent-mail"), "{err}");
+    }
+
+    #[test]
+    fn agent_list_is_honest_between_real_and_declarative_agents() {
+        use hakille_agents::{AgentManifest, AgentRegistry};
+        use hakille_core::CapabilityScope;
+
+        // Un manifeste DÉCLARATIF : jamais présenté comme exécutable.
+        let mut registry = AgentRegistry::new();
+        registry
+            .register(AgentManifest {
+                id: "agent-mail".into(),
+                name: "Mail Agent".into(),
+                version: "0.1.0".into(),
+                description: "manifest déclaratif".into(),
+                required_capabilities: vec![CapabilityScope::Network],
+            })
+            .expect("manifest enregistré");
+        let without_runtime = agent_dtos(None, &registry);
+        assert_eq!(without_runtime.len(), 1);
+        assert!(!without_runtime[0].artifact_present);
+        assert!(without_runtime[0].sha256.is_empty());
+        assert_eq!(without_runtime[0].required_caps.len(), 1);
+
+        // Avec un runtime réel : les agents de référence sont exécutables.
+        let dir = std::env::temp_dir().join(format!("hakille_agents_{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).expect("dossier de test");
+        let runtime = crate::agent_runtime::ReferenceAgentRuntime::provision(&dir)
+            .expect("runtime d'agents provisionné");
+        let with_runtime = agent_dtos(Some(&runtime), &registry);
+        let real: Vec<&AgentDto> = with_runtime.iter().filter(|a| a.artifact_present).collect();
+        assert_eq!(
+            real.len(),
+            runtime.agents().len(),
+            "chaque agent chargé est exécutable, avec son SHA-256"
+        );
+        assert!(real.iter().all(|a| a.sha256.len() == 64));
+        assert!(
+            with_runtime
+                .iter()
+                .any(|a| a.id == "agent-mail" && !a.artifact_present),
+            "le manifeste déclaratif reste marqué non exécutable"
+        );
     }
 
     #[test]

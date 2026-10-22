@@ -59,6 +59,13 @@ impl KernelStub for DenyAllKernel {
             | UiToKernel::StatusRequest => Err(BridgeError::DaemonRequired(
                 "noyau non branché — données réelles du démon requises".into(),
             )),
+            // Extension additive v1 (agents) : sans démon, aucun agent n'est
+            // exécutable — refus explicite, jamais de liste inventée.
+            UiToKernel::AgentListRequest | UiToKernel::AgentRunRequest { .. } => {
+                Err(BridgeError::DaemonRequired(
+                    "noyau non branché — runtime d'agents réel requis".into(),
+                ))
+            }
         }
     }
 }

@@ -245,6 +245,17 @@ Limites explicites : **une approbation n'exécute encore aucune action métier**
 - La fenêtre est **déplaçable à la souris** : glisser la barre du HUD (ou l'en-tête du panneau) déplace la fenêtre. Pendant une décision de carte, seule la barre du HUD et l'en-tête restent déplaçables — jamais les boutons.
 - Pendant un tour, le HUD affiche l'attente **avec le temps réel écoulé** (« En attente de réponse du démon… Ns ») et la saisie est verrouillée : pas de second tour concurrent.
 
+### Agents réels depuis le HUD (F4)
+
+Le démon expose son runtime WASM au desktop par un contrat IPC additif :
+
+- `F4` ouvre le panneau **Agents** : la liste affichée distingue explicitement les agents **réellement exécutables** (binaire WASM vérifié + SHA-256) des **manifests déclaratifs** (aucun binaire) ;
+- `:agent <nom> <json>` dans le champ de requête exécute un agent réel dans le bac à sable (fuel 10 M, timeout 2 s, 32 pages, zéro import hôte) et affiche sa sortie JSON réelle ;
+- chaque exécution est **auditée** (`WasmAgentRunCompleted`, empreintes SHA-256 de l'entrée et de la sortie, jamais la charge utile complète) ;
+- une demande de panneau faite avant la connexion au démon est **rejouée** à la connexion (sinon le panneau resterait vide).
+
+Limites explicites : seuls `echo-agent` et `count-agent` ont un binaire réel ; les cinq agents métier de `agents/` restent des manifests déclaratifs (pas de `.wasm` livré, `spawn_sandboxed` non branché).
+
 ### Voix : timeline de visèmes (approximation documentée)
 
 `hakille-voice` expose désormais `FormantStream::viseme_timeline()` : une timeline de **visèmes phonémiques** (A, E, I, O, U, M/B/P, F/V, L, neutre, silence) dérivée de la **source phonémique réelle** du TTS formantique. C'est une approximation documentée (la coarticulation n'est pas modélisée), **pas** du lip-sync image par image ; l'invariant « somme des durées == durée de l'audio » est vérifié par test, donc la timeline ne peut pas diverger du son.

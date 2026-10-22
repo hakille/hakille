@@ -17,7 +17,9 @@ use crate::scene::{Color, DrawCmd, Scene};
 use hakille_ui::{CostCounter, EphemeralHud, HudState, PresenceIndicator, SilenceBudgetTracker};
 use hakille_ui_model::snapshot::{EVAPORATE_MS, HUD_HEIGHT, HUD_WIDTH};
 use hakille_ui_model::{KernelEvent, StableSnapshot, UiEvent};
-use hakille_ui_protocol::{ActionCard, JournalEntryDto, KernelToUi, MemoryRowDto, StatusDto};
+use hakille_ui_protocol::{
+    ActionCard, AgentDto, JournalEntryDto, KernelToUi, MemoryRowDto, StatusDto,
+};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -49,6 +51,9 @@ pub enum HudInput {
     ShowMemory,
     /// Ouvre le panneau statut (F3).
     ShowStatus,
+    /// Ouvre le panneau des agents (F4) : liste des agents réellement
+    /// exécutables vs manifests déclaratifs.
+    ShowAgents,
     /// Frame due (minuterie d'animation — voir `FrameBudget`).
     Tick,
     /// Demande de focus sur le champ requête (AccessKit focus/click).
@@ -87,6 +92,14 @@ pub enum HudAction {
     },
     /// Statut minimal du démon.
     RequestStatus,
+    /// Liste des agents exposés par le démon (additif v1).
+    RequestAgents,
+    /// Exécution d'un agent WASM réel (additif v1) : entrée JSON → sortie
+    /// JSON. Le démon refuse tout agent sans binaire vérifié.
+    RunAgent {
+        name: String,
+        input_json: String,
+    },
     /// Décision explicite sur la carte en attente (jamais un effet local :
     /// le démon revérifie et audite avant tout accusé).
     ApproveCard {
@@ -111,7 +124,28 @@ pub enum PanelKind {
     Journal,
     Memory,
     Status,
+    /// Liste des agents (exécutables vs déclaratifs).
+    Agents,
     Card,
+}
+
+/// Action de demande de donnée pour un panneau de consultation.
+///
+/// SOURCE UNIQUE : utilisée à l'ouverture du panneau ET au rejeu après
+/// connexion (une demande perdue laisserait un panneau vide).
+pub fn panel_request_action(kind: PanelKind) -> HudAction {
+    match kind {
+        PanelKind::Journal => HudAction::RequestJournal {
+            limit: CONSULT_LIMIT,
+        },
+        PanelKind::Memory => HudAction::RequestMemory {
+            query: None,
+            limit: CONSULT_LIMIT,
+        },
+        PanelKind::Status => HudAction::RequestStatus,
+        PanelKind::Agents => HudAction::RequestAgents,
+        PanelKind::Card | PanelKind::Response | PanelKind::None => HudAction::Redraw,
+    }
 }
 
 fn map_presence(state: hakille_ui_protocol::PresenceState) -> hakille_ui::PresenceState {
@@ -212,6 +246,15 @@ pub struct HudApp {
     memory_rows: Vec<MemoryRowDto>,
     /// Dernier statut reçu du démon.
     last_status: Option<StatusDto>,
+    /// Panneau dont la donnée n'a pas pu être demandée (démon absent) : la
+    /// demande est REJOUÉE à la connexion, sinon le panneau resterait vide
+    /// pour toujours.
+    pending_panel_request: Option<PanelKind>,
+    /// Agents listés par le démon (additif v1) : `artifact_present` distingue
+    /// un agent réellement exécutable d'un manifeste déclaratif.
+    agents: Vec<AgentDto>,
+    /// Dernière exécution d'agent rapportée par le démon (nom, sortie, durée).
+    last_agent_run: Option<(String, String, u64)>,
     /// Dernier identifiant de fait mémorisé (accusé `MemoryRemember`).
     last_remember_id: Option<String>,
     /// Confirmation de consultation (non-erreur) affichée sous la requête.
@@ -257,6 +300,9 @@ impl HudApp {
             journal_entries: Vec::new(),
             memory_rows: Vec::new(),
             last_status: None,
+            pending_panel_request: None,
+            agents: Vec::new(),
+            last_agent_run: None,
             last_remember_id: None,
             data_notice: None,
             queued_queries: VecDeque::new(),
@@ -395,7 +441,8 @@ impl HudApp {
     /// Contenu texte du panneau actif. Aucune donnée inventée : une liste
     /// vide dit explicitement qu'il faut interroger le démon.
     pub fn consult_view(&self) -> ConsultView {
-        let footer = "Échap fermer  ·  F1 Journal  ·  F2 Mémoire  ·  F3 Statut".to_string();
+        let footer =
+            "Échap fermer  ·  F1 Journal  ·  F2 Mémoire  ·  F3 Statut  ·  F4 Agents".to_string();
         match self.panel {
             PanelKind::Journal => {
                 let mut lines = Vec::new();
@@ -521,6 +568,47 @@ impl HudApp {
                     title: "Décision requise".into(),
                     subtitle: "Carte issue du démon — aucune exécution sans décision auditée"
                         .into(),
+                    lines,
+                    footer,
+                }
+            }
+            PanelKind::Agents => {
+                let mut lines: Vec<ConsultLine> = Vec::new();
+                for agent in &self.agents {
+                    let etat = if agent.artifact_present {
+                        "exécutable (WASM vérifié)".to_string()
+                    } else {
+                        "déclaratif (aucun binaire)".to_string()
+                    };
+                    let sha = if agent.sha256.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [sha256 {}…]", &agent.sha256[..agent.sha256.len().min(12)])
+                    };
+                    lines.push(ConsultLine::new(
+                        format!("{} — {etat}{sha}", agent.name),
+                        if agent.artifact_present {
+                            ConsultLineKind::Strong
+                        } else {
+                            ConsultLineKind::Muted
+                        },
+                    ));
+                }
+                if lines.is_empty() {
+                    lines.push(ConsultLine::new(
+                        "Aucun agent listé par le démon.",
+                        ConsultLineKind::Muted,
+                    ));
+                }
+                if let Some((name, output, ms)) = &self.last_agent_run {
+                    lines.push(ConsultLine::new(
+                        format!("Dernière exécution : {name} ({ms} ms) → {output}"),
+                        ConsultLineKind::Normal,
+                    ));
+                }
+                ConsultView {
+                    title: "Agents".into(),
+                    subtitle: "Exécutables (WASM réel) vs manifests déclaratifs".into(),
                     lines,
                     footer,
                 }
@@ -669,6 +757,27 @@ impl HudApp {
                         let q = query.trim().to_string();
                         if q.is_empty() {
                             Vec::new()
+                        } else if let Some(rest) = q.strip_prefix(":agent ") {
+                            // Commande LOCALE : exécution d'un agent WASM réel
+                            // via le démon (`:agent <nom> <json>`). Le HUD
+                            // n'invente rien : il transmet, le démon décide.
+                            let mut parts = rest.splitn(2, ' ');
+                            let name = parts.next().unwrap_or_default().trim().to_string();
+                            let input_json = parts.next().unwrap_or("{}").trim().to_string();
+                            if name.is_empty() {
+                                self.notice = Some("usage : :agent <nom> <json>".into());
+                                vec![HudAction::Redraw]
+                            } else {
+                                self.hud.open_prompt();
+                                vec![HudAction::RunAgent {
+                                    name,
+                                    input_json: if input_json.is_empty() {
+                                        "{}".to_string()
+                                    } else {
+                                        input_json
+                                    },
+                                }]
+                            }
                         } else {
                             vec![HudAction::Submit { query: q }]
                         }
@@ -680,6 +789,7 @@ impl HudApp {
             HudInput::ShowJournal => self.open_panel(PanelKind::Journal),
             HudInput::ShowMemory => self.open_panel(PanelKind::Memory),
             HudInput::ShowStatus => self.open_panel(PanelKind::Status),
+            HudInput::ShowAgents => self.open_panel(PanelKind::Agents),
             HudInput::Tick => self.tick(),
             HudInput::FocusQuery => {
                 if self.visible {
@@ -772,7 +882,27 @@ impl HudApp {
     pub fn on_ipc_connected(&mut self) -> Vec<HudAction> {
         match self.queued_queries.pop_front() {
             Some(query) => vec![HudAction::Submit { query }],
-            None => Vec::new(),
+            None => match self.pending_panel_request.take() {
+                // La donnée du panneau était demandée AVANT la connexion :
+                // on la redemande (sinon le panneau resterait vide).
+                Some(kind) => vec![panel_request_action(kind)],
+                None => Vec::new(),
+            },
+        }
+    }
+
+    /// Demande de panneau impossible (démon absent) : le HUD le signale ET
+    /// garde la demande pour la rejouer à la prochaine connexion.
+    pub fn on_panel_request_failed(&mut self, kind: PanelKind) -> Vec<HudAction> {
+        self.pending_panel_request = Some(kind);
+        // Refus explicite (erreur) : l'utilisateur doit voir que la donnée
+        // n'a PAS été inventée.
+        self.notice = Some("démon non connecté — données réelles du démon requises".to_string());
+        if self.visible {
+            vec![HudAction::Redraw]
+        } else {
+            self.unseen_reply = true;
+            Vec::new()
         }
     }
 
@@ -948,6 +1078,36 @@ impl HudApp {
                 self.last_status = Some(status);
                 self.data_reply_actions(PanelKind::Status, label)
             }
+            KernelToUi::AgentListReply { agents } => {
+                // Liste HONNÊTE : on affiche ce que le démon a réellement
+                // (exécutable vs déclaratif). Aucune capability inventée.
+                let count = agents.len();
+                let real = agents.iter().filter(|a| a.artifact_present).count();
+                self.agents = agents;
+                self.data_reply_actions(
+                    PanelKind::Agents,
+                    format!("agents : {count} listé(s), {real} réellement exécutable(s)"),
+                )
+            }
+            KernelToUi::AgentRunReply {
+                name,
+                output_json,
+                duration_ms,
+                input_sha256,
+                output_sha256,
+            } => {
+                // Sortie RÉELLE rapportée par le démon (jamais simulée ici).
+                self.last_agent_run = Some((name.clone(), output_json.clone(), duration_ms));
+                self.data_notice = Some(format!(
+                    "agent {name} — {duration_ms} ms — sortie {output_json} (in {input_sha256} / out {output_sha256})"
+                ));
+                if self.visible {
+                    vec![HudAction::Redraw]
+                } else {
+                    self.unseen_reply = true;
+                    Vec::new()
+                }
+            }
             msg => self.on_turn_reply(msg),
         }
     }
@@ -1045,17 +1205,7 @@ impl HudApp {
             actions.push(HudAction::ShowWindow);
         }
         actions.push(self.resize_action(true));
-        actions.push(match kind {
-            PanelKind::Journal => HudAction::RequestJournal {
-                limit: CONSULT_LIMIT,
-            },
-            PanelKind::Memory => HudAction::RequestMemory {
-                query: None,
-                limit: CONSULT_LIMIT,
-            },
-            PanelKind::Status => HudAction::RequestStatus,
-            PanelKind::Card | PanelKind::Response | PanelKind::None => HudAction::Redraw,
-        });
+        actions.push(panel_request_action(kind));
         actions.push(HudAction::Redraw);
         actions
     }
@@ -1448,6 +1598,104 @@ mod tests {
         assert!(app.visible);
         assert!(actions.contains(&HudAction::ShowWindow));
         assert!(actions.contains(&HudAction::Redraw));
+    }
+
+    #[test]
+    fn agent_command_is_sent_to_the_daemon_not_to_the_llm() {
+        let mut app = shown(false);
+        type_text(&mut app, ":agent echo-agent {\"msg\":\"bonjour\"}");
+        let actions = app.handle(HudInput::Enter);
+        assert_eq!(
+            actions,
+            vec![HudAction::RunAgent {
+                name: "echo-agent".to_string(),
+                input_json: "{\"msg\":\"bonjour\"}".to_string(),
+            }],
+            "une commande agent ne part JAMAIS dans le LLM"
+        );
+        // Le champ est vidé : la commande ne reste pas dans le HUD.
+        assert_eq!(app.snapshot().hud_query, "");
+    }
+
+    #[test]
+    fn agent_list_reply_distinguishes_real_and_declarative_agents() {
+        let mut app = shown(false);
+        let actions = app.on_kernel_reply(KernelToUi::AgentListReply {
+            agents: vec![
+                AgentDto {
+                    id: "echo-agent".into(),
+                    name: "echo-agent".into(),
+                    required_caps: vec![],
+                    artifact_present: true,
+                    sha256: "a".repeat(64),
+                },
+                AgentDto {
+                    id: "agent-mail".into(),
+                    name: "Mail Agent".into(),
+                    required_caps: vec!["Network".into()],
+                    artifact_present: false,
+                    sha256: String::new(),
+                },
+            ],
+        });
+        assert!(actions.contains(&HudAction::ResizeWindow {
+            width: 720,
+            height: 360
+        }));
+        let view = app.consult_view();
+        let texte: String = view.lines.iter().map(|l| l.text.clone()).collect();
+        assert!(texte.contains("echo-agent"), "{texte}");
+        assert!(texte.contains("exécutable"), "{texte}");
+        assert!(texte.contains("déclaratif"), "{texte}");
+    }
+
+    #[test]
+    fn agent_run_reply_shows_the_real_output() {
+        let mut app = shown(false);
+        let actions = app.on_kernel_reply(KernelToUi::AgentRunReply {
+            name: "echo-agent".into(),
+            output_json: "{\"echo\":\"bonjour\"}".into(),
+            duration_ms: 7,
+            input_sha256: "b".repeat(64),
+            output_sha256: "c".repeat(64),
+        });
+        assert!(actions.contains(&HudAction::Redraw));
+        let notice = app.aux_notice().expect("sortie d'agent affichée");
+        assert!(notice.text.contains("echo-agent"), "{}", notice.text);
+        assert!(
+            notice.text.contains("{\"echo\":\"bonjour\"}"),
+            "{}",
+            notice.text
+        );
+    }
+
+    #[test]
+    fn panel_request_failed_is_replayed_on_connection() {
+        // Un panneau demandé AVANT la connexion ne doit pas rester vide
+        // pour toujours : la demande est rejouée à la connexion.
+        let mut app = shown(false);
+        let actions = app.handle(HudInput::ShowMemory);
+        assert!(actions.contains(&HudAction::RequestMemory {
+            query: None,
+            limit: CONSULT_LIMIT,
+        }));
+        // Le démon est absent : la demande échoue, le HUD le signale.
+        let actions = app.on_panel_request_failed(PanelKind::Memory);
+        assert!(actions.contains(&HudAction::Redraw));
+        let aux = app.aux_notice().expect("refus affiché");
+        assert!(aux.error, "le refus doit être visible");
+        assert!(aux.text.contains("non connecté"), "{}", aux.text);
+        // À la connexion, la demande est rejouée.
+        let actions = app.on_ipc_connected();
+        assert!(
+            actions.contains(&HudAction::RequestMemory {
+                query: None,
+                limit: CONSULT_LIMIT,
+            }),
+            "la demande doit être rejouée : {actions:?}"
+        );
+        // Une seconde connexion ne rejoue rien (pas de boucle).
+        assert!(app.on_ipc_connected().is_empty());
     }
 
     #[test]

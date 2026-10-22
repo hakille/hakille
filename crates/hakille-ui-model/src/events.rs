@@ -77,6 +77,23 @@ impl From<KernelToUi> for KernelEvent {
             KernelToUi::StatusReply { status } => Self::Toast {
                 text: format!("statut : {} — {}", status.model, status.cost),
             },
+            KernelToUi::AgentListReply { agents } => {
+                let real = agents.iter().filter(|a| a.artifact_present).count();
+                Self::Toast {
+                    text: format!(
+                        "agents : {} listé(s), {real} réellement exécutable(s)",
+                        agents.len()
+                    ),
+                }
+            }
+            KernelToUi::AgentRunReply {
+                name,
+                duration_ms,
+                output_json,
+                ..
+            } => Self::Toast {
+                text: format!("agent {name} — {duration_ms} ms — {output_json}"),
+            },
             KernelToUi::CardDecisionAck {
                 card_id,
                 approved,

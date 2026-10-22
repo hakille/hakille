@@ -16,7 +16,7 @@ use accesskit_winit::{
 };
 use hakille_ipc::transport;
 use hakille_ui_desktop::a11y::ActionCardA11y;
-use hakille_ui_desktop::app::{HudAction, HudApp, HudInput, PointerTarget};
+use hakille_ui_desktop::app::{HudAction, HudApp, HudInput, PanelKind, PointerTarget};
 use hakille_ui_desktop::runtime::WinitConfig;
 use hakille_ui_desktop::scene::Scene;
 use hakille_ui_desktop::{
@@ -476,7 +476,7 @@ impl DesktopApp {
                         .as_ref()
                         .is_some_and(|ipc| ipc.request_journal(limit));
                     if !sent {
-                        let actions = self.core.on_ipc_unavailable("journal");
+                        let actions = self.core.on_panel_request_failed(PanelKind::Journal);
                         self.apply(actions, event_loop);
                     }
                 }
@@ -486,14 +486,31 @@ impl DesktopApp {
                         .as_ref()
                         .is_some_and(|ipc| ipc.request_memory(query, limit));
                     if !sent {
-                        let actions = self.core.on_ipc_unavailable("mémoire");
+                        let actions = self.core.on_panel_request_failed(PanelKind::Memory);
                         self.apply(actions, event_loop);
                     }
                 }
                 HudAction::RequestStatus => {
                     let sent = self.ipc.as_ref().is_some_and(|ipc| ipc.request_status());
                     if !sent {
-                        let actions = self.core.on_ipc_unavailable("statut");
+                        let actions = self.core.on_panel_request_failed(PanelKind::Status);
+                        self.apply(actions, event_loop);
+                    }
+                }
+                HudAction::RequestAgents => {
+                    let sent = self.ipc.as_ref().is_some_and(|ipc| ipc.request_agents());
+                    if !sent {
+                        let actions = self.core.on_panel_request_failed(PanelKind::Agents);
+                        self.apply(actions, event_loop);
+                    }
+                }
+                HudAction::RunAgent { name, input_json } => {
+                    let sent = self
+                        .ipc
+                        .as_ref()
+                        .is_some_and(|ipc| ipc.run_agent(name.clone(), input_json.clone()));
+                    if !sent {
+                        let actions = self.core.on_ipc_unavailable("exécution d'agent");
                         self.apply(actions, event_loop);
                     }
                 }
@@ -819,6 +836,7 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                             Key::Named(NamedKey::F1) => inputs.push(HudInput::ShowJournal),
                             Key::Named(NamedKey::F2) => inputs.push(HudInput::ShowMemory),
                             Key::Named(NamedKey::F3) => inputs.push(HudInput::ShowStatus),
+                            Key::Named(NamedKey::F4) => inputs.push(HudInput::ShowAgents),
                             _ => {
                                 if let Some(text) = text {
                                     for c in text.chars() {

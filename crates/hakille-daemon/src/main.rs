@@ -885,6 +885,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if serve_mode {
+        // Le runtime d'agents est partagé (Arc<Mutex<..>>) : l'exécution
+        // WASM est bloquante, elle part dans une tâche dédiée sans figer le
+        // serveur IPC.
+        let agent_runtime_shared =
+            agent_runtime.map(|rt| std::sync::Arc::new(std::sync::Mutex::new(rt)));
         return run_serve(
             &mut orchestrator,
             &mut presence,
@@ -896,6 +901,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &memory_snapshot,
             &mut outbox,
             &data_dir,
+            agent_runtime_shared,
+            &agent_registry,
         )
         .await;
     }
