@@ -166,7 +166,7 @@ Le REPL accepte du texte naturel (qui est routé vers le `CognitiveOrchestrator`
 | **`:help`** | Affiche la liste complète des commandes interactives (y compris `:help` et `:quit`, alias `:exit`) et rappelle que toute saisie sans `:` est envoyée au modèle Qwen. |
 | **`:status`** | Affiche le palier matériel, l'état de la mémoire vive, l'état de présence actuel et le timeout LLM effectif. |
 | **`:metrics`** | Inspecte les 3 métriques North-Star (Continuité, Initiative Bornée, Généralité) et le détecteur de dérive des valeurs éthiques. |
-| **`:agents`** | Liste les cinq manifests métier déclaratifs et l'état du runtime WASM de référence (chemins, hashes, auto-test). |
+| **`:agents`** | Liste les cinq manifests métier (chargés depuis `agents/*/agent.toml`, scopes déclarés) et l'état du runtime WASM de référence (chemins, hashes, auto-test). |
 | **`:agents-run <name> <json>`** | Exécute réellement `echo-agent` ou `count-agent` ; audit avant/après avec hashes, jamais le payload brut. |
 | **`:cost`** | Affiche le compteur financier des appels Système 2 en temps réel. |
 | **`:models`** | Liste le catalogue des modèles fondations et l'état du cache disque local. |
