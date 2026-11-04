@@ -8,6 +8,14 @@ on:
     - cron: "0 3 * * 0"
   workflow_dispatch:
 
+# Les artefacts debug et le cache incrémental saturent le disque des runners
+# lors des builds successifs check/clippy/test. Les assertions et contrôles
+# d'overflow des profils dev/test restent actifs ; seuls ces artefacts changent.
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
 jobs:
   check-test:
     strategy:

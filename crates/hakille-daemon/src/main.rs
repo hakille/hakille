@@ -1553,6 +1553,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(target_os = "windows")]
             s if s.starts_with(":gui-action ") => {
                 let task = s.trim_start_matches(":gui-action ").trim();
+                // Ce chemin utilise l'ancrage sur pixels, sans forward VLM.
+                let gui_agent = hakille_agents::UiTarsAgent::new();
                 println!(
                     "Intentions GUI ancrées sur capture réelle (vision classique ; VLM non exécuté) pour tâche : '{}'...",
                     task
@@ -1572,7 +1574,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     };
                     let (screen_w, screen_h) = (capture.width, capture.height);
-                    let intentions = match _gui_agent.predict_grounded_on_frame(
+                    let intentions = match gui_agent.predict_grounded_on_frame(
                         task,
                         &capture.data,
                         screen_w,
@@ -1587,7 +1589,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("  Predicted {} GUI intentions:", intentions.len());
                     for (i, intent) in intentions.iter().enumerate() {
                         println!("    {}. {:?}", i + 1, intent);
-                        match _gui_agent
+                        match gui_agent
                             .execute_intention(
                                 &substrate,
                                 intent,
