@@ -10,7 +10,8 @@
 use crate::daemon_bridge::RealDaemonBridge;
 use crate::kernel_bridge::KernelBridge;
 use crate::renderer::{
-    CONSULT_HEIGHT, ConsultLine, ConsultLineKind, ConsultView, card_scene, consult_scene, hud_scene,
+    CONSULT_HEIGHT, CONSULT_PAGE_LINES, ConsultLine, ConsultLineKind, ConsultView, card_scene,
+    consult_scene, hud_scene, wrapped_consult_lines,
 };
 use crate::runtime::FrameBudget;
 use crate::scene::{Color, DrawCmd, Scene};
@@ -54,6 +55,10 @@ pub enum HudInput {
     /// Ouvre le panneau des agents (F4) : liste des agents réellement
     /// exécutables vs manifests déclaratifs.
     ShowAgents,
+    /// Défilement des lignes du panneau (clavier, molette, accessibilité).
+    ScrollPanel(i32),
+    PanelStart,
+    PanelEnd,
     /// Frame due (minuterie d'animation — voir `FrameBudget`).
     Tick,
     /// Demande de focus sur le champ requête (AccessKit focus/click).
@@ -266,6 +271,7 @@ pub struct HudApp {
     queued_queries: VecDeque<String>,
     /// Panneau actif sous le HUD (`None` : HUD compact 720×64).
     panel: PanelKind,
+    panel_offset: usize,
 }
 
 impl HudApp {
@@ -310,6 +316,7 @@ impl HudApp {
             data_notice: None,
             queued_queries: VecDeque::new(),
             panel: PanelKind::None,
+            panel_offset: 0,
         }
     }
 
@@ -418,7 +425,7 @@ impl HudApp {
             return card_scene(&snap, card, self.data_notice.as_deref(), dark);
         }
         if self.panel != PanelKind::None {
-            return consult_scene(&snap, &self.consult_view(), dark);
+            return consult_scene(&snap, &self.consult_page(), dark);
         }
         let mut scene = hud_scene(&snap, dark);
         if let Some(aux) = self.aux_notice() {
@@ -441,6 +448,43 @@ impl HudApp {
         scene
     }
 
+    /// Page réellement affichée, sans perdre le reste du contenu reçu.
+    pub fn consult_page(&self) -> ConsultView {
+        let mut view = self.consult_view();
+        let lines = wrapped_consult_lines(&view);
+        let total = lines.len();
+        let start = self
+            .panel_offset
+            .min(total.saturating_sub(CONSULT_PAGE_LINES));
+        let end = (start + CONSULT_PAGE_LINES).min(total);
+        view.lines = lines[start..end].to_vec();
+        view.footer = format!(
+            "Lignes {}–{end}/{total} · Pg↑/Pg↓ · Début/Fin · Molette · Échap fermer",
+            if total == 0 { 0 } else { start + 1 }
+        );
+        view
+    }
+
+    fn scroll_panel(&mut self, delta: i32, edge: Option<bool>) -> Vec<HudAction> {
+        if !self.visible || matches!(self.panel, PanelKind::None | PanelKind::Card) {
+            return Vec::new();
+        }
+        let maximum = wrapped_consult_lines(&self.consult_view())
+            .len()
+            .saturating_sub(CONSULT_PAGE_LINES);
+        let offset = self.panel_offset.min(maximum);
+        let next = match edge {
+            Some(true) => maximum,
+            Some(false) => 0,
+            None => offset.saturating_add_signed(delta as isize).min(maximum),
+        };
+        if next == self.panel_offset {
+            return Vec::new();
+        }
+        self.panel_offset = next;
+        vec![HudAction::Redraw]
+    }
+
     /// Contenu texte du panneau actif. Aucune donnée inventée : une liste
     /// vide dit explicitement qu'il faut interroger le démon.
     pub fn consult_view(&self) -> ConsultView {
@@ -455,7 +499,7 @@ impl HudApp {
                         ConsultLineKind::Muted,
                     ));
                 } else {
-                    for entry in self.journal_entries.iter().take(12) {
+                    for entry in self.journal_entries.iter() {
                         let stamp: String = entry.timestamp.chars().take(16).collect();
                         lines.push(ConsultLine::new(
                             format!("{}  ·  {}", stamp.replace('T', " "), entry.action),
@@ -486,7 +530,7 @@ impl HudApp {
                         ConsultLineKind::Muted,
                     ));
                 } else {
-                    for row in self.memory_rows.iter().take(12) {
+                    for row in self.memory_rows.iter() {
                         lines.push(ConsultLine::new(row.text.clone(), ConsultLineKind::Normal));
                         let short_id: String = row.id.chars().take(8).collect();
                         let tags = if row.tags.is_empty() {
@@ -793,6 +837,9 @@ impl HudApp {
             HudInput::ShowMemory => self.open_panel(PanelKind::Memory),
             HudInput::ShowStatus => self.open_panel(PanelKind::Status),
             HudInput::ShowAgents => self.open_panel(PanelKind::Agents),
+            HudInput::ScrollPanel(delta) => self.scroll_panel(delta, None),
+            HudInput::PanelStart => self.scroll_panel(0, Some(false)),
+            HudInput::PanelEnd => self.scroll_panel(0, Some(true)),
             HudInput::Tick => self.tick(),
             HudInput::FocusQuery => {
                 if self.visible {
@@ -1165,6 +1212,7 @@ impl HudApp {
         self.hud.set_streaming(query, text, true);
         self.presence.set_state(hakille_ui::PresenceState::Idle);
         let was_expanded = self.panel != PanelKind::None;
+        self.panel_offset = 0;
         self.panel = if long {
             PanelKind::Response
         } else {
@@ -1189,6 +1237,7 @@ impl HudApp {
     fn data_reply_actions(&mut self, kind: PanelKind, notice: String) -> Vec<HudAction> {
         self.data_notice = Some(notice);
         self.panel = kind;
+        self.panel_offset = 0;
         if self.visible {
             vec![self.resize_action(true), HudAction::Redraw]
         } else {
@@ -1216,6 +1265,7 @@ impl HudApp {
             return self.close_panel();
         }
         self.panel = kind;
+        self.panel_offset = 0;
         self.data_notice = None;
         let mut actions = Vec::new();
         if !self.visible {
@@ -2358,5 +2408,117 @@ mod tests {
             height: 360
         }));
         assert_eq!(app.scene().height, CONSULT_HEIGHT);
+    }
+    #[test]
+    fn desktop_shell_panel_navigation_reaches_all_received_memory_and_clamps() {
+        let mut app = shown(false);
+        app.panel = PanelKind::Memory;
+        app.memory_rows = (0..50)
+            .map(|n| MemoryRowDto {
+                id: n.to_string(),
+                text: format!("fait reçu {n}"),
+                tags: vec![],
+                source: "User".into(),
+            })
+            .collect();
+        assert!(
+            app.consult_view()
+                .lines
+                .iter()
+                .any(|line| line.text == "fait reçu 49")
+        );
+        assert_eq!(
+            app.handle(HudInput::ScrollPanel(CONSULT_PAGE_LINES as i32)),
+            vec![HudAction::Redraw]
+        );
+        assert!(app.panel_offset > 0);
+        app.handle(HudInput::PanelEnd);
+        assert!(
+            app.consult_page()
+                .lines
+                .iter()
+                .any(|line| line.text == "fait reçu 49")
+        );
+        assert!(app.handle(HudInput::ScrollPanel(i32::MAX)).is_empty());
+        app.handle(HudInput::PanelStart);
+        assert_eq!(app.panel_offset, 0);
+        assert!(
+            app.consult_page()
+                .lines
+                .iter()
+                .any(|line| line.text == "fait reçu 0")
+        );
+        assert!(app.handle(HudInput::ScrollPanel(i32::MIN)).is_empty());
+        app.handle(HudInput::PanelEnd);
+        app.handle(HudInput::ShowStatus);
+        assert_eq!(app.panel_offset, 0, "un autre panneau recommence en haut");
+        app.panel = PanelKind::Journal;
+        app.journal_entries = (0..50)
+            .map(|n| JournalEntryDto {
+                id: n.to_string(),
+                timestamp: "2026-11-03T12:00:00Z".into(),
+                action: format!("action {n}"),
+                summary: format!("résumé reçu {n}"),
+            })
+            .collect();
+        app.handle(HudInput::PanelEnd);
+        assert!(
+            app.consult_page()
+                .lines
+                .iter()
+                .any(|line| line.text == "résumé reçu 49")
+        );
+        let scene = app.scene();
+        assert!(
+            !scene
+                .cmds
+                .iter()
+                .any(|cmd| matches!(cmd, DrawCmd::GlyphRun { text, .. } if text == "…")),
+            "la page affichée tient entièrement dans le panneau"
+        );
+    }
+
+    #[test]
+    fn desktop_shell_panel_navigation_preserves_full_unicode_response() {
+        let mut app = shown(false);
+        let response = (0..40)
+            .map(|n| format!("日本語 réponse {n}\n"))
+            .collect::<String>();
+        app.display_turn("question".into(), response.clone(), false);
+        let full = wrapped_consult_lines(&app.consult_view());
+        let mut seen = Vec::new();
+        loop {
+            seen.extend(app.consult_page().lines.into_iter().map(|line| line.text));
+            if app
+                .handle(HudInput::ScrollPanel(CONSULT_PAGE_LINES as i32))
+                .is_empty()
+            {
+                break;
+            }
+        }
+        for line in full {
+            assert!(
+                seen.contains(&line.text),
+                "ligne jamais affichée : {}",
+                line.text
+            );
+        }
+        assert!(
+            app.consult_view()
+                .lines
+                .iter()
+                .any(|line| line.text == response)
+        );
+        app.visible = false;
+        assert!(
+            app.handle(HudInput::PanelStart).is_empty(),
+            "aucune frame en veille"
+        );
+        app.visible = true;
+        app.panel = PanelKind::Card;
+        assert!(
+            app.handle(HudInput::PanelEnd).is_empty(),
+            "aucun défilement des décisions"
+        );
     }
 }

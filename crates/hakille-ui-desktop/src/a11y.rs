@@ -166,6 +166,38 @@ pub fn build_shell_tree(
     }
 }
 
+/// Panneau consulté : tout le texte reçu reste lisible par le lecteur
+/// d'écran, même lorsque la fenêtre ne montre qu'une page.
+pub const CONSULT_PANEL_NODE: NodeId = NodeId(500);
+
+pub fn append_consult_panel(update: &mut TreeUpdate, view: &crate::renderer::ConsultView) {
+    let mut children = Vec::new();
+    for (index, line) in view.lines.iter().enumerate() {
+        if line.text.is_empty() {
+            continue;
+        }
+        let nid = id(1000 + index as u64);
+        update
+            .nodes
+            .push((nid, node(Role::Label, &line.text, &[], vec![])));
+        children.push(nid);
+    }
+    update.nodes.push((
+        CONSULT_PANEL_NODE,
+        node(
+            Role::GenericContainer,
+            &format!("{} — {}", view.title, view.subtitle),
+            &[Action::ScrollUp, Action::ScrollDown],
+            children,
+        ),
+    ));
+    if let Some((_, root)) = update.nodes.iter_mut().find(|(nid, _)| *nid == id(0)) {
+        let mut children = root.children().to_vec();
+        children.push(CONSULT_PANEL_NODE);
+        root.set_children(children);
+    }
+}
+
 /// Nœuds interactifs sans label (doit être vide — gate S3).
 pub fn audit_interactive_labels(update: &TreeUpdate) -> Vec<NodeId> {
     update
@@ -350,5 +382,47 @@ mod tests {
         let locked = u.nodes.iter().find(|(i, _)| *i == id(200)).unwrap();
         assert!(!locked.1.supports_action(Action::Click));
         assert!(locked.1.label().unwrap().contains("verrouillé"));
+    }
+    #[test]
+    fn a11y_consult_panel_exposes_complete_content_and_scroll_actions() {
+        use crate::renderer::{ConsultLine, ConsultLineKind, ConsultView};
+        let view = ConsultView {
+            title: "Mémoire".into(),
+            subtitle: "50 faits reçus".into(),
+            footer: String::new(),
+            lines: (0..50)
+                .map(|n| ConsultLine::new(format!("fait réel {n}"), ConsultLineKind::Normal))
+                .collect(),
+        };
+        let mut update = build_shell_tree(&sample(), &[], &[]);
+        append_consult_panel(&mut update, &view);
+        let root = &update
+            .nodes
+            .iter()
+            .find(|(nid, _)| *nid == id(0))
+            .unwrap()
+            .1;
+        assert!(root.children().contains(&CONSULT_PANEL_NODE));
+        let panel = &update
+            .nodes
+            .iter()
+            .find(|(nid, _)| *nid == CONSULT_PANEL_NODE)
+            .unwrap()
+            .1;
+        assert_eq!(panel.children().len(), 50);
+        assert!(panel.supports_action(Action::ScrollUp));
+        assert!(panel.supports_action(Action::ScrollDown));
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.value() == Some("fait réel 49"))
+        );
+        let ids: std::collections::HashSet<_> = update.nodes.iter().map(|(nid, _)| *nid).collect();
+        assert_eq!(
+            ids.len(),
+            update.nodes.len(),
+            "identifiants AccessKit uniques"
+        );
     }
 }

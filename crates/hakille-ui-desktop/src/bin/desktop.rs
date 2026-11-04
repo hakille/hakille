@@ -15,8 +15,9 @@ use accesskit_winit::{
     Adapter as AccessKitAdapter, Event as AccessKitEvent, WindowEvent as AccessKitWindowEvent,
 };
 use hakille_ipc::transport;
-use hakille_ui_desktop::a11y::ActionCardA11y;
+use hakille_ui_desktop::a11y::{ActionCardA11y, CONSULT_PANEL_NODE, append_consult_panel};
 use hakille_ui_desktop::app::{HudAction, HudApp, HudInput, PanelKind, PointerTarget};
+use hakille_ui_desktop::renderer::CONSULT_PAGE_LINES;
 use hakille_ui_desktop::runtime::WinitConfig;
 use hakille_ui_desktop::scene::Scene;
 use hakille_ui_desktop::{
@@ -32,7 +33,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
@@ -46,6 +47,17 @@ const A11Y_CARD_APPROVE: accesskit::NodeId = accesskit::NodeId(40);
 const A11Y_CARD_EDIT: accesskit::NodeId = accesskit::NodeId(41);
 const A11Y_CARD_REJECT: accesskit::NodeId = accesskit::NodeId(42);
 const CARD_HOLD: Duration = Duration::from_millis(600);
+
+/// Un geste fin doit finir par défiler, même si chaque événement vaut < 1 ligne.
+fn accumulate_scroll(remainder: &mut f64, delta: f64) -> i32 {
+    if !delta.is_finite() {
+        return 0;
+    }
+    let total = (*remainder + delta).clamp(i32::MIN as f64, i32::MAX as f64);
+    let whole = total.trunc() as i32;
+    *remainder = total - f64::from(whole);
+    whole
+}
 
 fn card_a11y(card: &ActionCard) -> ActionCardA11y {
     let data_label = match &card.data_exit {
@@ -294,6 +306,9 @@ impl WindowState {
             return build_action_card_tree(&card_a11y(card));
         }
         let mut tree = build_shell_tree(&core.snapshot(), &[], &[]);
+        if core.visible && !matches!(core.panel(), PanelKind::None | PanelKind::Card) {
+            append_consult_panel(&mut tree, &core.consult_view());
+        }
         if core.visible {
             tree.focus = A11Y_QUERY_NODE;
         }
@@ -320,6 +335,8 @@ struct DesktopApp {
     card_mouse_hold_start: Option<Instant>,
     /// Position courante du pointeur (coordonnées physiques).
     cursor: Option<PhysicalPosition<f64>>,
+    /// Fraction de ligne retenue pour les petits gestes du pavé tactile.
+    scroll_remainder: f64,
     frames_rendered: u64,
     code: u8,
     hotkey_status: String,
@@ -716,6 +733,18 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                     }
                 }
                 AccessKitWindowEvent::ActionRequested(request) => {
+                    if request.target_node == CONSULT_PANEL_NODE {
+                        let delta = match request.action {
+                            accesskit::Action::ScrollDown => Some(CONSULT_PAGE_LINES as i32),
+                            accesskit::Action::ScrollUp => Some(-(CONSULT_PAGE_LINES as i32)),
+                            _ => None,
+                        };
+                        if let Some(delta) = delta {
+                            let actions = self.core.handle(HudInput::ScrollPanel(delta));
+                            self.apply(actions, event_loop);
+                        }
+                        return;
+                    }
                     if let Some(card_id) = self.core.pending_card().map(|c| c.id) {
                         // Une activation AccessKit est explicite : elle vaut
                         // décision, sans le hold souris (pas de clic accidentel
@@ -781,6 +810,18 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                 self.redraw();
                 return;
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * 3.0,
+                    MouseScrollDelta::PixelDelta(position) => {
+                        -(position.y / ws.window.scale_factor() / 20.0)
+                    }
+                };
+                let whole_lines = accumulate_scroll(&mut self.scroll_remainder, lines);
+                if whole_lines != 0 {
+                    inputs.push(HudInput::ScrollPanel(whole_lines));
+                }
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -837,6 +878,14 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                             Key::Named(NamedKey::F2) => inputs.push(HudInput::ShowMemory),
                             Key::Named(NamedKey::F3) => inputs.push(HudInput::ShowStatus),
                             Key::Named(NamedKey::F4) => inputs.push(HudInput::ShowAgents),
+                            Key::Named(NamedKey::PageDown) => {
+                                inputs.push(HudInput::ScrollPanel(CONSULT_PAGE_LINES as i32))
+                            }
+                            Key::Named(NamedKey::PageUp) => {
+                                inputs.push(HudInput::ScrollPanel(-(CONSULT_PAGE_LINES as i32)))
+                            }
+                            Key::Named(NamedKey::Home) => inputs.push(HudInput::PanelStart),
+                            Key::Named(NamedKey::End) => inputs.push(HudInput::PanelEnd),
                             _ => {
                                 if let Some(text) = text {
                                     for c in text.chars() {
@@ -981,6 +1030,7 @@ fn main() -> ExitCode {
         card_hold_start: None,
         card_mouse_hold_start: None,
         cursor: None,
+        scroll_remainder: 0.0,
         frames_rendered: 0,
         code: 0,
         hotkey_status,
@@ -1014,5 +1064,17 @@ mod tests {
         assert!(args.show && args.authorized && args.smoke);
         let empty = parse_args(std::iter::empty::<String>());
         assert!(!empty.show && !empty.authorized && !empty.smoke);
+    }
+    #[test]
+    fn desktop_shell_trackpad_accumulates_fractional_lines() {
+        let mut remainder = 0.0;
+        for _ in 0..3 {
+            assert_eq!(accumulate_scroll(&mut remainder, 0.25), 0);
+        }
+        assert_eq!(accumulate_scroll(&mut remainder, 0.25), 1);
+        assert_eq!(accumulate_scroll(&mut remainder, -1.5), -1);
+        assert_eq!(accumulate_scroll(&mut remainder, -0.5), -1);
+        assert_eq!(accumulate_scroll(&mut remainder, f64::NAN), 0);
+        assert_eq!(remainder, 0.0);
     }
 }

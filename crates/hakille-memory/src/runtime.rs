@@ -725,6 +725,12 @@ fn validate_embedding(vector: &[f32], what: &str) -> Result<(), MemoryRuntimeErr
             vector.len()
         )));
     }
+    crate::vector::check_embedding_values(vector, what).map_err(embedding_error)?;
+    if vector.iter().all(|&value| value == 0.0) {
+        return Err(MemoryRuntimeError::Embedding(format!(
+            "{what} : vecteur nul refusé, aucune direction sémantique"
+        )));
+    }
     Ok(())
 }
 
@@ -1075,5 +1081,22 @@ mod tests {
         );
         drop(runtime);
         std::fs::remove_dir_all(&dir).ok();
+    }
+    #[test]
+    fn invalid_neural_embeddings_are_rejected_before_any_persistent_write() {
+        for value in [f32::NAN, f32::INFINITY, 0.0] {
+            let dir = temp_dir("invalid-neural");
+            let db = dir.join("memory.redb");
+            let mut runtime = MemoryRuntime::open(&db).unwrap();
+            runtime.set_embedder(Box::new(move |_| vec![value; EMBEDDING_DIM]));
+            assert!(matches!(
+                runtime.remember("ne pas sauvegarder", &[], "user"),
+                Err(MemoryRuntimeError::Embedding(_))
+            ));
+            assert!(runtime.is_empty());
+            drop(runtime);
+            assert!(MemoryRuntime::open(&db).unwrap().is_empty());
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 }

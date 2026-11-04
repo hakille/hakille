@@ -1,23 +1,8 @@
-//! # Moteur duplex RÉEL v1 (tour de parole + réponse vocale)
+//! Pipeline duplex avec codec Mimi neuronal lorsque le checkpoint est chargé.
 //!
-//! `MOTEUR DUPLEX RÉEL v1 (tokens RVQ Mimi réels, VAD réel, réponse générée
-//! depuis le texte du noyau ; modélisation neuronale du dialogue Moshi 7,6B
-//! non provisionnée — heuristique de tour de parole documentée)`.
-//!
-//! Chaîne RÉELLE par pas de 80 ms (une trame Mimi) :
-//! 1. Audio utilisateur → [`MimiCodec::encode_frame`] (VRAI RVQ Mimi).
-//! 2. Tour de parole : VAD réel ([`vad_score`], seuils partagés avec
-//!    `barge_in.rs`) + hangover → l'utilisateur parle-t-il ?
-//! 3. Réponse GÉNÉRÉE PAR LE TEXTE : le texte vient de
-//!    [`MoshiEngine::inject_context`] (noyau/RAG) — utilisé VRAIMENT : il
-//!    alimente le synthétiseur formantique ([`formant`](crate::tts::formant)).
-//!    Sans contexte : réponse d'attente honnête (« Je vous écoute. »).
-//! 4. Réponse audio → [`MimiCodec::encode_frame`] (VRAIS indices RVQ) →
-//!    [`MimiCodec::decode_frame`] (reconstruction) → échantillons générés.
-//! 5. `user_interrupted` RÉEL : VAD utilisateur actif (énergie > seuil
-//!    d'interruption + hangover) pendant que le système parlait.
-//!
-//! Plus aucun token inventé (`(turn*31+i*17)%2048` supprimé).
+//! Les entrées utilisateur et sortie système ont des états de codec séparés.
+//! La réponse reste une synthèse formantique du texte fourni par le noyau :
+//! le modèle conversationnel Moshi 7,6B n'est pas chargé ni exécuté ici.
 
 use crate::barge_in::{
     INTERRUPT_RMS_THRESHOLD, VAD_HANGOVER_FRAMES, VAD_MIN_PROBABILITY, VAD_RMS_THRESHOLD, vad_score,
@@ -44,6 +29,7 @@ pub struct MoshiStepOutput {
 
 pub struct MoshiEngine {
     codec: MimiCodec,
+    user_codec: MimiCodec,
     rag_context: Option<String>,
     dialogue_turn: u64,
     system_voice: FormantVoice,
@@ -57,6 +43,7 @@ impl MoshiEngine {
     pub fn new() -> Self {
         Self {
             codec: MimiCodec::new(),
+            user_codec: MimiCodec::new(),
             rag_context: None,
             dialogue_turn: 0,
             system_voice: FormantVoice::new(SYSTEM_VOICE_F0, 1.0),
@@ -67,13 +54,17 @@ impl MoshiEngine {
 
     /// Nom du moteur, honnête sur l'origine réelle des poids RVQ.
     ///
-    /// - `MimiWeights` : codebooks Mimi réellement chargés depuis le checkpoint ;
+    /// - `NeuralMimi` : encodeur/décodeur Mimi complet, sans modèle Moshi ;
+    /// - `MimiWeights` : diagnostic des codebooks historiques uniquement ;
     /// - `GeometryOnlyV1` / `SyntheticV1` : pas de décodeur neural Mimi, la
     ///   reconstruction RVQ est une projection déterministe de secours.
     pub fn engine_name(&self) -> &'static str {
         match self.codec.rvq_source_kind() {
+            RvqWeightsKind::NeuralMimi => {
+                "MoshiEngine duplex (codec Mimi neuronal réel + réponse formantique ; modèle Moshi absent)"
+            }
             RvqWeightsKind::MimiWeights => {
-                "MoshiEngine DUPLEX v1 (codebooks Mimi réels + VAD réel + réponse formantique)"
+                "MoshiEngine DUPLEX v1 (codebooks Mimi réels, projection historique sans décodeur neuronal)"
             }
             RvqWeightsKind::GeometryOnlyV1 => {
                 "MoshiEngine DUPLEX v1 (géométrie Mimi réelle, poids RVQ de secours — pas de décodeur neural)"
@@ -84,12 +75,10 @@ impl MoshiEngine {
         }
     }
 
-    /// `true` tant que le codec ne tourne pas sur de vrais poids Mimi.
-    ///
-    /// Le tour de parole et le VAD restent réels ; c'est la reconstruction
-    /// audio RVQ qui est simulée avec `GeometryOnlyV1`/`SyntheticV1`.
+    /// Le modèle conversationnel Moshi reste absent même avec un codec Mimi
+    /// neuronal. Ne pas confondre codec audio réel et génération Moshi 7,6B.
     pub fn is_simulated(&self) -> bool {
-        !matches!(self.codec.rvq_source_kind(), RvqWeightsKind::MimiWeights)
+        true
     }
 
     /// Taux attendu du pipeline voix : 24 kHz (Mimi).
@@ -104,6 +93,7 @@ impl MoshiEngine {
 
     pub fn with_codec(codec: MimiCodec) -> Self {
         Self {
+            user_codec: codec.fresh_stream(),
             codec,
             rag_context: None,
             dialogue_turn: 0,
@@ -111,6 +101,16 @@ impl MoshiEngine {
             user_hangover: 0,
             was_system_speaking: false,
         }
+    }
+
+    /// Commence une nouvelle session sans conserver l'historique d'un locuteur.
+    pub fn reset(&mut self) {
+        self.codec.reset();
+        self.user_codec.reset();
+        self.dialogue_turn = 0;
+        self.user_hangover = 0;
+        self.was_system_speaking = false;
+        self.rag_context = None;
     }
 
     pub fn codec(&self) -> &MimiCodec {
@@ -141,7 +141,7 @@ impl MoshiEngine {
 
         // 1. Encode RÉEL de l'audio utilisateur (VRAI RVQ Mimi).
         let user_frame: Vec<f32> = pad_or_trim(user_audio_samples);
-        let _user_tokens = self.codec.encode_frame(&user_frame)?;
+        let _user_tokens = self.user_codec.encode_frame(&user_frame)?;
 
         // 2. VAD RÉEL sur l'utilisateur (énergie + saisonnalité + hangover).
         let (user_energy, user_prob) = vad_score(&user_frame);
@@ -293,5 +293,40 @@ mod tests {
             out2.user_interrupted,
             "salve franche pendant playback → user_interrupted=true"
         );
+    }
+    #[test]
+    #[ignore = "checkpoint Mimi complet requis ; séparation de deux flux neuronaux CPU"]
+    fn neural_duplex_keeps_user_and_system_encoder_states_separate() {
+        let path = std::env::var_os("HAKILLE_MODELS_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../models")
+            })
+            .join("mimi_candle.safetensors");
+        let codec = MimiCodec::with_safetensors_file(path).expect("Mimi neuronal requis");
+        assert!(codec.is_neural());
+        let mut quiet = MoshiEngine::with_codec(codec.fresh_stream());
+        let mut speaking = MoshiEngine::with_codec(codec);
+        assert!(quiet.is_simulated(), "Moshi conversationnel reste absent");
+        assert!(quiet.engine_name().contains("modèle Moshi absent"));
+        quiet.inject_context("Bonjour.");
+        speaking.inject_context("Bonjour.");
+        let tone: Vec<f32> = (0..SAMPLES_PER_FRAME)
+            .map(|i| 0.1 * (i as f32 * 220.0 * std::f32::consts::TAU / 24_000.0).sin())
+            .collect();
+        let a = quiet
+            .full_duplex_step(&vec![0.0; SAMPLES_PER_FRAME])
+            .unwrap();
+        let b = speaking.full_duplex_step(&tone).unwrap();
+        assert_eq!(
+            a.generated_audio_tokens, b.generated_audio_tokens,
+            "l'état encodeur utilisateur ne doit pas contaminer la sortie système"
+        );
+        assert_eq!(a.generated_audio_samples, b.generated_audio_samples);
+        assert_eq!(a.generated_audio_samples.len(), SAMPLES_PER_FRAME);
+        speaking.reset();
+        speaking.inject_context("Bonjour.");
+        let reset = speaking.full_duplex_step(&tone).unwrap();
+        assert_eq!(reset.generated_audio_tokens, b.generated_audio_tokens);
     }
 }

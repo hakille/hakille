@@ -18,6 +18,8 @@ use std::time::Duration;
 
 /// Whole-request timeout (connect + read) applied to the reqwest client.
 pub const EGRESS_TIMEOUT_SECS: u64 = 10;
+/// Nombre maximal de redirections, chacune soumise à la politique.
+pub const EGRESS_MAX_REDIRECTS: usize = 10;
 /// Maximum request *and* response body size. Anything larger is refused
 /// with an explicit error instead of being silently truncated.
 pub const EGRESS_MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
@@ -90,7 +92,7 @@ impl EgressPolicy {
     pub fn check_url(&self, url_str: &str) -> hakille_core::Result<reqwest::Url> {
         use hakille_core::HakilleError;
         let url = reqwest::Url::parse(url_str).map_err(|e| {
-            HakilleError::SubstrateError(format!("egress denied: invalid URL '{url_str}': {e}"))
+            HakilleError::SubstrateError(format!("egress denied: invalid URL: {e}"))
         })?;
         match url.scheme() {
             "http" | "https" => {}
@@ -100,9 +102,14 @@ impl EgressPolicy {
                 )));
             }
         }
-        let host = url.host_str().ok_or_else(|| {
-            HakilleError::SubstrateError(format!("egress denied: URL '{url_str}' has no host"))
-        })?;
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(HakilleError::SubstrateError(
+                "egress denied: identifiants intégrés à l'URL interdits".into(),
+            ));
+        }
+        let host = url
+            .host_str()
+            .ok_or_else(|| HakilleError::SubstrateError("egress denied: URL has no host".into()))?;
         if !self.is_host_allowed(host) {
             if self.allowlist.is_empty() {
                 return Err(HakilleError::SubstrateError(format!(
@@ -111,17 +118,24 @@ impl EgressPolicy {
                 )));
             }
             return Err(HakilleError::SubstrateError(format!(
-                "egress denied: host '{host}' not in egress allowlist [{}]",
-                self.allowlist.join(", ")
+                "egress denied: host '{host}' not in egress allowlist"
             )));
         }
         Ok(url)
     }
 }
 
-/// Lowercase + trim + strip a single trailing dot (`example.com.` ⇒ `example.com`).
+/// Normalise les noms DNS et les littéraux IP (IPv6 avec ou sans crochets).
 pub fn normalize_host(host: &str) -> String {
-    host.trim().trim_end_matches('.').to_ascii_lowercase()
+    let host = host.trim().trim_end_matches('.');
+    let literal = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
+    match literal.parse::<IpAddr>() {
+        Ok(ip) => ip.to_string(),
+        Err(_) => host.to_ascii_lowercase(),
+    }
 }
 
 /// `true` for `localhost`, `127.0.0.0/8`, and `::1` (bracketed or not).
@@ -194,14 +208,32 @@ pub async fn fetch_via_egress(
     let url = policy.check_url(&req.url)?;
     let method = parse_method(&req.method)?;
 
+    let redirect_policy = policy.clone();
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= EGRESS_MAX_REDIRECTS {
+                return attempt.error("egress denied: trop de redirections");
+            }
+            if attempt
+                .previous()
+                .last()
+                .is_some_and(|url| url.scheme() == "https")
+                && attempt.url().scheme() != "https"
+            {
+                return attempt.error("egress denied: redirection HTTPS vers HTTP interdite");
+            }
+            match redirect_policy.check_url(attempt.url().as_str()) {
+                Ok(_) => attempt.follow(),
+                Err(_) => attempt.error("egress denied: destination de redirection interdite"),
+            }
+        }))
         .timeout(Duration::from_secs(EGRESS_TIMEOUT_SECS))
         .build()
         .map_err(|e| {
             HakilleError::SubstrateError(format!("egress denied: failed to build TLS client: {e}"))
         })?;
 
-    let mut builder = client.request(method, url.clone());
+    let mut builder = client.request(method, url);
     for (name, value) in &req.headers {
         let header_name =
             reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
@@ -213,11 +245,11 @@ pub async fn fetch_via_egress(
         builder = builder.header(header_name, header_value);
     }
     if !req.body.is_empty() {
-        builder = builder.body(req.body.clone());
+        builder = builder.body(req.body);
     }
 
-    let response = builder.send().await.map_err(|e| {
-        HakilleError::SubstrateError(format!("egress fetch failed for '{}': {e}", req.url))
+    let mut response = builder.send().await.map_err(|e| {
+        HakilleError::SubstrateError(format!("egress fetch failed: {}", e.without_url()))
     })?;
     let status_code = response.status().as_u16();
     if let Some(declared) = response.content_length()
@@ -231,20 +263,26 @@ pub async fn fetch_via_egress(
     for (name, value) in response.headers().iter() {
         headers.insert(name.to_string(), value.to_str().unwrap_or("").to_string());
     }
-    let bytes = response.bytes().await.map_err(|e| {
-        HakilleError::SubstrateError(format!("egress denied: failed reading response body: {e}"))
-    })?;
-    if bytes.len() > EGRESS_MAX_BODY_BYTES {
-        return Err(HakilleError::SubstrateError(format!(
-            "egress denied: response body ({} bytes) exceeds 5MiB limit",
-            bytes.len()
-        )));
+    // Ne jamais accumuler une réponse entière avant de vérifier son plafond :
+    // Content-Length est facultatif et ne protège pas les réponses chunked.
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| {
+        HakilleError::SubstrateError(format!(
+            "egress denied: failed reading response body: {}",
+            e.without_url()
+        ))
+    })? {
+        if chunk.len() > EGRESS_MAX_BODY_BYTES - body.len() {
+            return Err(HakilleError::SubstrateError(
+                "egress denied: response body exceeds 5MiB limit".into(),
+            ));
+        }
+        body.extend_from_slice(&chunk);
     }
-    let _ = url;
     Ok(HttpResponse {
         status_code,
         headers,
-        body: bytes.to_vec(),
+        body,
     })
 }
 

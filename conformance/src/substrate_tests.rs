@@ -111,32 +111,25 @@ async fn test_cross_substrate_screen_capture_conformance() {
         }
     }
 
-    let lin = LinuxSubstrate::new();
-    let lin_screen = lin.capture_screen(&cap).await.unwrap();
-    assert_eq!(lin_screen.width, 1920);
-    assert_eq!(lin_screen.height, 1080);
-    assert_eq!(lin_screen.data.len(), 1920 * 1080 * 4);
-
-    let mac = MacosSubstrate::new();
-    let mac_screen = mac.capture_screen(&cap).await.unwrap();
-    assert_eq!(mac_screen.width, 2560);
-    assert_eq!(mac_screen.height, 1600);
-    assert_eq!(mac_screen.data.len(), 2560 * 1600 * 4);
-
-    let redox = RedoxSubstrate::new();
-    let redox_screen = redox.capture_screen(&cap).await.unwrap();
-    assert_eq!(redox_screen.width, 1920);
-    assert_eq!(redox_screen.height, 1080);
-
-    let mob = MobileSubstrate::new();
-    let mob_screen = mob.capture_screen(&cap).await.unwrap();
-    assert_eq!(mob_screen.width, 1170);
-    assert_eq!(mob_screen.height, 2532);
-
-    let web = WebSubstrate::new();
-    let web_screen = web.capture_screen(&cap).await.unwrap();
-    assert_eq!(web_screen.width, 1920);
-    assert_eq!(web_screen.height, 1080);
+    // Les backends non raccordés refusent la capture ; leurs générateurs de
+    // démonstration ne constituent jamais des pixels du poste utilisateur.
+    let substrates: Vec<Box<dyn Substrate>> = vec![
+        Box::new(LinuxSubstrate::new()),
+        Box::new(MacosSubstrate::new()),
+        Box::new(RedoxSubstrate::new()),
+        Box::new(MobileSubstrate::new()),
+        Box::new(WebSubstrate::new()),
+    ];
+    for substrate in substrates {
+        let error = substrate.capture_screen(&cap).await.unwrap_err();
+        assert!(
+            matches!(&error, hakille_core::HakilleError::SubstrateError(message)
+                if message.contains("capture d'écran indisponible")
+                    && message.contains("aucune image du poste capturée")),
+            "{} : {error}",
+            substrate.manifest().os_name,
+        );
+    }
 }
 
 fn future_expiry() -> Timestamp {

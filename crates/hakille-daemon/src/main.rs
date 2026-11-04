@@ -1,10 +1,8 @@
-use hakille_agents::{AgentManifest, AgentRegistry, UiTarsAgent, sha256_hex};
+use hakille_agents::{AgentManifest, AgentRegistry, sha256_hex};
 use hakille_audit::journal::AuditJournal;
 use hakille_audit::{ActionRecord, AuditEntry, ReasoningStep, ReasoningTrace};
 use hakille_constitution::rules::Constitution;
-use hakille_core::{
-    ActorId, CapabilityAuthority, CapabilityScope, EntryId, KeyPair, Timestamp, TrustLevel, UserId,
-};
+use hakille_core::{ActorId, CapabilityScope, EntryId, Timestamp, TrustLevel, UserId};
 use hakille_inference::{ModelCatalog, ModelProvisioner, ModelTier};
 use hakille_kernel::{
     budget::PipelineBudgetConfig, fabric::CognitiveFabric, orchestrator::CognitiveOrchestrator,
@@ -17,15 +15,17 @@ use hakille_perception::{
     AsrEngine, AudioChunk, CameraPipeline, VoiceActivityDetector, WakeWordDetector, WorldModel,
 };
 use hakille_substrate::{CameraConfig, CameraFacing, CameraStreamHandle, Compute, Substrate};
-use hakille_substrate_windows::{WindowsComputeBackend, WindowsScreenCapturer, WindowsSubstrate};
-use hakille_sync::{CrdtSync, HandoffCoordinator, Outbox, OutboxEntry};
+#[cfg(target_os = "windows")]
+use hakille_substrate_windows::WindowsScreenCapturer;
+use hakille_sync::{CrdtSync, HandoffCoordinator, OutboxEntry};
 use hakille_ui::{
     AccessibilityManager, AcrylicOverlayWindowSpec, ChannelSelector, CostCounter, DeviceType,
     EphemeralHud, InitiativeOrigin, InteractionContext, MemoryViewerPanel, OnboardingManager,
     PlatformAdapter, PresenceIndicator, PresenceState, PrimaryModality, SilenceBudgetTracker,
     UrgencyLevel, VisualAuditViewer,
 };
-use hakille_voice::{BargeInDetector, FormantTts, MoshiEngine};
+use hakille_voice::{BargeInDetector, FormantTts};
+#[cfg(target_os = "windows")]
 use sha2::Digest;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
@@ -34,9 +34,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
 mod agent_runtime;
+mod host;
+mod identity;
 mod ipc;
+mod models_cli;
+mod persistence;
 
 use ipc::run_serve;
+use persistence::{load_outbox, outbox_file_path, update_outbox};
 
 fn make_cli_progress_callback() -> hakille_inference::ProgressCallback {
     Arc::new(|p: &hakille_inference::DownloadProgress| {
@@ -58,208 +63,34 @@ fn make_cli_progress_callback() -> hakille_inference::ProgressCallback {
     })
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
-
     let args: Vec<String> = std::env::args().collect();
+    tracing_subscriber::fmt()
+        .with_max_level(if args.get(1).map(String::as_str) == Some("models") {
+            tracing::Level::WARN
+        } else {
+            tracing::Level::INFO
+        })
+        .with_writer(io::stderr)
+        .init();
     let mut eval_prompt: Option<String> = None;
     let mut daily_budget_cents: u64 = 500;
     let mut models_dir = std::env::var("HAKILLE_MODELS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("./models"));
     let mut auto_download_models = false;
+    let mut explicit_models_dir = false;
     let mut provider_arg: Option<String> = None;
     let mut serve_mode = false;
     let mut speak_enabled = false;
     let mut listen_mode = false;
 
-    // Check for CLI subcommands first: `models list`, `models download`, `models verify`
-    if args.len() > 1 && args[1] == "models" {
-        let provisioner = ModelProvisioner::new(models_dir);
-        let subcmd = args.get(2).map(|s| s.as_str()).unwrap_or("list");
-
-        match subcmd {
-            "list" => {
-                println!("============================================================");
-                println!("  Hakille Sovereign Model Catalog & Local Cache Status");
-                println!("  Cache Directory: {}", provisioner.cache_dir().display());
-                println!("============================================================");
-
-                let statuses = provisioner.list_all_status();
-                for s in statuses {
-                    let status_badge = if s.is_installed {
-                        format!(
-                            "[INSTALLED - {:.1} MB]",
-                            s.total_disk_bytes as f64 / 1_048_576.0
-                        )
-                    } else {
-                        "[NOT DOWNLOADED]".to_string()
-                    };
-                    println!(
-                        "• {:<28} {:<10?} {:<18} {}",
-                        s.entry.id, s.entry.tier, status_badge, s.entry.name
-                    );
-                    println!(
-                        "    Format: {:?} | Runtime: {:?} | RAM: {}MB | VRAM: {}MB",
-                        s.entry.format,
-                        s.entry.runtime,
-                        s.entry.expected_ram_mb,
-                        s.entry.expected_vram_mb
-                    );
-                    println!("    File: {}", s.entry.primary_artifact.filename);
-                    if !s.missing_artifacts.is_empty() {
-                        println!("    Missing: {}", s.missing_artifacts.join(", "));
-                    }
-                    println!();
-                }
-                return Ok(());
-            }
-            "download" => {
-                let mut target_tier = None;
-                let mut target_model_id = None;
-                let mut idx = 3;
-                while idx < args.len() {
-                    match args[idx].as_str() {
-                        "--tier" if idx + 1 < args.len() => {
-                            target_tier = match args[idx + 1].to_lowercase().as_str() {
-                                "guest" => Some(ModelTier::Guest),
-                                "native" => Some(ModelTier::Native),
-                                "sovereign" => Some(ModelTier::Sovereign),
-                                _ => None,
-                            };
-                            idx += 1;
-                        }
-                        "--model" if idx + 1 < args.len() => {
-                            target_model_id = Some(args[idx + 1].clone());
-                            idx += 1;
-                        }
-                        arg if !arg.starts_with("--") && target_model_id.is_none() => {
-                            target_model_id = Some(arg.to_string());
-                        }
-                        _ => {}
-                    }
-                    idx += 1;
-                }
-
-                println!("============================================================");
-                println!("  Hakille Autonomous Model Downloader (Zero-Touch Provisioning)");
-                println!("  Target Directory: {}", provisioner.cache_dir().display());
-                println!("============================================================");
-
-                let progress = Some(make_cli_progress_callback());
-
-                let mut failures: Vec<String> = Vec::new();
-                if let Some(mut model_id) = target_model_id {
-                    // Match exact id or fuzzy/prefix against catalog
-                    if provisioner.catalog().iter().all(|m| m.id != model_id)
-                        && let Some(matched) = provisioner
-                            .catalog()
-                            .iter()
-                            .find(|m| m.id.starts_with(&model_id) || m.id.contains(&model_id))
-                    {
-                        model_id = matched.id.clone();
-                    }
-                    println!("\n[Provisioning Model: {}]", model_id);
-                    let res = provisioner.provision_by_id(&model_id, progress).await;
-                    println!();
-                    match res {
-                        Ok(path) => println!(
-                            "✓ Model '{}' successfully provisioned at: {}",
-                            model_id,
-                            path.display()
-                        ),
-                        Err(e) => {
-                            eprintln!("✗ Failed to provision '{}': {}", model_id, e);
-                            failures.push(model_id);
-                        }
-                    }
-                } else if let Some(tier) = target_tier {
-                    println!("\n[Provisioning Tier: {:?}]", tier);
-                    let models = ModelCatalog::models_for_tier(tier);
-                    for m in models {
-                        println!("\n-> Provisioning: {} ({})", m.name, m.id);
-                        let res = provisioner.provision_model(&m, progress.clone()).await;
-                        println!();
-                        match res {
-                            Ok(path) => println!("✓ Installed: {}", path.display()),
-                            Err(e) => {
-                                eprintln!("✗ Failed for {}: {}", m.id, e);
-                                failures.push(m.id.clone());
-                            }
-                        }
-                    }
-                } else {
-                    println!("\n[Provisioning All Foundation Models in Catalog]");
-                    for m in provisioner.catalog() {
-                        println!("\n-> Provisioning: {} ({})", m.name, m.id);
-                        let res = provisioner.provision_model(m, progress.clone()).await;
-                        println!();
-                        match res {
-                            Ok(path) => println!("✓ Installed: {}", path.display()),
-                            Err(e) => {
-                                eprintln!("✗ Failed for {}: {}", m.id, e);
-                                failures.push(m.id.clone());
-                            }
-                        }
-                    }
-                }
-                // ÉCHEC EXPLICITE : un téléchargement raté doit faire
-                // ÉCHOUER le processus (une CI qui « passe » sans modèle
-                // ne testerait rien — succès simulé).
-                if !failures.is_empty() {
-                    return Err(format!(
-                        "provisionnement incomplet : {} modèle(s) en échec : {}",
-                        failures.len(),
-                        failures.join(", ")
-                    )
-                    .into());
-                }
-                return Ok(());
-            }
-            "verify" => {
-                println!("============================================================");
-                println!("  Verifying Cryptographic Integrity of Local Model Cache");
-                println!("  Directory: {}", provisioner.cache_dir().display());
-                println!("============================================================");
-
-                let mut corrupted: Vec<String> = Vec::new();
-                let statuses = provisioner.list_all_status();
-                for s in statuses {
-                    if !s.is_installed {
-                        println!("• {:<28} [SKIPPED - Not downloaded]", s.entry.id);
-                        continue;
-                    }
-                    match provisioner.verify_integrity(&s.entry) {
-                        Ok(true) => println!("• {:<28} [INTEGRITY OK - Hash Verified]", s.entry.id),
-                        Ok(false) => {
-                            println!("• {:<28} [CORRUPTED OR CHECKSUM MISMATCH]", s.entry.id);
-                            corrupted.push(s.entry.id.clone());
-                        }
-                        Err(e) => {
-                            println!("• {:<28} [VERIFICATION ERROR: {}]", s.entry.id, e);
-                            corrupted.push(s.entry.id.clone());
-                        }
-                    }
-                }
-                // ÉCHEC EXPLICITE : un artefact corrompu doit faire ÉCHOUER
-                // le processus, jamais passer inaperçu.
-                if !corrupted.is_empty() {
-                    return Err(format!(
-                        "intégrité vérifiée : {} artefact(s) corrompu(s) : {}",
-                        corrupted.len(),
-                        corrupted.join(", ")
-                    )
-                    .into());
-                }
-                return Ok(());
-            }
-            _ => {
-                println!("Unknown model subcommand: {}", subcmd);
-                println!("Usage: hakille-daemon models [list|download|verify]");
-                return Ok(());
-            }
-        }
+    // Les commandes modèles fonctionnent sans démarrer l'identité, l'audit ou le HUD.
+    if args.get(1).map(String::as_str) == Some("models") {
+        models_cli::run(&args[2..], models_dir).await?;
+        return Ok(());
     }
 
     let mut arg_idx = 1;
@@ -317,6 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--models-dir" if arg_idx + 1 < args.len() => {
                 models_dir = PathBuf::from(&args[arg_idx + 1]);
+                explicit_models_dir = true;
                 arg_idx += 1;
             }
             "--auto-download" => {
@@ -338,6 +170,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
         arg_idx += 1;
+    }
+
+    if explicit_models_dir {
+        hakille_inference::configure_global_qwen_paths(&models_dir)?;
     }
 
     println!("============================================================");
@@ -370,57 +206,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             keys_dir.display()
         ))
     })?;
-    // Clés : keychain OS d'abord (service "hakille"), repli fichier LOUD sinon.
-    // Le repli keys/*.bin reste lisible en clair : migrer via rotation dès que
-    // le trousseau est débloqué. Jamais de régénération silencieuse.
-    let keystore = hakille_keystore::KeyRegistry::new(hakille_keystore::OsStore::new());
-    let (authority, signing_keypair) = match (
-        keystore.capability_root(),
-        keystore.journal_signing(),
-    ) {
-        (Ok(root), Ok(journal)) => {
-            println!(
-                "  Keys: keychain OS (service \"hakille\") — capability-root-v1 {} / journal-signing-v1 {}",
-                if root.created {
-                    "CRÉÉE (premier boot)"
-                } else {
-                    "chargée"
-                },
-                if journal.created {
-                    "CRÉÉE (premier boot)"
-                } else {
-                    "chargée"
-                },
-            );
-            let private = biscuit_auth::PrivateKey::from_bytes(&root.seed[..]).map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("seed capability-root-v1 invalide ({e})"),
-                )
-            })?;
-            (
-                CapabilityAuthority::with_keypair(biscuit_auth::KeyPair::from(&private)),
-                KeyPair::from_bytes(&journal.seed),
-            )
-        }
-        (Err(e), _) | (_, Err(e)) => {
-            eprintln!("  Keys: keychain OS indisponible ({e})");
-            eprintln!(
-                "  Keys: REPLI FICHIER {} (brut non chiffré — migrer via rotation dès que possible)",
-                keys_dir.display()
-            );
-            (
-                load_or_generate_authority(&keys_dir)?,
-                load_or_generate_signing_key(&keys_dir)?,
-            )
-        }
+    let production =
+        std::env::var_os("HAKILLE_PROD").is_some_and(|value| value != "0" && !value.is_empty());
+    // L'historique signé interdit toute création de clé manquante. Une paire
+    // fichier déjà présente garde son identité ; aucune migration automatique.
+    let history_exists = match std::fs::symlink_metadata(data_dir.join("audit.redb")) {
+        Ok(_) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
     };
+    let (authority, signing_keypair) = identity::load_identity(
+        hakille_keystore::OsStore::new(),
+        &keys_dir,
+        history_exists,
+        production,
+    )?;
     println!(
         "  Keys: persistent identity loaded (keys dir: {})",
         keys_dir.display()
     );
-    let substrate = WindowsSubstrate::new().with_trusted_root(authority.root_public_key());
-    let compute = WindowsComputeBackend::new();
+    let (substrate, compute) = host::create_host(authority.root_public_key());
     let manifest = substrate.manifest();
     println!("  Host OS: {} {}", manifest.os_name, manifest.os_version);
     println!("  Tier: {:?}", manifest.tier);
@@ -518,13 +323,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  [Auto-Download] Provisioning essential models autonomously...");
         let progress = Some(make_cli_progress_callback());
         for m in ModelCatalog::models_for_tier(ModelTier::Guest) {
-            let _ = provisioner.provision_model(&m, progress.clone()).await;
+            provisioner.provision_model(&m, progress.clone()).await?;
             println!();
         }
     }
 
     let maybe_connected = provisioner.connect_all_models();
-    let (mut vad, asr, mut _moshi, fabric, qwen_engine_opt, gui_agent) = match maybe_connected {
+    // Chaque moteur audio utilise le dossier demandé, même si un modèle visuel
+    // ou le codec n'est pas encore installé. Le chargement reste paresseux.
+    let mut vad = VoiceActivityDetector::with_onnx_model(models_dir.join("silero_vad.onnx"));
+    let asr = SenseVoiceSmall::with_models_dir(&models_dir);
+    let (fabric, qwen_engine_opt) = match maybe_connected {
         Ok(ref conn) => {
             let summary = conn.system_summary();
             println!(
@@ -534,7 +343,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 conn.total_disk_bytes as f64 / 1_000_000_000.0
             );
             println!(
-                "  NOTE: statuts par artefact — forwards réels pour VAD/ASR/CAM++/MiniLM/Qwen ; Mimi = RVQ nearest-L2 (pas de décodeur neural) ; UI-TARS = inspection seule, pas de forward VLM."
+                "  NOTE : inspection des fichiers uniquement ; models test exécute les moteurs. UI-TARS exige son serveur local configuré."
             );
             for m in &summary.models {
                 println!(
@@ -545,32 +354,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     m.status
                 );
             }
-            let vad = VoiceActivityDetector::with_onnx_model(conn.silero_vad_info.path.clone());
-            let asr = SenseVoiceSmall::with_tokenizer(conn.sensevoice_tokenizer.clone());
-            let moshi = MoshiEngine::new();
             let fabric = CognitiveFabric::from_connected_models(conn);
             let qwen = conn.qwen_engine();
-            let ui_tars = UiTarsAgent::with_gguf_model(conn.ui_tars.clone());
-            (vad, asr, moshi, fabric, Some(qwen), ui_tars)
+            (fabric, Some(qwen))
         }
         Err(ref e) => {
             println!("  ⚠ Model Connection Info: {}", e);
-            let vad = VoiceActivityDetector::default_silero_profile();
-            let asr = SenseVoiceSmall::new();
-            let moshi = MoshiEngine::new();
             let fabric = CognitiveFabric::new(hakille_kernel::fabric::CognitiveManifest::default());
-            let ui_tars = UiTarsAgent::new();
-            (vad, asr, moshi, fabric, None, ui_tars)
+            (fabric, None)
         }
     };
     let mut _wake_word = WakeWordDetector::default_hakille();
     let mut _barge_in = BargeInDetector::new(0.6, 2);
-    println!("  Audio Pipeline: 16kHz continuous capture buffer ready (REAL VAD/ASR via ort)");
+    println!("  Audio : moteurs VAD/ASR configurés, chargement et inférence au premier appel.");
     println!(
-        "  SenseVoice-Small: mel + LFR + forward ort + CTC greedy — real ASR, measured confidence"
+        "  SenseVoice : frontend Kaldi, CMVN du modèle et décodage CTC ; aucune transcription au démarrage."
     );
     println!(
-        "  Voice/GUI: Mimi RVQ nearest-L2 sur codebooks réels, TTS formantique Klatt, grounding CV — pas de modèle neuronal Moshi ni de forward VLM."
+        "  Mimi neuronal et UI-TARS local : models infer ; TTS formantique distinct ; modèle de dialogue Moshi absent."
     );
 
     // Camera & Multimodal Perception Pipeline (§6)
@@ -585,6 +386,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![hakille_core::CapabilityAction::Read],
         Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
     )?;
+    #[cfg(target_os = "windows")]
     let gui_input_cap = authority.create_root_token(
         vec![CapabilityScope::GuiInput],
         vec![
@@ -700,7 +502,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(engine) = qwen_engine_opt {
         orchestrator.set_inference_engine(engine);
         println!(
-            "  LLM Engine: Qwen 2.5 0.5B Q4_K_M décodé en réel (Candle + KV-cache, ChatML) via singleton System1/2"
+            "  LLM : artefact Qwen inspecté ; chargement Candle et génération au premier appel System1/2."
         );
     }
     // Budget pipeline aligné sur le timeout LLM réel : sans ça, le défaut
@@ -774,8 +576,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut silence_budget = SilenceBudgetTracker::new(3);
     let mut ephemeral_hud = EphemeralHud::new();
     // Outbox persistence: load JSON snapshot at boot (visible file,
-    // Journal-backed); saved after every :defer/:revalidate/:flush below.
-    let mut outbox = load_outbox(&data_dir);
+    // Journal-backed); sauvegardée après chaque :defer/:revalidate ci-dessous.
+    let mut outbox = load_outbox(&data_dir)?;
     println!(
         "  Outbox: {} queued action(s) restored from {}",
         outbox.len(),
@@ -1111,7 +913,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 println!("  :outbox           Show offline queue (visible file, Journal-backed)");
                 println!("  :revalidate <key> Revalidate a queued action waiting > 15 min");
-                println!("  :flush            Send queued sendable actions (traced in Journal)");
+                println!(
+                    "  :flush            Envoi indisponible : aucun exécuteur métier connecté"
+                );
                 println!("  :export [fichier]   Export JSON du graphe (affiche taille + compte)");
                 println!(
                     "  :import <fichier>   Import JSON du graphe (fusion via insert, sans écrasement)"
@@ -1124,11 +928,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "  :gui-action <cmd> Plan and execute native Windows GUI desktop actions via UI-TARS"
                 );
+                println!("  :ram              Télémétrie mémoire du système hôte (alias :win-ram)");
                 println!(
-                    "  :win-ram          Display real Windows physical RAM and GPU VRAM telemetry"
-                );
-                println!(
-                    "  :win-power        Display real Windows battery, AC power, and thermal state"
+                    "  :power            Alimentation et thermique du système hôte (alias :win-power)"
                 );
                 println!(
                     "  :win-screen       Capture primary display using native Win32 GDI (BitBlt)"
@@ -1744,6 +1546,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(e) => eprintln!("✗ Failed to read audit journal: {}", e),
                 }
             }
+            #[cfg(not(target_os = "windows"))]
+            s if s.starts_with(":gui-action ") || matches!(s, ":win-screen" | ":win-tray") => {
+                eprintln!("✗ Commande GUI Windows indisponible sur cet OS : aucun effet exécuté.");
+            }
+            #[cfg(target_os = "windows")]
             s if s.starts_with(":gui-action ") => {
                 let task = s.trim_start_matches(":gui-action ").trim();
                 println!(
@@ -1765,7 +1572,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     };
                     let (screen_w, screen_h) = (capture.width, capture.height);
-                    let intentions = match gui_agent.predict_grounded_on_frame(
+                    let intentions = match _gui_agent.predict_grounded_on_frame(
                         task,
                         &capture.data,
                         screen_w,
@@ -1780,7 +1587,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("  Predicted {} GUI intentions:", intentions.len());
                     for (i, intent) in intentions.iter().enumerate() {
                         println!("    {}. {:?}", i + 1, intent);
-                        match gui_agent
+                        match _gui_agent
                             .execute_intention(
                                 &substrate,
                                 intent,
@@ -2238,13 +2045,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("Usage : :defer <verbe> | <objet>");
                 } else {
                     let key = format!("{}|{}", verb.to_lowercase(), object.to_lowercase());
-                    let added = outbox.enqueue(OutboxEntry::new(verb, object, &key));
-                    // Persist JSON snapshot after every :defer (crash-safe).
-                    save_outbox(&data_dir, &outbox);
-                    if added {
-                        println!("Mis en file (clé {key}) — « Je l'enverrai à ta reconnexion ».");
-                    } else {
-                        println!("Doublon ignoré (clé {key}) — rejouable sans doublon.");
+                    match update_outbox(&data_dir, &mut outbox, |q| {
+                        q.enqueue(OutboxEntry::new(verb, object, &key))
+                    }) {
+                        Ok(true) => println!(
+                            "Mis en file (clé {key}) — en attente d'un exécuteur métier disponible."
+                        ),
+                        Ok(false) => {
+                            println!("Doublon ignoré (clé {key}) — rejouable sans doublon.")
+                        }
+                        Err(error) => eprintln!("✗ Mise en file non confirmée : {error}"),
                     }
                 }
             }
@@ -2272,11 +2082,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             s if s.starts_with(":revalidate ") => {
                 let key = s.trim_start_matches(":revalidate ").trim();
-                if outbox.revalidate(key) {
-                    save_outbox(&data_dir, &outbox);
-                    println!("Entrée {key} revalidée — elle peut partir.");
-                } else {
-                    eprintln!("✗ Clé '{key}' introuvable dans la file.");
+                match update_outbox(&data_dir, &mut outbox, |q| q.revalidate(key)) {
+                    Ok(true) => println!(
+                        "Entrée {key} revalidée — en attente d'un exécuteur métier disponible."
+                    ),
+                    Ok(false) => eprintln!("✗ Clé '{key}' introuvable dans la file."),
+                    Err(error) => eprintln!("✗ Revalidation non confirmée : {error}"),
                 }
             }
             s if s.starts_with(":export") => {
@@ -2412,68 +2223,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             ":flush" => {
-                let now = chrono::Utc::now();
-                let mut sent = 0;
-                while let Some(e) = outbox.take_sendable(now) {
-                    let entry = AuditEntry {
-                        id: EntryId(uuid::Uuid::now_v7()),
-                        timestamp: Timestamp::now(),
-                        actor: ActorId::Kernel,
-                        action: ActionRecord {
-                            action_type: "OutboxFlush".to_string(),
-                            description: format!("Transmis (file) : {} {}", e.verb, e.object),
-                            parameters: serde_json::json!({
-                                "dedup_key": e.dedup_key.clone(),
-                                "attempts": e.attempts,
-                            }),
-                            reversible: false,
-                            reversed: false,
-                        },
-                        capability_used: None,
-                        reasoning_trace: ReasoningTrace {
-                            steps: vec![ReasoningStep {
-                                description: "File d'envoi : entrée envoyable, tracée au Journal."
-                                    .to_string(),
-                                confidence: 1.0,
-                                evidence: vec![],
-                            }],
-                            model_used: None,
-                            duration_ms: 0,
-                        },
-                        graph_nodes_used: vec![],
-                        confidence: 1.0,
-                        cost: None,
-                        signature: vec![1, 2, 3, 4],
-                        prev_hash: vec![0; 32],
-                        token_hash: None,
-                    };
-                    match audit_journal.append(entry) {
-                        Ok(_) => {
-                            println!(
-                                "  → transmis : {} {} (clé {})",
-                                e.verb, e.object, e.dedup_key
-                            );
-                            sent += 1;
-                        }
-                        Err(err) => {
-                            // L'entrée a déjà été retirée par `take_sendable` :
-                            // on la remet en file pour ne pas perdre l'action.
-                            eprintln!(
-                                "  ✗ Audit indisponible pour {} {} — entrée remise en file : {err}",
-                                e.verb, e.object
-                            );
-                            let _ = outbox.enqueue(e);
-                            break;
-                        }
-                    }
-                }
-                if sent == 0 {
-                    println!("Rien d'envoyable (file vide ou revalidation requise).");
-                } else {
-                    println!("{sent} entrée(s) transmise(s) et tracée(s) au Journal.");
-                }
-                // Persist after flush (entries removed) so reboot stays consistent.
-                save_outbox(&data_dir, &outbox);
+                eprintln!(
+                    "✗ Envoi indisponible : aucun exécuteur métier connecté. Les {} entrée(s) restent en file ; aucun envoi ni audit de transmission inventé.",
+                    outbox.len()
+                );
             }
             ":camera" => {
                 println!("Capturing camera frame from Substrate via authenticated capability...");
@@ -2690,8 +2443,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
 
-            ":win-ram" => {
-                println!("Windows Substrate Physical Memory Telemetry (GlobalMemoryStatusEx):");
+            ":ram" | ":win-ram" => {
+                println!("Télémétrie mémoire du substrate {} :", manifest.os_name);
                 let total_ram_mb = compute.total_physical_ram() as f64 / 1_048_576.0;
                 let avail_ram_mb = compute.available_physical_ram() as f64 / 1_048_576.0;
                 let used_ram_mb = total_ram_mb - avail_ram_mb;
@@ -2726,8 +2479,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
 
-            ":win-power" => {
-                println!("Windows Substrate Power & Thermal Telemetry (GetSystemPowerStatus):");
+            ":power" | ":win-power" => {
+                println!(
+                    "Alimentation et thermique du substrate {} :",
+                    manifest.os_name
+                );
                 let power = substrate.power_state();
                 let thermal = substrate.thermal_state();
                 println!("  • On Battery Power:         {}", power.on_battery);
@@ -2747,6 +2503,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
 
+            #[cfg(target_os = "windows")]
             ":win-screen" => {
                 println!("Capturing primary display via Win32 GDI BitBlt (zero raw pixel leak)...");
                 let screen_cap_token = authority.create_root_token(
@@ -2781,6 +2538,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            #[cfg(target_os = "windows")]
             ":win-tray" => {
                 println!("Windows System Tray & Shell Integration Test:");
                 let mut win_tray = hakille_substrate_windows::WindowsPresenceTray::new();
@@ -3260,98 +3018,6 @@ fn hex_fmt(bytes: &[u8]) -> String {
 // (TPM/DPAPI tracked work) — but stable across reboots (no silent rotation).
 // Outbox lives in `<data_dir>/outbox.json` (pretty JSON array of entries).
 
-fn load_or_generate_signing_key(
-    keys_dir: &std::path::Path,
-) -> Result<KeyPair, Box<dyn std::error::Error>> {
-    let path = keys_dir.join("signing_key.bin");
-    if let Ok(bytes) = std::fs::read(&path) {
-        if bytes.len() == 32 {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&bytes);
-            return Ok(KeyPair::from_bytes(&arr));
-        }
-        eprintln!(
-            "  Keys: signing_key.bin corrupt ({} bytes), regenerating",
-            bytes.len()
-        );
-    }
-    let kp = KeyPair::generate();
-    std::fs::write(&path, kp.to_bytes())?;
-    println!("  Keys: new signing key generated -> {}", path.display());
-    Ok(kp)
-}
-
-fn load_or_generate_authority(
-    keys_dir: &std::path::Path,
-) -> Result<CapabilityAuthority, Box<dyn std::error::Error>> {
-    let path = keys_dir.join("capability_root.bin");
-    if let Ok(bytes) = std::fs::read(&path) {
-        if bytes.len() == 32 {
-            match biscuit_auth::PrivateKey::from_bytes(&bytes) {
-                Ok(private) => {
-                    return Ok(CapabilityAuthority::with_keypair(
-                        biscuit_auth::KeyPair::from(&private),
-                    ));
-                }
-                Err(e) => eprintln!("  Keys: capability_root.bin invalid ({e}), regenerating"),
-            }
-        } else {
-            eprintln!(
-                "  Keys: capability_root.bin corrupt ({} bytes), regenerating",
-                bytes.len()
-            );
-        }
-    }
-    let authority = CapabilityAuthority::new();
-    std::fs::write(&path, authority.root_keypair.private().to_bytes())?;
-    println!(
-        "  Keys: new capability root generated -> {}",
-        path.display()
-    );
-    Ok(authority)
-}
-
-fn outbox_file_path(data_dir: &std::path::Path) -> PathBuf {
-    data_dir.join("outbox.json")
-}
-
-fn load_outbox(data_dir: &std::path::Path) -> Outbox {
-    let path = outbox_file_path(data_dir);
-    let bytes = match std::fs::read(&path) {
-        Ok(b) => b,
-        Err(_) => return Outbox::new(),
-    };
-    let entries: Vec<OutboxEntry> = match serde_json::from_slice(&bytes) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!(
-                "  Outbox: {} unparsable ({e}), starting empty",
-                path.display()
-            );
-            return Outbox::new();
-        }
-    };
-    let mut outbox = Outbox::new();
-    for e in entries {
-        // enqueue dedups by key — replay-safe restore.
-        outbox.enqueue(e);
-    }
-    outbox
-}
-
-/// Persiste la file d'envoi (snapshot JSON pretty, écriture atomique).
-pub(crate) fn save_outbox(data_dir: &std::path::Path, outbox: &Outbox) {
-    let path = outbox_file_path(data_dir);
-    match serde_json::to_vec_pretty(outbox.list()) {
-        Ok(json) => {
-            if let Err(e) = std::fs::write(&path, json) {
-                eprintln!("  Outbox: failed to persist {} ({e})", path.display());
-            }
-        }
-        Err(e) => eprintln!("  Outbox: serialization failed ({e})"),
-    }
-}
-
 /// Fusionne un export JSON (`hakille_memory::import_graph`, produit par
 /// `:export`) dans le graphe RAM : restaure d'abord les registres nom→ID via
 /// les labels exportés (IDs déterministes — `resolve_*` redonne le même UUID,
@@ -3462,7 +3128,9 @@ const KNOWN_COMMANDS: &[&str] = &[
     ":settings",
     ":budget",
     ":ambient",
+    ":ram",
     ":win-ram",
+    ":power",
     ":win-power",
     ":win-screen",
     ":win-tray",
@@ -3762,4 +3430,16 @@ mod tests {
             "une commande avec argument ne doit pas être interceptée"
         );
     }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!(
+            "Démon Hakille non pris en charge sur {} : hôte natif non intégré",
+            std::env::consts::OS
+        ),
+    )
+    .into())
 }

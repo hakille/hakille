@@ -1,3 +1,5 @@
+mod ics;
+
 use hakille_core::{
     CapabilityAction, CapabilityScope, NodeId, PredicateId, Timestamp, TripletId, TrustLevel,
 };
@@ -16,6 +18,11 @@ pub struct CalendarEvent {
     pub location: Option<String>,
     pub recurrence: Option<String>,
     pub status: String,
+    /// TZID iCalendar conservé sans conversion implicite vers UTC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_timezone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_timezone: Option<String>,
 }
 
 pub struct CalendarManager {
@@ -24,9 +31,14 @@ pub struct CalendarManager {
 
 impl CalendarManager {
     pub fn new() -> Self {
-        let mut mgr = Self { events: Vec::new() };
-        mgr.seed_sample_events();
-        mgr
+        Self { events: Vec::new() }
+    }
+
+    /// Données fictives explicites pour démonstration, jamais chargées par défaut.
+    pub fn demo() -> Self {
+        let mut manager = Self::new();
+        manager.seed_sample_events();
+        manager
     }
 
     fn seed_sample_events(&mut self) {
@@ -39,6 +51,8 @@ impl CalendarManager {
             location: Some("Salle Turing & Visioconférence Sécurisée".to_string()),
             recurrence: None,
             status: "CONFIRMED".to_string(),
+            start_timezone: None,
+            end_timezone: None,
         });
         self.events.push(CalendarEvent {
             uid: "evt-20261009-02".to_string(),
@@ -50,6 +64,8 @@ impl CalendarManager {
             location: Some("Restaurant Le Silicium".to_string()),
             recurrence: None,
             status: "CONFIRMED".to_string(),
+            start_timezone: None,
+            end_timezone: None,
         });
     }
 
@@ -58,7 +74,10 @@ impl CalendarManager {
     }
 
     pub fn add_event(&mut self, event: CalendarEvent) -> Result<(), String> {
-        let conflicts = self.find_conflicts(&event);
+        if event.uid.is_empty() || self.events.iter().any(|current| current.uid == event.uid) {
+            return Err("UID vide ou déjà présent dans l'agenda".into());
+        }
+        let conflicts = self.find_conflicts(&event)?;
         if !conflicts.is_empty() {
             let conflict_titles: Vec<String> =
                 conflicts.iter().map(|e| e.summary.clone()).collect();
@@ -71,38 +90,85 @@ impl CalendarManager {
         Ok(())
     }
 
-    pub fn find_conflicts(&self, candidate: &CalendarEvent) -> Vec<&CalendarEvent> {
-        let cand_start = normalize_ics_time(&candidate.start_time);
-        let cand_end = normalize_ics_time(&candidate.end_time);
+    /// Compare des intervalles [début, fin). Une base temporelle différente
+    /// ou un fuseau nommé non résolu exige une décision explicite de l'appelant.
+    pub fn find_conflicts(&self, candidate: &CalendarEvent) -> Result<Vec<&CalendarEvent>, String> {
+        let candidate_range = ics::range(candidate)?;
+        candidate_range.ensure_schedulable()?;
+        let mut conflicts = Vec::new();
+        if candidate.status.eq_ignore_ascii_case("CANCELLED")
+            || candidate_range.start == candidate_range.end
+        {
+            return Ok(conflicts);
+        }
+        for event in &self.events {
+            if event.uid == candidate.uid || event.status.eq_ignore_ascii_case("CANCELLED") {
+                continue;
+            }
+            let range = ics::range(event)?;
+            range.ensure_schedulable()?;
+            if range.kind != candidate_range.kind {
+                return Err("Bases temporelles incompatibles : résoudre explicitement UTC, heure flottante ou journée entière avant la planification".into());
+            }
+            if range.start != range.end
+                && candidate_range.start < range.end
+                && candidate_range.end > range.start
+            {
+                conflicts.push(event);
+            }
+        }
+        Ok(conflicts)
+    }
+
+    /// Événements recouvrant le jour demandé (fin exclusive), pas seulement
+    /// ceux qui commencent ce jour. UTC pour les instants, date civile pour
+    /// les événements flottants/journées entières.
+    pub fn events_for_date(&self, date: &str) -> Vec<&CalendarEvent> {
+        let parsed = match date.len() {
+            8 => chrono::NaiveDate::parse_from_str(date, "%Y%m%d"),
+            10 => chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d"),
+            _ => return Vec::new(),
+        };
+        let Ok(date) = parsed else {
+            return Vec::new();
+        };
+        let start = date.and_hms_opt(0, 0, 0).unwrap();
+        let Some(end) = start.checked_add_signed(chrono::Duration::days(1)) else {
+            return Vec::new();
+        };
         self.events
             .iter()
-            .filter(|e| {
-                if e.uid == candidate.uid {
-                    return false;
-                }
-                // Overlap condition: candidate.start < e.end && candidate.end > e.start
-                // (comparaison sur temps normalisés, pas sur String brute).
-                let start = normalize_ics_time(&e.start_time);
-                let end = normalize_ics_time(&e.end_time);
-                cand_start < end && cand_end > start
+            .filter(|event| {
+                ics::range(event).is_ok_and(|range| {
+                    if range.start == range.end {
+                        range.start >= start && range.start < end
+                    } else {
+                        range.start < end && range.end > start
+                    }
+                })
             })
             .collect()
     }
 
-    pub fn events_for_date(&self, date_prefix: &str) -> Vec<&CalendarEvent> {
-        // Préfixe normalisé (chiffres seuls) pour supporter tous les formats.
-        let wanted: String = date_prefix.chars().filter(|c| c.is_ascii_digit()).collect();
-        self.events
-            .iter()
-            .filter(|e| normalize_ics_time(&e.start_time).starts_with(wanted.as_str()))
-            .collect()
+    /// Importe tout le lot ou ne modifie rien en cas de conflit/valeur invalide.
+    pub fn import_ics(&mut self, content: &str) -> Result<usize, String> {
+        let events = Self::parse_ics(content)?;
+        let count = events.len();
+        let mut staged = Self {
+            events: self.events.clone(),
+        };
+        for event in events {
+            staged.add_event(event)?;
+        }
+        self.events = staged.events;
+        Ok(count)
     }
 
-    /// Normalise un temps ICS/RFC3339 en UTC naïf `YYYYMMDDTHHMMSS`
-    /// comparable lexicographiquement. Gère :
+    /// Normaliseur historique d'affichage, conservé pour compatibilité.
+    /// Ne valide pas une entrée et ne résout pas les fuseaux : la planification
+    /// utilise désormais un parseur strict séparé. Gère :
     /// - `20261009T140000Z` (UTC basique) et `20261012T090000` (flottant
-    ///   TZID : supposé déjà local, conservé tel quel — TODO `chrono-tz`
-    ///   pour convertir le TZID nommé vers UTC) ;
+    ///   sans fuseau : conservé tel quel, jamais assimilé à UTC pour les conflits) ;
     /// - RFC 3339 `2026-10-09T10:00:00Z` et offsets `+02:00`/`+0200`
     ///   (ramenés à UTC) ;
     /// - date seule `20261009` ⇒ minuit.
@@ -143,119 +209,16 @@ impl CalendarManager {
         }
     }
 
-    /// Unfolds RFC 5545 lines (CRLF + space/tab continuation)
-    fn unfold_ics_lines(content: &str) -> Vec<String> {
-        let mut lines: Vec<String> = Vec::new();
-        for raw in content.lines() {
-            let line = raw.trim_end_matches('\r');
-            if line.starts_with(' ') || line.starts_with('\t') {
-                if let Some(last) = lines.last_mut() {
-                    last.push_str(&line[1..]);
-                } else {
-                    lines.push(line.trim_start().to_string());
-                }
-            } else if !line.is_empty() {
-                lines.push(line.to_string());
-            }
-        }
-        lines
-    }
-
-    /// Parses an RFC 5545 property name and value, stripping parameters like `;TZID=...` or `;VALUE=DATE`
-    fn parse_property(line: &str) -> Option<(&str, &str)> {
-        let colon = line.find(':')?;
-        let name_part = &line[..colon];
-        let val = &line[colon + 1..];
-        let name = name_part.split(';').next()?.trim();
-        Some((name, val))
-    }
-
-    /// Parse RFC 5545 iCalendar format into structured events, supporting line folding, parameters, and RRULE
+    /// Importe les événements UTC, flottants et journées entières. Les TZID
+    /// sont conservés ; leur résolution nécessite un moteur de fuseaux externe.
     pub fn parse_ics(content: &str) -> Result<Vec<CalendarEvent>, String> {
-        let mut events = Vec::new();
-        let mut in_vevent = false;
-        let mut current_uid = String::new();
-        let mut current_summary = String::new();
-        let mut current_desc = String::new();
-        let mut current_start = String::new();
-        let mut current_end = String::new();
-        let mut current_location = None;
-        let mut current_recurrence = None;
-        let mut current_status = "CONFIRMED".to_string();
-
-        let unfolded = Self::unfold_ics_lines(content);
-
-        for line in unfolded {
-            if line == "BEGIN:VEVENT" {
-                in_vevent = true;
-                current_uid.clear();
-                current_summary.clear();
-                current_desc.clear();
-                current_start.clear();
-                current_end.clear();
-                current_location = None;
-                current_recurrence = None;
-                current_status = "CONFIRMED".to_string();
-            } else if line == "END:VEVENT" {
-                if in_vevent {
-                    if !current_summary.is_empty() {
-                        events.push(CalendarEvent {
-                            uid: if current_uid.is_empty() {
-                                format!("uid-{}", uuid::Uuid::now_v7())
-                            } else {
-                                current_uid.clone()
-                            },
-                            summary: current_summary.clone(),
-                            description: current_desc.clone(),
-                            start_time: current_start.clone(),
-                            end_time: current_end.clone(),
-                            location: current_location.clone(),
-                            recurrence: current_recurrence.clone(),
-                            status: current_status.clone(),
-                        });
-                    }
-                    in_vevent = false;
-                }
-            } else if in_vevent && let Some((name, val)) = Self::parse_property(&line) {
-                match name.to_uppercase().as_str() {
-                    "UID" => current_uid = val.to_string(),
-                    "SUMMARY" => current_summary = val.to_string(),
-                    "DESCRIPTION" => current_desc = val.to_string(),
-                    "DTSTART" => current_start = val.to_string(),
-                    "DTEND" => current_end = val.to_string(),
-                    "LOCATION" => current_location = Some(val.to_string()),
-                    "RRULE" => current_recurrence = Some(val.to_string()),
-                    "STATUS" => current_status = val.to_string(),
-                    _ => {}
-                }
-            }
-        }
-
-        Ok(events)
+        ics::parse(content)
     }
 
-    /// Export events to RFC 5545 iCalendar string
-    pub fn export_ics(events: &[CalendarEvent]) -> String {
-        let mut ics = String::new();
-        ics.push_str("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Hakille Cognitive OS//FR\r\n");
-        for e in events {
-            ics.push_str("BEGIN:VEVENT\r\n");
-            ics.push_str(&format!("UID:{}\r\n", e.uid));
-            ics.push_str(&format!("SUMMARY:{}\r\n", e.summary));
-            ics.push_str(&format!("DESCRIPTION:{}\r\n", e.description));
-            ics.push_str(&format!("DTSTART:{}\r\n", e.start_time));
-            ics.push_str(&format!("DTEND:{}\r\n", e.end_time));
-            if let Some(ref loc) = e.location {
-                ics.push_str(&format!("LOCATION:{}\r\n", loc));
-            }
-            if let Some(ref rrule) = e.recurrence {
-                ics.push_str(&format!("RRULE:{}\r\n", rrule));
-            }
-            ics.push_str(&format!("STATUS:{}\r\n", e.status));
-            ics.push_str("END:VEVENT\r\n");
-        }
-        ics.push_str("END:VCALENDAR\r\n");
-        ics
+    /// Exporte un calendrier RFC 5545 (TEXT échappé, lignes repliées UTF-8).
+    /// Une donnée temporelle invalide est refusée explicitement.
+    pub fn export_ics(events: &[CalendarEvent]) -> Result<String, String> {
+        ics::export(events)
     }
 }
 
@@ -340,7 +303,7 @@ mod tests {
 
     #[test]
     fn test_calendar_conflict_detection() {
-        let mut mgr = CalendarManager::new();
+        let mut mgr = CalendarManager::demo();
         assert_eq!(mgr.events().len(), 2);
 
         // Conflicting event at 10:30 (overlaps with 10:00-11:30)
@@ -353,9 +316,11 @@ mod tests {
             location: None,
             recurrence: None,
             status: "CONFIRMED".to_string(),
+            start_timezone: None,
+            end_timezone: None,
         };
 
-        let conflicts = mgr.find_conflicts(&conflict_event);
+        let conflicts = mgr.find_conflicts(&conflict_event).unwrap();
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].uid, "evt-20261009-01");
 
@@ -369,6 +334,8 @@ mod tests {
             location: None,
             recurrence: None,
             status: "CONFIRMED".to_string(),
+            start_timezone: None,
+            end_timezone: None,
         };
         assert!(mgr.add_event(ok_event).is_ok());
         assert_eq!(mgr.events().len(), 3);
@@ -382,14 +349,14 @@ mod tests {
         assert_eq!(parsed[0].summary, "Sprint Review");
         assert_eq!(parsed[0].location.as_deref(), Some("Bureau 42"));
 
-        let exported = CalendarManager::export_ics(&parsed);
+        let exported = CalendarManager::export_ics(&parsed).unwrap();
         assert!(exported.contains("SUMMARY:Sprint Review"));
         assert!(exported.contains("UID:test-123"));
     }
 
     #[test]
     fn test_sync_with_memory_graph() {
-        let mgr = CalendarManager::new();
+        let mgr = CalendarManager::demo();
         let mut graph = KnowledgeGraph::new();
         mgr.sync_with_memory_graph(&mut graph);
 
@@ -438,6 +405,8 @@ END:VCALENDAR\r\n";
             "Parameterized DTEND must be parsed"
         );
         assert_eq!(ev.location.as_deref(), Some("Salle Conférence"));
+        assert_eq!(ev.start_timezone.as_deref(), Some("Europe/Paris"));
+        assert_eq!(ev.end_timezone.as_deref(), Some("Europe/Paris"));
         assert_eq!(
             ev.recurrence.as_deref(),
             Some("FREQ=WEEKLY;BYDAY=MO;COUNT=10")
@@ -445,7 +414,7 @@ END:VCALENDAR\r\n";
         assert_eq!(ev.status, "CONFIRMED");
 
         // Roundtrip export must contain RRULE
-        let exported = CalendarManager::export_ics(&parsed);
+        let exported = CalendarManager::export_ics(&parsed).unwrap();
         assert!(exported.contains("RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=10"));
     }
 
@@ -465,7 +434,7 @@ END:VCALENDAR\r\n";
             normalize_ics_time("2026-10-09T16:00:00+0200"),
             "20261009T140000"
         );
-        // Flottant TZID conservé tel quel (documenté, TODO chrono-tz).
+        // Normaliseur historique : heure flottante conservée, hors calcul de conflits.
         assert_eq!(normalize_ics_time("20261012T090000"), "20261012T090000");
         // Date seule ⇒ minuit.
         assert_eq!(normalize_ics_time("20261009"), "20261009T000000");
@@ -473,7 +442,7 @@ END:VCALENDAR\r\n";
 
     #[test]
     fn test_conflict_detection_across_mixed_formats() {
-        let mut mgr = CalendarManager::new();
+        let mut mgr = CalendarManager::demo();
         // Candidat en format basique Z chevauchant l'événement seed RFC 3339
         // 10:00–11:30 : conflit détecté malgré les formats mélangés.
         let mixed = CalendarEvent {
@@ -485,8 +454,10 @@ END:VCALENDAR\r\n";
             location: None,
             recurrence: None,
             status: "CONFIRMED".to_string(),
+            start_timezone: None,
+            end_timezone: None,
         };
-        let conflicts = mgr.find_conflicts(&mixed);
+        let conflicts = mgr.find_conflicts(&mixed).unwrap();
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].uid, "evt-20261009-01");
         assert!(mgr.add_event(mixed).is_err());
@@ -501,10 +472,12 @@ END:VCALENDAR\r\n";
             location: None,
             recurrence: None,
             status: "CONFIRMED".to_string(),
+            start_timezone: None,
+            end_timezone: None,
         };
-        assert_eq!(mgr.find_conflicts(&offset).len(), 1);
+        assert_eq!(mgr.find_conflicts(&offset).unwrap().len(), 1);
 
-        // Disjoint en flottant TZID : aucun conflit.
+        // Une heure flottante ne peut pas être comparée à un agenda UTC sans fuseau.
         let far = CalendarEvent {
             uid: "evt-far".to_string(),
             summary: "Loin".to_string(),
@@ -514,12 +487,17 @@ END:VCALENDAR\r\n";
             location: None,
             recurrence: None,
             status: "CONFIRMED".to_string(),
+            start_timezone: None,
+            end_timezone: None,
         };
-        assert!(mgr.find_conflicts(&far).is_empty());
-        assert!(mgr.add_event(far).is_ok());
+        assert!(
+            mgr.find_conflicts(&far).is_err(),
+            "UTC et flottant ne sont pas comparables sans fuseau"
+        );
+        assert!(mgr.add_event(far).is_err());
 
         // events_for_date accepte les deux styles de préfixe.
         assert_eq!(mgr.events_for_date("2026-10-09").len(), 2);
-        assert_eq!(mgr.events_for_date("20261012").len(), 1);
+        assert_eq!(mgr.events_for_date("20261012").len(), 0);
     }
 }

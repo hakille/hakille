@@ -226,3 +226,26 @@ L'implémentation Web permet à Hakille de tourner dans n'importe quel navigateu
 | **Attestation (v1)** | Signature dev locale | Signature dev locale | Signature dev locale | Signature dev locale | Signature dev locale | Non disponible |
 | **Gestion Alimentation** | `GetSystemPowerStatus` | `/sys/class/power_supply` | IOKit IOPMPowerSource | `sys:power` | BatteryManager | Battery API (opt) |
 | **Continuité de Session** | Locale persistante | Locale persistante | Locale persistante | Locale persistante | **Shadow Sync TiKV** | Déportée Hub |
+
+## Durcissement commun — novembre 2026
+
+Les six implémentations délèguent le transport HTTP à `hakille-substrate::fetch_via_egress`
+après vérification de la capability réseau. La liste des hôtes autorisés est désormais
+vérifiée à chaque redirection, avec une limite de redirections et refus du passage
+HTTPS vers HTTP. Les adresses IPv6 sont normalisées ; les identifiants intégrés à
+l'URL sont refusés. Les erreurs réseau ne reproduisent ni l'URL complète ni les
+entrées brutes de configuration pouvant contenir des secrets.
+
+Le plafond de réponse de 5 Mio est contrôlé pendant la lecture, y compris sans
+`Content-Length` et avec un transfert chunked. Une réponse trop grande est refusée
+sans attendre sa fin. Ces garanties sont testées avec de vrais serveurs HTTP
+locaux dans `crates/hakille-substrate/tests/egress_limits.rs`. Il s'agit d'une
+politique d'hôtes, pas d'un filtrage des adresses IP après résolution DNS.
+
+`spawn_sandboxed` refuse explicitement le lancement sur chacun des six substrats :
+aucun moteur n'est raccordé à cette méthode. Les capabilities restent vérifiées
+avant ce refus. Le runtime Wasmtime distinct de `hakille-agents` exécute les deux
+agents de référence ; cela ne rend pas les cinq manifests métier exécutables.
+
+Voir [l'analyse multiplateforme](ANALYSE_MULTIPLATEFORME_2026-11-03.md) pour la
+matrice des fonctions, les tests réalisés et les limites matérielles restantes.

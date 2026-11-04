@@ -20,7 +20,7 @@ issue for a vulnerability. Include:
 
 We aim to acknowledge within 72h and publish a fix + CVE note.
 
-## Current guarantees (post 2026-10-11 hardening)
+## Current guarantees (hardening reviewed 2026-11-03)
 
 - Windows substrate enforces Biscuit scope/action at point of effect
   (`read/write/list/delete`, network, audio, camera, screen, GUI input).
@@ -32,20 +32,50 @@ We aim to acknowledge within 72h and publish a fix + CVE note.
   `./hakille_data/Hakille/audit.redb`), Ed25519-chained.
 - With artifacts provisioned, inference is **real and golden-tested**: Silero
   VAD, SenseVoice CTC ASR, CAM++ and MiniLM embeddings via `ort`, Qwen 2.5
-  Q4_K_M via Candle, Mimi RVQ codebooks, formant TTS, and CV grounding.
+  Q4_K_M via Candle, the complete neural Mimi codec, and UI-TARS through a
+  separately configured local llama.cpp server and verified vision projector.
+  Formant TTS and CV grounding remain separate non-neural components.
   Missing artifacts produce explicit errors or `SKIP`, never simulated output.
 
 ## Explicitly NOT guaranteed yet
 
 - No TPM/VBS hardware attestation (local dev signature only).
-- UI-TARS VLM forward is not implemented (CV grounding only); Moshi 7.6B is not
-  provisioned; ASR has no beam search; TTS is non-neural.
-- No WASM `StoreLimits`, network/file sandboxing per agent (fuel only).
-- No durable key management (ephemeral Biscuit root + journal keys per boot),
-  no rotation/revocation store, no TiKV replication auth.
-- `http_request` defaults to loopback-only and enforces the configured host
-  allowlist, but has no TLS pinning.
+- UI-TARS accepts only an explicitly configured loopback server. Model alias
+  validation cannot attest that another local process loaded the intended weights;
+  the server operator remains trusted. Proposals never execute GUI actions.
+- Moshi 7.6B is not provisioned; ASR rejects unavailable beam search; TTS is non-neural.
+- The reference WASM runner has a custom `ResourceLimiter`, fuel and epoch
+  interruption; it exposes no host imports. Bounds do not establish native OS
+  isolation or a mediated filesystem/network API for business agents. The six
+  substrate `spawn_sandboxed` entry points reject execution explicitly until a
+  runner is connected; a valid capability alone does not launch a process.
+- The daemon loads capability-root and journal keys through the OS keystore.
+  A **plaintext-file fallback** is allowed only at a first development boot when
+  the root keychain is unavailable and no signed history exists. Existing raw
+  identities stay on that backend in development; production refuses them.
+  Corrupt, partial or missing identities with existing history stop startup;
+  the daemon does not silently regenerate keys or migrate backends. Unix raw
+  seeds are created with mode 0600 and permissive existing files are refused.
+  The configured Linux `linux-native` keyring is session-volatile. Registry
+  rotation/revocation helpers exist, but end-to-end migration, recovery and
+  cross-session persistence still require validation; no authenticated TiKV
+  replication deployment is established.
+- `http_request` defaults to loopback-only, checks redirect destinations against
+  the configured host allowlist, rejects HTTPS-to-HTTP downgrade and bounds the
+  response while streaming. It has no TLS pinning and host allowlisting alone
+  does not establish an IP-level policy against DNS rebinding.
+- The optional encrypted-file keystore helper uses authenticated v2 storage
+  (Argon2id and ChaCha20Poly1305). Legacy unauthenticated v1 files are refused
+  without replacement; migration requires an explicit recovery procedure from
+  a trusted backup. This helper is **not** the daemon's plaintext fallback and
+  remains disallowed when `HAKILLE_PROD=1/true`. File and lock operations require
+  a trusted parent directory; Windows ACLs are inherited, not hardened here.
+- The daemon’s outbox snapshots use atomic replacement and report persistence failures, but
+  the JSON outbox and redb audit journal do not share one transaction. Crash
+  recovery across those resources must be addressed before a business executor
+  consumes queued actions. `:flush` refuses transmission while none is wired.
 - No DPIA for voice biometrics; liveness is heuristic RMS/ZCR, never
   sufficient for payments or strong auth.
 
-See `docs/AUDIT_PROJET_2026-10-08.md` for the full gap analysis.
+See [platform analysis](docs/ANALYSE_MULTIPLATEFORME_2026-11-03.md) and
+[implementation review](docs/ANALYSE_APPROFONDIE_2026-11-03.md) for scope and remaining gaps.

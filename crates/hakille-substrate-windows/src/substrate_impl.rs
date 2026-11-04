@@ -9,6 +9,7 @@ use hakille_substrate::{
     ScreenCapture, Substrate, ThermalState,
 };
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::compute_impl::WindowsComputeBackend;
@@ -24,8 +25,6 @@ const WINDOWS_CAMERA_UNIMPLEMENTED: &str = "camera not implemented for Windows s
 pub struct WindowsSubstrate {
     manifest: PlatformManifest,
     attestation_keypair: KeyPair,
-    audio_counter: AtomicU64,
-    process_counter: AtomicU64,
     virtual_fs_root: PathBuf,
     /// Host allowlist egress policy. Default is loopback-only
     /// (no external egress until hosts are explicitly allowed).
@@ -93,8 +92,6 @@ impl WindowsSubstrate {
         Self {
             manifest,
             attestation_keypair: KeyPair::generate(),
-            audio_counter: AtomicU64::new(1),
-            process_counter: AtomicU64::new(1),
             virtual_fs_root,
             egress_policy: EgressPolicy::loopback_only(),
             trusted_capability_root: None,
@@ -258,7 +255,7 @@ impl WindowsSubstrate {
     /// call this method with the owner's Audio/Read capability.
     pub async fn stop_audio_capture_with_cap(
         &self,
-        handle: AudioStreamHandle,
+        _handle: AudioStreamHandle,
         cap: &CapabilityToken,
     ) -> hakille_core::Result<()> {
         self.enforce(
@@ -266,8 +263,9 @@ impl WindowsSubstrate {
             CapabilityScope::Audio,
             hakille_core::CapabilityAction::Read,
         )?;
-        let _ = handle;
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "arrêt audio indisponible : aucun flux audio natif géré par ce substrat".to_string(),
+        ))
     }
 
     /// Capability-checked stop for a camera stream. See
@@ -451,15 +449,15 @@ impl Substrate for WindowsSubstrate {
             CapabilityScope::Audio,
             hakille_core::CapabilityAction::Read,
         )?;
-        let id = self.audio_counter.fetch_add(1, Ordering::SeqCst);
-        Ok(AudioStreamHandle(id))
+        Err(hakille_core::HakilleError::SubstrateError(
+            "capture audio indisponible : backend audio non raccordé au substrat windows; aucun flux démarré".to_string(),
+        ))
     }
 
     async fn stop_audio_capture(&self, _handle: AudioStreamHandle) -> Result<()> {
-        tracing::warn!(
-            "stop_audio_capture(handle) without capability is deprecated; use stop_audio_capture_with_cap(handle, cap) with Audio/Read ownership proof"
-        );
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "arrêt audio indisponible : aucun flux audio natif géré par ce substrat".to_string(),
+        ))
     }
 
     async fn play_audio(
@@ -473,7 +471,9 @@ impl Substrate for WindowsSubstrate {
             CapabilityScope::Audio,
             hakille_core::CapabilityAction::Write,
         )?;
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "lecture audio indisponible : backend audio non raccordé au substrat windows; aucun son joué".to_string(),
+        ))
     }
 
     async fn start_camera_capture(
@@ -628,8 +628,12 @@ impl Substrate for WindowsSubstrate {
                 ))
             })?;
         }
-        let id = self.process_counter.fetch_add(1, Ordering::SeqCst);
-        Ok(ProcessHandle(id))
+        // Aucun moteur WASM n'est relié à cette API : ne jamais inventer
+        // un handle de processus. Le runtime des agents de référence est distinct.
+        Err(hakille_core::HakilleError::SubstrateError(
+            "spawn_sandboxed indisponible : moteur WASM non raccordé au substrat windows; aucun processus lancé"
+                .to_string(),
+        ))
     }
 
     fn power_state(&self) -> PowerState {

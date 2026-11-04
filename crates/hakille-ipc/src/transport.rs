@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rand::RngCore as _;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::frame::{ErrorCode, Frame, FrameBody, MAX_FRAME_BYTES};
 
@@ -104,32 +104,36 @@ pub fn fresh_token_hex() -> String {
     encode_hex(&bytes)
 }
 
-/// Écrit le jeton (crée les parents ; sur Unix, permissions 0600).
+/// Publie le jeton par remplacement atomique (0600 sur Unix).
+/// Le fichier temporaire est créé exclusivement dans le même répertoire ;
+/// un lien symbolique à la destination n'est jamais suivi lors de l'écriture.
+/// Le répertoire parent doit rester sous le contrôle de l'utilisateur.
 pub fn write_token_file(path: &Path, token_hex: &str) -> std::io::Result<()> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)?;
-    }
+    use std::io::Write as _;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let temporary = parent.join(format!(".hakille-token-{}.tmp", fresh_token_hex()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::io::Write as _;
-        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary)?;
+    let result = (|| {
         file.write_all(token_hex.as_bytes())?;
-        file.flush()?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
     }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(path, token_hex)?;
-    }
-    Ok(())
+    result
 }
 
 /// Lit le jeton et retire les blancs périphériques.
@@ -138,20 +142,20 @@ pub fn read_token_file(path: &Path) -> std::io::Result<String> {
 }
 
 #[cfg(windows)]
-pub type ServerStream = tokio::net::windows::named_pipe::NamedPipeServer;
+pub type ServerStream = BufReader<tokio::net::windows::named_pipe::NamedPipeServer>;
 #[cfg(windows)]
-pub type ClientStream = tokio::net::windows::named_pipe::NamedPipeClient;
+pub type ClientStream = BufReader<tokio::net::windows::named_pipe::NamedPipeClient>;
 #[cfg(unix)]
-pub type ServerStream = tokio::net::UnixStream;
+pub type ServerStream = BufReader<tokio::net::UnixStream>;
 #[cfg(unix)]
-pub type ClientStream = tokio::net::UnixStream;
+pub type ClientStream = BufReader<tokio::net::UnixStream>;
 
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
 
 #[cfg(windows)]
 struct ListenerState {
-    pending: Option<ServerStream>,
+    pending: Option<tokio::net::windows::named_pipe::NamedPipeServer>,
     failure: Option<std::io::Error>,
 }
 
@@ -198,19 +202,24 @@ impl IpcListener {
             Ok(next) => state.pending = Some(next),
             Err(err) => state.failure = Some(err),
         }
-        Ok(instance)
+        Ok(BufReader::new(instance))
     }
 }
 
 #[cfg(windows)]
-fn pipe_instance(endpoint: &str, first: bool) -> std::io::Result<ServerStream> {
+fn pipe_instance(
+    endpoint: &str,
+    first: bool,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
     ServerOptions::new()
         .first_pipe_instance(first)
         .reject_remote_clients(true)
         .create(endpoint)
 }
 
-/// Écoute locale. Unix : `UnixListener` (socket périmé supprimé avant bind).
+/// Écoute locale Unix. Un chemin déjà occupé est toujours refusé :
+/// supprimer automatiquement un socket peut déconnecter un démon actif ou
+/// effacer un autre fichier. Le nettoyage après crash revient à l'opérateur.
 #[cfg(unix)]
 pub struct IpcListener {
     listener: tokio::net::UnixListener,
@@ -219,69 +228,74 @@ pub struct IpcListener {
 #[cfg(unix)]
 impl IpcListener {
     pub async fn bind(endpoint: &str) -> std::io::Result<Self> {
-        match tokio::net::UnixListener::bind(endpoint) {
-            Ok(listener) => Ok(Self { listener }),
-            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
-                match std::fs::remove_file(endpoint) {
-                    Ok(()) => {}
-                    Err(unlink) if unlink.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(unlink) => return Err(unlink),
-                }
-                Ok(Self {
-                    listener: tokio::net::UnixListener::bind(endpoint)?,
-                })
+        let listener = tokio::net::UnixListener::bind(endpoint).map_err(|err| {
+            if err.kind() == std::io::ErrorKind::AddrInUse {
+                std::io::Error::new(
+                    err.kind(),
+                    "endpoint IPC déjà occupé ; arrêter le démon existant ou vérifier le socket périmé avant de le supprimer",
+                )
+            } else {
+                err
             }
-            Err(err) => Err(err),
-        }
+        })?;
+        Ok(Self { listener })
     }
 
     pub async fn accept(&self) -> std::io::Result<ServerStream> {
-        self.listener.accept().await.map(|(stream, _addr)| stream)
+        self.listener
+            .accept()
+            .await
+            .map(|(stream, _addr)| BufReader::new(stream))
     }
 }
 
 /// Se connecte à l'endpoint (une seule tentative ; les retries sont à l'appelant).
 #[cfg(windows)]
 pub async fn connect(endpoint: &str) -> std::io::Result<ClientStream> {
-    ClientOptions::new().open(endpoint)
+    ClientOptions::new().open(endpoint).map(BufReader::new)
 }
 
 /// Se connecte à l'endpoint (une seule tentative ; les retries sont à l'appelant).
 #[cfg(unix)]
 pub async fn connect(endpoint: &str) -> std::io::Result<ClientStream> {
-    tokio::net::UnixStream::connect(endpoint).await
+    tokio::net::UnixStream::connect(endpoint)
+        .await
+        .map(BufReader::new)
 }
 
-/// Lit une trame JSON terminée par `\n`.
+/// Lit une trame JSON terminée par `\n` sans consommer la trame suivante.
 ///
-/// `Ok(None)` = EOF propre (aucun octet en tampon). Plafond strict de
-/// [`MAX_FRAME_BYTES`] : au-delà → [`IpcError::TooLarge`], sans jamais
-/// allouer au-delà du plafond plus un morceau de lecture. La version est
-/// vérifiée par [`Frame::check`] ; EOF sur ligne partielle → erreur de parsing.
-pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<Frame>, IpcError> {
+/// Le lecteur bufferisé doit être conservé pendant toute la connexion, y
+/// compris entre handshake et session. `Ok(None)` signifie un EOF propre ;
+/// un EOF avant le délimiteur est une erreur, même si le JSON est complet.
+/// Le contenu accumulé est plafonné à [`MAX_FRAME_BYTES`].
+/// Cette fonction n'est pas annulation-sûre : après annulation, fermer la
+/// connexion plutôt que reprendre une trame partiellement consommée.
+pub async fn read_frame<R: AsyncBufRead + Unpin>(r: &mut R) -> Result<Option<Frame>, IpcError> {
     let mut line: Vec<u8> = Vec::with_capacity(READ_CHUNK_BYTES);
-    let mut searched = 0usize;
-    let mut chunk = [0u8; READ_CHUNK_BYTES];
     loop {
-        if let Some(offset) = line[searched..].iter().position(|&byte| byte == b'\n') {
-            let end = searched + offset;
-            if end > MAX_FRAME_BYTES {
-                return Err(IpcError::TooLarge);
-            }
-            return parse_line(&line[..end]).map(Some);
+        let available = r.fill_buf().await?;
+        if available.is_empty() {
+            return if line.is_empty() {
+                Ok(None)
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "trame IPC incomplète : délimiteur final absent",
+                )
+                .into())
+            };
         }
-        searched = line.len();
-        if line.len() > MAX_FRAME_BYTES {
+        let newline = available.iter().position(|&byte| byte == b'\n');
+        let take = newline.unwrap_or(available.len());
+        if take > MAX_FRAME_BYTES - line.len() {
             return Err(IpcError::TooLarge);
         }
-        let read = r.read(&mut chunk).await?;
-        if read == 0 {
-            if line.is_empty() {
-                return Ok(None);
-            }
+        line.extend_from_slice(&available[..take]);
+        r.consume(take + usize::from(newline.is_some()));
+        if newline.is_some() {
             return parse_line(&line).map(Some);
         }
-        line.extend_from_slice(&chunk[..read]);
     }
 }
 
@@ -299,7 +313,7 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, frame: &Frame) -> Res
 }
 
 /// Handshake client : Hello{token}, puis Welcome exigé sous 10 s.
-pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
+pub async fn client_handshake<S: AsyncBufRead + AsyncWrite + Unpin>(
     s: &mut S,
     token_hex: &str,
 ) -> Result<(), IpcError> {
@@ -322,7 +336,7 @@ pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
 
 /// Handshake serveur : Hello exigé sous 10 s, jeton comparé en temps
 /// ~constant sur les octets décodés, puis Welcome (ou Error explicite).
-pub async fn server_handshake<S: AsyncRead + AsyncWrite + Unpin>(
+pub async fn server_handshake<S: AsyncBufRead + AsyncWrite + Unpin>(
     s: &mut S,
     expected_token_hex: &str,
 ) -> Result<(), IpcError> {

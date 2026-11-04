@@ -14,7 +14,6 @@ use hakille_substrate::{
     ScreenCapture, Substrate, ThermalState,
 };
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Missing native binding reported by every Linux camera method.
 const LINUX_CAMERA_UNIMPLEMENTED: &str = "camera not implemented for Linux substrate: V4L2 binding missing \
@@ -23,8 +22,6 @@ const LINUX_CAMERA_UNIMPLEMENTED: &str = "camera not implemented for Linux subst
 pub struct LinuxSubstrate {
     manifest: PlatformManifest,
     attestation_keypair: KeyPair,
-    audio_counter: AtomicU64,
-    process_counter: AtomicU64,
     display_engine: LinuxDisplayCaptureEngine,
     input_injector: LinuxInputInjector,
     virtual_fs_root: PathBuf,
@@ -126,8 +123,6 @@ impl LinuxSubstrate {
         Self {
             manifest,
             attestation_keypair: KeyPair::generate(),
-            audio_counter: AtomicU64::new(1),
-            process_counter: AtomicU64::new(1),
             display_engine: LinuxDisplayCaptureEngine::new(),
             input_injector: LinuxInputInjector::default(),
             virtual_fs_root: PathBuf::from("/var/lib/hakille/vfs"),
@@ -291,7 +286,7 @@ impl LinuxSubstrate {
     /// call this method with the owner's Audio/Read capability.
     pub async fn stop_audio_capture_with_cap(
         &self,
-        handle: AudioStreamHandle,
+        _handle: AudioStreamHandle,
         cap: &CapabilityToken,
     ) -> hakille_core::Result<()> {
         self.enforce(
@@ -299,8 +294,9 @@ impl LinuxSubstrate {
             CapabilityScope::Audio,
             hakille_core::CapabilityAction::Read,
         )?;
-        let _ = handle;
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "arrêt audio indisponible : aucun flux audio natif géré par ce substrat".to_string(),
+        ))
     }
 
     /// Capability-checked stop for a camera stream. See
@@ -467,15 +463,15 @@ impl Substrate for LinuxSubstrate {
             CapabilityScope::Audio,
             hakille_core::CapabilityAction::Read,
         )?;
-        let id = self.audio_counter.fetch_add(1, Ordering::SeqCst);
-        Ok(AudioStreamHandle(id))
+        Err(hakille_core::HakilleError::SubstrateError(
+            "capture audio indisponible : backend audio non raccordé au substrat linux; aucun flux démarré".to_string(),
+        ))
     }
 
     async fn stop_audio_capture(&self, _handle: AudioStreamHandle) -> Result<()> {
-        tracing::warn!(
-            "stop_audio_capture(handle) without capability is deprecated; use stop_audio_capture_with_cap(handle, cap) with Audio/Read ownership proof"
-        );
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "arrêt audio indisponible : aucun flux audio natif géré par ce substrat".to_string(),
+        ))
     }
 
     async fn play_audio(
@@ -489,7 +485,9 @@ impl Substrate for LinuxSubstrate {
             CapabilityScope::Audio,
             hakille_core::CapabilityAction::Write,
         )?;
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "lecture audio indisponible : backend audio non raccordé au substrat linux; aucun son joué".to_string(),
+        ))
     }
 
     async fn start_camera_capture(
@@ -537,7 +535,9 @@ impl Substrate for LinuxSubstrate {
             CapabilityScope::Sensor,
             hakille_core::CapabilityAction::Read,
         )?;
-        Ok(self.display_engine.capture_screen())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "capture d'écran indisponible : binding X11/Wayland/DRM non raccordé; aucune image du poste capturée".to_string(),
+        ))
     }
 
     async fn inject_input(&self, action: InputAction, cap: &CapabilityToken) -> Result<()> {
@@ -599,8 +599,12 @@ impl Substrate for LinuxSubstrate {
                 ))
             })?;
         }
-        let id = self.process_counter.fetch_add(1, Ordering::SeqCst);
-        Ok(ProcessHandle(id))
+        // Aucun moteur WASM n'est relié à cette API : ne jamais inventer
+        // un handle de processus. Le runtime des agents de référence est distinct.
+        Err(hakille_core::HakilleError::SubstrateError(
+            "spawn_sandboxed indisponible : moteur WASM non raccordé au substrat linux; aucun processus lancé"
+                .to_string(),
+        ))
     }
 
     fn power_state(&self) -> PowerState {

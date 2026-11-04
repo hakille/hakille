@@ -18,9 +18,9 @@
 > **Statut : prototype / pré-alpha.** Voir [SECURITY.md](SECURITY.md) :
 > l'inférence est **réelle et golden-testée lorsque les artefacts sont
 > provisionnés** (forwards `ort` VAD/ASR/CAM++/MiniLM, Qwen 2.5 Candle, TTS
-> formantique, grounding CV). Le codec Mimi fait un RVQ nearest-L2 sur de vrais
-> codebooks, sans décodeur neural complet ; le VLM UI-TARS reste inspecté sans
-> forward ; le modèle neuronal Moshi 7,6B n'est pas provisionné
+> formantique). Le codec Mimi exécute son encodeur/décodeur neuronal Candle ;
+> UI-TARS exécute son VLM via un serveur llama.cpp local et son projecteur.
+> Voir le [guide d’inférence locale](docs/INFERENCE_LOCALE.md). Le modèle de dialogue Moshi 7,6B n’est pas provisionné
 > (`MoshiEngine::is_simulated() == true`). Les cinq agents métier de `agents/` restent des manifests déclaratifs :
 > aucun binaire `.wasm` métier n'est livré ni exécuté, et `spawn_sandboxed`
 > n'est toujours pas branché pour ces crates. En revanche, les deux agents de
@@ -40,7 +40,7 @@ Hakille n'est ni une application de chat, ni un wrapper d'API, ni un agent promp
 1. **La Continuité d'État (*No-Session Continuity*)** : Aucun concept de session qui s'achève. Un fil de vie continu persistant dans un graphe de connaissances distribué.
 2. **L'Initiative Bornée (*Bounded Initiative*)** : Le système agit et anticipe de façon proactive dans un périmètre strict garanti par des contrats cryptographiques et un budget de silence.
 3. **La Généralité Pratique (*Practical Generality*)** : Coder, auditer des contrats, planifier des événements, piloter l'environnement graphique ou la domotique sans changer de contexte.
-4. **L'Éradication Absolue de Python en Production (*Zero-Python Runtime*)** : Tous les modèles (ASR, Full-Duplex Speech, VLM, LLM) s'exécutent en Rust natif via **Candle**, **ONNX Runtime (`ort`)** et des chargeurs binaires GGUF v3 purs, garantissant sûreté mémoire et absence de garbage collector.
+4. **L'Éradication Absolue de Python en Production (*Zero-Python Runtime*)** : Les moteurs locaux utilisent **Candle**, **ONNX Runtime (`ort`)** et, pour UI-TARS, **llama.cpp** natif sur loopback. Aucun runtime Python n’est nécessaire au produit. Les modèles non provisionnés restent explicitement indisponibles.
 
 ---
 
@@ -95,7 +95,7 @@ Hakille n'est ni une application de chat, ni un wrapper d'API, ni un agent promp
 ```
 
 > Le bloc « Kyutai Moshi Full-Duplex » désigne la **cible** : le runtime actuel
-> fournit un duplex RVQ Mimi + VAD réel, sans modèle neuronal Moshi 7,6B
+> fournit le codec neuronal Mimi + VAD réel, sans modèle de dialogue Moshi 7,6B
 > (`MoshiEngine::is_simulated() == true`). De même, la couche 5 est partiellement réelle : le démon exécute deux agents
 > WASM de référence, mais les cinq agents métier restent des manifests
 > déclaratifs. Le détail par moteur est dans
@@ -122,10 +122,10 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agen
 - [`hakille-sync`](crates/hakille-sync) : Synchronisation CRDT (grow-only sets + tombstones, vector clocks), handoff de tâche cross-device et réplication TiKV.
 
 ### 3. Perception, Voix & Inférence Neuronale
-- [`hakille-perception`](crates/hakille-perception) : Pipeline audio (SenseVoice-Small, Silero VAD, openWakeWord, CAM++ speaker ID, Nemotron-3 diarisation), CameraPipeline et WorldModel situationnel continu.
+- [`hakille-perception`](crates/hakille-perception) : Pipeline audio (SenseVoice-Small, Silero VAD, CAM++ et diarisation par clustering), client UI-TARS local, CameraPipeline et WorldModel. Un checkpoint openWakeWord personnalisé reste optionnel ; Nemotron n’est pas fourni.
 - [`hakille-audio`](crates/hakille-audio) : I/O audio temps réel via `cpal` — capture micro 16 kHz (downmix + rééchantillonnage) et lecture PCM ; aucune simulation, erreur explicite si aucun périphérique.
-- [`hakille-voice`](crates/hakille-voice) : Moteur vocal — RVQ Mimi nearest-L2 sur de vrais codebooks (12,5 Hz), TTS formantique Klatt (`FormantTts`, 24 kHz) et détecteur d'interruption Barge-In ; pas de décodeur neural Mimi complet, et `MoshiEngine::is_simulated()` vaut `true`.
-- [`hakille-inference`](crates/hakille-inference) : Runtimes neuronaux natifs (parseur binaire streaming GGUF v3, parseur Safetensors Candle, inspecteur ONNX Runtime `ort`, registre LRU de pagination VRAM) et provisioner d'artefacts.
+- [`hakille-voice`](crates/hakille-voice) : Codec Mimi neuronal complet (24 kHz, trames de 80 ms), TTS formantique Klatt et détecteur d’interruption Barge-In. Le modèle de dialogue Moshi est absent ; `MoshiEngine::is_simulated()` reste `true`.
+- [`hakille-inference`](crates/hakille-inference) : Runtimes neuronaux natifs (parseur binaire streaming GGUF v3, parseur Safetensors Candle, inspecteur ONNX Runtime `ort`, registre de réservations mémoire bornées) et provisioner d’artefacts vérifiés. Le registre ne décharge pas automatiquement les tenseurs des moteurs.
 
 ### 4. Cognition, Agents, Confiance & UI
 - [`hakille-kernel`](crates/hakille-kernel) : Fabric cognitif, routeur System 1/2, Working Memory scratchpad, Deliberate Planner, Self-Model introspectif, Graph Curiosity Scanner, Dry-Run Simulator et budgets de latence par étage.
@@ -174,7 +174,7 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agen
 | **Invité** | Mobile Android / iOS / Web WASM | Moonshine + SenseVoice Mobile (NPU/CoreML) + WebAudio 16kHz | Ombre déportée sur Hub personnel via sync CRDT | Accès restreint par l'OS hôte, continuité portée par le cluster. |
 
 > Les modèles neuronaux non provisionnés (Moshi 7,6B, VibeVoice, CosyVoice2/NeuTTS,
-> UI-TARS, Moonshine) sont des **cibles**. Le runtime actuel signale leur état via
+> UI-TARS 7B, Moonshine) sont des **cibles**. UI-TARS 2B est exécutable localement avec son projecteur et llama.cpp. Le runtime actuel signale leur état via
 > `:models-honest` et `is_simulated()` ; il n'affiche jamais un statut `Operational` feint.
 
 ---
@@ -310,9 +310,14 @@ hakille> :exit             # Arrêt propre du démon
 
 Pour explorer chaque sous-système en profondeur, consultez les guides dédiés :
 
+- [**Analyse multiplateforme et améliorations du 3 novembre 2026**](docs/ANALYSE_MULTIPLATEFORME_2026-11-03.md) : état réel des six plateformes, corrections et preuves de validation, limites restantes et priorités.
+- [**Analyse approfondie et deuxième lot de corrections**](docs/ANALYSE_APPROFONDIE_2026-11-03.md) : stockage des clés, persistance, calendrier, patches, dépendances corrigées et vérification du workspace.
+
 - 🏛️ [**Architecture Système Complète**](docs/ARCHITECTURE.md) : Les 6 couches, flux de données, graphe des dépendances inter-crates et invariants.
 - ⚙️ [**Spécification des Substrates OS**](docs/SUBSTRATES.md) : Implémentations natives des 6 OS (Windows, Linux, macOS, Redox, Mobile, Web), sandboxes et télémétrie.
 - 🧠 [**Noyau Cognitif & Mémoire Distribuée**](docs/COGNITION.md) : Système 1/2, Cognitive Fabric, Working Memory, Deliberate Planner, Self-Model, Curiosité, Graphe SPO et DSL.
+- [**Utiliser et tester l’inférence locale**](docs/INFERENCE_LOCALE.md) : commandes des sept modèles, fichiers audio, texte et images.
+- [**Validation des sept modèles locaux**](docs/VALIDATION_INFERENCE_LOCALE_2026-11-03.md) : forwards réels, résultats des tests, provenance et limites.
 - 🤖 [**Modèles Fondations & Runtimes d'Inférence**](docs/MODELS.md) : Spécifications des 7 modèles, parseurs binaires GGUF v3 / Safetensors / ONNX et registre LRU VRAM.
 - 🛡️ [**Sécurité, Capabilities & Gouvernance**](docs/SECURITY_AND_GOVERNANCE.md) : Jetons Biscuit, Registre de Consentement, Journal chaîné Ed25519, Constitution et Anti-Spoofing.
 - 👁️ [**Interfaces Ambiantes & Perception**](docs/INTERFACES_AND_PERCEPTION.md) : Présence discrète, HUD Spotlight éphémère, Sélecteur de Canal, Budget de Silence, World Model et moteur vocal duplex (RVQ/VAD v1).

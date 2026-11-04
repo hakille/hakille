@@ -229,7 +229,8 @@ async fn run_session(
     outbound: &mut mpsc::UnboundedReceiver<Frame>,
     on_reply: &impl Fn(KernelToUi),
 ) -> SessionEnd {
-    let (mut reader, mut writer) = tokio::io::split(stream);
+    let (reader, mut writer) = tokio::io::split(stream);
+    let mut reader = tokio::io::BufReader::new(reader);
     let (frames_tx, mut frames_rx) = mpsc::unbounded_channel::<Frame>();
     let reader_task = tokio::spawn(async move {
         loop {

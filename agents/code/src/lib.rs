@@ -386,43 +386,41 @@ impl CodePatchEngine {
         modified: &str,
         explanation: &str,
     ) -> CodePatch {
-        let mut diff_lines = Vec::new();
-        diff_lines.push(format!("--- a/{}", file_path));
-        diff_lines.push(format!("+++ b/{}", file_path));
-
-        let orig_lines: Vec<&str> = original.lines().collect();
-        let mod_lines: Vec<&str> = modified.lines().collect();
-
-        diff_lines.push(format!(
-            "@@ -1,{} +1,{} @@",
-            orig_lines.len(),
-            mod_lines.len()
-        ));
-
-        let mut i = 0;
-        let mut j = 0;
-        while i < orig_lines.len() || j < mod_lines.len() {
-            if i < orig_lines.len() && j < mod_lines.len() && orig_lines[i] == mod_lines[j] {
-                diff_lines.push(format!(" {}", orig_lines[i]));
-                i += 1;
-                j += 1;
-            } else {
-                if i < orig_lines.len() {
-                    diff_lines.push(format!("-{}", orig_lines[i]));
-                    i += 1;
-                }
-                if j < mod_lines.len() {
-                    diff_lines.push(format!("+{}", mod_lines[j]));
-                    j += 1;
+        // Les terminaisons font partie du contenu : `lines()` perdrait la
+        // différence entre fichier terminé par LF, CRLF et absence de LF.
+        let unified_diff = if original == modified {
+            String::new()
+        } else {
+            let old: Vec<&str> = original.split_inclusive('\n').collect();
+            let new: Vec<&str> = modified.split_inclusive('\n').collect();
+            let mut diff = format!(
+                "--- {}\n+++ {}\n@@ -{},{} +{},{} @@\n",
+                quote_diff_path(&format!("a/{file_path}")),
+                quote_diff_path(&format!("b/{file_path}")),
+                usize::from(!old.is_empty()),
+                old.len(),
+                usize::from(!new.is_empty()),
+                new.len(),
+            );
+            // Un hunk complet évite une heuristique d'alignement incorrecte.
+            // Le patch reste déterministe et applicable par les outils Git.
+            for (prefix, lines) in [('-', old), ('+', new)] {
+                for line in lines {
+                    diff.push(prefix);
+                    diff.push_str(line);
+                    if !line.ends_with('\n') {
+                        diff.push_str("\n\\ No newline at end of file\n");
+                    }
                 }
             }
-        }
+            diff
+        };
 
         CodePatch {
             file_path: file_path.to_string(),
             original_content: original.to_string(),
             modified_content: modified.to_string(),
-            unified_diff: diff_lines.join("\n"),
+            unified_diff,
             explanation: explanation.to_string(),
         }
     }
@@ -436,6 +434,31 @@ impl CodePatchEngine {
         }
         Ok(patch.modified_content.clone())
     }
+}
+
+/// Échappement C des chemins selon le format de patch Git : un nom de
+/// fichier ne peut pas injecter un deuxième en-tête ou une nouvelle ligne.
+fn quote_diff_path(path: &str) -> String {
+    if !path
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\\'))
+    {
+        return path.to_string();
+    }
+    let mut quoted = String::from("\"");
+    for byte in path.bytes() {
+        match byte {
+            b'"' => quoted.push_str("\\\""),
+            b'\\' => quoted.push_str("\\\\"),
+            0..=31 | 127..=255 => {
+                use std::fmt::Write;
+                write!(quoted, "\\{byte:03o}").expect("écriture dans String");
+            }
+            _ => quoted.push(byte as char),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 pub fn check_code_capabilities() -> Vec<(CapabilityScope, CapabilityAction)> {

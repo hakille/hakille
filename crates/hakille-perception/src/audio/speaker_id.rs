@@ -13,41 +13,10 @@ pub struct VoiceBiometricEmbedding {
 
 impl VoiceBiometricEmbedding {
     pub fn cosine_similarity(&self, other: &Self) -> f32 {
-        if self.vector.len() != other.vector.len() || self.vector.is_empty() {
+        if self.dimension != self.vector.len() || other.dimension != other.vector.len() {
             return 0.0;
         }
-
-        let dot_product: f32 = self
-            .vector
-            .iter()
-            .zip(&other.vector)
-            .map(|(&a, &b)| {
-                if a.is_finite() && b.is_finite() {
-                    a * b
-                } else {
-                    0.0
-                }
-            })
-            .sum();
-
-        let norm_a: f32 = self
-            .vector
-            .iter()
-            .map(|&a| if a.is_finite() { a * a } else { 0.0 })
-            .sum::<f32>()
-            .sqrt();
-        let norm_b: f32 = other
-            .vector
-            .iter()
-            .map(|&b| if b.is_finite() { b * b } else { 0.0 })
-            .sum::<f32>()
-            .sqrt();
-
-        if norm_a <= 0.0 || norm_b <= 0.0 {
-            0.0
-        } else {
-            (dot_product / (norm_a * norm_b)).clamp(-1.0, 1.0)
-        }
+        hakille_inference::speaker_onnx::cosine_similarity(&self.vector, &other.vector)
     }
 }
 
@@ -110,54 +79,11 @@ impl CamPlusPlusIdentifier {
     }
 
     fn mono_16k(chunk: &AudioChunk) -> Result<Vec<f32>> {
-        if chunk.sample_rate == 0 {
-            return Err(HakilleError::InferenceError(
-                "CamPlusPlusIdentifier: sample_rate nul".to_string(),
-            ));
-        }
-        // Dé-interlace multi-canaux par moyenne.
-        let mono: Vec<f32> = if chunk.channels > 1 {
-            let ch = chunk.channels as usize;
-            let frames = chunk.samples.len() / ch;
-            let mut m = Vec::with_capacity(frames);
-            for f in 0..frames {
-                let mut acc = 0.0f32;
-                for c in 0..ch {
-                    let s = chunk.samples[f * ch + c];
-                    acc += if s.is_finite() { s } else { 0.0 };
-                }
-                m.push((acc / ch as f32).clamp(-1.0, 1.0));
-            }
-            m
-        } else {
-            chunk
-                .samples
-                .iter()
-                .map(|s| {
-                    if s.is_finite() {
-                        s.clamp(-1.0, 1.0)
-                    } else {
-                        0.0
-                    }
-                })
-                .collect()
-        };
-        if chunk.sample_rate == 16_000 {
-            return Ok(mono);
-        }
-        // Ré-échantillonnage linéaire pur Rust.
-        let ratio = 16_000.0 / chunk.sample_rate as f64;
-        let out_len = ((mono.len() as f64 * ratio).round() as usize).max(1);
-        let mut out = Vec::with_capacity(out_len);
-        for i in 0..out_len {
-            let pos = i as f64 / ratio;
-            let i0 = pos.floor() as usize;
-            let frac = (pos - i0 as f64) as f32;
-            let s0 = mono.get(i0).copied().unwrap_or(0.0);
-            let s1 = mono.get(i0 + 1).copied().unwrap_or(s0);
-            out.push(s0 + (s1 - s0) * frac);
-        }
-        Ok(out)
+        hakille_inference::audio_resample::try_to_mono_16k(
+            &chunk.samples,
+            chunk.channels,
+            chunk.sample_rate,
+        )
     }
 }
 

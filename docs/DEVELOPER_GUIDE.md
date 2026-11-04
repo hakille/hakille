@@ -140,7 +140,7 @@ Au démarrage, le démon affiche les six étapes d'initialisation du système :
 [4/6] Bootstrapping Inference Models & Cognitive Pipeline...
   Audio Pipeline: 16kHz continuous capture buffer ready
   SenseVoice-Small: mel + LFR + forward ort + CTC greedy — real ASR, measured confidence
-  Voice/GUI: Mimi RVQ nearest-L2, TTS formantique Klatt, grounding CV — pas de Moshi neural ni de forward VLM
+  Voice/GUI: Mimi neuronal via Candle, UI-TARS via llama.cpp local configuré ; TTS formantique distinct et modèle de dialogue Moshi absent
 
 [5/6] Registering Agent Manifests & WASM Runtime...
   Registered 5 declarative business agent manifests (scopes déclarés, aucun binaire métier fourni)

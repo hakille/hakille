@@ -12,8 +12,7 @@
 //!    `models/`, l'auto-bascule `ort` s'active si l'utilisateur en provisionne un) ;
 //! 5. ASR : délégation à [`SenseVoiceSmall`] (SenseVoice-Small ONNX réel)
 //!    uniquement si `sensevoice_small.int8.onnx` + `tokens.txt` sont présents ;
-//!    sinon `push_speech_transcript()` retourne SANS événement `Transcript`
-//!    avec un warning clair — jamais de texte inventé.
+//!    sinon `push_speech_transcript()` retourne un événement `Error` explicite.
 //!
 //! L'audio finalisé (`SpeechEnd`) peut être récupéré via
 //! [`VoicePipeline::last_utterance`] ou dirigé vers CAM++ via
@@ -396,19 +395,25 @@ impl VoicePipeline {
     }
 
     /// Alimente le pipeline en échantillons mono 16 kHz (déjà conformes —
-    /// aucun ré-échantillonnage n'est fait ici ; `NaN`/`Inf` -> 0.0, clamp
-    /// `[-1, 1]`). Retourne les événements produits dans l'ordre.
+    /// aucun ré-échantillonnage n'est fait ici ; valeurs non finies ou hors
+    /// `[-1, 1]` refusées). Retourne les événements produits dans l'ordre.
     pub fn push_audio(&mut self, samples_16k_mono: &[f32]) -> Vec<VoiceEvent> {
         let mut events: Vec<VoiceEvent> = Vec::new();
-        for &s in samples_16k_mono {
-            let v = if s.is_finite() {
-                s.clamp(-1.0, 1.0)
-            } else {
-                0.0
-            };
-            self.pending.push_back(v);
+        if self.pending.len().saturating_add(samples_16k_mono.len())
+            > 120 * PIPELINE_SAMPLE_RATE as usize
+            || samples_16k_mono
+                .iter()
+                .any(|s| !s.is_finite() || s.abs() > 1.0)
+        {
+            self.events_emitted += 1;
+            return vec![VoiceEvent::Error(
+                "PCM invalide ou file audio supérieure à 120 secondes".into(),
+            )];
         }
-        while self.pending.len() >= PIPELINE_BLOCK_SAMPLES {
+        self.pending.extend(samples_16k_mono.iter().copied());
+        while self.state != PipelineState::Transcribing
+            && self.pending.len() >= PIPELINE_BLOCK_SAMPLES
+        {
             let block: Vec<f32> = self.pending.drain(..PIPELINE_BLOCK_SAMPLES).collect();
             self.process_block(&block, &mut events);
         }
@@ -416,61 +421,70 @@ impl VoicePipeline {
         events
     }
 
-    /// Transcrit le dernier énoncé finalisé via SenseVoice-Small RÉEL.
-    ///
-    /// - Retourne `[Transcript { .. }]` si l'ASR est chargé (modèle réel présent) ;
-    /// - Retourne `[]` + warning clair si aucun modèle ASR n'est chargé
-    ///   (le pipeline ne fabrique JAMAIS de texte) ;
-    /// - Erreur `ort` -> `[Error(..)]` (message réel remonté).
-    ///
-    /// Passe l'état de `Transcribing` à `Idle` dans tous les cas.
+    /// Termine le flux : traite le bloc partiel et complète la dernière fenêtre
+    /// VAD avec des zéros, sans ajouter ces zéros à l'audio transcrit.
+    /// Si un énoncé attend sa transcription, l'appelant doit le consommer puis
+    /// rappeler cette méthode pour terminer l'audio encore en file.
+    pub fn finish_stream(&mut self) -> Vec<VoiceEvent> {
+        let mut events = self.push_audio(&[]);
+        if self.state == PipelineState::Transcribing {
+            return events;
+        }
+        let previous = events.len();
+        if !self.pending.is_empty() {
+            let tail: Vec<_> = self.pending.drain(..).collect();
+            self.process_block(&tail, &mut events);
+        }
+        match self.vad.finish_stream() {
+            Ok(Some((_, probability))) => self.advance_state(probability, &mut events),
+            Ok(None) => {}
+            Err(e) => events.push(VoiceEvent::Error(format!("VAD fin de flux: {e}"))),
+        }
+        if self.state == PipelineState::Listening {
+            self.finalize_utterance(&mut events);
+        }
+        self.events_emitted += (events.len() - previous) as u64;
+        events
+    }
+
+    /// Transcrit l'énoncé en attente, puis reprend l'audio conservé en file.
+    /// Une erreur conserve l'énoncé pour permettre une nouvelle tentative.
     pub async fn push_speech_transcript(&mut self) -> Vec<VoiceEvent> {
         if self.state != PipelineState::Transcribing {
-            tracing::warn!(
-                state = self.state.label(),
-                "VoicePipeline::push_speech_transcript: aucun énoncé finalisé en attente"
-            );
             return Vec::new();
         }
-        let Some(utterance) = self.last_utterance.take() else {
-            tracing::warn!(
-                "VoicePipeline::push_speech_transcript: état Transcribing sans énoncé \
-                 (incohérence interne) — aucun transcript"
-            );
-            self.state = PipelineState::Idle;
-            return Vec::new();
+        let result = match (&self.last_utterance, &self.asr) {
+            (Some(utterance), Some(asr)) => {
+                let chunk = AudioChunk::new(utterance.clone(), PIPELINE_SAMPLE_RATE, 1);
+                asr.transcribe(&chunk)
+                    .await
+                    .map(|hyp| hyp.transcript)
+                    .map_err(|e| format!("ASR: {e}"))
+            }
+            (None, _) => Err("ASR: aucun énoncé finalisé".into()),
+            (_, None) => Err("ASR: modèle absent ou transcription désactivée".into()),
         };
+        self.events_emitted += 1;
+        match result {
+            Ok(text) => {
+                self.last_utterance = None;
+                self.state = PipelineState::Idle;
+                let mut events = vec![VoiceEvent::Transcript { text }];
+                events.extend(self.push_audio(&[]));
+                events
+            }
+            Err(error) => vec![VoiceEvent::Error(error)],
+        }
+    }
+
+    /// Consomme un segment pour un traitement externe (ASR désactivée,
+    /// stockage ou biométrie), puis laisse reprendre le flux au prochain push.
+    pub fn take_utterance(&mut self) -> Option<Vec<f32>> {
+        if self.state != PipelineState::Transcribing {
+            return None;
+        }
         self.state = PipelineState::Idle;
-        let Some(asr) = &self.asr else {
-            tracing::warn!(
-                duration_s = utterance.len() as f32 / PIPELINE_SAMPLE_RATE as f32,
-                "VoicePipeline::push_speech_transcript: AUCUN modèle ASR chargé \
-                 (sensevoice_small.int8.onnx + tokens.txt absents) — transcript \
-                 absent, aucun texte inventé"
-            );
-            return Vec::new();
-        };
-        let chunk = AudioChunk::new(utterance, PIPELINE_SAMPLE_RATE, 1);
-        match asr.transcribe(&chunk).await {
-            Ok(hyp) => {
-                let mut events = vec![VoiceEvent::Transcript {
-                    text: hyp.transcript,
-                }];
-                self.events_emitted += events.len() as u64;
-                events.shrink_to_fit();
-                events
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    "VoicePipeline::push_speech_transcript: forward ASR réel en échec"
-                );
-                let mut events = vec![VoiceEvent::Error(format!("ASR: {e}"))];
-                self.events_emitted += events.len() as u64;
-                events.shrink_to_fit();
-                events
-            }
-        }
+        self.last_utterance.take()
     }
 
     fn process_block(&mut self, block: &[f32], events: &mut Vec<VoiceEvent>) {
@@ -554,15 +568,7 @@ impl VoicePipeline {
                     self.finalize_utterance(events);
                 }
             }
-            PipelineState::Transcribing => {
-                // Nouvelle prise de parole pendant qu'un transcript est en
-                // attente : la précédente utterance reste disponible via
-                // `last_utterance` jusqu'à `push_speech_transcript`.
-                if is_speech {
-                    self.begin_utterance();
-                    events.push(VoiceEvent::SpeechStart);
-                }
-            }
+            PipelineState::Transcribing => {}
         }
     }
 
@@ -781,6 +787,31 @@ mod tests {
         vec![0.0; (seconds * PIPELINE_SAMPLE_RATE as f32) as usize]
     }
 
+    #[test]
+    fn pending_utterance_cannot_be_overwritten_and_tail_is_not_lost() {
+        let Some(mut pipeline) = test_pipeline(None, false) else {
+            return;
+        };
+        pipeline.last_utterance = Some(vec![0.25; 400]);
+        pipeline.state = PipelineState::Transcribing;
+        assert!(pipeline.push_audio(&[0.0; 321]).is_empty());
+        assert_eq!(pipeline.pending.len(), 321);
+        assert_eq!(pipeline.last_utterance().unwrap(), &[0.25; 400]);
+        assert!(matches!(
+            pipeline.push_audio(&[f32::NAN]).as_slice(),
+            [VoiceEvent::Error(_)]
+        ));
+        assert_eq!(pipeline.pending.len(), 321);
+        assert_eq!(pipeline.take_utterance().unwrap(), vec![0.25; 400]);
+        pipeline.finish_stream();
+        assert!(pipeline.pending.is_empty());
+        assert_eq!(pipeline.total_pushed, 321);
+        assert_eq!(pipeline.vad.pending_carry_len(), 0);
+        let calls = pipeline.vad.forward_calls();
+        pipeline.finish_stream();
+        assert_eq!(pipeline.vad.forward_calls(), calls);
+    }
+
     /// Silence pur (bruit nul) -> AUCUN `SpeechStart` (seuil VAD par défaut
     /// 0.5 ; probabilité Silero mesurée sur silence ≈ 0.0005).
     #[test]
@@ -974,8 +1005,8 @@ mod tests {
         assert_eq!(pipeline.state(), PipelineState::Transcribing);
         let events = pipeline.push_speech_transcript().await;
         assert!(
-            events.is_empty(),
-            "aucun Transcript sans modèle ASR, obtenus {events:?}"
+            matches!(events.as_slice(), [VoiceEvent::Error(_)]),
+            "erreur explicite sans modèle ASR, obtenus {events:?}"
         );
         assert!(
             !events
@@ -983,6 +1014,9 @@ mod tests {
                 .any(|e| matches!(e, VoiceEvent::Transcript { .. })),
             "aucun texte ne doit être inventé"
         );
+        assert_eq!(pipeline.state(), PipelineState::Transcribing);
+        assert!(pipeline.last_utterance().is_some());
+        assert!(pipeline.take_utterance().is_some());
         assert_eq!(pipeline.state(), PipelineState::Idle);
         // Sans énoncé en attente : plus aucun événement.
         assert!(pipeline.push_speech_transcript().await.is_empty());

@@ -8,12 +8,11 @@ use hakille_core::{
 };
 use hakille_substrate::{
     AudioConfig, AudioStreamHandle, CameraConfig, CameraFrame, CameraStreamHandle, EgressPolicy,
-    HttpRequest, HttpResponse, ImageFormat, InputAction, PlatformManifest, PowerState,
-    ProcessHandle, ScreenCapture, Substrate, ThermalState,
+    HttpRequest, HttpResponse, InputAction, PlatformManifest, PowerState, ProcessHandle,
+    ScreenCapture, Substrate, ThermalState,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Missing native binding reported by every mobile camera method.
 const MOBILE_CAMERA_UNIMPLEMENTED: &str = "camera not implemented for mobile substrate: Camera2 (Android) / AVFoundation (iOS) binding missing \
@@ -22,8 +21,6 @@ const MOBILE_CAMERA_UNIMPLEMENTED: &str = "camera not implemented for mobile sub
 pub struct MobileSubstrate {
     manifest: PlatformManifest,
     attestation_keypair: KeyPair,
-    audio_counter: AtomicU64,
-    process_counter: AtomicU64,
     shadow_sync: Mutex<MobileShadowSync>,
     storage_sandbox: ScopedStorageSandbox,
     battery_engine: Mutex<BatteryConservationEngine>,
@@ -72,8 +69,6 @@ impl MobileSubstrate {
         Self {
             manifest,
             attestation_keypair: KeyPair::generate(),
-            audio_counter: AtomicU64::new(1),
-            process_counter: AtomicU64::new(1),
             shadow_sync: Mutex::new(MobileShadowSync::default()),
             storage_sandbox: ScopedStorageSandbox::default(),
             battery_engine: Mutex::new(BatteryConservationEngine::default()),
@@ -306,12 +301,15 @@ impl Substrate for MobileSubstrate {
             CapabilityScope::Audio,
             hakille_core::CapabilityAction::Read,
         )?;
-        let id = self.audio_counter.fetch_add(1, Ordering::SeqCst);
-        Ok(AudioStreamHandle(id))
+        Err(hakille_core::HakilleError::SubstrateError(
+            "capture audio indisponible : backend audio non raccordé au substrat mobile; aucun flux démarré".to_string(),
+        ))
     }
 
     async fn stop_audio_capture(&self, _handle: AudioStreamHandle) -> Result<()> {
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "arrêt audio indisponible : aucun flux audio natif géré par ce substrat".to_string(),
+        ))
     }
 
     async fn play_audio(
@@ -325,7 +323,9 @@ impl Substrate for MobileSubstrate {
             CapabilityScope::Audio,
             hakille_core::CapabilityAction::Write,
         )?;
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "lecture audio indisponible : backend audio non raccordé au substrat mobile; aucun son joué".to_string(),
+        ))
     }
 
     async fn start_camera_capture(
@@ -370,37 +370,9 @@ impl Substrate for MobileSubstrate {
             CapabilityScope::Sensor,
             hakille_core::CapabilityAction::Read,
         )?;
-        // Mobile portrait framebuffer (1170 x 2532)
-        let w = 1170;
-        let h = 2532;
-        let pixel_count = (w * h) as usize;
-        let mut data = vec![0u8; pixel_count * 4];
-
-        for y in 0..h {
-            for x in 0..w {
-                let idx = ((y * w + x) * 4) as usize;
-                // Mobile OLED true black base with soft indicator
-                if y < 80 {
-                    // Status bar notch / dynamic island
-                    data[idx] = 10;
-                    data[idx + 1] = 10;
-                    data[idx + 2] = 12;
-                    data[idx + 3] = 255;
-                } else {
-                    data[idx] = 18;
-                    data[idx + 1] = 18;
-                    data[idx + 2] = 22;
-                    data[idx + 3] = 255;
-                }
-            }
-        }
-
-        Ok(ScreenCapture {
-            width: w,
-            height: h,
-            data,
-            format: ImageFormat::Rgba8,
-        })
+        Err(hakille_core::HakilleError::SubstrateError(
+            "capture d'écran indisponible : binding MediaProjection/ReplayKit non raccordé; aucune image du poste capturée".to_string(),
+        ))
     }
 
     async fn inject_input(&self, _action: InputAction, cap: &CapabilityToken) -> Result<()> {
@@ -409,7 +381,9 @@ impl Substrate for MobileSubstrate {
             CapabilityScope::GuiInput,
             hakille_core::CapabilityAction::Execute,
         )?;
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "injection d'entrée indisponible : binding accessibilité Android/iOS non raccordé; aucun événement émis".to_string(),
+        ))
     }
 
     async fn spawn_sandboxed(
@@ -459,8 +433,12 @@ impl Substrate for MobileSubstrate {
                 )));
             }
         }
-        let id = self.process_counter.fetch_add(1, Ordering::SeqCst);
-        Ok(ProcessHandle(id))
+        // Aucun moteur WASM n'est relié à cette API : ne jamais inventer
+        // un handle de processus. Le runtime des agents de référence est distinct.
+        Err(hakille_core::HakilleError::SubstrateError(
+            "spawn_sandboxed indisponible : moteur WASM non raccordé au substrat mobile; aucun processus lancé"
+                .to_string(),
+        ))
     }
 
     fn power_state(&self) -> PowerState {
