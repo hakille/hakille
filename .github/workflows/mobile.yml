@@ -41,6 +41,9 @@ jobs:
           toolchain: "1.95"
           targets: aarch64-linux-android,x86_64-linux-android
       - uses: android-actions/setup-android@v3
+        with:
+          # L'ancien paquet « tools » a été retiré du dépôt SDK Google.
+          packages: platform-tools
       - name: SDK Android et NDK épinglés
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
       - name: Contrats mobiles, FFI et passerelle HTTP
