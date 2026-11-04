@@ -83,7 +83,13 @@ sombres lorsque le système est clair ; le correctif qui suit fait dépendre
 les barres du thème effectif de Hakille. Le moteur ASR absent de cet émulateur
 est annoncé comme indisponible, sans résultat vocal simulé.
 
-Le résultat iOS de cette révision est encore en attente.
+Le job iOS de cette même révision a réussi **26 XCTest**, sans échec ni test
+ignoré, sur iPhone Air simulé / iOS 26.5 ARM64. Les tests incluent les politiques
+vocales, fichiers/annulation, destinations exactes, position approximative,
+le pont UniFFI et le chargement réel de la fonte et de l’image de marque.
+La capture `screenshots/home-settled.png` a été inspectée : accueil Voix,
+logo, commandes et navigation sont présents. Le libellé de marque de la barre
+supérieure était tronqué sur iOS 26 ; un correctif ciblé suit cette mesure.
 
 ## Vérifications matérielles encore nécessaires
 

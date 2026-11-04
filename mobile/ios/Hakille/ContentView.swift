@@ -99,7 +99,13 @@ extension Color {
             }.listStyle(.insetGrouped).scrollContentBackground(.hidden).background(background)
                 .listRowSeparatorTint(Color(hakille: colorScheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight))
                 .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .navigationBarLeading) { Text("hakille").font(HakilleTypography.heading).accessibilityLabel("Hakille") } }
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        Image("HakilleMark").renderingMode(.original).resizable().scaledToFit()
+                            .frame(width: 32, height: 32)
+                            .accessibilityLabel("Hakille")
+                    }
+                }
                 .toolbarBackground(background, for: .navigationBar, .tabBar)
                 .toolbarBackground(.visible, for: .navigationBar, .tabBar)
         }
