@@ -1,5 +1,5 @@
 //! Inférence locale explicite, indépendante du démarrage du démon.
-//! Le contrôle d'intégrité précède le chargement ; un test exécute le modèle.
+//! Le contrôle d'intégrité précède le chargement ; les résultats précisent le forward réel.
 
 use hakille_inference::{ModelCatalog, ModelProvisioner, ModelTier};
 use serde_json::{Value, json};
@@ -48,7 +48,8 @@ impl Options {
                 "--json" if !options.json => options.json = true,
                 "--all" if !options.all => options.all = true,
                 "--models-dir" | "--model" | "--tier" | "--text" | "--audio" | "--image"
-                | "--output" | "--endpoint" | "--max-tokens" | "--timeout-seconds" => {
+                | "--output" | "--endpoint" | "--max-tokens" | "--timeout-seconds"
+                | "--language" => {
                     let value = args
                         .get(i + 1)
                         .filter(|v| !v.starts_with("--") && !v.is_empty())
@@ -83,6 +84,7 @@ impl Options {
                             | "--endpoint"
                             | "--max-tokens"
                             | "--timeout-seconds"
+                            | "--language"
                     ));
             if !allowed {
                 return Err(format!("{key} n'est pas applicable à {command}").into());
@@ -108,7 +110,53 @@ impl Options {
         {
             return Err("Texte limité à 32768 octets".into());
         }
+        if let Some(language) = options.get("--language") {
+            if options.get("--model") != Some("whisper-tiny-multilingual") {
+                return Err("--language exige --model whisper-tiny-multilingual".into());
+            }
+            if language != "auto"
+                && !hakille_inference::whisper_engine::WHISPER_LANGUAGES.contains(&language)
+            {
+                return Err(format!("Code langue Whisper inconnu : {language}; utiliser auto ou un code tel que fr, en, ar").into());
+            }
+        }
+        options.validate_inference_options(&options.model_ids()?)?;
         Ok(options)
+    }
+
+    fn validate_inference_options(&self, ids: &[String]) -> CliResult<()> {
+        if !matches!(self.command.as_str(), "infer" | "test") {
+            return Ok(());
+        }
+        for key in self.values.keys() {
+            let applicable = ids.iter().any(|id| match key.as_str() {
+                "--text" => matches!(
+                    id.as_str(),
+                    "qwen2.5-0.5b-instruct-q4km" | "all-minilm-l6-v2" | "ui-tars-2b-sft-q4km"
+                ),
+                "--audio" => matches!(
+                    id.as_str(),
+                    "silero-vad-v5"
+                        | "campplus-speaker-id"
+                        | "sensevoice-small-int8"
+                        | "moshi-mimi-s2s"
+                        | "whisper-tiny-multilingual"
+                ),
+                "--output" => id == "moshi-mimi-s2s",
+                "--image" | "--endpoint" => id == "ui-tars-2b-sft-q4km",
+                "--max-tokens" => id == "qwen2.5-0.5b-instruct-q4km",
+                "--timeout-seconds" => matches!(
+                    id.as_str(),
+                    "qwen2.5-0.5b-instruct-q4km" | "whisper-tiny-multilingual"
+                ),
+                "--language" => id == "whisper-tiny-multilingual",
+                _ => true,
+            });
+            if !applicable {
+                return Err(format!("Option {key} non applicable aux modèles sélectionnés").into());
+            }
+        }
+        Ok(())
     }
 
     fn get(&self, key: &str) -> Option<&str> {
@@ -157,38 +205,14 @@ Stockage : --models-dir <dossier> ; sortie : --json\n\
 Inférence : --text <texte>, --audio <WAV mono/stéréo>, --image <PNG/JPEG>\n\
 Mimi : --audio <WAV 24 kHz> --output <nouveau WAV>\n\
 UI-TARS : --endpoint http://127.0.0.1:8080 --image <fichier> --text <instruction>\n\
-Qwen : --max-tokens <1..4096> --timeout-seconds <1..3600>\n\
-test exécute un forward réel ; ses signaux synthétiques vérifient le fonctionnement, pas la qualité métier.\n\
+Qwen : --max-tokens <1..4096> ; Qwen/Whisper : --timeout-seconds <1..3600>\n\
+Whisper : --model whisper-tiny-multilingual --audio <WAV 0,1..30 s> --language auto|fr|en|…\n\
+test vérifie le fonctionnement, pas la qualité métier ; Whisper sans --audio teste le rejet du silence sans forward.\n\
 verify/test échouent si un modèle sélectionné est absent, corrompu ou inexécutable."
         );
         return Ok(());
     }
     let ids = options.model_ids()?;
-    if options.command == "infer" {
-        let id = &ids[0];
-        for key in options.values.keys() {
-            let applicable = match key.as_str() {
-                "--text" => matches!(
-                    id.as_str(),
-                    "qwen2.5-0.5b-instruct-q4km" | "all-minilm-l6-v2" | "ui-tars-2b-sft-q4km"
-                ),
-                "--audio" => matches!(
-                    id.as_str(),
-                    "silero-vad-v5"
-                        | "campplus-speaker-id"
-                        | "sensevoice-small-int8"
-                        | "moshi-mimi-s2s"
-                ),
-                "--output" => id == "moshi-mimi-s2s",
-                "--image" | "--endpoint" => id == "ui-tars-2b-sft-q4km",
-                "--max-tokens" | "--timeout-seconds" => id == "qwen2.5-0.5b-instruct-q4km",
-                _ => true,
-            };
-            if !applicable {
-                return Err(format!("Option {key} non applicable au modèle {id}").into());
-            }
-        }
-    }
     let provisioner = ModelProvisioner::new(options.directory.clone());
     let mut rows = Vec::new();
     let mut failed = false;
@@ -348,6 +372,37 @@ fn infer(id: &str, options: &Options) -> CliResult<Value> {
                 }
             }
         }
+        "whisper-tiny-multilingual" => {
+            use hakille_inference::whisper_engine::{
+                WHISPER_MAX_SAMPLES, WHISPER_MIN_SAMPLES, WhisperEngine,
+            };
+            let synthetic_silence = smoke && options.get("--audio").is_none();
+            let samples = if let Some(audio) = options.get("--audio") {
+                read_audio(Path::new(audio), 16_000)?
+            } else if synthetic_silence {
+                vec![0.0; 16_000]
+            } else {
+                return Err("Whisper nécessite --audio <WAV de 0,1 à 30 secondes>".into());
+            };
+            if !(WHISPER_MIN_SAMPLES..=WHISPER_MAX_SAMPLES).contains(&samples.len()) {
+                return Err("Whisper accepte de 0,1 à 30 secondes d'audio".into());
+            }
+            let language = options
+                .get("--language")
+                .filter(|language| *language != "auto");
+            let timeout: u64 = options.get("--timeout-seconds").unwrap_or("120").parse()?;
+            let mut engine = WhisperEngine::load_from_dir(&options.directory)?;
+            let result = engine.transcribe(
+                &samples,
+                language,
+                Some(Instant::now() + Duration::from_secs(timeout)),
+            )?;
+            Ok(whisper_result_json(
+                &result,
+                samples.len(),
+                synthetic_silence,
+            ))
+        }
         "moshi-mimi-s2s" => {
             let samples = if let Some(audio) = options.get("--audio") {
                 read_audio(Path::new(audio), 24_000)?
@@ -385,8 +440,33 @@ fn infer(id: &str, options: &Options) -> CliResult<Value> {
     }
 }
 
+/// Un score neuronal absent signifie que le silence a été rejeté avant forward.
+fn whisper_result_json(
+    result: &hakille_inference::whisper_engine::WhisperTranscription,
+    samples: usize,
+    synthetic_silence: bool,
+) -> Value {
+    let real_forward = result.no_speech_probability.is_some();
+    json!({
+        "text":result.text,
+        "language":result.language,
+        "language_probability":result.language_probability,
+        "no_speech_probability":result.no_speech_probability,
+        "suppressed_silence":result.suppressed_silence,
+        "generated_tokens":result.generated_tokens,
+        "inference_elapsed_ms":result.elapsed_ms,
+        "sample_rate":16000,
+        "samples":samples,
+        "backend":"candle_cpu",
+        "real_forward":real_forward,
+        "synthetic_silence":synthetic_silence,
+        "acoustic_quality_evaluated":false,
+        "validation":if real_forward {"transcription"} else {"silence_rejected_before_forward"},
+    })
+}
+
 /// WAV borné et validé avant toute allocation dépendant du contenu audio.
-fn read_audio(path: &Path, target_rate: u32) -> CliResult<Vec<f32>> {
+pub(super) fn read_audio(path: &Path, target_rate: u32) -> CliResult<Vec<f32>> {
     if std::fs::metadata(path)?.len() > 64 * 1024 * 1024 {
         return Err("WAV limité à 64 Mio".into());
     }
@@ -499,6 +579,143 @@ mod tests {
         assert_eq!(o.directory, PathBuf::from("custom"));
         assert_eq!(o.model_ids().unwrap(), ["silero-vad-v5"]);
     }
+    #[test]
+    fn model_cli_whisper_language_and_model_flags_are_strict() {
+        for command in ["test", "infer"] {
+            for language in ["auto", "fr", "en", "ar"] {
+                let options = parse(&[
+                    command,
+                    "--model",
+                    "whisper-tiny-multilingual",
+                    "--audio",
+                    "voice.wav",
+                    "--language",
+                    language,
+                    "--timeout-seconds",
+                    "30",
+                ])
+                .unwrap();
+                assert_eq!(options.get("--language"), Some(language));
+            }
+            for arguments in [
+                vec![
+                    command,
+                    "--model",
+                    "whisper-tiny-multilingual",
+                    "--language",
+                    "xx",
+                ],
+                vec![
+                    command,
+                    "--model",
+                    "whisper-tiny-multilingual",
+                    "--language",
+                    "FR",
+                ],
+                vec![
+                    command,
+                    "--model",
+                    "whisper-tiny-multilingual",
+                    "--language",
+                ],
+                vec![
+                    command,
+                    "--model",
+                    "whisper-tiny-multilingual",
+                    "--language",
+                    "fr",
+                    "--language",
+                    "en",
+                ],
+                vec![
+                    command,
+                    "--model",
+                    "whisper-tiny-multilingual",
+                    "--text",
+                    "ignored",
+                ],
+                vec![
+                    command,
+                    "--model",
+                    "whisper-tiny-multilingual",
+                    "--max-tokens",
+                    "12",
+                ],
+                vec![
+                    command,
+                    "--model",
+                    "sensevoice-small-int8",
+                    "--language",
+                    "fr",
+                ],
+            ] {
+                assert!(parse(&arguments).is_err(), "{arguments:?}");
+            }
+        }
+        assert!(
+            parse(&[
+                "list",
+                "--model",
+                "whisper-tiny-multilingual",
+                "--language",
+                "fr"
+            ])
+            .is_err()
+        );
+        assert!(parse(&["test", "--all", "--language", "fr"]).is_err());
+        let options = parse(&["test", "--model", "whisper-tiny-multilingual"]).unwrap();
+        assert!(options.get("--language").is_none());
+    }
+
+    #[test]
+    fn model_cli_whisper_rejects_missing_or_out_of_bounds_audio_before_loading() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut options = parse(&["infer", "--model", "whisper-tiny-multilingual"]).unwrap();
+        options.directory = dir.path().join("absent-models");
+        assert!(
+            infer("whisper-tiny-multilingual", &options)
+                .unwrap_err()
+                .to_string()
+                .contains("--audio")
+        );
+        for sample_count in [800, 480_001] {
+            let path = dir.path().join(format!("audio-{sample_count}.wav"));
+            write_audio(&path, &vec![0.0; sample_count], 16_000).unwrap();
+            options
+                .values
+                .insert("--audio".into(), path.to_str().unwrap().into());
+            let error = infer("whisper-tiny-multilingual", &options)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("0,1 à 30 secondes"), "{error}");
+        }
+    }
+
+    #[test]
+    fn model_cli_whisper_silence_never_claims_neural_forward_or_probability() {
+        use hakille_inference::whisper_engine::WhisperTranscription;
+        let mut result = WhisperTranscription {
+            text: String::new(),
+            language: None,
+            language_probability: None,
+            no_speech_probability: None,
+            suppressed_silence: true,
+            generated_tokens: 0,
+            elapsed_ms: 0,
+        };
+        let silence = whisper_result_json(&result, 16_000, true);
+        assert_eq!(silence["real_forward"], false);
+        assert_eq!(silence["synthetic_silence"], true);
+        assert_eq!(silence["acoustic_quality_evaluated"], false);
+        assert!(silence["language_probability"].is_null());
+        assert!(silence["no_speech_probability"].is_null());
+        // Un silence rejeté par le réseau, en revanche, a réellement exécuté le forward.
+        result.no_speech_probability = Some(0.99);
+        let neural_silence = whisper_result_json(&result, 16_000, false);
+        assert_eq!(neural_silence["real_forward"], true);
+        assert_eq!(neural_silence["suppressed_silence"], true);
+    }
+
     #[test]
     fn model_cli_requires_verified_nonempty_integrity_reports() {
         assert!(require_integrity(&[]).is_err());

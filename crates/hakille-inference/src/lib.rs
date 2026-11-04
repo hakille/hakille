@@ -15,6 +15,7 @@ pub mod ort_vad;
 pub mod quantization;
 pub mod sensevoice_onnx;
 pub mod speaker_onnx;
+pub mod whisper_engine;
 
 pub use audio_resample::*;
 pub use candle_runtime::*;

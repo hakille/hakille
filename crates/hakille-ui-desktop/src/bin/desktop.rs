@@ -4,6 +4,8 @@
 //! Modes : défaut = caché + hotkey global ; `--show` = visible au lancement ;
 //! `--authorized` = pont `LocalAuthorized` simulé ; `--smoke` = auto-test
 //! (event loop réel + fenêtre cachée + surface softbuffer + 1 rendu) puis sort.
+//! `--voice` active explicitement l’écoute locale ; F8 ou le bouton micro
+//! permet de l’arrêter ou de la démarrer. Aucun microphone ouvert par défaut.
 //!
 //! Transparence : softbuffer écrit en XRGB (pas d'alpha), donc la fenêtre
 //! Windows est passée en **couche Win32 avec clé couleur** : le fond peint
@@ -15,8 +17,11 @@ use accesskit_winit::{
     Adapter as AccessKitAdapter, Event as AccessKitEvent, WindowEvent as AccessKitWindowEvent,
 };
 use hakille_ipc::transport;
-use hakille_ui_desktop::a11y::{ActionCardA11y, CONSULT_PANEL_NODE, append_consult_panel};
-use hakille_ui_desktop::app::{HudAction, HudApp, HudInput, PanelKind, PointerTarget};
+use hakille_ui_desktop::a11y::{
+    ActionCardA11y, CONSULT_PANEL_NODE, VOICE_TOGGLE_NODE, append_consult_panel,
+    append_voice_controls,
+};
+use hakille_ui_desktop::app::{HudAction, HudApp, HudInput, PanelKind, PointerTarget, VoiceState};
 use hakille_ui_desktop::renderer::CONSULT_PAGE_LINES;
 use hakille_ui_desktop::runtime::WinitConfig;
 use hakille_ui_desktop::scene::Scene;
@@ -27,7 +32,9 @@ use hakille_ui_desktop::{
 use hakille_ui_model::snapshot::HUD_WIDTH;
 use hakille_ui_platform::hotkey::{HakilleHotkey, HotkeyEvent};
 use hakille_ui_protocol::{ActionCard, DataExit, KernelToUi, Provenance, UiToKernel};
+use hakille_voice::input::{VoiceInputConfig, VoiceInputEvent, VoiceInputHandle};
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -87,30 +94,69 @@ fn card_a11y(card: &ActionCard) -> ActionCardA11y {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct Args {
+    help: bool,
     show: bool,
     authorized: bool,
     smoke: bool,
+    voice: bool,
+    models_dir: Option<PathBuf>,
+    voice_language: Option<String>,
+    voice_device: Option<String>,
+    wake_aliases: Vec<String>,
 }
 
-fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Args {
+fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Args, String> {
     let mut out = Args::default();
-    for arg in args {
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--help" | "-h" => out.help = true,
             "--show" => out.show = true,
             "--authorized" => out.authorized = true,
             "--smoke" => out.smoke = true,
-            other => eprintln!("hakille-desktop: argument inconnu ignoré: {other}"),
+            "--voice" | "--voiceactive" => {
+                out.voice = true;
+                out.show = true;
+            }
+            "--models-dir" | "--voice-language" | "--voice-device" | "--wake-alias" => {
+                let value = args
+                    .next()
+                    .filter(|s| !s.starts_with("--") && !s.trim().is_empty())
+                    .ok_or_else(|| format!("Valeur requise pour {arg}"))?;
+                match arg.as_str() {
+                    "--models-dir" => out.models_dir = Some(PathBuf::from(value)),
+                    "--voice-language" => out.voice_language = Some(value),
+                    "--wake-alias" => out.wake_aliases.push(value),
+                    _ => out.voice_device = Some(value),
+                }
+            }
+            other => return Err(format!("Argument inconnu : {other}")),
         }
     }
-    out
+    if let Some(language) = out.voice_language.as_deref()
+        && language != "auto"
+        && !hakille_voice::input::WHISPER_LANGUAGES.contains(&language)
+    {
+        return Err(format!(
+            "Langue vocale inconnue : {language} ; utiliser auto ou un code Whisper comme fr, en, es."
+        ));
+    }
+    if out.voice && (out.smoke || out.authorized) {
+        return Err("--voice ne peut pas être combiné avec --smoke ou --authorized (modes de test sans microphone)".into());
+    }
+    Ok(out)
 }
 
 /// Événements utilisateur : requêtes AccessKit, appui hotkey et fil IPC
 /// (réponses/déconnexion) — tout passe par le thread winit via le proxy.
 #[derive(Debug)]
 enum AppEvent {
+    Voice {
+        generation: u64,
+        event: VoiceInputEvent,
+    },
     AccessKit(AccessKitEvent),
     HotkeyToggle,
     /// Réponse du démon reçue par le client IPC.
@@ -303,14 +349,24 @@ impl WindowState {
     /// ouverte), sinon focus sur le champ requête si le HUD est visible.
     fn tree(&self, core: &HudApp) -> accesskit::TreeUpdate {
         if let Some(card) = core.pending_card() {
-            return build_action_card_tree(&card_a11y(card));
+            let mut tree = build_action_card_tree(&card_a11y(card));
+            append_voice_controls(&mut tree, core.voice_state(), core.voice_enabled());
+            if core.voice_control_focused() {
+                tree.focus = VOICE_TOGGLE_NODE;
+            }
+            return tree;
         }
         let mut tree = build_shell_tree(&core.snapshot(), &[], &[]);
         if core.visible && !matches!(core.panel(), PanelKind::None | PanelKind::Card) {
             append_consult_panel(&mut tree, &core.consult_view());
         }
+        append_voice_controls(&mut tree, core.voice_state(), core.voice_enabled());
         if core.visible {
-            tree.focus = A11Y_QUERY_NODE;
+            tree.focus = if core.voice_control_focused() {
+                VOICE_TOGGLE_NODE
+            } else {
+                A11Y_QUERY_NODE
+            };
         }
         tree
     }
@@ -327,6 +383,10 @@ struct DesktopApp {
     /// Client IPC du démon (`None` : `--authorized` simulation et `--smoke`
     /// test pur restent sans fil réel).
     ipc: Option<IpcClient>,
+    voice: Option<VoiceInputHandle>,
+    voice_generation: u64,
+    voice_suspended: bool,
+    voice_started: bool,
     window: Option<WindowState>,
     pending_frame_at: Option<Instant>,
     /// Début de l'appui sur Entrée pour une carte irréversible (≥600 ms).
@@ -344,6 +404,115 @@ struct DesktopApp {
 }
 
 impl DesktopApp {
+    fn set_voice_enabled(&mut self, enabled: bool, event_loop: &ActiveEventLoop) {
+        self.voice_generation = self.voice_generation.wrapping_add(1);
+        if let Some(worker) = self.voice.take() {
+            worker.stop();
+        }
+        self.voice_suspended = false;
+        if !enabled {
+            return;
+        }
+        if self.args.smoke || self.args.authorized {
+            let actions = self.core.on_voice_state(VoiceState::Error(
+                "Microphone indisponible en mode de test sans démon".into(),
+            ));
+            self.apply(actions, event_loop);
+            return;
+        }
+        let mut config = VoiceInputConfig::default();
+        if let Some(path) = &self.args.models_dir {
+            config.models_dir = path.clone();
+        }
+        if let Some(language) = &self.args.voice_language {
+            config.language = (language != "auto").then(|| language.clone());
+        }
+        if let Some(device) = &self.args.voice_device {
+            config.device_name = Some(device.clone());
+        }
+        config
+            .activation
+            .aliases
+            .extend(self.args.wake_aliases.clone());
+        let generation = self.voice_generation;
+        let proxy = self.proxy.clone();
+        self.voice = Some(VoiceInputHandle::start(config, move |event| {
+            let _ = proxy.send_event(AppEvent::Voice { generation, event });
+        }));
+    }
+
+    /// Arrête la capture pendant les tours clavier/voix et les cartes, puis
+    /// remet le détecteur à zéro avant toute reprise. Aucun travail ASR ici.
+    fn sync_voice_suspension(&mut self, event_loop: &ActiveEventLoop) {
+        let suspended = self.core.voice_capture_suspended();
+        if self.core.voice_enabled()
+            && suspended != self.voice_suspended
+            && let Some(worker) = self.voice.as_ref()
+        {
+            self.voice_suspended = suspended;
+            worker.set_suspended(suspended);
+            let state = if suspended {
+                VoiceState::Processing
+            } else {
+                VoiceState::Starting
+            };
+            let actions = self.core.on_voice_state(state);
+            self.apply(actions, event_loop);
+        }
+    }
+
+    fn on_voice_event(
+        &mut self,
+        generation: u64,
+        event: VoiceInputEvent,
+        event_loop: &ActiveEventLoop,
+    ) {
+        if generation != self.voice_generation || !self.core.voice_enabled() {
+            return;
+        }
+        // Les erreurs ne sont jamais masquées ; les événements d'un segment
+        // déjà suspendu ne doivent pas rouvrir le micro ou envoyer une commande.
+        let state = match event {
+            VoiceInputEvent::Error(error) => {
+                self.voice_generation = self.voice_generation.wrapping_add(1);
+                if let Some(worker) = self.voice.take() {
+                    worker.stop();
+                }
+                self.voice_suspended = false;
+                Some(VoiceState::Error(error))
+            }
+            VoiceInputEvent::Stopped => {
+                let actions = self.core.handle(HudInput::ToggleVoice);
+                self.apply(actions, event_loop);
+                return;
+            }
+            _ if self.voice_suspended => return,
+            VoiceInputEvent::Loading | VoiceInputEvent::Ignored => Some(VoiceState::Starting),
+            VoiceInputEvent::Listening => Some(VoiceState::Listening),
+            VoiceInputEvent::Speech => Some(VoiceState::Speech),
+            VoiceInputEvent::Transcribing => Some(VoiceState::Transcribing),
+            VoiceInputEvent::Armed => Some(VoiceState::WakeDetected),
+            VoiceInputEvent::Command { text, epoch, .. } => {
+                if !self
+                    .voice
+                    .as_ref()
+                    .is_some_and(|worker| worker.accept_command(epoch))
+                {
+                    return;
+                }
+                // Le worker s'est déjà suspendu après cette commande.
+                self.voice_suspended = true;
+                let actions = self.core.on_voice_command(text);
+                self.apply(actions, event_loop);
+                return;
+            }
+        };
+        if let Some(state) = state {
+            let actions = self.core.on_voice_state(state);
+            self.apply(actions, event_loop);
+        }
+    }
+
     fn create_window(
         &self,
         event_loop: &ActiveEventLoop,
@@ -409,6 +578,9 @@ impl DesktopApp {
     fn apply(&mut self, actions: Vec<HudAction>, event_loop: &ActiveEventLoop) {
         for action in actions {
             match action {
+                HudAction::SetVoiceEnabled { enabled } => {
+                    self.set_voice_enabled(enabled, event_loop)
+                }
                 HudAction::ShowWindow => {
                     self.show_window_ui();
                     self.pending_frame_at = None;
@@ -534,6 +706,7 @@ impl DesktopApp {
                 HudAction::Quit => event_loop.exit(),
             }
         }
+        self.sync_voice_suspension(event_loop);
     }
 
     fn redraw(&mut self) {
@@ -617,6 +790,10 @@ impl DesktopApp {
         let target = self.core.pointer_target(x, y);
         let card = self.core.pending_card().map(|c| (c.id, c.reversible));
         match target {
+            PointerTarget::VoiceToggle => {
+                let actions = self.core.handle(HudInput::ToggleVoice);
+                self.apply(actions, event_loop);
+            }
             PointerTarget::CardValidate => {
                 let Some((id, reversible)) = card else { return };
                 if reversible {
@@ -702,6 +879,11 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                 }
             }
         }
+        if self.args.voice && !self.voice_started {
+            self.voice_started = true;
+            let actions = self.core.handle(HudInput::ToggleVoice);
+            self.apply(actions, event_loop);
+        }
         if self.args.smoke {
             self.run_smoke(event_loop);
         }
@@ -709,6 +891,9 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
+            AppEvent::Voice { generation, event } => {
+                self.on_voice_event(generation, event, event_loop)
+            }
             AppEvent::HotkeyToggle => {
                 let actions = self.core.handle(HudInput::HotkeyToggle);
                 self.apply(actions, event_loop);
@@ -733,6 +918,19 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                     }
                 }
                 AccessKitWindowEvent::ActionRequested(request) => {
+                    if request.target_node == VOICE_TOGGLE_NODE {
+                        if matches!(
+                            request.action,
+                            accesskit::Action::Click | accesskit::Action::Focus
+                        ) {
+                            let mut actions = self.core.handle(HudInput::FocusVoice);
+                            if request.action == accesskit::Action::Click {
+                                actions.extend(self.core.handle(HudInput::ToggleVoice));
+                            }
+                            self.apply(actions, event_loop);
+                        }
+                        return;
+                    }
                     if request.target_node == CONSULT_PANEL_NODE {
                         let delta = match request.action {
                             accesskit::Action::ScrollDown => Some(CONSULT_PAGE_LINES as i32),
@@ -828,11 +1026,22 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                         state,
                         logical_key,
                         text,
+                        repeat,
                         ..
                     },
                 ..
             } => {
-                if let Some(card) = self.core.pending_card().map(|c| (c.id, c.reversible)) {
+                if matches!(&logical_key, Key::Named(NamedKey::F8)) {
+                    if state == ElementState::Pressed && !repeat {
+                        inputs.push(HudInput::ToggleVoice);
+                    }
+                } else if self.core.voice_control_focused()
+                    && matches!(&logical_key, Key::Named(NamedKey::Enter))
+                {
+                    if state == ElementState::Pressed && !repeat {
+                        inputs.push(HudInput::Enter);
+                    }
+                } else if let Some(card) = self.core.pending_card().map(|c| (c.id, c.reversible)) {
                     // Une carte capte le clavier : Entrée maintenue valide,
                     // R refuse, Échap masque sans décider. Les caractères ne
                     // partent jamais dans la requête derrière la carte.
@@ -945,10 +1154,27 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
         }
     }
 
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {}
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(worker) = self.voice.take() {
+            worker.stop();
+        }
+    }
 }
 fn main() -> ExitCode {
-    let args = parse_args(std::env::args().skip(1));
+    let args = match parse_args(std::env::args().skip(1)) {
+        Ok(args) => args,
+        Err(error) => {
+            eprintln!("hakille-desktop: {error}");
+            return ExitCode::from(2);
+        }
+    };
+
+    if args.help {
+        println!(
+            "Hakille desktop : --show | --voice [--models-dir DOSSIER] [--voice-language auto|fr|en|…] [--voice-device NOM] [--wake-alias MOT]\nMicrophone coupé par défaut. F8 ou bouton Micro pour activer/arrêter.\n--wake-alias est répétable ; --voiceactive est un alias de --voice.\nModes de test sans microphone : --smoke, --authorized."
+        );
+        return ExitCode::SUCCESS;
+    }
 
     let event_loop = match EventLoop::<AppEvent>::with_user_event().build() {
         Ok(event_loop) => event_loop,
@@ -1015,7 +1241,7 @@ fn main() -> ExitCode {
 
     let start_visible = args.show || hotkey.is_none();
     let mut app = DesktopApp {
-        args,
+        args: args.clone(),
         core: HudApp::new(
             args.authorized,
             start_visible,
@@ -1025,6 +1251,10 @@ fn main() -> ExitCode {
         proxy,
         _hotkey: hotkey,
         ipc,
+        voice: None,
+        voice_generation: 0,
+        voice_suspended: false,
+        voice_started: false,
         window: None,
         pending_frame_at: None,
         card_hold_start: None,
@@ -1060,9 +1290,10 @@ mod tests {
             ["--show", "--authorized", "--smoke"]
                 .iter()
                 .map(|s| s.to_string()),
-        );
+        )
+        .unwrap();
         assert!(args.show && args.authorized && args.smoke);
-        let empty = parse_args(std::iter::empty::<String>());
+        let empty = parse_args(std::iter::empty::<String>()).unwrap();
         assert!(!empty.show && !empty.authorized && !empty.smoke);
     }
     #[test]
@@ -1076,5 +1307,41 @@ mod tests {
         assert_eq!(accumulate_scroll(&mut remainder, -0.5), -1);
         assert_eq!(accumulate_scroll(&mut remainder, f64::NAN), 0);
         assert_eq!(remainder, 0.0);
+    }
+    #[test]
+    fn desktop_shell_voice_flags_are_explicit_and_missing_values_fail() {
+        let args = parse_args(
+            [
+                "--voice",
+                "--models-dir",
+                "custom",
+                "--voice-language",
+                "fr",
+                "--voice-device",
+                "USB",
+                "--wake-alias",
+                "Akil",
+                "--wake-alias",
+                "Akhil",
+            ]
+            .map(str::to_owned),
+        )
+        .unwrap();
+        assert!(args.voice && args.show);
+        assert_eq!(args.models_dir, Some(PathBuf::from("custom")));
+        assert_eq!(args.voice_language.as_deref(), Some("fr"));
+        assert_eq!(args.voice_device.as_deref(), Some("USB"));
+        assert_eq!(args.wake_aliases, ["Akil", "Akhil"]);
+        assert!(!parse_args(["--show".to_owned()]).unwrap().voice);
+        assert!(parse_args(["--voice-language".to_owned(), "auto".to_owned()]).is_ok());
+        for args in [
+            vec!["--voice", "--smoke"],
+            vec!["--voice", "--authorized"],
+            vec!["--voice-device"],
+            vec!["--voice-language", "--show"],
+            vec!["--voice-language", "francais"],
+        ] {
+            assert!(parse_args(args.into_iter().map(str::to_owned)).is_err());
+        }
     }
 }

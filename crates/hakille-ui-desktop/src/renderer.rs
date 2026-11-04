@@ -596,6 +596,51 @@ const BODY_BASELINE: f32 = 40.0;
 /// anneau de présence 2 px + halo interpolé, texte body 16 (baseline 40 px)
 /// et caption 13 px secondaire à droite (coût). Braise réservée décision
 /// requise / urgence / validation (spec §3).
+/// Cible visible du contrôle micro, partagée avec le hit-test et AccessKit.
+pub fn voice_button_rect() -> Rect {
+    Rect::new(HUD_WIDTH as f32 - 182.0, 12.0, 168.0, 40.0).rounded(8.0)
+}
+
+pub fn append_voice_indicator(scene: &mut Scene, state: &crate::app::VoiceState, focused: bool) {
+    use crate::app::VoiceState;
+    let p = hud_palette(scene.theme_dark);
+    let rect = voice_button_rect();
+    let active = matches!(
+        state,
+        VoiceState::Listening
+            | VoiceState::Speech
+            | VoiceState::WakeDetected
+            | VoiceState::Transcribing
+    );
+    let color = if matches!(state, VoiceState::Error(_)) {
+        Color::from_hex(p.braise)
+    } else if active {
+        Color::from_hex(p.lueur)
+    } else {
+        Color::from_hex(p.text2)
+    };
+    scene.fill(
+        rect,
+        Color::from_hex(if focused { p.lueur } else { p.line }),
+    );
+    scene.fill(
+        Rect::new(rect.x + 1.0, rect.y + 1.0, rect.w - 2.0, rect.h - 2.0).rounded(7.0),
+        Color::from_hex(p.surface1),
+    );
+    scene.text(rect.x + 8.0, rect.y + 16.0, 12.0, color, state.label());
+    scene.text(
+        rect.x + 8.0,
+        rect.y + 31.0,
+        10.0,
+        Color::from_hex(p.text2),
+        if matches!(state, VoiceState::Inactive | VoiceState::Error(_)) {
+            "F8 · Activer le microphone"
+        } else {
+            "F8 · Arrêter le microphone"
+        },
+    );
+}
+
 pub fn hud_scene(snap: &hakille_ui_model::StableSnapshot, theme_dark: bool) -> Scene {
     let p = hud_palette(theme_dark);
     let grid = ty::LAYOUT_GRID_PT_BASE as f32;
@@ -661,7 +706,7 @@ pub fn hud_scene(snap: &hakille_ui_model::StableSnapshot, theme_dark: bool) -> S
 
     // Texte body + caption secondaire à droite (coût), ellipse sans débordement.
     let text_x = bar.x + grid * 13.0;
-    let right = bar.x + bar.w - grid * 3.0;
+    let right = voice_button_rect().x - grid * 2.0;
     let body_max = (right - text_x).max(0.0);
     let caption = if snap.hud_validation {
         let cost = snap.hud_validation_cost.trim();
@@ -1433,6 +1478,67 @@ mod tests {
         assert_eq!(lines.concat(), original);
         for line in lines {
             assert!(measure_ui_text(&line, 14.0) <= 120.01);
+        }
+    }
+    #[test]
+    fn renderer_voice_control_preserves_query_and_cost_without_overlap() {
+        use crate::app::VoiceState;
+        let mut snap = snapshot_with_state(0, false);
+        snap.hud_query = "une longue requête avec des accents ".repeat(15);
+        snap.cost_level = 2;
+        snap.cost_total_cents = 100;
+        snap.cost_budget_cents = 500;
+        let mut scene = hud_scene(&snap, true);
+        let rect = voice_button_rect();
+        for cmd in &scene.cmds {
+            if let DrawCmd::GlyphRun {
+                x,
+                text,
+                size,
+                weight,
+                ..
+            } = cmd
+            {
+                assert!(
+                    *x + measure_ui_text_weighted(text, *size, *weight) <= rect.x,
+                    "texte derrière le microphone : {text}"
+                );
+            }
+        }
+        assert!(
+            scene
+                .cmds
+                .iter()
+                .any(|cmd| matches!(cmd, DrawCmd::GlyphRun { text, .. } if text.contains("EUR")))
+        );
+        for state in [
+            VoiceState::Inactive,
+            VoiceState::Starting,
+            VoiceState::Listening,
+            VoiceState::Speech,
+            VoiceState::WakeDetected,
+            VoiceState::Transcribing,
+            VoiceState::Processing,
+            VoiceState::Error("absent".into()),
+        ] {
+            scene.cmds.clear();
+            append_voice_indicator(&mut scene, &state, false);
+            for cmd in &scene.cmds {
+                if let DrawCmd::GlyphRun {
+                    x,
+                    text,
+                    size,
+                    weight,
+                    ..
+                } = cmd
+                {
+                    assert!(
+                        *x >= rect.x
+                            && *x + measure_ui_text_weighted(text, *size, *weight)
+                                <= rect.x + rect.w
+                    );
+                }
+            }
         }
     }
 }

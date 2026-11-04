@@ -5,12 +5,16 @@
 //! livre des blocs mono `f32` à 16 kHz (format attendu par le pipeline voix/STT).
 
 pub mod capture;
+pub mod diagnostics;
 pub mod playback;
 pub mod resample;
 
 use cpal::traits::HostTrait;
 
 pub use capture::Capture;
+pub use diagnostics::{
+    CaptureConfig, CaptureStatus, InputDeviceDiagnostic, input_device_diagnostics,
+};
 pub use playback::{PlaybackHandle, play_pcm, play_pcm_async};
 pub use resample::{downmix_to_mono, resample_linear};
 

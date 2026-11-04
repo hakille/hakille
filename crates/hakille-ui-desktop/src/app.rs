@@ -39,6 +39,10 @@ pub const CONSULT_LIMIT: usize = 50;
 pub enum HudInput {
     /// Appui sur le hotkey global : bascule la visibilité.
     HotkeyToggle,
+    /// Activation explicite du microphone (F8, clic ou AccessKit).
+    ToggleVoice,
+    /// Focus accessible du contrôle micro, sans activer la capture.
+    FocusVoice,
     /// Caractère saisi (hors caractères de contrôle).
     Char(char),
     /// IME : texte commité d'un coup.
@@ -69,6 +73,10 @@ pub enum HudInput {
 /// Effets demandés à l'hôte winit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HudAction {
+    /// Démarrage/arrêt non bloquant du service vocal par l’hôte.
+    SetVoiceEnabled {
+        enabled: bool,
+    },
     /// Rend la fenêtre visible et lui donne le focus clavier.
     ShowWindow,
     /// Masque la fenêtre → retour veille (0 frame).
@@ -210,6 +218,7 @@ pub enum PointerTarget {
     None,
     /// Zone de déplacement de la fenêtre.
     Drag,
+    VoiceToggle,
     /// Bouton « Valider » de la carte d'action.
     CardValidate,
     /// Bouton « Modifier » de la carte d'action.
@@ -218,8 +227,59 @@ pub enum PointerTarget {
     CardReject,
 }
 
+/// État confirmé du service vocal ; `Starting` ne signifie pas que le micro écoute.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum VoiceState {
+    #[default]
+    Inactive,
+    Starting,
+    Listening,
+    Speech,
+    WakeDetected,
+    Transcribing,
+    Processing,
+    Error(String),
+}
+
+impl VoiceState {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Inactive => "Micro coupé",
+            Self::Starting => "Préparation vocale",
+            Self::Listening => "Écoute : dites Hakille",
+            Self::Speech => "Parole détectée",
+            Self::WakeDetected => "Hakille détecté",
+            Self::Transcribing => "Transcription locale",
+            Self::Processing => "Micro en pause",
+            Self::Error(_) => "Erreur microphone",
+        }
+    }
+
+    pub fn description(&self) -> String {
+        match self {
+            Self::Error(error) => format!("Microphone arrêté : {error}. F8 pour réessayer."),
+            Self::Inactive => {
+                "Microphone coupé. F8 pour activer l’écoute locale de Hakille.".into()
+            }
+            Self::Starting => "Préparation du modèle et du microphone en cours.".into(),
+            Self::Listening => {
+                "Microphone actif. Dites Hakille puis votre demande. F8 pour arrêter.".into()
+            }
+            Self::Speech => "Parole détectée ; analyse locale en cours.".into(),
+            Self::WakeDetected => "Hakille reconnu. Vous pouvez dire votre demande.".into(),
+            Self::Transcribing => "Transcription locale de l’audio en cours.".into(),
+            Self::Processing => {
+                "Microphone suspendu pendant le traitement ou la décision en cours.".into()
+            }
+        }
+    }
+}
+
 /// Machine à états du shell HUD desktop.
 pub struct HudApp {
+    voice_enabled: bool,
+    voice_focused: bool,
+    voice_state: VoiceState,
     pub visible: bool,
     pub hud: EphemeralHud,
     pub presence: PresenceIndicator,
@@ -288,6 +348,9 @@ impl HudApp {
             hud.open_prompt();
         }
         Self {
+            voice_enabled: false,
+            voice_focused: false,
+            voice_state: VoiceState::Inactive,
             visible,
             hud,
             presence: PresenceIndicator::new(),
@@ -318,6 +381,127 @@ impl HudApp {
             panel: PanelKind::None,
             panel_offset: 0,
         }
+    }
+
+    pub fn voice_enabled(&self) -> bool {
+        self.voice_enabled
+    }
+
+    pub fn voice_control_focused(&self) -> bool {
+        self.voice_focused
+    }
+
+    pub fn voice_state(&self) -> &VoiceState {
+        &self.voice_state
+    }
+
+    pub fn voice_capture_suspended(&self) -> bool {
+        self.pending_query.is_some()
+            || self.pending_card.is_some()
+            || !self.queued_queries.is_empty()
+            || self.presence.state() == hakille_ui::PresenceState::Speaking
+    }
+
+    /// Événement réellement émis par le worker, jamais une activité inventée.
+    pub fn on_voice_state(&mut self, state: VoiceState) -> Vec<HudAction> {
+        if !self.voice_enabled && !matches!(state, VoiceState::Inactive) {
+            return Vec::new();
+        }
+        let error_notice = if let VoiceState::Error(error) = &state {
+            self.voice_enabled = false;
+            Some(format!("Microphone : {error}"))
+        } else {
+            None
+        };
+        if self.voice_capture_suspended()
+            && !matches!(
+                state,
+                VoiceState::Processing | VoiceState::Error(_) | VoiceState::Inactive
+            )
+        {
+            return Vec::new();
+        }
+        let wake = state == VoiceState::WakeDetected || error_notice.is_some();
+        self.voice_state = state;
+        let mut actions = Vec::new();
+        if wake && !self.visible {
+            self.show();
+            actions.push(HudAction::ShowWindow);
+            if self.panel != PanelKind::None {
+                actions.push(self.resize_action(true));
+            }
+        }
+        if let Some(notice) = error_notice {
+            self.notice = Some(notice);
+            if self.pending_card.is_none() {
+                self.panel = PanelKind::Response;
+                self.panel_offset = 0;
+                actions.push(self.resize_action(true));
+            }
+        }
+        if self.visible {
+            actions.push(HudAction::Redraw);
+        }
+        actions
+    }
+
+    /// La voix soumet du texte via le même pont ; elle ne décide jamais une carte.
+    pub fn on_voice_command(&mut self, text: String) -> Vec<HudAction> {
+        if !self.voice_enabled || self.voice_capture_suspended() {
+            return Vec::new();
+        }
+        let query = text.trim();
+        if query.is_empty() || query.len() > MAX_QUERY_BYTES || query.chars().any(char::is_control)
+        {
+            self.notice = Some(format!(
+                "Demande vocale refusée : texte non vide, sans caractères de contrôle, limité à {MAX_QUERY_BYTES} octets."
+            ));
+            return if self.visible {
+                vec![HudAction::Redraw]
+            } else {
+                Vec::new()
+            };
+        }
+        // Ne pas remplacer un brouillon saisi au clavier.
+        if matches!(self.hud.state(), HudState::Prompting { query, .. } if !query.trim().is_empty())
+        {
+            self.notice =
+                Some("Demande vocale non envoyée : terminez ou effacez la saisie en cours.".into());
+            return if self.visible {
+                vec![HudAction::Redraw]
+            } else {
+                Vec::new()
+            };
+        }
+        let mut actions = Vec::new();
+        if !self.visible {
+            self.show();
+            actions.push(HudAction::ShowWindow);
+        }
+        self.voice_state = VoiceState::Processing;
+        actions.push(HudAction::Submit {
+            query: query.to_owned(),
+        });
+        actions
+    }
+
+    fn toggle_voice(&mut self) -> Vec<HudAction> {
+        if matches!(self.voice_state, VoiceState::Error(_)) {
+            self.notice = None;
+        }
+        self.voice_enabled = !self.voice_enabled;
+        self.voice_state = if self.voice_enabled {
+            VoiceState::Starting
+        } else {
+            VoiceState::Inactive
+        };
+        let mut actions = vec![HudAction::SetVoiceEnabled {
+            enabled: self.voice_enabled,
+        }];
+        if self.visible {
+            actions.push(HudAction::Redraw);
+        }
+        actions
     }
 
     /// Snapshot immuable consommé par le renderer et l'arbre AccessKit.
@@ -379,6 +563,9 @@ impl HudApp {
     /// - le panneau de consultation n'est déplaçable que par son en-tête ;
     /// - le HUD compact est intégralement une poignée de déplacement.
     pub fn pointer_target(&self, x: f32, y: f32) -> PointerTarget {
+        if self.visible && crate::renderer::voice_button_rect().contains(x, y) {
+            return PointerTarget::VoiceToggle;
+        }
         let panel_top = HUD_HEIGHT as f32 + crate::renderer::LAYOUT_GRID;
         let theme_dark = !self.snapshot().light_mode;
         if self.pending_card.is_some() {
@@ -422,10 +609,22 @@ impl HudApp {
         let snap = self.snapshot();
         let dark = !snap.light_mode;
         if let Some(card) = &self.pending_card {
-            return card_scene(&snap, card, self.data_notice.as_deref(), dark);
+            let mut scene = card_scene(&snap, card, self.data_notice.as_deref(), dark);
+            crate::renderer::append_voice_indicator(
+                &mut scene,
+                &self.voice_state,
+                self.voice_focused,
+            );
+            return scene;
         }
         if self.panel != PanelKind::None {
-            return consult_scene(&snap, &self.consult_page(), dark);
+            let mut scene = consult_scene(&snap, &self.consult_page(), dark);
+            crate::renderer::append_voice_indicator(
+                &mut scene,
+                &self.voice_state,
+                self.voice_focused,
+            );
+            return scene;
         }
         let mut scene = hud_scene(&snap, dark);
         if let Some(aux) = self.aux_notice() {
@@ -443,8 +642,14 @@ impl HudApp {
             } else {
                 Color::from_hex(if dark { 0xA3A9B6 } else { 0x4A5060 })
             };
-            scene.text(56.0, 56.0, 12.0, color, aux.text);
+            let text = crate::text::ellipsize(
+                &aux.text,
+                crate::renderer::voice_button_rect().x - 64.0,
+                |text| crate::renderer::measure_ui_text(text, 12.0),
+            );
+            scene.text(56.0, 56.0, 12.0, color, text);
         }
+        crate::renderer::append_voice_indicator(&mut scene, &self.voice_state, self.voice_focused);
         scene
     }
 
@@ -677,8 +882,22 @@ impl HudApp {
                     )],
                 };
                 ConsultView {
-                    title: "Réponse du démon".into(),
-                    subtitle: if self.pending_query.is_some() {
+                    title: if self
+                        .notice
+                        .as_deref()
+                        .is_some_and(|notice| notice.starts_with("Microphone :"))
+                    {
+                        "Microphone indisponible".into()
+                    } else {
+                        "Réponse du démon".into()
+                    },
+                    subtitle: if self
+                        .notice
+                        .as_deref()
+                        .is_some_and(|notice| notice.starts_with("Microphone :"))
+                    {
+                        "Corrigez la cause puis appuyez sur F8 pour réessayer.".into()
+                    } else if self.pending_query.is_some() {
                         "Requête en cours…".into()
                     } else {
                         "Dernière réponse reçue".into()
@@ -732,6 +951,9 @@ impl HudApp {
 
     /// Traite une entrée et renvoie les effets pour l'hôte.
     pub fn handle(&mut self, input: HudInput) -> Vec<HudAction> {
+        if self.visible && self.voice_focused && input == HudInput::Enter {
+            return self.toggle_voice();
+        }
         // Une carte ouverte est un état de décision : la frappe ne doit ni
         // modifier la requête ni envoyer un tour par accident.
         if self.pending_card.is_some()
@@ -756,10 +978,17 @@ impl HudApp {
         }
         match input {
             HudInput::HotkeyToggle => self.toggle_visibility(),
+            HudInput::ToggleVoice => self.toggle_voice(),
+            HudInput::FocusVoice => {
+                let actions = self.handle(HudInput::FocusQuery);
+                self.voice_focused = true;
+                actions
+            }
             HudInput::Char(c) => {
                 if !self.visible || c.is_control() {
                     return Vec::new();
                 }
+                self.voice_focused = false;
                 self.ensure_prompt();
                 if self.query_len() + c.len_utf8() <= MAX_QUERY_BYTES {
                     self.hud.insert_char(c);
@@ -772,6 +1001,7 @@ impl HudApp {
                 if !self.visible {
                     return Vec::new();
                 }
+                self.voice_focused = false;
                 self.ensure_prompt();
                 for c in text.chars() {
                     if self.query_len() + c.len_utf8() > MAX_QUERY_BYTES {
@@ -789,6 +1019,7 @@ impl HudApp {
                 if !self.visible {
                     return Vec::new();
                 }
+                self.voice_focused = false;
                 self.ensure_prompt();
                 self.hud.backspace();
                 self.notice = None;
@@ -842,6 +1073,7 @@ impl HudApp {
             HudInput::PanelEnd => self.scroll_panel(0, Some(true)),
             HudInput::Tick => self.tick(),
             HudInput::FocusQuery => {
+                self.voice_focused = false;
                 if self.visible {
                     vec![HudAction::Redraw]
                 } else {
@@ -2520,5 +2752,168 @@ mod tests {
             app.handle(HudInput::PanelEnd).is_empty(),
             "aucun défilement des décisions"
         );
+    }
+    #[test]
+    fn desktop_shell_voice_opt_in_and_late_events_never_reactivate() {
+        let mut app = shown(false);
+        assert!(!app.voice_enabled());
+        assert_eq!(app.voice_state(), &VoiceState::Inactive);
+        assert!(app.on_voice_state(VoiceState::Listening).is_empty());
+        assert!(app.on_voice_command("bonjour".into()).is_empty());
+        assert!(
+            app.handle(HudInput::ToggleVoice)
+                .contains(&HudAction::SetVoiceEnabled { enabled: true })
+        );
+        assert_eq!(app.voice_state(), &VoiceState::Starting);
+        app.on_voice_state(VoiceState::Listening);
+        assert_eq!(app.voice_state(), &VoiceState::Listening);
+        assert!(
+            app.handle(HudInput::ToggleVoice)
+                .contains(&HudAction::SetVoiceEnabled { enabled: false })
+        );
+        app.on_voice_state(VoiceState::WakeDetected);
+        assert_eq!(app.voice_state(), &VoiceState::Inactive);
+    }
+
+    #[test]
+    fn desktop_shell_voice_wake_shows_hud_without_submitting() {
+        let mut app = app(false, false);
+        app.handle(HudInput::ToggleVoice);
+        let actions = app.on_voice_state(VoiceState::Listening);
+        assert!(actions.is_empty(), "pas de frame masqué");
+        let actions = app.on_voice_state(VoiceState::WakeDetected);
+        assert!(actions.contains(&HudAction::ShowWindow));
+        assert!(actions.contains(&HudAction::Redraw));
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, HudAction::Submit { .. }))
+        );
+        assert!(app.visible);
+        assert_eq!(app.voice_state(), &VoiceState::WakeDetected);
+    }
+
+    #[test]
+    fn desktop_shell_voice_command_uses_normal_submit_and_protects_cards() {
+        let mut app = shown(false);
+        app.handle(HudInput::ToggleVoice);
+        assert_eq!(
+            app.on_voice_command("  résume ma journée  ".into()),
+            vec![HudAction::Submit {
+                query: "résume ma journée".into()
+            }]
+        );
+        app.on_submit_sent("résume ma journée".into());
+        assert!(app.voice_capture_suspended());
+        assert!(app.on_voice_command("autre demande".into()).is_empty());
+        app.on_kernel_reply(KernelToUi::HudReply {
+            response: "réponse".into(),
+            validation: None,
+        });
+        assert!(!app.voice_capture_suspended());
+        app.on_kernel_reply(KernelToUi::Presence(PresenceState::Speaking));
+        assert!(app.voice_capture_suspended());
+        assert!(app.on_voice_command("écho de la réponse".into()).is_empty());
+        app.on_kernel_reply(KernelToUi::Presence(PresenceState::Idle));
+        assert!(!app.voice_capture_suspended());
+        app.show_card(test_card(123));
+        assert!(app.voice_capture_suspended());
+        assert!(app.on_voice_command("valider".into()).is_empty());
+        assert_eq!(app.pending_card().unwrap().id, 123);
+        // F8 reste accessible pendant une décision.
+        assert!(
+            app.handle(HudInput::ToggleVoice)
+                .contains(&HudAction::SetVoiceEnabled { enabled: false })
+        );
+        app.handle(HudInput::FocusVoice);
+        let actions = app.handle(HudInput::Enter);
+        assert!(actions.contains(&HudAction::SetVoiceEnabled { enabled: true }));
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, HudAction::ApproveCard { .. }))
+        );
+        assert_eq!(app.pending_card().unwrap().id, 123);
+    }
+
+    #[test]
+    fn desktop_shell_voice_preserves_drafts_and_rejects_invalid_transcripts() {
+        let mut app = shown(false);
+        app.handle(HudInput::ToggleVoice);
+        for text in [
+            "".to_owned(),
+            "é".repeat(MAX_QUERY_BYTES),
+            "abc\ndef".to_owned(),
+        ] {
+            assert!(
+                !app.on_voice_command(text)
+                    .iter()
+                    .any(|a| matches!(a, HudAction::Submit { .. }))
+            );
+        }
+        app.handle(HudInput::ImeCommit("mon brouillon".into()));
+        assert!(
+            !app.on_voice_command("autre".into())
+                .iter()
+                .any(|a| matches!(a, HudAction::Submit { .. }))
+        );
+        assert_eq!(app.snapshot().hud_query, "mon brouillon");
+        app.on_voice_state(VoiceState::Error("Permission microphone refusée".into()));
+        assert!(!app.voice_enabled());
+        assert_eq!(app.consult_view().title, "Microphone indisponible");
+        assert!(
+            app.voice_state()
+                .description()
+                .contains("Permission microphone refusée")
+        );
+        app.handle(HudInput::ToggleVoice);
+        assert_eq!(app.voice_state(), &VoiceState::Starting);
+    }
+
+    #[test]
+    fn desktop_shell_voice_control_has_same_hit_target_in_all_panels() {
+        let mut app = shown(false);
+        let rect = crate::renderer::voice_button_rect();
+        assert_eq!(
+            app.pointer_target(rect.x + 2.0, rect.y + 2.0),
+            PointerTarget::VoiceToggle
+        );
+        app.handle(HudInput::ShowMemory);
+        assert_eq!(
+            app.pointer_target(rect.x + 2.0, rect.y + 2.0),
+            PointerTarget::VoiceToggle
+        );
+        app.show_card(test_card(2));
+        assert_eq!(
+            app.pointer_target(rect.x + 2.0, rect.y + 2.0),
+            PointerTarget::VoiceToggle
+        );
+        let scene = app.scene();
+        assert!(
+            scene
+                .cmds
+                .iter()
+                .any(|cmd| matches!(cmd, DrawCmd::GlyphRun { text, .. } if text == "Micro coupé"))
+        );
+    }
+    #[test]
+    fn a11y_voice_focus_never_opens_microphone_and_error_is_visible() {
+        let mut app = app(false, false);
+        let actions = app.handle(HudInput::FocusVoice);
+        assert!(actions.contains(&HudAction::ShowWindow));
+        assert!(app.voice_control_focused());
+        assert!(!app.voice_enabled());
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, HudAction::SetVoiceEnabled { .. }))
+        );
+        app.handle(HudInput::ToggleVoice);
+        app.handle(HudInput::HotkeyToggle);
+        assert!(!app.visible);
+        let actions = app.on_voice_state(VoiceState::Error("Microphone absent".into()));
+        assert!(actions.contains(&HudAction::ShowWindow));
+        assert!(app.notice.as_ref().unwrap().contains("Microphone absent"));
+        assert!(!app.voice_enabled());
     }
 }

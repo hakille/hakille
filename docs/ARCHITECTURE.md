@@ -77,7 +77,7 @@ Hakille est structuré selon une hiérarchie stricte en 6 couches hermétiques. 
                                          ▼
 +===================================================================================+
 |                         COUCHE 2 : PERCEPTION MULTIMODALE                         |
-|  - Détection VAD (Silero) & Mot d'activation openWakeWord ("Dis Hakille")          |
+|  - Silero VAD → Whisper multilingue → activation lexicale Hakille          |
 |  - Transcription SenseVoice-Small (234M, non-autorégressif, ASR, émotions, bruits)|
 |  - Diarisation continue Nemotron-3 (100M, Sortformer, 8 locuteurs)                |
 |  - Biométrie vocale déterministe CAM++ (7.2M, 192-d)                              |
@@ -118,9 +118,9 @@ Le monorepo Cargo regroupe 31 crates modulaires (+ 5 crates d'agents métier dé
 | **`hakille-substrate-redox`** | [`../crates/hakille-substrate-redox`](../crates/hakille-substrate-redox) | Implémentation Redox OS micro-noyau : gestionnaire de schemes natifs (`chan:`, `orbital:`, `disk:`, `sys:`, `audio:`), sérialisation `RedoxPacket`, table de capacités microkernel. | Couche 1 |
 | **`hakille-substrate-mobile`** | [`../crates/hakille-substrate-mobile`](../crates/hakille-substrate-mobile) | Implémentation mobile (Android/iOS) : synchronisation d'ombre (*Shadow sync*) avec horloge de Lamport, sandbox de stockage scopé, machine à états d'économie de batterie (Doze). | Couche 1 |
 | **`hakille-substrate-web`** | [`../crates/hakille-substrate-web`](../crates/hakille-substrate-web) | Implémentation WebAssembly : bridge Web Audio avec rééchantillonnage linéaire 48kHz -> 16kHz, tampon circulaire anti-overrun, capture Canvas ImageData, détection WebGPU. | Couche 1 |
-| **`hakille-perception`** | [`../crates/hakille-perception`](../crates/hakille-perception) | Ingestion sensorielle : capture audio 16kHz, Silero VAD, openWakeWord, SenseVoice-Small ASR, CAM++ speaker ID, Nemotron-3 diarisation, CameraPipeline et WorldModel spatial continu. | Couche 2 |
+| **`hakille-perception`** | [`../crates/hakille-perception`](../crates/hakille-perception) | Ingestion sensorielle : capture audio 16kHz, Silero VAD, activation après ASR, SenseVoice-Small ASR, CAM++ speaker ID et clustering local (Nemotron absent), CameraPipeline et WorldModel spatial continu. | Couche 2 |
 | **`hakille-audio`** | [`../crates/hakille-audio`](../crates/hakille-audio) | I/O audio temps réel `cpal` : capture micro, downmix mono et rééchantillonnage vers 16 kHz par blocs de 10 ms, lecture PCM. Erreur explicite si périphérique indisponible — jamais de simulation. | Couche 2 |
-| **`hakille-voice`** | [`../crates/hakille-voice`](../crates/hakille-voice) | Moteur vocal : RVQ Mimi nearest-L2 sur codebooks réels (12,5 Hz), TTS formantique Klatt (`FormantTts`, 24 kHz), détecteur d'interruption (Barge-in). Pas de décodeur neural Mimi complet ; `MoshiEngine::is_simulated()` vaut `true`. | Couche 2 |
+| **`hakille-voice`** | [`../crates/hakille-voice`](../crates/hakille-voice) | Écoute opt-in : CPAL → Silero → Whisper → activation lexicale, partagée entre CLI et HUD. Codec Mimi neuronal complet, TTS formantique Klatt et Barge-in. Le modèle de dialogue Moshi reste absent (`is_simulated() = true`). | Couche 2 |
 | **`hakille-inference`** | [`../crates/hakille-inference`](../crates/hakille-inference) | Runtimes neuronaux : parseur Candle Safetensors, inspecteur ONNX Runtime (`ort`), parseur binaire streaming GGUF v3, ModelRegistry avec éviction LRU VRAM et provisioner d'artefacts. | Transverse |
 | **`hakille-ipc`** | [`../crates/hakille-ipc`](../crates/hakille-ipc) | Contrat IPC local : named pipe Windows et socket Unix, messages délimités et gestion de cycle de vie ; aucun transport TCP exposé. | Transverse |
 | **`hakille-kernel`** | [`../crates/hakille-kernel`](../crates/hakille-kernel) | Cerveau cognitif : `CognitiveFabric`, routeur System 1/2, `WorkingMemory`, `DeliberatePlanner`, `SelfModel`, `GraphCuriosityScanner`, `DryRunSimulator`, budgets de latence par étage. | Couche 3 |
@@ -190,14 +190,14 @@ Le schéma suivant illustre l'arbre d'appels et de compilation entre les briques
 
 ## 5. Flux de Données et Cycle de Vie d'une Interaction
 
-Une requête cognitive suit un cycle rigoureux garantissant réactivité sub-seconde, sécurité par capabilities et traçabilité inviolable :
+Le diagramme suivant représente le cycle architectural cible. Le chemin vocal actuellement raccordé est décrit dans [ACTIVATION_VOCALE.md](ACTIVATION_VOCALE.md) ; il ne garantit pas une réponse en moins d’une seconde et ne réalise pas d’authentification biométrique implicite.
 
 ```
 Utilisateur        Perception           Kernel            Mémoire           Agents / OS          Audit
     │                  │                   │                 │                   │                 │
     │── Audio 16kHz ──►│                   │                 │                   │                 │
     │   "Dis Hakille"   │── VAD + ASR ─────►│                 │                   │                 │
-    │                  │   (SenseVoice)    │                 │                   │                 │
+    │                  │   (Whisper)       │                 │                   │                 │
     │                  │── Biométrie ─────►│                 │                   │                 │
     │                  │   (CAM++ 192d)    │                 │                   │                 │
     │                  │                   │── Authentifier ─┼───────────────────┼────────────────►│
@@ -225,12 +225,12 @@ Utilisateur        Perception           Kernel            Mémoire           Age
     │    Full-Duplex   │                   │                 │                   │                 │
 ```
 
-### Étape 1 : Ingestion Perceptive & Biométrie Continue
-1. Le flux microphone (16 kHz, PCM 16-bit) est ingéré par `hakille-perception`.
-2. Le `VoiceActivityDetector` (Silero VAD) filtre le bruit et active `WakeWordDetector` ("Dis Hakille").
-3. `SenseVoiceSmall` réalise la transcription phonétique, l'analyse d'émotions et la détection d'événements ambiants ; la latence dépend du CPU et n'est pas garantie sous 50 ms.
-4. Simultanément, la diarisation locale utilise un clustering d'embeddings CAM++ (Nemotron n'est pas provisionné) et `CAM++` génère un vecteur de 192 dimensions.
-5. `hakille-auth` compare ce vecteur à des gabarits locaux et génère un jeton Biscuit ; l'attestation de plateforme est une signature de développement, pas une preuve TPM/Secure Enclave.
+### Étape 1 : Ingestion vocale et activation explicite
+1. Après activation utilisateur, `hakille-audio` livre du PCM mono f32 à 16 kHz au worker `hakille_voice::input`.
+2. Silero segmente la parole ; le VAD ne reconnaît aucun mot. Les segments tronqués à la limite de 12 secondes sont refusés.
+3. Whisper tiny multilingue transcrit localement avec l’indice lexical natif « Hakille ». Le contrôleur `WakeActivation` recherche ensuite un alias explicite au début de l’énoncé ou après un vocatif. « Hakille » seul arme la phrase suivante.
+4. La commande emprunte le parcours normal du CLI ou du HUD. Le microphone est fermé pendant l’ASR et suspendu pendant le traitement ; les résultats annulés ne sont pas soumis.
+5. SenseVoice, CAM++ et la diarisation demeurent des moteurs distincts. Cette activation ne vérifie aucune identité et ne génère pas de permission ; les capabilities et cartes d’approbation restent nécessaires.
 
 ### Étape 2 : Résolution Mémorielle & Contexte
 1. L'intention transcrite est envoyée à `hakille-kernel::CognitiveFabric`.

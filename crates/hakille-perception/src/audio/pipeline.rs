@@ -6,10 +6,8 @@
 //!    score les fenêtres 512 réelles — modèle absent à la construction ->
 //!    [`VoicePipelineError::ModelMissing`] LOUD, jamais de faux VAD ;
 //! 3. machine d'état `Idle -> Listening -> Transcribing` avec hangover ;
-//! 4. wake word : détecteur EXISTANT [`WakeWordDetector::process_gated`]
-//!    (chemin énergétique VAD-gaté — **openWakeWord n'est pas provisionné**,
-//!    voir `wake_word.rs` : aucun checkpoint `openwakeword_*.onnx` dans
-//!    `models/`, l'auto-bascule `ort` s'active si l'utilisateur en provisionne un) ;
+//! 4. aucune reconnaissance de mot-clé depuis l'énergie : l'activation
+//!    intervient après transcription dans `WakeActivation` ;
 //! 5. ASR : délégation à [`SenseVoiceSmall`] (SenseVoice-Small ONNX réel)
 //!    uniquement si `sensevoice_small.int8.onnx` + `tokens.txt` sont présents ;
 //!    sinon `push_speech_transcript()` retourne un événement `Error` explicite.
@@ -20,7 +18,7 @@
 
 use crate::audio::asr::{AsrEngine, SenseVoiceSmall};
 use crate::audio::capture::AudioChunk;
-use crate::audio::wake_word::{WakeBackendKind, WakeWordDetector};
+use crate::audio::wake_word::WakeBackendKind;
 use hakille_inference::{OrtVadSession, resolve_vad_model_path};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -58,7 +56,7 @@ pub enum VoicePipelineError {
 /// Événement émis par le pipeline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum VoiceEvent {
-    /// Mot-clé détecté (détecteur VAD-gaté existant ; openWakeWord non provisionné).
+    /// Événement historique conservé ; jamais produit par le VAD seul.
     Wake { confidence: f32 },
     /// Début de parole confirmé par le VAD réel (prob >= seuil).
     SpeechStart,
@@ -103,9 +101,10 @@ pub struct VoicePipelineConfig {
     /// Hangover en fenêtres VAD de 512 échantillons (~32 ms) après la dernière
     /// fenêtre chaude avant `SpeechEnd` (défaut 3 ≈ 96 ms).
     pub vad_hangover_windows: usize,
-    /// Mot-clé de réveil (`None` = wake désactivé). Défaut `"Dis Hakille"`.
+    /// Réglage historique conservé, sans détecteur acoustique raccordé.
+    /// Utiliser WakeActivation après ASR ; ce champ ne filtre pas la parole.
     pub wake_word: Option<String>,
-    /// Seuil de confiance du détecteur de wake (défaut 0.75).
+    /// Seuil historique validé pour compatibilité, sans effet sur l’activation.
     pub wake_threshold: f32,
     /// Pré-roll conservé avant `SpeechStart` (ms) pour ne pas tronquer l'onset
     /// (défaut 200 ms).
@@ -155,11 +154,10 @@ where
     }
 }
 
-/// Pipeline voix complet (VAD réel + wake VAD-gaté + ASR réel optionnel).
+/// Segmentation VAD réelle + ASR optionnelle, sans décision de mot-clé.
 pub struct VoicePipeline {
     config: VoicePipelineConfig,
     vad: OrtVadSession,
-    wake: Option<WakeWordDetector>,
     asr: Option<SenseVoiceSmall>,
     /// Échantillons en attente de complétion d'un bloc de 10 ms.
     pending: VecDeque<f32>,
@@ -173,12 +171,13 @@ pub struct VoicePipeline {
     utterance_start_abs: Option<u64>,
     /// Dernier énoncé finalisé (disponible pour ASR/CAM++).
     last_utterance: Option<Vec<f32>>,
+    /// Fin imposée par la durée maximale, donc phrase potentiellement coupée.
+    last_utterance_truncated: bool,
     state: PipelineState,
     hangover_left: usize,
     frames_processed: u64,
     events_emitted: u64,
     vad_error_reported: bool,
-    wake_error_reported: bool,
     embedding_hook: Option<Arc<dyn EmbeddingHook>>,
 }
 
@@ -190,9 +189,9 @@ impl VoicePipeline {
     /// - `config.models_dir = None` : résolution standard ; si aucun candidat
     ///   n'existe -> [`VoicePipelineError::ModelMissing`] avec le chemin
     ///   canonique `models/silero_vad.onnx`.
-    /// - Wake et ASR sont optionnels : leur indisponibilité n'échoue PAS la
-    ///   construction (wake : VAD partagé du même dossier ; ASR : warning +
-    ///   transcripts absents, aucun texte inventé).
+    /// - L'ancien réglage wake est conservé sans reconnaissance acoustique.
+    ///   L'ASR est optionnelle ; son absence est explicitement signalée lors
+    ///   d'une demande de transcription, sans texte inventé.
     pub fn new(config: VoicePipelineConfig) -> Result<Self, VoicePipelineError> {
         Self::validate_config(&config)?;
 
@@ -201,23 +200,11 @@ impl VoicePipeline {
             message: format!("ouverture VAD '{}' : {e}", vad_path.display()),
         })?;
 
-        let wake = match &config.wake_word {
-            Some(keyword) => {
-                let detector = match config.models_dir.as_deref() {
-                    Some(dir) => WakeWordDetector::with_models_dir(
-                        keyword.clone(),
-                        config.wake_threshold,
-                        dir,
-                    )
-                    .map_err(|e| VoicePipelineError::Inference {
-                        message: format!("construction wake detector : {e}"),
-                    })?,
-                    None => WakeWordDetector::new(keyword.clone(), config.wake_threshold),
-                };
-                Some(detector)
-            }
-            None => None,
-        };
+        if config.wake_word.is_some() {
+            tracing::warn!(
+                "VoicePipeline : mot-clé acoustique indisponible ; configuration historique ignorée, activation à effectuer après transcription ASR"
+            );
+        }
 
         let asr = if config.enable_asr {
             match Self::resolve_asr_dir(config.asr_models_dir.as_deref()) {
@@ -247,10 +234,7 @@ impl VoicePipeline {
             threshold = config.vad_threshold,
             hangover_windows = config.vad_hangover_windows,
             wake = config.wake_word.as_deref().unwrap_or("<désactivé>"),
-            wake_backend = wake
-                .as_ref()
-                .map(|w| w.backend_kind().label())
-                .unwrap_or("<aucun>"),
+            wake_backend = "<aucun détecteur acoustique>",
             asr = asr.is_some(),
             "VoicePipeline: prêt (VAD réel chargé)"
         );
@@ -265,7 +249,6 @@ impl VoicePipeline {
         Ok(Self {
             config,
             vad,
-            wake,
             asr,
             pending: VecDeque::new(),
             rolling: VecDeque::with_capacity(rolling_cap),
@@ -273,12 +256,12 @@ impl VoicePipeline {
             total_pushed: 0,
             utterance_start_abs: None,
             last_utterance: None,
+            last_utterance_truncated: false,
             state: PipelineState::Idle,
             hangover_left: 0,
             frames_processed: 0,
             events_emitted: 0,
             vad_error_reported: false,
-            wake_error_reported: false,
             embedding_hook: None,
         })
     }
@@ -479,6 +462,8 @@ impl VoicePipeline {
 
     /// Consomme un segment pour un traitement externe (ASR désactivée,
     /// stockage ou biométrie), puis laisse reprendre le flux au prochain push.
+    /// L'indicateur `last_utterance_truncated()` reste consultable après cet
+    /// appel ; le lire avant de commencer un nouveau segment ou de réinitialiser.
     pub fn take_utterance(&mut self) -> Option<Vec<f32>> {
         if self.state != PipelineState::Transcribing {
             return None;
@@ -497,24 +482,8 @@ impl VoicePipeline {
             self.rolling.pop_front();
         }
 
-        // Wake : détecteur existant VAD-gaté, actif hors écoute (Idle/Transcribing).
-        if self.state != PipelineState::Listening
-            && let Some(wake) = self.wake.as_mut()
-        {
-            let chunk = AudioChunk::new(block.to_vec(), PIPELINE_SAMPLE_RATE, 1);
-            match wake.process_gated(&chunk) {
-                Ok(d) if d.detected => events.push(VoiceEvent::Wake {
-                    confidence: d.confidence,
-                }),
-                Ok(_) => {}
-                Err(e) => {
-                    if !self.wake_error_reported {
-                        self.wake_error_reported = true;
-                        events.push(VoiceEvent::Error(format!("wake: {e}")));
-                    }
-                }
-            }
-        }
+        // L'énergie/VAD segmente la parole mais n'identifie aucun mot-clé.
+        // L'activation appartient au contrôleur après transcription ASR.
 
         // VAD réel : fenêtres 512 complétées par ce bloc.
         let windows = match self.vad.process_stream(block) {
@@ -544,6 +513,7 @@ impl VoicePipeline {
             let max_samples =
                 (self.config.max_utterance_seconds * PIPELINE_SAMPLE_RATE as f32) as u64;
             if self.total_pushed.saturating_sub(start) > max_samples {
+                self.last_utterance_truncated = true;
                 self.finalize_utterance(events);
             }
         }
@@ -573,6 +543,7 @@ impl VoicePipeline {
     }
 
     fn begin_utterance(&mut self) {
+        self.last_utterance_truncated = false;
         self.state = PipelineState::Listening;
         self.hangover_left = self.config.vad_hangover_windows;
         let pre_roll_samples =
@@ -626,6 +597,14 @@ impl VoicePipeline {
         self.last_utterance.as_deref()
     }
 
+    /// Vrai si la durée maximale a forcé la fin du dernier énoncé. Une telle
+    /// phrase ne doit pas être acceptée comme une commande vocale complète.
+    /// Conservé après `take_utterance`, remis à faux au prochain début de
+    /// segment ou par `reset_audio`.
+    pub fn last_utterance_truncated(&self) -> bool {
+        self.last_utterance_truncated
+    }
+
     /// Forwards VAD `ort` réellement exécutés (preuve de chaînage réel).
     pub fn vad_forward_calls(&self) -> u64 {
         self.vad.forward_calls()
@@ -636,9 +615,27 @@ impl VoicePipeline {
         self.vad.model_path()
     }
 
-    /// Backend du détecteur de wake (`None` si wake désactivé).
+    /// Aucun détecteur acoustique de mot-clé n'est raccordé, même si le
+    /// champ de configuration historique `wake_word` est renseigné.
     pub fn wake_backend(&self) -> Option<WakeBackendKind> {
-        self.wake.as_ref().map(|w| w.backend_kind())
+        None
+    }
+
+    /// Abandonne les échantillons et l'énoncé en attente lors d'une pause ou
+    /// reprise du microphone. La session ONNX est conservée mais son état
+    /// récurrent est remis à zéro ; aucun ancien audio ne traverse la reprise.
+    /// Les compteurs cumulés restent disponibles pour l'observabilité.
+    pub fn reset_audio(&mut self) {
+        self.vad.reset_state();
+        self.pending.clear();
+        self.rolling.clear();
+        self.total_pushed = 0;
+        self.utterance_start_abs = None;
+        self.last_utterance = None;
+        self.last_utterance_truncated = false;
+        self.state = PipelineState::Idle;
+        self.hangover_left = 0;
+        self.vad_error_reported = false;
     }
 
     /// `true` si un moteur ASR réel est chargé (modèle SenseVoice présent).
@@ -812,6 +809,86 @@ mod tests {
         assert_eq!(pipeline.vad.forward_calls(), calls);
     }
 
+    #[test]
+    fn reset_audio_discards_stale_audio_and_keeps_loaded_vad() {
+        let Some(mut pipeline) = test_pipeline(None, false) else {
+            eprintln!("SKIP reset_audio : modèle Silero absent");
+            return;
+        };
+        pipeline.push_audio(&[0.0; 777]);
+        let forwards = pipeline.vad_forward_calls();
+        let frames = pipeline.frames_processed();
+        assert!(forwards > 0);
+        pipeline.last_utterance = Some(vec![0.7; 99]);
+        pipeline.last_utterance_truncated = true;
+        pipeline.utterance_start_abs = Some(50);
+        pipeline.state = PipelineState::Transcribing;
+        pipeline.hangover_left = 3;
+        pipeline.reset_audio();
+        assert_eq!(pipeline.state(), PipelineState::Idle);
+        assert_eq!(pipeline.vad.pending_carry_len(), 0);
+        assert!(pipeline.pending.is_empty() && pipeline.rolling.is_empty());
+        assert!(pipeline.last_utterance().is_none());
+        assert!(!pipeline.last_utterance_truncated());
+        assert!(pipeline.utterance_start_abs.is_none());
+        assert_eq!(pipeline.hangover_left, 0);
+        assert_eq!(pipeline.total_pushed, 0);
+        assert_eq!(pipeline.frames_processed(), frames);
+        assert_eq!(pipeline.vad_forward_calls(), forwards);
+        assert!(pipeline.push_audio(&[0.0; 640]).is_empty());
+        assert!(pipeline.vad_forward_calls() > forwards);
+    }
+
+    #[test]
+    fn real_vad_forced_duration_marks_truncated_utterance_after_take() {
+        let Some(dir) = workspace_vad_dir() else {
+            eprintln!("SKIP troncature : modèle Silero absent");
+            return;
+        };
+        let mut pipeline = VoicePipeline::new(VoicePipelineConfig {
+            models_dir: Some(dir),
+            wake_word: None,
+            enable_asr: false,
+            max_utterance_seconds: 0.1,
+            pre_roll_ms: 0,
+            vad_hangover_windows: 25,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(!pipeline.last_utterance_truncated());
+        let mut signal = silence(512.0 / 16_000.0);
+        signal.extend_from_slice(&voiced_burst_400ms());
+        signal.extend_from_slice(&silence(0.5));
+        let events = pipeline.push_audio(&signal);
+        assert!(pipeline.vad_forward_calls() > 0);
+        assert!(events.iter().any(|e| matches!(e, VoiceEvent::SpeechStart)));
+        assert!(events.iter().any(|e| matches!(e, VoiceEvent::SpeechEnd)));
+        assert!(pipeline.last_utterance_truncated());
+        let utterance = pipeline.take_utterance().expect("segment borné disponible");
+        assert!(!utterance.is_empty());
+        assert!(
+            pipeline.last_utterance_truncated(),
+            "flag conservé après consommation"
+        );
+        pipeline.reset_audio();
+        assert!(!pipeline.last_utterance_truncated());
+    }
+
+    #[test]
+    fn configured_legacy_keyword_cannot_turn_speech_into_wake() {
+        let Some(mut pipeline) = test_pipeline(Some("Hakille"), false) else {
+            eprintln!("SKIP wake négatif : modèle Silero absent");
+            return;
+        };
+        let mut signal = silence(512.0 / 16_000.0);
+        signal.extend_from_slice(&voiced_burst_400ms());
+        signal.extend_from_slice(&silence(0.5));
+        let events = pipeline.push_audio(&signal);
+        assert!(events.iter().any(|e| matches!(e, VoiceEvent::SpeechStart)));
+        assert!(!events.iter().any(|e| matches!(e, VoiceEvent::Wake { .. })));
+        assert_eq!(pipeline.wake_backend(), None);
+    }
+
     /// Silence pur (bruit nul) -> AUCUN `SpeechStart` (seuil VAD par défaut
     /// 0.5 ; probabilité Silero mesurée sur silence ≈ 0.0005).
     #[test]
@@ -874,6 +951,10 @@ mod tests {
             "wake désactivé: aucun événement Wake attendu"
         );
         assert_eq!(pipeline.state(), PipelineState::Transcribing);
+        assert!(
+            !pipeline.last_utterance_truncated(),
+            "fin naturelle non tronquée"
+        );
         let utterance = pipeline
             .last_utterance()
             .expect("énoncé finalisé disponible");

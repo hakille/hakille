@@ -1,3 +1,4 @@
+pub mod activation;
 pub mod asr;
 pub mod capture;
 pub mod diarization;
@@ -6,6 +7,7 @@ pub mod speaker_id;
 pub mod vad;
 pub mod wake_word;
 
+pub use activation::*;
 pub use asr::*;
 pub use capture::*;
 pub use diarization::*;

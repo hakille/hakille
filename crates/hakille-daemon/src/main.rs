@@ -10,10 +10,7 @@ use hakille_kernel::{
 use hakille_metrics::{
     BoundedInitiativeTracker, ContinuityTracker, GeneralityTracker, TaskDomain, ValuesDriftDetector,
 };
-use hakille_perception::audio::SenseVoiceSmall;
-use hakille_perception::{
-    AsrEngine, AudioChunk, CameraPipeline, VoiceActivityDetector, WakeWordDetector, WorldModel,
-};
+use hakille_perception::{CameraPipeline, WorldModel};
 use hakille_substrate::{CameraConfig, CameraFacing, CameraStreamHandle, Compute, Substrate};
 #[cfg(target_os = "windows")]
 use hakille_substrate_windows::WindowsScreenCapturer;
@@ -24,6 +21,7 @@ use hakille_ui::{
     PlatformAdapter, PresenceIndicator, PresenceState, PrimaryModality, SilenceBudgetTracker,
     UrgencyLevel, VisualAuditViewer,
 };
+use hakille_voice::input::{VoiceInputEvent, VoiceInputHandle};
 use hakille_voice::{BargeInDetector, FormantTts};
 #[cfg(target_os = "windows")]
 use sha2::Digest;
@@ -39,6 +37,8 @@ mod identity;
 mod ipc;
 mod models_cli;
 mod persistence;
+mod voice_cli;
+mod voice_file_cli;
 
 use ipc::run_serve;
 use persistence::{load_outbox, outbox_file_path, update_outbox};
@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut provider_arg: Option<String> = None;
     let mut serve_mode = false;
     let mut speak_enabled = false;
-    let mut listen_mode = false;
+    let mut voice_options = voice_cli::VoiceOptions::default();
 
     // Les commandes modèles fonctionnent sans démarrer l'identité, l'audit ou le HUD.
     if args.get(1).map(String::as_str) == Some("models") {
@@ -93,8 +93,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if args.get(1).map(String::as_str) == Some("voice") {
+        if args.get(2).map(String::as_str) == Some("test") {
+            voice_file_cli::run(&args[2..]).map_err(io::Error::other)?;
+            return Ok(());
+        }
+        return voice_cli::print_devices(&args[2..]);
+    }
+
     let mut arg_idx = 1;
     while arg_idx < args.len() {
+        if let Some(consumed) = voice_options.parse_flag(&args, arg_idx)? {
+            arg_idx += consumed;
+            continue;
+        }
         match args[arg_idx].as_str() {
             "--help" | "-h" => {
                 println!("Hakille Sovereign Cognitive OS Daemon");
@@ -104,6 +116,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  models list                 List catalog models and cache status");
                 println!("  models download [OPTIONS]   Download foundation models");
                 println!("  models verify               Verify SHA-256 integrity of models");
+                println!("  voice devices               Inventaire audio, sans ouvrir le micro");
+                println!(
+                    "  voice test --audio <WAV>     Diagnostic Whisper + activation sur fichier, aucune commande exécutée"
+                );
                 println!();
                 println!("Options:");
                 println!(
@@ -126,8 +142,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "  --speak                     Synthèse vocale réelle (FormantTts) de chaque réponse REPL"
                 );
                 println!(
-                    "  --listen                    Écoute micro réelle (VAD + ASR) au démarrage du REPL"
+                    "  --listen                    Session vocale continue : dites Hakille, puis une commande (Ctrl+C arrête)"
                 );
+                println!("  --voice-language <auto|fr|en|…>  Langue Whisper (défaut : auto)");
+                println!(
+                    "  --voice-device <NOM>        Périphérique exact donné par voice devices"
+                );
+                println!(
+                    "  --wake-alias <MOT>          Alias supplémentaire explicite, option répétable"
+                );
+                println!("  --serve et --listen incompatibles ; utilisez F8 dans le desktop.");
                 println!("  --version, -v               Print version information");
                 println!("  --help, -h                  Print this help message");
                 return Ok(());
@@ -164,13 +188,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--speak" => {
                 speak_enabled = true;
             }
-            "--listen" => {
-                listen_mode = true;
-            }
             _ => {}
         }
         arg_idx += 1;
     }
+
+    voice_options.validate_modes(serve_mode, eval_prompt.is_some())?;
+    let voice_config = voice_options.config(models_dir.clone())?;
 
     if explicit_models_dir {
         hakille_inference::configure_global_qwen_paths(&models_dir)?;
@@ -329,10 +353,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let maybe_connected = provisioner.connect_all_models();
-    // Chaque moteur audio utilise le dossier demandé, même si un modèle visuel
-    // ou le codec n'est pas encore installé. Le chargement reste paresseux.
-    let mut vad = VoiceActivityDetector::with_onnx_model(models_dir.join("silero_vad.onnx"));
-    let asr = SenseVoiceSmall::with_models_dir(&models_dir);
     let (fabric, qwen_engine_opt) = match maybe_connected {
         Ok(ref conn) => {
             let summary = conn.system_summary();
@@ -364,7 +384,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             (fabric, None)
         }
     };
-    let mut _wake_word = WakeWordDetector::default_hakille();
     let mut _barge_in = BargeInDetector::new(0.6, 2);
     println!("  Audio : moteurs VAD/ASR configurés, chargement et inférence au premier appel.");
     println!(
@@ -701,17 +720,108 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
     }
 
+    if voice_options.listen {
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let voice = VoiceInputHandle::start(voice_config, move |event| {
+            let _ = events_tx.send(event);
+        });
+        println!(
+            "Session vocale continue : dites « Hakille » ou « Dis Hakille », puis votre commande. Ctrl+C arrête."
+        );
+        loop {
+            let event = tokio::select! {
+                interrupted = tokio::signal::ctrl_c() => {
+                    interrupted?;
+                    println!("Arrêt de l'écoute demandé.");
+                    break;
+                }
+                event = events_rx.recv() => match event {
+                    Some(event) => event,
+                    None => break,
+                }
+            };
+            match event {
+                VoiceInputEvent::Command {
+                    text,
+                    language,
+                    epoch,
+                } => {
+                    if !voice.accept_command(epoch) {
+                        continue;
+                    }
+                    voice.set_suspended(true);
+                    println!("\n[Commande vocale — {language}] {text}");
+                    let turn = tokio::select! {
+                        result = process_prompt(
+                        &text,
+                        &mut orchestrator,
+                        &mut presence,
+                        &mut cost_counter,
+                        &mut continuity_tracker,
+                        &mut bounded_initiative,
+                        &mut generality_tracker,
+                        &audit_journal,
+                        &memory_snapshot,
+                        true,
+                        speak_enabled,
+                    ) => Some(result),
+                        interrupted = tokio::signal::ctrl_c() => {
+                            interrupted?;
+                            None
+                        }
+                    };
+                    let Some(turn) = turn else {
+                        voice.stop();
+                        persist_memory(&orchestrator, &memory_snapshot, true);
+                        eprintln!("Tour vocal interrompu ; arrêt de la capture demandé.");
+                        // Un backend déjà lancé peut être bloquant : ne pas
+                        // attendre son achèvement pendant l'arrêt utilisateur.
+                        std::process::exit(130);
+                    };
+                    if let Err(error) = turn {
+                        presence.set_state(PresenceState::Idle);
+                        eprintln!("✗ Tour vocal échoué : {error}");
+                        if let Some(hint) = turn_error_hint(&error.to_string()) {
+                            eprintln!("  → {hint}");
+                        }
+                    }
+                    // process_prompt inclut la lecture TTS éventuelle : éviter
+                    // que la réponse de Hakille soit capturée comme commande.
+                    voice.set_suspended(false);
+                }
+                VoiceInputEvent::Loading => eprintln!("Voix : chargement des modèles locaux…"),
+                VoiceInputEvent::Listening => {
+                    eprintln!("Voix : micro en écoute, activation par transcription de Hakille.")
+                }
+                VoiceInputEvent::Speech => eprintln!("Voix : parole détectée."),
+                VoiceInputEvent::Transcribing => eprintln!("Voix : transcription locale…"),
+                VoiceInputEvent::Armed => {
+                    eprintln!("Hakille vous écoute : prononcez votre commande.")
+                }
+                VoiceInputEvent::Ignored => {}
+                VoiceInputEvent::Error(error) => {
+                    voice.stop();
+                    persist_memory(&orchestrator, &memory_snapshot, true);
+                    return Err(
+                        io::Error::other(format!("session vocale interrompue : {error}")).into(),
+                    );
+                }
+                VoiceInputEvent::Stopped => break,
+            }
+        }
+        voice.stop();
+        persist_memory(&orchestrator, &memory_snapshot, true);
+        return Ok(());
+    }
+
     println!("\n============================================================");
     println!("Hakille is running. Type a prompt, or a command (:help, :status, :models, :exit)");
     println!("============================================================\n");
 
-    // Ctrl+C : arrêt immédiat mais jamais destructeur — la mémoire est
-    // auto-sauvegardée après chaque tour (succès ou échec).
+    // Ctrl+C du REPL texte. La session vocale ci-dessus utilise son arrêt propre.
     tokio::spawn(async {
         if tokio::signal::ctrl_c().await.is_ok() {
-            eprintln!(
-                "\n⚠ Interruption (Ctrl+C) — arrêt. La mémoire a été auto-sauvegardée après le dernier tour."
-            );
+            eprintln!("\nInterruption (Ctrl+C) — mémoire sauvegardée après le dernier tour.");
             std::process::exit(130);
         }
     });
@@ -724,36 +834,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Analyser le contrat de prestation et vérifier les clauses",
         "Refactoriser le module d'inférence en Rust pur",
     ];
-
-    // `--listen` : un tour vocal réel au démarrage (micro → VAD Silero →
-    // ASR SenseVoice → tour cognitif), puis le REPL texte continue.
-    if listen_mode && let Some(prompt) = listen_once(&mut vad, &asr).await {
-        println!("\n[Hakille — tour vocal]");
-        match process_prompt(
-            &prompt,
-            &mut orchestrator,
-            &mut presence,
-            &mut cost_counter,
-            &mut continuity_tracker,
-            &mut bounded_initiative,
-            &mut generality_tracker,
-            &audit_journal,
-            &memory_snapshot,
-            true,
-            speak_enabled,
-        )
-        .await
-        {
-            Ok(_) => {}
-            Err(e) => {
-                presence.set_state(PresenceState::Idle);
-                eprintln!("✗ Tour vocal échoué : {e}");
-                if let Some(hint) = turn_error_hint(&e.to_string()) {
-                    eprintln!("  → {hint}");
-                }
-            }
-        }
-    }
 
     print!("hakille> ");
     stdout.flush()?;
@@ -2911,97 +2991,6 @@ async fn process_prompt(
     }
 
     Ok(outcome.non_empty)
-}
-
-/// Écoute micro one-shot réelle : VAD Silero (`ort`) pour détecter début/fin
-/// de parole, puis ASR SenseVoice (`ort`). Aucun fallback simulé : toute
-/// erreur (micro absent, modèle manquant, forward en échec) est affichée et
-/// `None` est renvoyé — le REPL continue en mode texte.
-async fn listen_once(vad: &mut VoiceActivityDetector, asr: &SenseVoiceSmall) -> Option<String> {
-    let mut capture = match hakille_audio::Capture::new() {
-        Ok(capture) => capture,
-        Err(e) => {
-            eprintln!("  ⚠ Écoute micro indisponible : {e} — REPL en mode texte.");
-            return None;
-        }
-    };
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<f32>>();
-    if let Err(e) = capture.start(move |block| {
-        let _ = tx.send(block.to_vec());
-    }) {
-        eprintln!("  ⚠ Démarrage de la capture impossible : {e} — REPL en mode texte.");
-        return None;
-    }
-
-    println!(
-        "  🎤 Écoute micro (VAD Silero réel) : parlez ; 1,2 s de silence termine (max 15 s)..."
-    );
-    vad.reset();
-
-    const MAX_MS: u64 = 15_000;
-    const SILENCE_MS: u64 = 1_200;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(MAX_MS);
-    let mut pcm: Vec<f32> = Vec::new();
-    let mut speech_started = false;
-    let mut silence_ms: u64 = 0;
-
-    while std::time::Instant::now() < deadline {
-        let block = match rx.recv_timeout(std::time::Duration::from_millis(250)) {
-            Ok(block) => block,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-        };
-        let chunk = AudioChunk::new(block.clone(), hakille_audio::TARGET_SAMPLE_RATE, 1);
-        let is_speech = match vad.process_real(&chunk) {
-            Ok(result) => result.is_speech,
-            Err(e) => {
-                eprintln!("  ⚠ VAD réel indisponible : {e}");
-                break;
-            }
-        };
-        if is_speech {
-            speech_started = true;
-            silence_ms = 0;
-            pcm.extend_from_slice(&block);
-        } else if speech_started {
-            silence_ms += 10;
-            pcm.extend_from_slice(&block);
-            if silence_ms >= SILENCE_MS {
-                break;
-            }
-        }
-        // Avant le premier mot : blocs ignorés (pas de pré-roll dans le buffer).
-    }
-
-    if let Err(e) = capture.stop() {
-        eprintln!("  ⚠ Arrêt de la capture : {e}");
-    }
-    if !speech_started || pcm.is_empty() {
-        println!("  (aucune parole détectée)");
-        return None;
-    }
-
-    println!("  Transcription ASR (SenseVoice réel)...");
-    let chunk = AudioChunk::new(pcm, hakille_audio::TARGET_SAMPLE_RATE, 1);
-    match asr.transcribe(&chunk).await {
-        Ok(hyp) => {
-            let text = hyp.transcript.trim().to_string();
-            if text.is_empty() {
-                println!("  (transcription vide — aucune action)");
-                None
-            } else {
-                println!(
-                    "  🎤 « {} » [langue: {}, confiance: {:.3}]",
-                    text, hyp.language, hyp.confidence
-                );
-                Some(text)
-            }
-        }
-        Err(e) => {
-            eprintln!("  ⚠ ASR réel impossible : {e}");
-            None
-        }
-    }
 }
 
 fn hex_fmt(bytes: &[u8]) -> String {

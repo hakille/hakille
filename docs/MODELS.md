@@ -1,6 +1,6 @@
 # Modèles locaux et moteurs réellement disponibles
 
-Le catalogue contient **sept modèles**, définis dans
+Le catalogue contient **huit modèles**, définis dans
 [`catalog.rs`](../crates/hakille-inference/src/catalog.rs). Les commandes et
 exemples reproductibles sont dans [Inférence locale](INFERENCE_LOCALE.md).
 Les poids sont téléchargés séparément et restent hors Git. L'installation
@@ -16,11 +16,13 @@ machine courante.
 | `qwen2.5-0.5b-instruct-q4km` | native | `qwen2.5-0.5b-instruct-q4_k_m.gguf`, `tokenizer.json` | Candle CPU ; génération de texte Qwen 2.5 0,5B Q4_K_M |
 | `ui-tars-2b-sft-q4km` | native | `ui-tars-2b-sft-q4_k_m.gguf`, `mmproj-UI-TARS-2B-SFT-f16.gguf` | Serveur natif llama.cpp local ; proposition d'action depuis une image et une instruction |
 | `moshi-mimi-s2s` | sovereign | `mimi_candle.safetensors` | Candle CPU ; encodage et décodage audio neuronal Mimi |
+| `whisper-tiny-multilingual` | native | `whisper-tiny.safetensors`, `whisper-tiny-config.json`, `whisper-tiny-tokenizer.json` | Candle CPU ; transcription multilingue locale, détection ou choix de langue |
 
 Les niveaux sont cumulatifs : `guest` sélectionne deux modèles, `native` les
-six premiers et `sovereign` les sept. Ce classement décrit une sélection de
-modèles, pas une autorisation ou une garantie de ressources. Les onze fichiers
-représentent environ **3,69 Go sur disque** ; cette taille n'est pas la RAM
+sept modèles de niveau guest/native et `sovereign` les huit. Ce classement
+décrit une sélection de modèles, pas une autorisation ou une garantie de
+ressources. Les quatorze fichiers
+représentent environ **3,84 Go sur disque** ; cette taille n'est pas la RAM
 nécessaire à leur exécution. UI-TARS représente à lui seul environ 2,45 Go de
 poids, projecteur inclus. Le serveur llama.cpp et les bibliothèques natives
 s'ajoutent à ces fichiers.
@@ -38,7 +40,36 @@ moteur. Un modèle absent, corrompu ou inexécutable produit une erreur. Ces
 commandes ne démarrent pas le HUD et n'exécutent aucune action GUI proposée.
 Les tests de fonctionnement par défaut emploient parfois du silence ou une
 sinusoïde : ils vérifient le chargement, les tenseurs et le forward, sans
-mesurer la qualité de transcription, de voix ou de reconnaissance.
+mesurer la qualité de transcription, de voix ou de reconnaissance. Pour Whisper,
+`models test` sans `--audio` vérifie uniquement le chargement et le rejet d'un
+silence synthétique **avant forward** : `real_forward` vaut `false`, les
+probabilités non calculées valent `null`, et aucune qualité acoustique n'est
+évaluée. Fournir une voix réelle pour exercer la transcription.
+
+```bash
+cargo run -p hakille-daemon -- models download --model whisper-tiny-multilingual
+cargo run -p hakille-daemon -- models infer --model whisper-tiny-multilingual --audio phrase.wav --language fr --json
+cargo run -p hakille-daemon -- models test --model whisper-tiny-multilingual --audio phrase.wav --language auto --timeout-seconds 120 --json
+```
+
+`--language` accepte `auto` (valeur par défaut) ou un code Whisper tel que
+`fr`, `en`, `ar`. Cette option exige la sélection explicite de Whisper ; les
+codes inconnus et options propres aux autres moteurs sont refusés.
+
+Le diagnostic `voice test` réutilise le même `VoiceRecognizer` et le même
+contrôleur d'activation que l'écoute microphone, avec des fichiers WAV :
+
+```bash
+cargo run -p hakille-daemon -- voice test --audio hakille.wav --next-audio commande.wav --language fr --models-dir models
+```
+
+Il affiche les transcriptions réellement obtenues et les résultats `armed`,
+`command` ou `ignored`, sans exécuter ni soumettre une commande. Le second
+fichier utilise l'état laissé par le premier ; après une commande détectée,
+le cooldown reste actif. `--alias NOM` ajoute un alias explicite au contrôle
+d'activation, sans indice lexical injecté dans Whisper. Ce diagnostic ne
+valide ni le périphérique microphone ni sa capture. L'échec à reconnaître un
+nom propre reste visible dans la transcription et le résultat d'activation.
 
 ## Contrats et limites des moteurs
 
@@ -82,6 +113,19 @@ et événements proviennent des tokens décodés. La confiance est une mesure
 issue des sorties du réseau, pas une probabilité calibrée de transcription
 correcte. Sans filtrage VAD, l'ASR peut produire du texte sur du silence.
 
+**Whisper tiny multilingue.** Les trois artefacts proviennent de
+`openai/whisper-tiny`, révision `169d4a4341b33bc18d8881c4b69c2e104e1cc0af`,
+avec SHA-256 vérifié. Le tokenizer contient 99 codes langue ; cela ne garantit
+pas la même qualité dans toutes les langues ou sur tous les accents. La CLI
+accepte des WAV mono/stéréo, convertis en mono 16 kHz, de **0,1 à 30 secondes**.
+Le décodage transcrit sans traduction ni indice lexical ajouté. La sortie JSON
+expose texte, langue, probabilités réellement calculées et rejet du silence.
+La probabilité de langue est absente quand la langue est imposée. Le silence
+quasi nul est rejeté avant forward ; le filtre neuronal « no speech » peut
+aussi supprimer une sortie. L'échéance est coopérative : un forward Candle
+déjà commencé reste non préemptible. Whisper se charge indépendamment ;
+`connect_all_models()` conserve l'inspection des sept modèles historiques.
+
 **Qwen.** Le moteur charge le GGUF et le tokenizer, applique le format de
 conversation puis effectue le forward CPU et le décodage avec cache KV.
 La capacité de contexte est lue dans le GGUF ; elle est de 32 768 tokens pour
@@ -123,7 +167,30 @@ plateforme visée. La CLI locale du démon est destinée à Linux, Windows et
 macOS ; les validations des autres cibles restent séparées.
 
 Les anciens documents citaient VibeVoice, Nemotron, Moshi 7,6B, Qwen3 et
-UI-TARS 7B comme objectifs. Ils ne font pas partie de ces sept entrées.
+UI-TARS 7B comme objectifs. Ils ne font pas partie de ces huit entrées.
 Le TTS formantique et les chemins historiques simulés ne doivent pas être
 confondus avec des modèles vocaux neuronaux installés. Aucun téléchargement,
 inspection de header ou registre de mémoire ne remplace un test d'inférence.
+
+## Régénérer les échantillons vocaux synthétiques
+
+L'outil de développement [`prepare_voice_fixtures.py`](../scripts/prepare_voice_fixtures.py)
+utilise uniquement la bibliothèque standard Python et exige `espeak-ng` et
+`ffmpeg` déjà installés. Il ne télécharge ni n'installe rien. Depuis la racine :
+
+```bash
+python3 scripts/prepare_voice_fixtures.py --output /tmp/hakille-voice-fixtures
+HAKILLE_WHISPER_WAKE_MANIFEST=/tmp/hakille-voice-fixtures/manifest.json cargo test -p hakille-inference --locked synthetic_wake_comparison_report -- --ignored --nocapture
+```
+
+Les chemins des exécutables sont configurables avec `--espeak-ng` et `--ffmpeg` ;
+l'environnement de l'appelant est conservé, notamment `ESPEAK_DATA_PATH` pour
+une installation locale d'eSpeak NG. Le script refuse les fichiers existants
+sans `--force`. Il produit les huit phrases FR/EN, dont trois négatifs et deux
+variantes « Akille », en WAV et PCM float32 little-endian mono 16 kHz, avec un
+manifeste indiquant textes de synthèse, versions des outils et SHA-256.
+Les octets peuvent varier avec les versions ou données vocales installées.
+Ces voix sont **synthétiques** : elles ne valident pas un microphone réel,
+les accents humains ou la précision générale. Le texte d'entrée ne remplace
+jamais le résultat ASR ; le test ignoré exécute les inférences CPU et nécessite
+les trois artefacts Whisper préalablement téléchargés.

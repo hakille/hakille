@@ -451,7 +451,9 @@ impl ModelProvisioner {
             .all(|report| report.verified))
     }
 
-    /// Connect, inspect, and link all 7 downloaded foundation models across the cognitive pipeline.
+    /// Inspecte les sept modèles historiques après vérification de leur intégrité.
+    /// Whisper reste indépendant : sa présence est requise uniquement si la voie vocale
+    /// multilingue est sélectionnée, via `verify_model_by_id("whisper-tiny-multilingual")`.
     pub fn connect_all_models(&self) -> Result<InspectedModels> {
         let mut integrity = Vec::new();
         for id in [
@@ -818,6 +820,33 @@ mod provisioning_tests {
         assert!(!provisioner.verify_integrity(&entry).unwrap());
         std::fs::write(dir.0.join("tokens.json"), b"good").unwrap();
         assert!(provisioner.verify_integrity(&entry).unwrap());
+    }
+
+    #[test]
+    fn multilingual_asr_integrity_is_independent_of_legacy_models() {
+        let dir = TestDir::new();
+        let mut whisper = ModelCatalog::get_by_id("whisper-tiny-multilingual").unwrap();
+        // Fixtures minuscules : exerce la sélection et le contrôle de chacun des trois
+        // artefacts, sans modèle historique ni téléchargement dans ce test unitaire.
+        for artifact in
+            std::iter::once(&mut whisper.primary_artifact).chain(&mut whisper.auxiliary_artifacts)
+        {
+            artifact.size_bytes = 4;
+            artifact.sha256_checksum = Some(format!("{:x}", Sha256::digest(b"good")));
+            std::fs::write(dir.0.join(&artifact.filename), b"good").unwrap();
+        }
+        let provisioner = ModelProvisioner::with_catalog(dir.0.clone(), vec![whisper.clone()]);
+        let reports = provisioner.verify_model_by_id(&whisper.id).unwrap();
+        assert_eq!(reports.len(), 3);
+        assert!(reports.iter().all(|report| report.verified));
+        assert!(provisioner.status(&whisper).is_installed);
+        std::fs::write(dir.0.join("whisper-tiny-tokenizer.json"), b"evil").unwrap();
+        assert!(!provisioner.verify_integrity(&whisper).unwrap());
+        std::fs::remove_file(dir.0.join("whisper-tiny-config.json")).unwrap();
+        let reports = provisioner.verify_model_by_id(&whisper.id).unwrap();
+        assert!(reports[0].verified);
+        assert!(!reports[1].verified);
+        assert!(!reports[2].verified);
     }
 
     #[test]

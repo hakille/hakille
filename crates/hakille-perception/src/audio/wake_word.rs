@@ -1,63 +1,41 @@
-//! DÉTECTEUR ÉNERGÉTIQUE VAD-GATÉ (checkpoint openWakeWord non provisionné — voir [`provision()`]).
+//! API historique de mesure acoustique, sans reconnaissance de mot-clé.
 //!
-//! - Aucun checkpoint openWakeWord n'est présent dans `models/` : la décision
-//!   neurale est donc assurée par une mesure RÉELLE non-neurale mais
-//!   fonctionnelle, en pur Rust (aucune valeur simulée, aucun stub) :
-//!   - `process()` : mesure énergétique instantanée déterministe (broadband +
-//!     bande 300–3400 Hz par soustraction de moyenne glissante), indépendante
-//!     du modèle — déclenche sur onsets forts, avec cooldown ;
-//!   - `process_gated()` : décision qualité STRICTE — ne déclenche que si
-//!     VAD Silero RÉEL > 0.5 **et** énergie de bande suffisante **et** durée
-//!     voisée dans `[0.3s, 1.2s]`, avec cooldown. Erreur LOUD si le modèle VAD
-//!     est absent (jamais de fallback silencieux).
-//! - [`provision()`] télécharge un `.onnx` openWakeWord (via
-//!   [`hakille_inference::ModelDownloader`], SHA-256 optionnel) ;
-//!   [`WakeWordDetector::maybe_upgrade_to_ort()`] (appelée automatiquement dans
-//!   `process_gated`) bascule vers un forward `ort` RÉEL
-//!   ([`hakille_inference::OrtScalarScorer`]) dès que le fichier existe.
-//!   Tant que la signature du checkpoint est incompatible, le chemin
-//!   énergétique reste la décision et l'échec `ort` est journalisé LOUD.
+//! L'énergie et le VAD indiquent une activité sonore ou vocale, jamais le mot
+//! « Hakille ». Sans frontend et checkpoint compatibles, `detected` reste faux
+//! et `confidence` vaut zéro. L'activation utilisable est effectuée sur la
+//! transcription ASR par le contrôleur `WakeActivation`.
+//!
+//! Un fichier openWakeWord seul n'est pas exploitable ici : les 64 ratios de
+//! bande de l'ancien chemin ne constituent pas son frontend mel/embeddings.
+//! Le chargement via `OrtScalarScorer` a donc été retiré ; aucun état `OrtReal`
+//! ne peut être annoncé par cette implémentation.
 
 use crate::audio::capture::AudioChunk;
-use hakille_inference::{
-    ModelDownloader, OrtScalarScorer, OrtVadSession, resolve_vad_model_path, to_mono_16k,
-};
+use hakille_inference::{ModelDownloader, OrtVadSession, resolve_vad_model_path, to_mono_16k};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Bande vocale utile pour le Mot-clé (Hz).
 pub const WAKE_BAND_LO_HZ: f32 = 300.0;
 pub const WAKE_BAND_HI_HZ: f32 = 3400.0;
-/// Seuil VAD strict pour la décision gatée.
 pub const WAKE_VAD_GATE: f32 = 0.5;
-/// Fenêtre de durée voisée acceptée pour un mot-clé (s).
 pub const WAKE_MIN_DURATION_S: f32 = 0.3;
 pub const WAKE_MAX_DURATION_S: f32 = 1.2;
-/// Moyenne glissante exponentielle ~300 Hz : alpha = 1 − exp(−2π·300/16000).
-/// Sa soustraction au signal = passe-haut 1er ordre (borne basse vocale),
-/// sans l'effet de peigne d'une moyenne rectangulaire (qui réinjecte les
-/// graves par opposition de phase — mesuré : 100 Hz à 0.79 avec MA53).
 const ALPHA_HP_300HZ: f32 = 0.1111;
-/// Lissage passe-bas ~3.4 kHz : alpha = 1 − exp(−2π·3400/16000) ≈ 0.74.
 const LP_ALPHA: f32 = 0.74;
-/// RMS minimal d'une fenêtre pour être voisée (rejet du souffle/quantification).
-const MIN_WINDOW_RMS: f32 = 0.015;
-/// Préfixe des checkpoints openWakeWord provisionnés.
 pub const OWW_FILENAME_PREFIX: &str = "openwakeword_";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WakeBackendKind {
-    /// Mesure énergétique VAD-gatée (pur Rust, checkpoint non provisionné).
+    /// Mesures acoustiques uniquement ; aucune reconnaissance de mot-clé.
     Energetic,
-    /// Forward `ort` réel sur checkpoint provisionné (auto-bascule).
+    /// Variante historique conservée pour compatibilité, jamais produite ici.
     OrtReal,
 }
-
 impl WakeBackendKind {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Energetic => "ÉNERGÉTIQUE-VAD-GATÉ",
-            Self::OrtReal => "ORT-RÉEL",
+            Self::Energetic => "MESURES-ACOUSTIQUES — MOT-CLÉ INDISPONIBLE",
+            Self::OrtReal => "ORT-RÉEL (VARIANTE HISTORIQUE NON RACCORDÉE)",
         }
     }
 }
@@ -65,22 +43,18 @@ impl WakeBackendKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WakeWordDetection {
     pub detected: bool,
+    /// Mot-clé demandé, pas un mot reconnu lorsque `detected` vaut faux.
     pub keyword: String,
     pub confidence: f32,
-    /// Probabilité VAD réelle du chunk (`None` sur le chemin instantané).
     pub vad_prob: Option<f32>,
-    /// Ratio d'énergie dans 300–3400 Hz (`None` si chunk inscorable).
     pub band_ratio: Option<f32>,
-    /// Backend ayant produit la décision.
     pub backend: WakeBackendKind,
-    /// Score `ort` brut quand le backend neural est actif.
     pub ort_prob: Option<f32>,
 }
-
 fn neg(keyword: &str, vad_prob: Option<f32>, band_ratio: Option<f32>) -> WakeWordDetection {
     WakeWordDetection {
         detected: false,
-        keyword: keyword.to_string(),
+        keyword: keyword.to_owned(),
         confidence: 0.0,
         vad_prob,
         band_ratio,
@@ -174,8 +148,8 @@ pub fn openwakeword_path(models_dir: Option<&Path>, keyword: &str) -> Option<Pat
 
 /// Télécharge un checkpoint openWakeWord `.onnx` depuis `url` vers
 /// `models_dir/openwakeword_<mot-clé>.onnx` (reprise + SHA-256 optionnel via
-/// [`ModelDownloader`]). Le détecteur bascule automatiquement vers `ort`
-/// quand le fichier existe (voir `maybe_upgrade_to_ort`).
+/// [`ModelDownloader`]). Le téléchargement ne raccorde pas de moteur de reconnaissance :
+/// le frontend openWakeWord et un modèle entraîné pour le mot-clé restent requis.
 pub async fn provision(
     url: &str,
     models_dir: impl AsRef<Path>,
@@ -198,472 +172,186 @@ pub async fn provision(
         .await
 }
 
+/// Compatibilité de l'ancien détecteur. Les mesures exposées ne doivent
+/// jamais servir de preuve de reconnaissance du mot-clé.
 pub struct WakeWordDetector {
     keyword: String,
-    threshold: f32,
-    cooldown_frames: usize,
-    current_cooldown: usize,
-    vad_gate: f32,
-    band_threshold: f32,
-    min_duration_s: f32,
-    max_duration_s: f32,
-    /// Fenêtres 512 chaudes consécutives en cours (durée voisée gatée).
-    trailing_hot_windows: usize,
     vad_model_path: Option<PathBuf>,
     vad_session: Option<OrtVadSession>,
     oww_models_dir: Option<PathBuf>,
     oww_path: Option<PathBuf>,
-    ort_scorer: Option<OrtScalarScorer>,
-    last_backend: WakeBackendKind,
     last_vad_prob: Option<f32>,
     last_band_ratio: Option<f32>,
-    last_ort_prob: Option<f32>,
     last_windows: Vec<(f32, f32, f32)>,
+    diagnostic_carry: Vec<f32>,
 }
-
 impl WakeWordDetector {
-    pub fn new(keyword: impl Into<String>, threshold: f32) -> Self {
-        let keyword = keyword.into();
-        let vad_model_path = resolve_vad_model_path(None).ok();
+    /// `threshold` est conservé pour compatibilité ; il ne peut activer un mot.
+    pub fn new(keyword: impl Into<String>, _threshold: f32) -> Self {
         Self {
-            keyword,
-            threshold,
-            cooldown_frames: 10,
-            current_cooldown: 0,
-            vad_gate: WAKE_VAD_GATE,
-            band_threshold: 0.20,
-            min_duration_s: WAKE_MIN_DURATION_S,
-            max_duration_s: WAKE_MAX_DURATION_S,
-            trailing_hot_windows: 0,
-            vad_model_path,
+            keyword: keyword.into(),
+            vad_model_path: resolve_vad_model_path(None).ok(),
             vad_session: None,
             oww_models_dir: None,
             oww_path: None,
-            ort_scorer: None,
-            last_backend: WakeBackendKind::Energetic,
             last_vad_prob: None,
             last_band_ratio: None,
-            last_ort_prob: None,
             last_windows: Vec::new(),
+            diagnostic_carry: Vec::new(),
         }
     }
-
-    /// Mot-clé + dossier modèles explicite (VAD résolu LOUD si absent, checkpoint
-    /// openWakeWord détecté s'il existe).
     pub fn with_models_dir(
         keyword: impl Into<String>,
         threshold: f32,
         models_dir: impl AsRef<Path>,
     ) -> hakille_core::Result<Self> {
-        let keyword = keyword.into();
-        let vad_path = resolve_vad_model_path(Some(models_dir.as_ref()))?;
-        let oww = openwakeword_path(Some(models_dir.as_ref()), &keyword);
-        Ok(Self {
-            keyword,
-            threshold,
-            cooldown_frames: 10,
-            current_cooldown: 0,
-            vad_gate: WAKE_VAD_GATE,
-            band_threshold: 0.20,
-            min_duration_s: WAKE_MIN_DURATION_S,
-            max_duration_s: WAKE_MAX_DURATION_S,
-            trailing_hot_windows: 0,
-            vad_model_path: Some(vad_path),
-            vad_session: None,
-            oww_models_dir: Some(models_dir.as_ref().to_path_buf()),
-            oww_path: oww,
-            ort_scorer: None,
-            last_backend: WakeBackendKind::Energetic,
-            last_vad_prob: None,
-            last_band_ratio: None,
-            last_ort_prob: None,
-            last_windows: Vec::new(),
-        })
+        let mut detector = Self::new(keyword, threshold);
+        detector.vad_model_path = Some(resolve_vad_model_path(Some(models_dir.as_ref()))?);
+        detector.oww_models_dir = Some(models_dir.as_ref().to_path_buf());
+        detector.oww_path = openwakeword_path(Some(models_dir.as_ref()), &detector.keyword);
+        Ok(detector)
     }
-
     pub fn default_hakille() -> Self {
         Self::new("Dis Hakille", 0.75)
     }
-
-    /// Ajuste la fenêtre de durée voisée gatée (s) — ex. mot-clé court vs long.
-    /// Erreur LOUD si `0 < min <= max <= 5` est violé (jamais de clamp silencieux).
-    pub fn with_gated_timing(
-        &mut self,
-        min_duration_s: f32,
-        max_duration_s: f32,
-    ) -> hakille_core::Result<&mut Self> {
-        if !(min_duration_s.is_finite() && max_duration_s.is_finite())
-            || min_duration_s <= 0.0
-            || min_duration_s > max_duration_s
-            || max_duration_s > 5.0
-        {
-            return Err(hakille_core::HakilleError::InferenceError(format!(
-                "WakeWordDetector::with_gated_timing: fenêtre invalide \
-                 [{min_duration_s}, {max_duration_s}] (attendu 0 < min <= max <= 5 s)"
-            )));
-        }
-        self.min_duration_s = min_duration_s;
-        self.max_duration_s = max_duration_s;
-        Ok(self)
-    }
-
-    /// Seuil de ratio de bande 300–3400 Hz par fenêtre (défaut 0.20) — réglage
-    /// déploiement (micro/pièce). Erreur LOUD hors `[0, 1]`.
-    pub fn with_band_threshold(&mut self, ratio: f32) -> hakille_core::Result<&mut Self> {
-        if !ratio.is_finite() || !(0.0..=1.0).contains(&ratio) {
-            return Err(hakille_core::HakilleError::InferenceError(format!(
-                "WakeWordDetector::with_band_threshold: ratio invalide {ratio} (attendu [0, 1])"
-            )));
-        }
-        self.band_threshold = ratio;
-        Ok(self)
-    }
-
     pub fn keyword(&self) -> &str {
         &self.keyword
     }
-
     pub fn backend_kind(&self) -> WakeBackendKind {
-        self.last_backend
+        WakeBackendKind::Energetic
     }
-
-    /// Seuil VAD par fenêtre (défaut 0.5) — réglage déploiement.
-    /// Erreur LOUD hors `(0, 1)`.
-    pub fn with_vad_gate(&mut self, gate: f32) -> hakille_core::Result<&mut Self> {
-        if !gate.is_finite() || gate <= 0.0 || gate >= 1.0 {
-            return Err(hakille_core::HakilleError::InferenceError(format!(
-                "WakeWordDetector::with_vad_gate: seuil invalide {gate} (attendu dans (0, 1))"
-            )));
+    pub fn recognition_available(&self) -> bool {
+        false
+    }
+    pub fn unavailable_reason(&self) -> &'static str {
+        "Reconnaissance acoustique du mot-clé indisponible : frontend openWakeWord et checkpoint Hakille compatibles non raccordés ; utilisez l'activation après transcription ASR"
+    }
+    /// Réglage historique validé pour compatibilité ; aucune décision de mot-clé.
+    pub fn with_gated_timing(&mut self, min: f32, max: f32) -> hakille_core::Result<&mut Self> {
+        if !min.is_finite() || !max.is_finite() || min <= 0.0 || min > max || max > 5.0 {
+            return Err(hakille_core::HakilleError::InferenceError(
+                "Fenêtre historique invalide : 0 < min <= max <= 5 s requis".into(),
+            ));
         }
-        self.vad_gate = gate;
         Ok(self)
     }
-
-    /// Détail par fenêtre 512 du dernier appel gaté : `(vad, rms, bande)`.
-    /// Observabilité (mise au point, logs) — jamais une décision.
+    /// Réglage historique validé ; aucune décision de mot-clé.
+    pub fn with_band_threshold(&mut self, ratio: f32) -> hakille_core::Result<&mut Self> {
+        if !ratio.is_finite() || !(0.0..=1.0).contains(&ratio) {
+            return Err(hakille_core::HakilleError::InferenceError(
+                "Ratio de bande hors [0,1]".into(),
+            ));
+        }
+        Ok(self)
+    }
+    /// Réglage historique validé ; aucune décision de mot-clé.
+    pub fn with_vad_gate(&mut self, gate: f32) -> hakille_core::Result<&mut Self> {
+        if !gate.is_finite() || gate <= 0.0 || gate >= 1.0 {
+            return Err(hakille_core::HakilleError::InferenceError(
+                "Seuil VAD hors ]0,1[".into(),
+            ));
+        }
+        Ok(self)
+    }
     pub fn last_windows_debug(&self) -> &[(f32, f32, f32)] {
         &self.last_windows
     }
-
     pub fn last_vad_prob(&self) -> Option<f32> {
         self.last_vad_prob
     }
-
     pub fn last_band_ratio(&self) -> Option<f32> {
         self.last_band_ratio
     }
-
     pub fn ort_forward_calls(&self) -> Option<u64> {
-        self.ort_scorer.as_ref().map(|s| s.forward_calls())
+        None
     }
 
-    /// Tente la bascule vers `ort` si le checkpoint existe. Retourne `true` si
-    /// le backend neural RÉEL est désormais actif. Erreur LOUD si le fichier
-    /// existe mais est illisible/incompatible (pas de bascule silencieuse).
+    /// Aucun modèle acoustique n'est compatible avec ce chemin historique.
+    /// Absence : `Ok(false)` ; présence : erreur explicite, jamais un repli.
     pub fn maybe_upgrade_to_ort(&mut self) -> hakille_core::Result<bool> {
-        if self.ort_scorer.is_some() {
-            self.last_backend = WakeBackendKind::OrtReal;
-            return Ok(true);
-        }
         if self.oww_path.is_none() {
-            let dir_opt = self.oww_models_dir.clone();
-            self.oww_path = openwakeword_path(dir_opt.as_deref(), &self.keyword);
+            self.oww_path = openwakeword_path(self.oww_models_dir.as_deref(), &self.keyword);
         }
-        match self.oww_path.clone() {
-            Some(p) => {
-                let scorer = OrtScalarScorer::open(&p)?;
-                tracing::info!(
-                    path = %p.display(),
-                    inputs = ?scorer.real_input_names(),
-                    "WakeWordDetector: bascule ORT-RÉELLE (checkpoint provisionné)"
-                );
-                self.ort_scorer = Some(scorer);
-                self.last_backend = WakeBackendKind::OrtReal;
-                Ok(true)
-            }
-            None => Ok(false),
+        if self.oww_path.is_some() {
+            return Err(hakille_core::HakilleError::InferenceError(
+                "Checkpoint openWakeWord refusé : frontend mel/embeddings et contrat d'entrée non implémentés ; les ratios de bande ne sont pas des features openWakeWord compatibles".into()));
         }
-    }
-
-    fn tick_cooldown(&mut self) -> bool {
-        if self.current_cooldown > 0 {
-            self.current_cooldown -= 1;
-            return true;
-        }
-        false
+        Ok(false)
     }
 
     fn mono16k(chunk: &AudioChunk) -> Vec<f32> {
-        if chunk.samples.is_empty() {
-            return Vec::new();
-        }
         to_mono_16k(&chunk.samples, chunk.channels, chunk.sample_rate)
     }
-
     fn ensure_vad(&mut self) -> hakille_core::Result<&mut OrtVadSession> {
         if self.vad_session.is_none() {
-            let p = self.vad_model_path.clone().ok_or_else(|| {
+            let path = self.vad_model_path.as_ref().ok_or_else(|| {
                 hakille_core::HakilleError::InferenceError(
-                    "WakeWordDetector: modèle VAD absent (models/silero_vad.onnx \
-                     introuvable, $HAKILLE_MODELS_DIR vide) — décision gatée \
-                     impossible, pas de fallback"
-                        .to_string(),
+                    "Modèle VAD absent : mesures acoustiques indisponibles".into(),
                 )
             })?;
-            if !p.exists() {
-                return Err(hakille_core::HakilleError::InferenceError(format!(
-                    "WakeWordDetector: modèle VAD absent '{}'",
-                    p.display()
-                )));
-            }
-            self.vad_session = Some(OrtVadSession::open(&p)?);
+            self.vad_session = Some(OrtVadSession::open(path)?);
         }
-        self.vad_session.as_mut().ok_or_else(|| {
-            hakille_core::HakilleError::InferenceError(
-                "WakeWordDetector: session VAD non ouverte (incohérence interne)".to_string(),
-            )
-        })
+        Ok(self
+            .vad_session
+            .as_mut()
+            .expect("session initialisée ci-dessus"))
     }
 
-    /// Probabilités VAD réelles des fenêtres 512 complétées par ce chunk, dans
-    /// l'ordre, avec le carry session avant ingestion (pour aligner les
-    /// mesures de bande sur les EXACTES mêmes 512 échantillons scorés).
-    fn real_vad_windows(&mut self, mono: &[f32]) -> hakille_core::Result<(usize, Vec<f32>)> {
-        if mono.is_empty() {
-            return Ok((0, Vec::new()));
-        }
-        let sess = self.ensure_vad()?;
-        let carry_before = sess.pending_carry_len();
-        if carry_before >= 512 {
-            return Err(hakille_core::HakilleError::InferenceError(format!(
-                "WakeWordDetector: carry incohérent ({carry_before})"
-            )));
-        }
-        let outs = sess.process_stream(mono)?;
-        let mut probs = Vec::with_capacity(outs.len());
-        for (_, p) in outs.iter() {
-            probs.push(*p);
-        }
-        Ok((carry_before, probs))
+    /// Mesure acoustique seule : `detected=false`, `confidence=0`, toujours.
+    pub fn measure_activity(&mut self, chunk: &AudioChunk) -> WakeWordDetection {
+        let (_, ratio) = band_measurements(&Self::mono16k(chunk));
+        self.last_vad_prob = None;
+        self.last_band_ratio = Some(ratio);
+        self.last_windows.clear();
+        neg(&self.keyword, None, Some(ratio))
     }
 
-    /// Chemin instantané RÉEL (mesure énergétique, sans neural) : déclenche sur
-    /// onsets forts (broadband), confiance façonnée par la bande 300–3400 Hz.
-    /// Déterministe et indépendant du modèle (compatibilité temps réel).
+    #[deprecated(
+        note = "L'énergie ne reconnaît aucun mot-clé ; utiliser WakeActivation après ASR ou measure_activity pour les seules mesures"
+    )]
     pub fn process(&mut self, chunk: &AudioChunk) -> WakeWordDetection {
-        if self.tick_cooldown() {
-            return WakeWordDetection {
-                detected: false,
-                keyword: self.keyword.clone(),
-                confidence: 0.0,
-                vad_prob: None,
-                band_ratio: None,
-                backend: self.last_backend,
-                ort_prob: None,
-            };
-        }
-        if chunk.samples.is_empty() {
-            return neg(&self.keyword, None, None);
-        }
-        let mono = Self::mono16k(chunk);
-        if mono.is_empty() {
-            return neg(&self.keyword, None, None);
-        }
-        let (rms, band_ratio) = band_measurements(&mono);
-        self.last_band_ratio = Some(band_ratio);
-        // Onset fort : broadband décide, bande façonne (0.80 + 0.20·ratio).
-        let loud = (rms * 15.0).clamp(0.0, 1.0);
-        let confidence = (loud * (0.80 + 0.20 * band_ratio)).clamp(0.0, 1.0);
-        let detected = confidence >= self.threshold;
-        if detected {
-            self.current_cooldown = self.cooldown_frames;
-        }
-        WakeWordDetection {
-            detected,
-            keyword: self.keyword.clone(),
-            confidence,
-            vad_prob: None,
-            band_ratio: Some(band_ratio),
-            backend: self.last_backend,
-            ort_prob: None,
-        }
+        self.measure_activity(chunk)
     }
 
-    /// Décision VAD-gatée STRICTE (qualité), évaluée par fenêtre 512 alignée :
-    /// ne déclenche que si une série CONSÉCUTIVE de fenêtres chaudes
-    /// (VAD Silero RÉEL > 0.5 **et** bande 300–3400 suffisante **et** RMS
-    /// minimal) dure dans `[min_duration_s, max_duration_s]` (défaut
-    /// `[0.3s, 1.2s]`), avec cooldown. Bascule auto vers `ort` si provisionné.
-    /// Erreur LOUD si le modèle VAD est absent — jamais de déclenchement
-    /// sans preuve VAD. La moyenne (dilution) n'est jamais utilisée comme
-    /// gate : une onset de 32 ms compte.
+    /// VAD réel et mesures de bande uniquement. Même une forte probabilité
+    /// de parole ne prouve pas « Hakille » : aucune détection n'est produite.
+    /// Un checkpoint présent sans frontend compatible provoque une erreur.
     pub fn process_gated(&mut self, chunk: &AudioChunk) -> hakille_core::Result<WakeWordDetection> {
-        // Bascule automatique vers ort quand le checkpoint existe.
-        // Échec de bascule = journalisé LOUD (jamais silencieux), décision
-        // énergétique conservée ; absence de fichier = état normal.
-        if self.ort_scorer.is_none()
-            && let Err(e) = self.maybe_upgrade_to_ort()
+        self.last_vad_prob = None;
+        self.last_band_ratio = None;
+        self.last_windows.clear();
+        self.maybe_upgrade_to_ort()?;
+        let mono = Self::mono16k(chunk);
+        let probabilities = self.ensure_vad()?.process_stream(&mono)?;
+        // Le carry est conservé pour mesurer les mêmes 512 échantillons que
+        // le VAD, même si les chunks entrants sont fragmentés arbitrairement.
+        self.diagnostic_carry.extend_from_slice(&mono);
+        for ((_, probability), window) in probabilities
+            .iter()
+            .zip(self.diagnostic_carry.chunks_exact(512))
         {
-            tracing::warn!(
-                error = %e,
-                "WakeWordDetector: checkpoint présent mais inutilisable — \
-                 reste sur le chemin énergétique VAD-gaté"
+            let (rms, ratio) = band_measurements(window);
+            self.last_windows.push((*probability, rms, ratio));
+        }
+        let consumed = probabilities.len() * 512;
+        if consumed > self.diagnostic_carry.len() {
+            return Err(hakille_core::HakilleError::InferenceError(
+                "Carry de diagnostic VAD incohérent".into(),
+            ));
+        }
+        self.diagnostic_carry.drain(..consumed);
+        if !self.last_windows.is_empty() {
+            self.last_vad_prob = Some(self.last_windows.iter().map(|w| w.0).fold(0.0f32, f32::max));
+            self.last_band_ratio = Some(
+                self.last_windows.iter().map(|w| w.2).sum::<f32>() / self.last_windows.len() as f32,
             );
         }
-        if self.tick_cooldown() {
-            return Ok(WakeWordDetection {
-                detected: false,
-                keyword: self.keyword.clone(),
-                confidence: 0.0,
-                vad_prob: self.last_vad_prob,
-                band_ratio: self.last_band_ratio,
-                backend: self.last_backend,
-                ort_prob: self.last_ort_prob,
-            });
-        }
-        if chunk.samples.is_empty() {
-            self.trailing_hot_windows = 0;
-            return Ok(neg(&self.keyword, Some(0.0), Some(0.0)));
-        }
-        let mono = Self::mono16k(chunk);
-        if mono.is_empty() {
-            self.trailing_hot_windows = 0;
-            return Ok(neg(&self.keyword, Some(0.0), Some(0.0)));
-        }
-        let (carry_before, vad_probs) = self.real_vad_windows(&mono)?;
-        self.last_windows.clear();
-        self.last_windows.reserve(vad_probs.len());
-        // Aligne chaque probabilité sur ses EXACTS 512 échantillons : la
-        // première fenêtre complète le carry session, les suivantes par pas de 512.
-        let mut off = 0usize;
-        let mut first_len = 512usize.saturating_sub(carry_before);
-        if first_len == 0 || first_len > 512 {
-            first_len = 512;
-        }
-        let min_win = ((self.min_duration_s * 16_000.0 / 512.0).ceil() as usize).max(1);
-        let max_win = ((self.max_duration_s * 16_000.0 / 512.0).floor() as usize).max(min_win);
-        let mut run = self.trailing_hot_windows;
-        let mut run_peak = 0.0f32;
-        let mut run_band_sum = 0.0f32;
-        let mut run_n = 0usize;
-        let mut vad_peak = 0.0f32;
-        let mut band_sum = 0.0f32;
-        let mut ort_feats: Vec<f32> = Vec::with_capacity(vad_probs.len());
-        let mut detected = false;
-        let mut confidence = 0.0f32;
-        for (wi, prob) in vad_probs.iter().enumerate() {
-            let wlen = if wi == 0 { first_len } else { 512 };
-            let end = off.saturating_add(wlen);
-            let slice = mono.get(off..end).ok_or_else(|| {
-                hakille_core::HakilleError::InferenceError(format!(
-                    "WakeWordDetector::process_gated: fenêtre {wi} hors bornes \
-                     (off={off}, wlen={wlen}, mono={}) — incohérence carry",
-                    mono.len()
-                ))
-            })?;
-            off = end;
-            let (rms_w, ratio_w) = band_measurements(slice);
-            ort_feats.push(ratio_w);
-            self.last_windows
-                .push((prob.clamp(0.0, 1.0), rms_w, ratio_w));
-            if *prob > vad_peak {
-                vad_peak = *prob;
-            }
-            band_sum += ratio_w;
-            let hot =
-                *prob > self.vad_gate && ratio_w >= self.band_threshold && rms_w >= MIN_WINDOW_RMS;
-            if hot {
-                run += 1;
-                if *prob > run_peak {
-                    run_peak = *prob;
-                }
-                run_band_sum += ratio_w;
-                run_n += 1;
-            } else {
-                run = 0;
-                run_peak = 0.0;
-                run_band_sum = 0.0;
-                run_n = 0;
-            }
-            if run > max_win {
-                // Parole continue, pas un mot-clé : on repart sans déclencher.
-                run = 0;
-                run_peak = 0.0;
-                run_band_sum = 0.0;
-                run_n = 0;
-                continue;
-            }
-            if !detected && run >= min_win {
-                let run_band = if run_n > 0 {
-                    run_band_sum / run_n as f32
-                } else {
-                    0.0
-                };
-                confidence = (0.65 * run_peak + 0.35 * run_band.clamp(0.0, 1.0)).clamp(0.0, 1.0);
-                if confidence >= self.threshold {
-                    detected = true;
-                }
-            }
-        }
-        self.trailing_hot_windows = if vad_probs.is_empty() {
-            self.trailing_hot_windows
-        } else if run > 0 {
-            run.min(max_win)
-        } else {
-            0
-        };
-        let mean_band = if vad_probs.is_empty() {
-            0.0
-        } else {
-            (band_sum / vad_probs.len() as f32).clamp(0.0, 1.0)
-        };
-        self.last_vad_prob = Some(vad_peak.clamp(0.0, 1.0));
-        self.last_band_ratio = Some(mean_band);
-
-        // Score neural réel si provisionné (features = ratios de bande par
-        // fenêtre) — bonus s'il confirme, jamais un veto silencieux.
-        let mut ort_prob: Option<f32> = None;
-        if let Some(scorer) = self.ort_scorer.as_mut()
-            && !ort_feats.is_empty()
-        {
-            match scorer.score_features(&ort_feats) {
-                Ok(p) => {
-                    ort_prob = Some(p);
-                    self.last_backend = WakeBackendKind::OrtReal;
-                }
-                Err(e) => {
-                    tracing::error!(
-                        error = %e,
-                        "WakeWordDetector::process_gated: forward ort du checkpoint \
-                         en échec — décision énergétique conservée"
-                    );
-                }
-            }
-        }
-        self.last_ort_prob = ort_prob;
-        if let Some(op) = ort_prob {
-            confidence = (0.5 * confidence + 0.5 * op).clamp(0.0, 1.0);
-            if detected && confidence < self.threshold {
-                detected = false;
-            }
-        }
-        if detected {
-            self.current_cooldown = self.cooldown_frames;
-            self.trailing_hot_windows = 0;
-        }
-        Ok(WakeWordDetection {
-            detected,
-            keyword: self.keyword.clone(),
-            confidence,
-            vad_prob: Some(vad_peak.clamp(0.0, 1.0)),
-            band_ratio: Some(mean_band),
-            backend: self.last_backend,
-            ort_prob,
-        })
+        Ok(neg(&self.keyword, self.last_vad_prob, self.last_band_ratio))
     }
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use hakille_core::Timestamp;
@@ -802,18 +490,24 @@ mod tests {
     }
 
     #[test]
-    fn instant_path_loud_onset_then_cooldown() {
-        let mut det = WakeWordDetector::default_hakille();
-        assert!(!det.process(&chunk(vec![0.0f32; 1600])).detected);
-        let loud = chunk(vec![0.3f32; 1600]);
-        let d = det.process(&loud);
-        assert!(d.detected, "onset fort mesuré doit déclencher");
-        assert_eq!(d.keyword, "Dis Hakille");
-        assert!(d.confidence >= 0.75);
-        assert!(d.band_ratio.is_some());
-        // Cooldown : le chunk suivant est bloqué.
-        let d2 = det.process(&loud);
-        assert!(!d2.detected, "cooldown obligatoire");
+    fn loud_energy_never_recognizes_hakille_even_with_zero_threshold() {
+        for threshold in [0.0, 0.25, 0.75, f32::NAN] {
+            let mut detector = WakeWordDetector::new("Hakille", threshold);
+            assert!(!detector.recognition_available());
+            for signal in [
+                vec![0.0; 1600],
+                vec![0.3; 1600],
+                sine(1000.0, 0.9, 16000),
+                vec![f32::INFINITY; 1600],
+            ] {
+                for _ in 0..12 {
+                    let result = detector.process(&chunk(signal.clone()));
+                    assert!(!result.detected);
+                    assert_eq!(result.confidence, 0.0);
+                    assert_eq!(result.ort_prob, None);
+                }
+            }
+        }
     }
 
     #[test]
@@ -833,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn gated_path_voiced_phrase_fires_once_real() {
+    fn real_vad_speech_is_never_keyword_evidence() {
         let phrase = gated_test_phrase();
         // 1) Défaut (0.75, 0.3-1.2 s, bande 0.20) : ZÉRO faux positif sur pics
         // isolés — la durée exigée n'est jamais atteinte — mais le VAD réel
@@ -866,9 +560,8 @@ mod tests {
             fires_default, 0,
             "pics isolés : pas de déclenchement sans durée soutenue"
         );
-        // 2) Resserre (gate 0.2, fenêtre 32 ms, bande 0.0, seuil 0.25) : les
-        // fenêtres excitées (VAD 0.49/0.59) déclenchent — gate, durée,
-        // confiance et cooldown prouvés de bout en bout avec le VRAI modèle.
+        // Même avec des paramètres historiquement permissifs, une activité
+        // VAD réelle ne devient jamais une preuve de reconnaissance du mot.
         let mut det2 = WakeWordDetector::new("test", 0.25);
         det2.with_vad_gate(0.2)
             .expect("gate valide")
@@ -883,6 +576,8 @@ mod tests {
                 buf[i] = *s;
             }
             let r = det2.process_gated(&chunk(buf)).expect("gated réel");
+            assert_eq!(r.confidence, 0.0);
+            assert_eq!(r.ort_prob, None);
             eprintln!(
                 "gated resserré: detected={} conf={:.3} vad={:?} band={:?} fenêtres={:?}",
                 r.detected,
@@ -897,9 +592,9 @@ mod tests {
                 assert!(r.vad_prob.unwrap_or(0.0) > 0.2, "VAD-gate strict");
             }
         }
-        assert!(
-            fires >= 1,
-            "les fenêtres excitées doivent déclencher au moins une fois"
+        assert_eq!(
+            fires, 0,
+            "Même un VAD/gate permissif ne reconnaît aucun mot-clé"
         );
     }
 
@@ -914,6 +609,57 @@ mod tests {
         assert!(det.ort_forward_calls().is_none());
         assert_eq!(oww_filename("Dis Hakille"), "openwakeword_dis_hakille.onnx");
         assert_eq!(oww_filename("  "), "openwakeword_keyword.onnx");
+    }
+
+    #[test]
+    fn checkpoint_presence_never_implies_compatible_keyword_frontend() {
+        let path = std::env::temp_dir().join(format!("hakille-wake-{}.onnx", uuid::Uuid::new_v4()));
+        std::fs::write(&path, b"checkpoint de test non chargeable").unwrap();
+        let mut detector = WakeWordDetector::default_hakille();
+        detector.oww_path = Some(path.clone());
+        let error = detector.maybe_upgrade_to_ort().unwrap_err();
+        assert!(error.to_string().contains("frontend"));
+        assert!(
+            detector
+                .process_gated(&chunk(sine(1000.0, 0.9, 16000)))
+                .is_err()
+        );
+        assert_eq!(detector.backend_kind(), WakeBackendKind::Energetic);
+        assert!(!detector.recognition_available());
+        assert_eq!(detector.ort_forward_calls(), None);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn missing_vad_is_explicit_and_no_activity_becomes_keyword() {
+        let mut detector = WakeWordDetector::default_hakille();
+        detector.vad_model_path = None;
+        assert!(detector.process_gated(&chunk(vec![0.3; 1600])).is_err());
+        assert!(!detector.measure_activity(&chunk(vec![0.3; 1600])).detected);
+    }
+
+    #[test]
+    fn gated_diagnostics_preserve_aligned_windows_across_fragmentation() {
+        let mut whole = WakeWordDetector::default_hakille();
+        if !real_vad_available(&whole) {
+            return;
+        }
+        let mut fragmented = WakeWordDetector::default_hakille();
+        let signal = sine(1000.0, 0.3, 2048);
+        whole.process_gated(&chunk(signal.clone())).unwrap();
+        let expected = whole.last_windows_debug().to_vec();
+        let mut actual = Vec::new();
+        for samples in signal.chunks(321) {
+            let detection = fragmented.process_gated(&chunk(samples.to_vec())).unwrap();
+            assert!(!detection.detected);
+            actual.extend_from_slice(fragmented.last_windows_debug());
+        }
+        assert_eq!(actual.len(), expected.len());
+        for (a, b) in actual.iter().zip(&expected) {
+            assert!((a.0 - b.0).abs() < 1e-6);
+            assert!((a.1 - b.1).abs() < 1e-6);
+            assert!((a.2 - b.2).abs() < 1e-6);
+        }
     }
 
     #[test]

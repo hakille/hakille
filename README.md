@@ -122,9 +122,9 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agen
 - [`hakille-sync`](crates/hakille-sync) : Synchronisation CRDT (grow-only sets + tombstones, vector clocks), handoff de tâche cross-device et réplication TiKV.
 
 ### 3. Perception, Voix & Inférence Neuronale
-- [`hakille-perception`](crates/hakille-perception) : Pipeline audio (SenseVoice-Small, Silero VAD, CAM++ et diarisation par clustering), client UI-TARS local, CameraPipeline et WorldModel. Un checkpoint openWakeWord personnalisé reste optionnel ; Nemotron n’est pas fourni.
+- [`hakille-perception`](crates/hakille-perception) : Pipeline audio (SenseVoice-Small, Silero VAD, CAM++ et diarisation par clustering), client UI-TARS local, CameraPipeline et WorldModel. L’activation passe par Whisper puis un contrôleur lexical ; aucun frontend openWakeWord compatible ni modèle Nemotron n’est fourni.
 - [`hakille-audio`](crates/hakille-audio) : I/O audio temps réel via `cpal` — capture micro 16 kHz (downmix + rééchantillonnage) et lecture PCM ; aucune simulation, erreur explicite si aucun périphérique.
-- [`hakille-voice`](crates/hakille-voice) : Codec Mimi neuronal complet (24 kHz, trames de 80 ms), TTS formantique Klatt et détecteur d’interruption Barge-In. Le modèle de dialogue Moshi est absent ; `MoshiEngine::is_simulated()` reste `true`.
+- [`hakille-voice`](crates/hakille-voice) : Service d’écoute locale Silero → Whisper → activation, codec Mimi neuronal complet (24 kHz, trames de 80 ms), TTS formantique Klatt et détecteur d’interruption Barge-In. Le modèle de dialogue Moshi est absent ; `MoshiEngine::is_simulated()` reste `true`.
 - [`hakille-inference`](crates/hakille-inference) : Runtimes neuronaux natifs (parseur binaire streaming GGUF v3, parseur Safetensors Candle, inspecteur ONNX Runtime `ort`, registre de réservations mémoire bornées) et provisioner d’artefacts vérifiés. Le registre ne décharge pas automatiquement les tenseurs des moteurs.
 
 ### 4. Cognition, Agents, Confiance & UI
@@ -260,6 +260,36 @@ Le démon expose son runtime WASM au desktop par un contrat IPC additif :
 - une demande de panneau faite avant la connexion au démon est **rejouée** à la connexion (sinon le panneau resterait vide).
 
 Limites explicites : seuls `echo-agent` et `count-agent` ont un binaire réel ; les cinq agents métier de `agents/` restent des manifests déclaratifs (pas de `.wasm` livré, `spawn_sandboxed` non branché).
+
+### Activation vocale locale : microphone explicite
+
+Le worker vocal raccorde capture, Silero VAD, Whisper et reconnaissance
+textuelle de « Hakille ». L'énergie sonore seule ne peut plus activer le
+mot-clé. Le microphone est **désactivé par défaut**.
+
+```bash
+cargo run --locked -p hakille-daemon -- models download --model silero-vad-v5
+cargo run --locked -p hakille-daemon -- models download --model whisper-tiny-multilingual
+cargo run --locked -p hakille-daemon -- voice devices
+# Session continue ; Ctrl+C arrête :
+cargo run --locked -p hakille-daemon -- --listen --models-dir models --voice-language fr
+# Diagnostic WAV sans microphone ni exécution de commande :
+cargo run --locked -p hakille-daemon -- voice test --audio commande.wav --models-dir models --language fr
+```
+
+Dans le desktop connecté au démon `--serve`, utiliser **F8 avec la fenêtre
+active**, le bouton microphone ou l'option `--voice`. F8 n'est pas global ;
+masquer le HUD ne coupe pas une écoute explicitement activée. Les commandes
+vocales suivent les contrôles habituels, et les segments coupés à la limite
+de 12 secondes sont refusés. `--listen` et `--serve` sont incompatibles.
+
+Whisper expose 99 codes de langue, sans garantie de précision sur chacune :
+les phrases courtes et le nom propre Hakille restent sensibles aux erreurs
+ASR. Le service fournit l'indice lexical explicite « Hakille » au décodeur,
+sans remplacer le texte reconnu ; cela ne garantit pas une commande correcte.
+Ce lot est testé sur Linux sans microphone physique ; Windows/macOS et
+les périphériques réels restent à vérifier. Commandes, alias, états du HUD
+et preuves : [Activation vocale](docs/ACTIVATION_VOCALE.md).
 
 ### Voix : timeline de visèmes (approximation documentée)
 

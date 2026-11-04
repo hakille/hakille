@@ -137,7 +137,8 @@ mod tests {
     }
 
     #[test]
-    fn test_wake_word_trigger_and_cooldown() {
+    #[allow(deprecated)]
+    fn test_wake_word_energy_never_identifies_keyword() {
         let mut detector = WakeWordDetector::default_hakille();
 
         // Silence: not detected
@@ -149,7 +150,7 @@ mod tests {
         };
         assert!(!detector.process(&silent_chunk).detected);
 
-        // High-energy voice chunk: detected
+        // Une forte énergie ne prouve aucun mot-clé.
         let energetic_chunk = AudioChunk {
             samples: vec![0.3f32; 1600],
             sample_rate: 16_000,
@@ -157,14 +158,15 @@ mod tests {
             timestamp: hakille_core::Timestamp::now(),
         };
         let det = detector.process(&energetic_chunk);
-        assert!(det.detected);
+        assert!(!det.detected);
+        assert_eq!(det.confidence, 0.0);
         assert_eq!(det.keyword, "Dis Hakille");
 
-        // Immediately following chunk: must be blocked by cooldown
+        // Même répétée, cette énergie ne devient jamais une reconnaissance.
         let follow_up = detector.process(&energetic_chunk);
         assert!(
             !follow_up.detected,
-            "Cooldown must prevent consecutive wake word triggers"
+            "L’énergie seule ne doit jamais déclencher Hakille"
         );
     }
 

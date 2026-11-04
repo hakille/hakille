@@ -301,6 +301,45 @@ impl ModelCatalog {
                 expected_vram_mb: 400,
                 description: "Checkpoint Kyutai Mimi pour codec audio neural ; le diagnostic distingue inspection, chargement et encodage/décodage réels.".to_string(),
             },
+            // 8. Whisper tiny multilingue : chargé uniquement par la voie vocale choisie.
+            ModelEntry {
+                id: "whisper-tiny-multilingual".to_string(),
+                name: "OpenAI Whisper tiny multilingue".to_string(),
+                model_ref: ModelReference("whisper-tiny-multilingual".to_string()),
+                role: PipelineRole::PerceptionAsr,
+                tier: ModelTier::Native,
+                runtime: RuntimeType::Candle,
+                format: ModelFormat::Safetensors,
+                primary_artifact: ModelArtifact {
+                    filename: "whisper-tiny.safetensors".to_string(),
+                    primary_url: "https://huggingface.co/openai/whisper-tiny/resolve/169d4a4341b33bc18d8881c4b69c2e104e1cc0af/model.safetensors".to_string(),
+                    fallback_url: None,
+                    size_bytes: 151_061_672,
+                    sha256_checksum: Some("7ebd0e69e78190ffe1438491fa05cc1f5c1aa3a4c4db3bc1723adbb551ea2395".to_string()),
+                    is_essential: true,
+                },
+                auxiliary_artifacts: vec![
+                    ModelArtifact {
+                        filename: "whisper-tiny-config.json".to_string(),
+                        primary_url: "https://huggingface.co/openai/whisper-tiny/resolve/169d4a4341b33bc18d8881c4b69c2e104e1cc0af/config.json".to_string(),
+                        fallback_url: None,
+                        size_bytes: 1_983,
+                        sha256_checksum: Some("ffdccec4f3211f4c63310f2b7098f309fe70f3952cedc5e4d11e43f5b2379b98".to_string()),
+                        is_essential: true,
+                    },
+                    ModelArtifact {
+                        filename: "whisper-tiny-tokenizer.json".to_string(),
+                        primary_url: "https://huggingface.co/openai/whisper-tiny/resolve/169d4a4341b33bc18d8881c4b69c2e104e1cc0af/tokenizer.json".to_string(),
+                        fallback_url: None,
+                        size_bytes: 2_480_466,
+                        sha256_checksum: Some("27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566".to_string()),
+                        is_essential: true,
+                    },
+                ],
+                expected_ram_mb: 400,
+                expected_vram_mb: 0,
+                description: "Reconnaissance vocale locale Whisper tiny multilingue (99 langues du tokenizer), PCM mono 16 kHz ; performances variables selon la langue et l'audio. Chargement indépendant des sept modèles historiques.".to_string(),
+            },
         ]
     }
 

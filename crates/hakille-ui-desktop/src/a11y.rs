@@ -166,6 +166,44 @@ pub fn build_shell_tree(
     }
 }
 
+/// Identifiants réservés hors cartes (40..42), listes et panneau (500).
+pub const VOICE_TOGGLE_NODE: NodeId = NodeId(60);
+pub const VOICE_STATUS_NODE: NodeId = NodeId(61);
+
+pub fn append_voice_controls(
+    update: &mut TreeUpdate,
+    state: &crate::app::VoiceState,
+    enabled: bool,
+) {
+    let mut button = node(
+        Role::Button,
+        if enabled {
+            "Arrêter le microphone — F8"
+        } else {
+            "Activer le microphone — F8"
+        },
+        &[Action::Focus, Action::Click],
+        vec![],
+    );
+    button.set_description(state.description());
+    let rect = crate::renderer::voice_button_rect();
+    button.set_bounds(accesskit::Rect::new(
+        rect.x as f64,
+        rect.y as f64,
+        (rect.x + rect.w) as f64,
+        (rect.y + rect.h) as f64,
+    ));
+    let mut status = node(Role::Label, &state.description(), &[], vec![]);
+    status.set_live(accesskit::Live::Polite);
+    update.nodes.push((VOICE_TOGGLE_NODE, button));
+    update.nodes.push((VOICE_STATUS_NODE, status));
+    if let Some((_, root)) = update.nodes.iter_mut().find(|(nid, _)| *nid == id(0)) {
+        let mut children = root.children().to_vec();
+        children.extend([VOICE_TOGGLE_NODE, VOICE_STATUS_NODE]);
+        root.set_children(children);
+    }
+}
+
 /// Panneau consulté : tout le texte reçu reste lisible par le lecteur
 /// d'écran, même lorsque la fenêtre ne montre qu'une page.
 pub const CONSULT_PANEL_NODE: NodeId = NodeId(500);
@@ -424,5 +462,36 @@ mod tests {
             update.nodes.len(),
             "identifiants AccessKit uniques"
         );
+    }
+    #[test]
+    fn a11y_voice_button_and_live_status_have_unique_ids_and_real_state() {
+        let app = crate::app::HudApp::new(
+            false,
+            true,
+            crate::runtime::FrameBudget::battery_saver(),
+            true,
+        );
+        let mut tree = build_shell_tree(&app.snapshot(), &[], &[]);
+        append_voice_controls(&mut tree, &crate::app::VoiceState::Transcribing, true);
+        let button = &tree
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == VOICE_TOGGLE_NODE)
+            .unwrap()
+            .1;
+        assert_eq!(button.role(), Role::Button);
+        assert!(button.supports_action(Action::Click));
+        assert!(button.label().unwrap().contains("Arrêter"));
+        let status = &tree
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == VOICE_STATUS_NODE)
+            .unwrap()
+            .1;
+        assert_eq!(status.live(), Some(accesskit::Live::Polite));
+        assert!(status.value().unwrap().contains("Transcription locale"));
+        let ids: std::collections::HashSet<_> = tree.nodes.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids.len(), tree.nodes.len());
+        assert!(tree.nodes[0].1.children().contains(&VOICE_TOGGLE_NODE));
     }
 }
