@@ -66,6 +66,7 @@ fn exported_patches_apply_with_git_and_preserve_line_endings() {
         ("file.rs", "abc", "abc\n"),
         ("file.rs", "abc\n", "abc"),
         ("file.rs", "a\r\nb\r\n", "a\nb\n"),
+        ("file.rs", "a\nb\n", "a\r\nb\r\n"),
         ("file.rs", "", "nouveau\n"),
         ("file.rs", "ancien\n", ""),
         ("fichier avec espace.txt", "漢字\n", "été\nfin"),
@@ -73,8 +74,18 @@ fn exported_patches_apply_with_git_and_preserve_line_endings() {
     ] {
         std::fs::write(root.join(name), before).unwrap();
         let patch = CodePatchEngine::create_patch(name, before, after, "test exact");
+        // Vérifier les octets du patch, sans conversion de fins de ligne
+        // imposée par la configuration Git globale (autocrlf sur Windows).
         let mut child = Command::new("git")
-            .args(["apply", "--whitespace=nowarn", "-"])
+            .args([
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "core.eol=lf",
+                "apply",
+                "--whitespace=nowarn",
+                "-",
+            ])
             .current_dir(&root)
             .stdin(Stdio::piped())
             .stderr(Stdio::piped())

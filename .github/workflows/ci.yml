@@ -47,7 +47,8 @@ jobs:
         # Windows : 0 warning (vérifié localement). `-D warnings` reste désactivé
         # tant que la matrice Ubuntu n'a pas été repassée en revue.
       - name: tests
-        run: cargo test --workspace --locked
+        # Exécuter toutes les suites même si l’une échoue ; le job reste en échec.
+        run: cargo test --workspace --locked --no-fail-fast
       - name: conformance
         run: cargo run -p xtask -- conformance
 
