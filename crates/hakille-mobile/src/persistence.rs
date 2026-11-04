@@ -76,6 +76,7 @@ impl Core {
             }
         }
         candidate.cancel_hold();
+        candidate.invalidate_voice();
         candidate.snapshot.microphone_enabled = false;
         candidate.refresh_recovery();
         if candidate.snapshot.recovery_required {

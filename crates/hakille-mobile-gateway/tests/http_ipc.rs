@@ -177,16 +177,33 @@ async fn http_auth_origin_size_version_and_allowlist_fail_before_ipc() {
             .status(),
         403
     );
-    let huge = rig
-        .client
-        .post(format!("{}/v1/request", rig.base))
-        .bearer_auth(MOBILE_TOKEN)
-        .header("Content-Type", "application/json")
-        .body(" ".repeat((1 << 20) + 1))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(huge.status(), 413);
+    // Le Content-Length excessif doit être refusé avant toute lecture du corps.
+    // Envoyer aussi 1 Mio ici crée sous Windows une course entre l'upload et
+    // la fermeture HTTP : WSAECONNABORTED peut masquer la réponse 413 valide.
+    // Le test chunked ci-dessous vérifie séparément la limite sur les octets lus.
+    let mut socket = tokio::net::TcpStream::connect(rig.address).await.unwrap();
+    let headers = format!(
+        "POST /v1/request HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {MOBILE_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nExpect: 100-continue\r\n\r\n",
+        rig.address,
+        (1 << 20) + 1
+    );
+    socket.write_all(headers.as_bytes()).await.unwrap();
+    let mut oversized_response = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        socket.read_to_string(&mut oversized_response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        oversized_response.starts_with("HTTP/1.1 413"),
+        "{oversized_response}"
+    );
+    let (_, body) = oversized_response.split_once("\r\n\r\n").unwrap();
+    let rejected: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(rejected["error"]["code"], "too_large");
+    assert_eq!(rejected["error"]["issue_unknown"], false);
     let mut wrong_version = request.clone();
     wrong_version.version = 999;
     for refused in [

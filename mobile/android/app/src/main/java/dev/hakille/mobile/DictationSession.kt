@@ -6,7 +6,7 @@ enum class DictationIssue { ANDROID_VERSION, ENGINE_MISSING, PERMISSION_DENIED, 
 data class DictationStatus(val phase: DictationPhase = DictationPhase.IDLE, val issue: DictationIssue? = null) {
     val active: Boolean get() = phase in setOf(DictationPhase.PERMISSION, DictationPhase.STARTING, DictationPhase.LISTENING, DictationPhase.FINISHING, DictationPhase.PROCESSING)
 }
-data class DictationContext(val connection: Long, val revision: Long, val draft: String, val allowed: Boolean)
+data class DictationContext(val connection: Long, val revision: Long, val draft: String, val allowed: Boolean, val voiceContextId: String? = null)
 
 interface DictationEngine {
     fun start(language: String)
@@ -36,6 +36,7 @@ class DictationSession(
     private val context: () -> DictationContext,
     private val commitDraft: (DictationContext, String) -> Boolean,
     private val changed: (DictationStatus) -> Unit,
+    private val prepare: () -> Boolean = { true },
 ) {
     var status = DictationStatus(); private set
     private var generation = 0L
@@ -51,6 +52,7 @@ class DictationSession(
         cancel()
         val issue = platform.unavailable()
         if (issue != null) { update(DictationStatus(DictationPhase.ERROR, issue)); return null }
+        if (!prepare()) { update(DictationStatus(DictationPhase.ERROR, DictationIssue.CONTEXT_CHANGED)); return null }
         val current = context()
         if (!current.allowed) { update(DictationStatus(DictationPhase.ERROR, DictationIssue.CONTEXT_CHANGED)); return null }
         generation++; captured = current; language = languageTag

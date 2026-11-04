@@ -66,12 +66,37 @@ def network_policy(aapt, apk):
     return "HTTPS par défaut ; HTTP permis uniquement vers 127.0.0.1"
 
 
+def brand_assets(archive, aapt, apk):
+    expected = {
+        "res/font/inter_variable.ttf": "29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031",
+        "res/raw/inter_ofl.txt": "5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57",
+    }
+    digests = {}
+    for name, digest in expected.items():
+        if name not in archive.namelist() or archive.getinfo(name).file_size > 2 * 1024 * 1024:
+            raise ValueError(f"Police/licence attendue absente ou trop volumineuse : {name}")
+        actual = hashlib.sha256(archive.read(name)).hexdigest()
+        if actual != digest:
+            raise ValueError(f"Police/licence différente de la version officielle épinglée : {name}")
+        digests[name] = actual
+    manifest = run(str(aapt), "dump", "xmltree", str(apk), "--file", "AndroidManifest.xml")
+    resources = run(str(aapt), "dump", "resources", str(apk))
+    icons = re.findall(r":(?:icon|roundIcon)\([^)]*\)=@(0x[0-9a-f]+)", manifest)
+    if not icons or any(not re.search(rf"resource {icon} mipmap/ic_hakille_launcher\b", resources) for icon in icons):
+        raise ValueError("Le manifeste ne référence pas l'icône Hakille officielle")
+    for mark in ("hakille_mark_dark", "hakille_mark_light"):
+        if not re.search(rf"resource 0x[0-9a-f]+ drawable/{mark}\b", resources):
+            raise ValueError(f"Marque UI absente de l'APK : {mark}")
+    return {"sha256": digests, "launcher": "mipmap/ic_hakille_launcher", "rendering_verified": False}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("apk", type=Path)
     parser.add_argument("--sdk", type=Path, default=os.environ.get("ANDROID_SDK_ROOT", os.environ.get("ANDROID_HOME")))
     parser.add_argument("--build-tools", default="35.0.0")
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--brand-assets", action="store_true", help="Exige Inter/licence épinglés et les marques/icônes Hakille")
     args = parser.parse_args()
     if not args.apk.is_file() or args.sdk is None:
         raise ValueError("APK existant et --sdk/ANDROID_SDK_ROOT requis")
@@ -79,6 +104,7 @@ def main():
     signature = run(str(tools / "apksigner"), "verify", "--verbose", str(args.apk))
     run(str(tools / "zipalign"), "-c", "-P", "16", "4", str(args.apk))
     native = {}
+    branding = None
     expected = {f"lib/{abi}/{name}" for abi in ["arm64-v8a", "x86_64"] for name in ["libhakille_mobile.so", "libjnidispatch.so"]}
     with zipfile.ZipFile(args.apk) as archive:
         names = archive.namelist()
@@ -95,10 +121,12 @@ def main():
             if entry.file_size > 128 * 1024 * 1024 or entry.compress_type != zipfile.ZIP_STORED:
                 raise ValueError(f"Bibliothèque trop volumineuse ou compressée : {name}")
             native[name] = elf_alignment(archive.read(name), 183 if "/arm64-v8a/" in name else 62)
+        if args.brand_assets:
+            branding = brand_assets(archive, tools / "aapt2", args.apk)
     report = {"apk": str(args.apk), "sha256": hashlib.sha256(args.apk.read_bytes()).hexdigest(),
               "signature_verified": True, "zip_alignment_16k_verified": True,
               "elf_load_alignments": native, "network_policy": network_policy(tools / "aapt2", args.apk),
-              "signature_details": signature.strip(), "runtime_tested": False}
+              "signature_details": signature.strip(), "brand_assets": branding, "runtime_tested": False}
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")

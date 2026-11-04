@@ -177,3 +177,12 @@ plutôt qu'une simple compilation des tests.
   changements n'ajoutent pas de moteur neuronal embarqué au téléphone.
 - Les sept modèles ne sont pas déclarés tous opérationnels sur toutes les plateformes.
   La disponibilité réelle des artefacts, pilotes et accélérateurs demeure déterminante.
+
+## Mise à jour après cette mesure
+
+La [CI Mobile de `22510d6`](https://github.com/hakille/hakille/actions/runs/41777888530)
+a ensuite réussi : sept assertions Android sur émulateur et seize XCTest iOS
+sur simulateur. Les difficultés de l’émulateur Linux local consignées plus haut
+restent un résultat de cet environnement, pas un échec de cette CI.
+La refonte suivante est suivie dans le
+[rapport design et voix](VALIDATION_DESIGN_VOIX_MOBILE_2026-11-04.md).

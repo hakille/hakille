@@ -23,8 +23,22 @@ décrit cet état initial, les écarts de confiance et les exigences de validati
   local de la langue choisie et requête imposant ce mode. Sans ce support,
   elle refuse l'écoute ; aucun repli cloud n'est configuré.
   Les permissions sont demandées sur action explicite, la capture est bornée
-  à 30 secondes et le résultat final complète seulement le brouillon.
+  à 30 secondes ; en mode dictée, le résultat final complète seulement le brouillon.
   La dictée ne déclenche ni commande, ni approbation, ni réveil permanent.
+- Le mode conversation vocale est explicitement activé et chaque tour démarre
+  sur pression. Il soumet le texte final au hub après le checkpoint durable,
+  puis lit sa seule réponse finale corrélée par contexte et requête. Les cartes
+  de décision restent manuelles. La navigation et l’arrière-plan invalident
+  le contexte ; aucune boucle de réactivation du microphone n’est installée.
+- Les hôtes fournissent caméra, sélection de fichier bornée, localisation
+  ponctuelle et ouverture confirmée de destinations fixes. Les aperçus restent
+  locaux et temporaires ; aucun texte de modèle n’est interprété comme une
+  commande du téléphone. La lecture est bornée à 1 Mio sur Android, 8 Mio sur
+  iOS ; son annulation reste coopérative vis-à-vis du fournisseur. Android
+  efface les aperçus en quittant le panneau ou à la pause, tout en acceptant le
+  retour d'un sélecteur/caméra externe lancé explicitement. iOS les conserve
+  entre onglets jusqu'à effacement explicite ou passage en arrière-plan.
+  Les restrictions de l’OS et permissions s’appliquent.
 - `hakille-mobile-gateway` est un processus séparé, lancé explicitement. Il
   écoute sur IPv4 loopback et traduit les échanges HTTP authentifiés vers
   l'IPC local existant. Le démon conserve ses vérifications de capacités et

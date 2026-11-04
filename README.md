@@ -8,7 +8,7 @@
 # Hakille — Sovereign Cognitive Operating System (Rust Native)
 
 [![Rust Version](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org)
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](.github/workflows/ci.yml)
+[![Build Status](https://github.com/hakille/hakille/actions/workflows/ci.yml/badge.svg)](https://github.com/hakille/hakille/actions/workflows/ci.yml)
 [![Conformance](https://img.shields.io/badge/conformance-66%20fast%20%2B12%20slow%20ignored-yellow.svg)](.github/workflows/ci.yml)
 [![Security](https://img.shields.io/badge/security-Biscuit%20Capabilities-red.svg)]()
 [![No Python](https://img.shields.io/badge/python-0%25%20(Pure%20Rust)-purple.svg)]()
@@ -248,8 +248,18 @@ Une action explicite demande les permissions, puis le résultat final complète
 le brouillon ; **Envoyer** reste une action séparée. Aucun modèle Hakille
 n'est chargé sur le téléphone et aucun réveil vocal permanent n'y est fourni.
 
+L’interface privilégie désormais la voix : quatre espaces **Voix, Mémoire,
+Activité et Hub**, logo officiel, police Inter et thèmes issus des tokens.
+Le mode conversation, activé explicitement, envoie la transcription finale
+au hub et lit uniquement la réponse corrélée avec une voix locale disponible.
+Chaque tour exige une pression ; les cartes gardent leur approbation séparée.
+Le panneau téléphone propose caméra, fichier choisi, localisation ponctuelle
+et ouverture confirmée d’applications autorisées. Les aperçus restent locaux.
+Voir le [design et son périmètre](docs/DESIGN_MOBILE_2026-11-04.md).
+
 Avant HTTP, les hôtes sauvegardent un checkpoint v2 durable. Une mutation
-interrompue revient comme `unknown` au redémarrage, sans rejeu automatique.
+encore marquée en cours revient comme `unknown` au redémarrage, sans rejeu
+automatique.
 Le statut et le journal restent consultables ; prendre en compte les
 avertissements permet la reprise mais ne confirme pas les effets métier.
 Le handoff signé v2 de la bibliothèque de synchronisation exige séparément
@@ -259,10 +269,11 @@ synchronisation réseau automatique de ces applications.
 Le [guide mobile](mobile/README.md) décrit la construction, la connexion et
 les scripts d'inspection APK, de parcours sur émulateur Android et de tests
 iOS sur simulateur. Le [rapport de seconde itération](docs/VALIDATION_MOBILE_SUITE_2026-11-04.md)
-sépare les résultats acquis des validations restantes. La compilation et
-les tests iOS nécessitent macOS/Xcode ; cette session Linux ne les établit
-pas. La dictée avec microphone physique, TalkBack et VoiceOver restent à
-valider sur les appareils ciblés.
+sépare les résultats acquis des validations restantes. La CI macOS et Android
+a ensuite validé la version `22510d6` ; les résultats de la nouvelle interface
+sont suivis dans le [rapport design/voix](docs/VALIDATION_DESIGN_VOIX_MOBILE_2026-11-04.md).
+La dictée avec microphone physique, TalkBack et VoiceOver restent à valider
+sur les appareils ciblés.
 
 ### Cartes d'action (démon → desktop)
 

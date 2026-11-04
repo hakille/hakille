@@ -42,6 +42,19 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
     val error = _error.asStateFlow()
     private val _savedEndpoint = MutableStateFlow("")
     val savedEndpoint = _savedEndpoint.asStateFlow()
+    val devices = DeviceCapabilitiesController(application, viewModelScope)
+
+    private val voicePolicy = VoiceTurnPolicy()
+    private var voiceLanguage = java.util.Locale.getDefault().toLanguageTag()
+    private val _voiceConversationEnabled = MutableStateFlow(false)
+    val voiceConversationEnabled = _voiceConversationEnabled.asStateFlow()
+    private val _voiceDictationStatus = MutableStateFlow(DictationStatus())
+    val voiceDictationStatus = _voiceDictationStatus.asStateFlow()
+    private val _speechStatus = MutableStateFlow(LocalSpeechStatus())
+    val speechStatus = _speechStatus.asStateFlow()
+    private val _voiceNotice = MutableStateFlow("")
+    val voiceNotice = _voiceNotice.asStateFlow()
+    private val speaker = AndroidLocalSpeaker(application) { _speechStatus.value = it }
 
     private val _dictationStatus = MutableStateFlow(DictationStatus())
     val dictationStatus = _dictationStatus.asStateFlow()
@@ -53,7 +66,57 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
             else dispatch("set_draft") { put("text", text) }
         },
         changed = { _dictationStatus.value = it },
+        prepare = { stopVoiceTurn(); true },
     )
+    val voiceDictation = DictationSession(
+        AndroidDictationPlatform(application), context = ::voiceContext,
+        commitDraft = { expected, text ->
+            if (voiceContext() != expected || expected.voiceContextId == null) false
+            else {
+                val accepted = dispatch("submit_voice") {
+                    put("context_id", JsonPrimitive(expected.voiceContextId.toBigInteger())); put("text", text)
+                }
+                val id = _snapshot.value.objectOrNull("pending")?.text("request_id")?.toULongOrNull()
+                if (accepted && id != null) voicePolicy.awaitReply(id) else false
+            }
+        },
+        changed = {
+            _voiceDictationStatus.value = it
+            if (it.phase in setOf(DictationPhase.ERROR, DictationPhase.CANCELLED)) {
+                voicePolicy.cancel()
+                if (!_restoring.value && !restoreBlocked) accept(bridge.dispatchJson("{\"type\":\"cancel_voice\"}"))
+            }
+        },
+        prepare = {
+            dictation.cancel(); speaker.stop(false); voicePolicy.cancel()
+            _voiceConversationEnabled.value && credentials != null && foregroundActive && dispatch("begin_voice")
+        },
+    )
+    private fun voiceContext(): DictationContext {
+        val base = dictationContext()
+        val id = _snapshot.value["voice_context_id"]?.jsonPrimitive?.contentOrNull?.takeUnless { it == "null" }
+        return base.copy(allowed = base.allowed && _voiceConversationEnabled.value && id != null,
+            voiceContextId = id)
+    }
+    fun enableVoiceConversation(enabled: Boolean) {
+        stopVoiceTurn()
+        voicePolicy.enable(enabled)
+        _voiceConversationEnabled.value = enabled
+        if (enabled) _voiceNotice.value = ""
+    }
+    fun startVoiceTurn(language: String): Long? {
+        voiceLanguage = language
+        return voiceDictation.requestStart(language)
+    }
+    fun stopVoicePlayback() { speaker.stop(); voicePolicy.cancel() }
+    fun stopVoiceTurn() {
+        val voiceRequest = _snapshot.value.text("voice_request_id").toULongOrNull()
+        if (voiceRequest != null && _snapshot.value.objectOrNull("pending")?.text("request_id")?.toULongOrNull() == voiceRequest) {
+            generation++; operation?.cancel(); operation = null
+        }
+        voiceDictation.cancel(); speaker.stop(false); voicePolicy.cancel()
+        if (!_restoring.value && !restoreBlocked) accept(bridge.dispatchJson("{\"type\":\"cancel_voice\"}"))
+    }
     private fun dictationContext() = DictationContext(
         generation, draftRevision, _snapshot.value.text("draft"),
         !_restoring.value && !restoreBlocked && foregroundActive &&
@@ -111,6 +174,8 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun resetConnection(): Long {
+        devices.clear()
+        enableVoiceConversation(false)
         dictation.cancel(); draftRevision++
         generation++; configurationJob?.cancel(); operation?.cancel(); operation = null; credentials = null
         // Une déconnexion interrompt l’ancien tour sans effacer son incertitude.
@@ -160,6 +225,7 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
 
     fun dispatch(type: String, values: JsonObjectBuilder.() -> Unit = {}): Boolean {
         if (_restoring.value || restoreBlocked) return false
+        if (type !in setOf("begin_voice", "submit_voice", "cancel_voice", "set_foreground")) stopVoiceTurn()
         if (type != "set_foreground") dictation.cancel()
         if (type == "set_draft") draftRevision++
         val action = buildJsonObject { put("type", type); values() }
@@ -167,12 +233,18 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun foreground(active: Boolean) {
+        if (!active && voiceDictation.status.phase == DictationPhase.PERMISSION) {
+            _voiceNotice.value = getApplication<Application>().getString(R.string.voice_permission_resume)
+        }
         foregroundActive = active
+        if (!active) devices.pause()
+        if (!active) enableVoiceConversation(false) else voiceDictation.checkPermission()
         if (!active) dictation.cancel() else dictation.checkPermission()
         if (!active) { generation++; operation?.cancel(); operation = null; configurationJob?.cancel() }
         if (!_restoring.value) accept(bridge.dispatchJson(buildJsonObject { put("type", "set_foreground"); put("active", active) }.toString()))
     }
     fun cancelRequest() {
+        stopVoiceTurn()
         dictation.cancel()
         val pending = _snapshot.value.objectOrNull("pending") ?: return
         generation++; operation?.cancel(); operation = null
@@ -212,7 +284,23 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
                     sent = true
                     gateway.send(configuration, frame.toString(), session)
                 }
-                if (epoch == generation) accept(bridge.receiveJson(id, response))
+                if (epoch == generation) {
+                    val accepted = accept(bridge.receiveJson(id, response))
+                    val reply = _snapshot.value.objectOrNull("voice_reply")
+                    val voiceRequest = _snapshot.value.text("voice_request_id").toULongOrNull()
+                    val correlated = reply != null && reply.text("request_id").toULongOrNull() == id &&
+                        reply.text("context_id") == _snapshot.value.text("voice_context_id") && voiceRequest == id
+                    val expectedVoiceReply = voicePolicy.expects(id)
+                    val text = voicePolicy.finish(id, accepted && correlated, reply?.text("text"))
+                    if (text != null && foregroundActive && _voiceConversationEnabled.value) speaker.speak(text, voiceLanguage)
+                    else if (expectedVoiceReply && accepted && voiceRequest == id && foregroundActive && _voiceConversationEnabled.value) {
+                        val outcome = _snapshot.value.rows("outcomes").firstOrNull { it.text("request_id").toULongOrNull() == id }
+                        val responseText = outcome?.objectOrNull("result")?.objectOrNull("HudReply")?.text("response")
+                        if (outcome?.text("state") == "confirmed" && responseText != null && responseText.toByteArray(Charsets.UTF_8).size > 8192) {
+                            _speechStatus.value = LocalSpeechStatus(LocalSpeechPhase.ERROR, LocalSpeechIssue.TEXT_TOO_LONG)
+                        }
+                    }
+                }
             } catch (_: CancellationException) { /* Cancellation is reported explicitly by the initiating action. */ }
             catch (_: Exception) {
                 if (epoch == generation) {
@@ -230,6 +318,8 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        devices.clear()
+        voiceDictation.cancel(); speaker.stop(false)
         dictation.cancel()
         super.onCleared()
     }

@@ -59,6 +59,8 @@ private final class DictationObservers {
 @MainActor final class NativeDictationController {
     private var policy = DictationPolicy()
     private var completionGeneration: UUID?
+    private var capturePreparation: (() throws -> Void)?
+    private var completionMessage = String(localized: "Dictation added to the draft. Review it before sending.")
     private var isForeground = false
     private var recognizer: SFSpeechRecognizer?
     private var resources: DictationResources?
@@ -72,10 +74,11 @@ private final class DictationObservers {
         self.onStatus = onStatus; self.onFinal = onFinal
         installObservers()
     }
-    func start(localeIdentifier: String) {
+    func start(localeIdentifier: String, beforeCapture: (() throws -> Void)? = nil, completionMessage: String = String(localized: "Dictation added to the draft. Review it before sending.")) {
         do {
             let token = try policy.begin(foreground: isForeground)
             completionGeneration = nil
+            capturePreparation = beforeCapture; self.completionMessage = completionMessage
             publish(String(localized: "Requesting speech and microphone permissions…"))
             guard let candidate = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier)) else { throw DictationFailure.unsupportedLanguage }
             guard candidate.supportsOnDeviceRecognition else { throw DictationFailure.localRecognitionUnavailable }
@@ -131,6 +134,7 @@ private final class DictationObservers {
         }
         do {
             try DictationPolicy.requireLocalSupport(supported: recognizer.supportsOnDeviceRecognition, available: recognizer.isAvailable)
+            try capturePreparation?(); capturePreparation = nil
             _ = policy.transition(.preparing, token: token)
             let current = DictationResources(); resources = current
             let session = AVAudioSession.sharedInstance()
@@ -193,7 +197,7 @@ private final class DictationObservers {
                 let successful = await saved.value
                 guard let self, self.policy.phase == .completed, self.completionGeneration == token else { return }
                 self.completionGeneration = nil
-                if successful { self.publish(String(localized: "Dictation added to the draft. Review it before sending.")) }
+                if successful { self.publish(self.completionMessage) }
                 else { self.fail(DictationFailure.storageUnavailable) }
             }
         } catch { fail(error as? DictationFailure ?? .storageUnavailable) }
@@ -206,7 +210,7 @@ private final class DictationObservers {
         publish(restored ? error.localizedDescription : DictationFailure.audioSessionFailure.localizedDescription)
     }
     @discardableResult private func stopResources() -> Bool {
-        deadline?.cancel(); deadline = nil; watchdog?.cancel(); watchdog = nil
+        deadline?.cancel(); deadline = nil; watchdog?.cancel(); watchdog = nil; capturePreparation = nil
         let restored = resources?.cancel() ?? true
         resources = nil; recognizer = nil
         return restored

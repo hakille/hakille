@@ -4,10 +4,16 @@
 Les deux applications appellent le même cœur Rust
 [`hakille-mobile`](../crates/hakille-mobile) par UniFFI. Elles ne contiennent
 pas de WebView et ne chargent aucun modèle Hakille sur le téléphone. La
-dictée optionnelle utilise le moteur local fourni par le système mobile.
+reconnaissance et la synthèse vocales optionnelles utilisent les moteurs locaux
+fournis par le système mobile.
 
 Les résultats mesurés et les limites sont consignés dans le
 [rapport de validation de la seconde itération](../docs/VALIDATION_MOBILE_SUITE_2026-11-04.md).
+
+La navigation propose **Voix, Mémoire, Activité et Hub**. Le thème sombre par
+défaut, les variantes clair/système, le logo officiel et la police Inter
+reprennent les [principes du design mobile](../docs/DESIGN_MOBILE_2026-11-04.md).
+L’écran Voix privilégie la parole ; le clavier et les détails restent accessibles.
 
 Les écrans exposent la conversation, le statut du hub, la recherche et
 l'enregistrement de mémoire, le journal, les agents réellement disponibles
@@ -16,8 +22,9 @@ et les cartes d'autorisation. Les données proviennent du hub choisi : un
 `confirmed`, `failed` et `unknown` restent ceux du cœur ; une mise en file
 d'action n'est pas présentée comme une exécution métier.
 
-Le bouton **Dicter dans le brouillon** demande les permissions au moment de
-l'utilisation. Android exige Android 12/API 31 et un moteur de reconnaissance
+Dans **Voix**, le mode **Dictée** demande les permissions au lancement
+(**Dicter dans le brouillon** sur Android, **Parler** sur iOS). Android exige
+Android 12/API 31 et un moteur de reconnaissance
 sur l'appareil disponible ; les versions API 26–30 restent utilisables au
 clavier. Sur iOS 16 ou supérieur, la langue choisie doit prendre en charge
 `supportsOnDeviceRecognition` et la requête impose
@@ -27,12 +34,59 @@ produit une indisponibilité explicite, sans repli vers un service cloud.
 Seul le résultat final rejoint le brouillon ; il faut ensuite appuyer sur
 **Envoyer**. La dictée ne soumet aucune commande et n'approuve aucune carte.
 La capture est limitée à 30 secondes et s'arrête notamment au passage en
-arrière-plan ou à la déconnexion. Il n'y a ni réveil permanent « Hakille »,
+arrière-plan ou à la déconnexion. Sur Android, une boîte de permission qui
+met l'activité en pause invalide le démarrage : un nouvel appui est nécessaire.
+Sur iOS, cette inactivité de permission est distinguée de l'arrière-plan ;
+la capture autorisée attend le retour actif avant de démarrer. Il n'y a ni
+réveil permanent « Hakille »,
 ni Whisper embarqué. Le champ `microphone_enabled` du cœur Rust reste distinct
 de l'état de cette capture native. Les contraintes et essais manuels sont
 décrits dans les guides [Android](android/DICTATION.md) et
 [iOS](ios/DICTATION_AND_RECOVERY.md). La qualité et le fonctionnement hors ligne
 des moteurs installés restent à vérifier sur les appareils ciblés.
+
+## Conversation vocale et fonctions du téléphone
+
+Le mode **Conversation vocale** est une option distincte de la dictée du
+brouillon. Après activation et connexion au hub, chaque pression lance un
+tour : reconnaissance locale → transcription finale envoyée au hub → lecture
+locale de sa réponse. Le cœur Rust attribue un contexte unique, expire les
+contextes non soumis et ne permet de lire que la réponse finale correspondante.
+Une carte de décision suspend cette lecture ; elle exige toujours sa propre
+approbation. Le microphone ne redémarre pas automatiquement après la réponse.
+Une navigation, une interruption ou un passage en arrière-plan invalide le tour.
+Le hub reçoit le texte reconnu, pas l’enregistrement audio. Les voix/langues
+absentes ou réponses trop longues produisent un diagnostic ; le texte reste
+accessible. Ce mode exige un brouillon vide et aucune opération incertaine.
+
+Dans **Hub → Ce téléphone**, les permissions sont demandées à l’action :
+
+| Fonction | Android | iOS |
+| --- | --- | --- |
+| Caméra | Miniature renvoyée par l’application caméra, conservée en mémoire | Capture native, aperçu de 1 536 pixels au plus sur le côté long, JPEG ≤ 8 Mio, en mémoire |
+| Fichier choisi | Sélecteur SAF, lecture ≤ 1 Mio, aperçu texte ≤ 4 Kio | Sélecteur système, fichier régulier ≤ 8 Mio, aperçu ≤ 4 000 caractères |
+| Localisation | Mesure ponctuelle, âge et précision affichés | Mesure ponctuelle, âge et précision affichés ; autorisation approximative acceptée et signalée |
+| Ouvrir une application | Réglages, Horloge, Calendrier, Cartes, documentation | Réglages Hakille, Calendrier, Cartes, documentation |
+
+Les aperçus et coordonnées restent locaux, sans ajout automatique au brouillon
+ni envoi au hub. Sur Android, quitter le panneau ou mettre l'activité en pause
+efface les aperçus ; une caméra ou un sélecteur externe explicitement ouvert
+peut encore répondre après cette pause. Sur iOS, les aperçus restent en mémoire
+en changeant d'onglet ; **Effacer les aperçus locaux** ou le passage en
+arrière-plan les retire. Aucun des deux hôtes ne crée de copie durable de ces
+aperçus. Les ouvertures exigent confirmation et utilisent une liste fixe ;
+la documentation ouvre
+GitHub dans le navigateur. Les applications externes conservent leurs propres
+permissions et règles de stockage. Le texte d’un modèle ne peut pas lancer
+une URL, lire un fichier ou commander une autre application. Ces accès passent
+par les API autorisées par Android/iOS : ils ne donnent pas un contrôle général
+du téléphone. Les lectures de fichiers vérifient les octets reçus et rejettent
+les résultats périmés. Sur Android API 26–29, seuls les descripteurs de fichiers
+ordinaires sont acceptés ; les pipes et sockets de fournisseurs sont refusés.
+Leur annulation et leur échéance de 10 secondes ne
+peuvent pas garantir l'arrêt immédiat d'un fournisseur ou d'un appel noyau
+bloqué ; le contrôle iOS est coopératif entre les blocs lus. Voir le
+[contrat Android détaillé](android/VOICE_AND_PHONE.md).
 
 ## Construire Android
 
@@ -112,7 +166,7 @@ scripts/test-ios-simulator.sh
 Ce script choisit un iPhone simulateur disponible, compile puis exécute les
 XCTest et exige des tests réellement réussis ; il conserve le rapport
 `.xcresult` dans `target/mobile-validation/ios/`. Il nécessite macOS/Xcode.
-Cette session Linux ne démontre ni une compilation iOS ni l'exécution XCTest.
+Les exécutions CI macOS sont consignées dans les rapports de validation.
 Une installation sur iPhone/iPad demande une équipe de signature Xcode et un
 appareil disponible. Les sources et une compilation CI ne constituent pas
 une validation sur appareil, avec microphone ou avec VoiceOver.
@@ -132,7 +186,7 @@ adb reverse tcp:17840 tcp:17840
 adb install -r mobile/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Dans l'écran **Connexion**, saisir `http://127.0.0.1:17840` et le jeton mobile,
+Dans **Hub → Connexion**, saisir `http://127.0.0.1:17840` et le jeton mobile,
 puis **Connecter et enregistrer de façon sécurisée**. Le transport ADB doit
 être mis en place explicitement ; `10.0.2.2` et `localhost` ne sont pas des
 exceptions HTTP acceptées. Sur téléphone distant, employer une URL **HTTPS**
@@ -208,8 +262,8 @@ le hub. Une requête ambiguë reste `unknown`, sans relance automatique.
 Les libellés existent en français et anglais. Les contrôles natifs utilisent
 le sens de disposition du système ; le réglage **Disposition de droite à
 gauche** permet aussi de vérifier une présentation RTL. Les tailles de texte
-restent celles du système, les listes défilent et les boutons disposent de
-libellés accessibles. La vérification pratique avec TalkBack/VoiceOver,
+reprennent les tokens avec la mise à l’échelle du système, les listes défilent
+et les boutons disposent de libellés accessibles. La vérification pratique avec TalkBack/VoiceOver,
 grandes polices, clavier externe et interruption réseau reste nécessaire sur
 les appareils visés.
 

@@ -1,3 +1,5 @@
 "NSLocalNetworkUsageDescription" = "Se connecter au hub Hakille que vous avez explicitement choisi sur votre réseau local.";
-"NSMicrophoneUsageDescription" = "Capturer jusqu’à 30 secondes de parole après votre appui sur Dicter. La reconnaissance reste sur cet appareil ; le texte remplit uniquement votre brouillon.";
+"NSMicrophoneUsageDescription" = "Capturer jusqu’à 30 secondes après votre appui sur Parler. La reconnaissance reste sur cet appareil. La dictée remplit le brouillon ; la conversation vocale optionnelle envoie le texte final au hub choisi.";
 "NSSpeechRecognitionUsageDescription" = "Transcrire la parole sur cet appareil après votre appui sur Dicter. Si la reconnaissance locale est indisponible, la dictée ne démarre pas.";
+"NSCameraUsageDescription" = "Prendre une photo uniquement lorsque vous choisissez Caméra. Son aperçu reste en mémoire, sans transfert ni enregistrement dans Photos.";
+"NSLocationWhenInUseUsageDescription" = "Obtenir une position ponctuelle à votre demande, au premier plan. Elle est affichée localement et n’est pas envoyée au hub.";

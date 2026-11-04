@@ -7,6 +7,16 @@ import Combine
     @Published private(set) var storageError = ""
     @Published private(set) var savedEndpoint = ""
     @Published private(set) var dictationStatus = DictationStatus()
+    @Published private(set) var conversationEnabled = false
+    @Published private(set) var speaking = false
+    @Published private(set) var voiceMessage = ""
+    let phone = PhoneCapabilities()
+    private var voicePolicy = VoiceConversationPolicy()
+    private var voiceCaptureGeneration: UUID?
+    private var voiceLocale = Locale.current.identifier
+    private lazy var speechOutput = NativeSpeechOutput { [weak self] active, message in
+        self?.speaking = active; self?.voiceMessage = message
+    }
     private var bridge = MobileBridge()
     private let store = CredentialStore()
     private let stateStore: MobileStateIO
@@ -22,7 +32,7 @@ import Combine
     private var isForeground = false
     private var dictationOriginal = ""
     private lazy var dictation = NativeDictationController(
-        onStatus: { [weak self] in self?.dictationStatus = $0 },
+        onStatus: { [weak self] in self?.receiveDictationStatus($0) },
         onFinal: { [weak self] text in
             guard let self else { throw DictationFailure.interrupted }
             return try self.applyDictatedText(text)
@@ -76,6 +86,7 @@ import Combine
     }
     @discardableResult private func resetConnection() -> UInt64 {
         generation &+= 1; configurationTask?.cancel(); requestTask?.cancel(); requestTask = nil; credentials = nil
+        disableConversation()
         dictation.cancel()
         cancelUnsentRequest()
         transportStartedID = nil
@@ -126,25 +137,99 @@ import Combine
     }
     func foreground(_ active: Bool, background: Bool = false) {
         isForeground = active
-        dictation.foreground(active, background: background)
+        phone.foreground(active, background: background)
+        let permissionDialog = !background && (dictationStatus.phase == .authorizing || dictationStatus.phase == .waitingForForeground)
         if !active {
+            dictation.foreground(false, background: background)
+            if !permissionDialog { disableConversation() }
+            speechOutput.stop()
             generation &+= 1; requestTask?.cancel(); requestTask = nil; configurationTask?.cancel()
             cancelUnsentRequest(); transportStartedID = nil
         }
-        // Toujours interrompre le cœur, même si sa sauvegarde est indisponible.
         _ = accept(bridge.dispatchJson(actionJson: "{\"type\":\"set_foreground\",\"active\":\(active)}"))
+        // Le cœur redevient actif avant le callback d'armement vocal.
+        if active { dictation.foreground(true, background: false) }
+    }
+    func enableConversation() {
+        guard isForeground, !dictationStatus.isBusy, persistenceReady else { return }
+        voicePolicy.enable(); conversationEnabled = true
+        voiceMessage = String(localized: "Voice mode enabled. Each tap sends one final transcription to the hub, then reads its reply.")
+    }
+    func disableConversation() {
+        let hadVoice = voicePolicy.enabled || voiceCaptureGeneration != nil
+        let requestID = snapshot["voice_request_id"].id
+        voicePolicy.disable(); conversationEnabled = false; voiceCaptureGeneration = nil
+        speechOutput.stop()
+        if hadVoice { dictation.cancel() }
+        if let requestID, snapshot["pending"]["request_id"].id == requestID { cancelRequest() }
+        if hadVoice { _ = accept(bridge.dispatchJson(actionJson: "{\"type\":\"cancel_voice\"}")) }
+        voiceMessage = ""
+    }
+    func startConversationTurn(localeIdentifier: String) {
+        guard conversationEnabled, isForeground, persistenceReady, snapshot["pending"].isNull, !dictationStatus.isBusy else { return }
+        guard snapshot["draft"].text.isEmpty else {
+            voiceMessage = String(localized: "Send or clear the existing draft before starting a voice turn."); return
+        }
+        guard snapshot["connection"].text == "connected", snapshot["cards"].array.isEmpty, snapshot["recovery_required"] != .bool(true) else {
+            voiceMessage = String(localized: "Connect and refresh the hub, and resolve pending decisions before starting a voice turn."); return
+        }
+        speechOutput.stop(); voiceLocale = localeIdentifier
+        let epoch = voicePolicy.generation; voiceCaptureGeneration = epoch
+        dictation.start(localeIdentifier: localeIdentifier, beforeCapture: { [weak self] in
+            guard let self, self.voicePolicy.enabled, self.voicePolicy.generation == epoch, self.isForeground, self.persistenceReady else { throw DictationFailure.interrupted }
+            let json = self.bridge.dispatchJson(actionJson: "{\"type\":\"begin_voice\"}")
+            guard let result = try? JSONValue.parse(json), result["ok"] == .bool(true), let context = result["snapshot"]["voice_context_id"].id else {
+                _ = self.accept(json); throw DictationFailure.busy
+            }
+            self.voicePolicy.arm(context: context); _ = self.accept(json)
+        }, completionMessage: String(localized: "Transcription ready. Follow the hub request status."))
+    }
+    func stopSpokenReply() { speechOutput.stop(message: String(localized: "Spoken reply stopped. Read the reply on screen.")) }
+    private func receiveDictationStatus(_ status: DictationStatus) {
+        dictationStatus = status
+        if status.phase == .failed || status.phase == .cancelled, voiceCaptureGeneration != nil {
+            voiceCaptureGeneration = nil; voicePolicy.clearTurn()
+            _ = accept(bridge.dispatchJson(actionJson: "{\"type\":\"cancel_voice\"}"))
+            voiceMessage = status.message
+        }
+    }
+    private func updateVoiceReply() {
+        guard voicePolicy.enabled else { return }
+        if let context = voicePolicy.context, snapshot["voice_context_id"].id != context {
+            disableConversation(); return
+        }
+        let reply = snapshot["voice_reply"]
+        if reply.isNull, let request = snapshot["voice_request_id"].id, snapshot["pending"].isNull,
+           snapshot["outcomes"].array.contains(where: { $0["request_id"].id == request && $0["state"].text == "confirmed" }) {
+            voiceCaptureGeneration = nil
+            voiceMessage = String(localized: "The hub reply is available on screen, but has no eligible spoken version.")
+            return
+        }
+        guard let context = reply["context_id"].id, let request = reply["request_id"].id,
+              voicePolicy.consume(VoiceReplyIdentity(context: context, request: request), foreground: isForeground,
+                                  context: snapshot["voice_context_id"].id, request: snapshot["voice_request_id"].id) else { return }
+        voiceCaptureGeneration = nil
+        speechOutput.speak(reply["text"].text, localeIdentifier: voiceLocale)
     }
     func startDictation(localeIdentifier: String) {
         guard persistenceReady, snapshot["pending"].isNull, snapshot["approval"].isNull, !dictationStatus.isBusy else {
             error = DictationFailure.busy.localizedDescription; return
         }
+        disableConversation()
         dictationOriginal = snapshot["draft"].text
         dictation.start(localeIdentifier: localeIdentifier)
     }
     func stopDictation() { dictation.stop() }
-    func cancelDictation() { dictation.cancel() }
+    func cancelDictation() { if conversationEnabled { disableConversation() } else { dictation.cancel() } }
     private func applyDictatedText(_ text: String) throws -> Task<Bool, Never> {
         guard isForeground else { throw DictationFailure.interrupted }
+        if let epoch = voiceCaptureGeneration {
+            guard let context = voicePolicy.context, voicePolicy.accepts(context: context, generation: epoch),
+                  snapshot["voice_context_id"].id == context, persistenceReady else { throw DictationFailure.interrupted }
+            let transcript = try VoiceConversationPolicy.validatedTranscript(text)
+            let action = try JSONValue.object(["type": .string("submit_voice"), "context_id": .unsigned(context), "text": .string(transcript)]).encoded()
+            return accept(bridge.dispatchJson(actionJson: action))
+        }
         let draft = try DictationPolicy.completedDraft(original: dictationOriginal, current: snapshot["draft"].text, transcript: text)
         guard persistenceReady else { throw DictationFailure.storageUnavailable }
         let action = try JSONValue.object(["type": .string("set_draft"), "text": .string(draft)]).encoded()
@@ -169,6 +254,7 @@ import Combine
             error = String(localized: "Invalid core response."); return Task { false }
         }
         snapshot = result["snapshot"]; error = result["error"].text
+        updateVoiceReply()
         guard stateLoaded else { return Task { false } }
         let frame = result["request"]
         let epoch = generation

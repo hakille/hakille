@@ -10,6 +10,7 @@ pub const MAX_RECOVERY_OPERATIONS: usize = 32;
 const MAX_SNAPSHOT_BYTES: usize = 512 * 1024;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 const HOLD_MS: u64 = 600;
+const VOICE_ARM_TTL: Duration = Duration::from_secs(120);
 
 #[derive(Clone)]
 pub(crate) struct Core {
@@ -17,6 +18,7 @@ pub(crate) struct Core {
     pub(crate) next_id: u64,
     inflight: Option<UiToKernel>,
     hold_started: Option<Instant>,
+    voice_started_at: Option<Instant>,
 }
 impl Default for Core {
     fn default() -> Self {
@@ -25,6 +27,7 @@ impl Default for Core {
             next_id: 1,
             inflight: None,
             hold_started: None,
+            voice_started_at: None,
         }
     }
 }
@@ -35,7 +38,44 @@ impl Core {
         action: MobileAction,
         now: Instant,
     ) -> Result<Option<Frame>, String> {
+        // Une intention manuelle invalide la capture/lecture vocale en cours.
+        // Un callback ancien ne doit toutefois pas annuler un nouveau contexte.
+        if !matches!(
+            &action,
+            MobileAction::BeginVoice {}
+                | MobileAction::CancelVoice {}
+                | MobileAction::SubmitVoice { .. }
+                | MobileAction::SetForeground { active: true }
+                | MobileAction::FailBeforeSend { .. }
+        ) {
+            self.invalidate_voice();
+        }
         match action {
+            MobileAction::BeginVoice {} => {
+                self.voice_available()?;
+                if self.next_id >= u64::MAX - 1 {
+                    return Err("Identifiants insuffisants pour un tour vocal".into());
+                }
+                self.invalidate_voice();
+                self.snapshot.voice_context_id = Some(self.next_id);
+                self.next_id += 1; // La vérification réserve aussi l'identifiant de requête.
+                self.voice_started_at = Some(now);
+                return Ok(None);
+            }
+            MobileAction::CancelVoice {} => {
+                let pending_voice = self.snapshot.voice_request_id.is_some()
+                    && self.snapshot.voice_request_id
+                        == self
+                            .snapshot
+                            .pending
+                            .as_ref()
+                            .map(|pending| pending.request_id);
+                self.invalidate_voice();
+                if pending_voice {
+                    self.interrupt("Tour vocal interrompu : résultat en vol non confirmé");
+                }
+                return Ok(None);
+            }
             MobileAction::SetHub { hub_id } => {
                 text(&hub_id, 2048, false)?;
                 if hub_id.contains(['@', '?', '#']) {
@@ -127,7 +167,28 @@ impl Core {
             return Err("Une requête est déjà en cours".into());
         }
 
+        let voice_submission = matches!(&action, MobileAction::SubmitVoice { .. });
         let (request, kind, mutating) = match action {
+            MobileAction::SubmitVoice {
+                context_id,
+                text: value,
+            } => {
+                if self.snapshot.voice_context_id != Some(context_id)
+                    || self.snapshot.voice_request_id.is_some()
+                {
+                    return Err("Contexte vocal ancien, absent ou déjà soumis".into());
+                }
+                if !self.voice_started_at.is_some_and(|start| {
+                    now.checked_duration_since(start)
+                        .is_some_and(|elapsed| elapsed < VOICE_ARM_TTL)
+                }) {
+                    self.invalidate_voice();
+                    return Err("Tour vocal expiré : armer une nouvelle capture".into());
+                }
+                self.voice_available()?;
+                text(&value, MAX_DRAFT_BYTES, false)?;
+                (UiToKernel::HudSubmit { query: value }, "submit", true)
+            }
             MobileAction::Submit {} => {
                 text(&self.snapshot.draft, MAX_DRAFT_BYTES, false)?;
                 (
@@ -238,6 +299,11 @@ impl Core {
         }
         self.cancel_hold();
         if let UiToKernel::HudSubmit { query } = &request {
+            if voice_submission {
+                self.snapshot.draft = query.clone();
+                self.snapshot.voice_request_id = Some(id);
+                self.voice_started_at = None;
+            }
             self.push_chat("user", query.clone());
             self.snapshot.streaming = false;
             // Le brouillon n'est pas effacé avant l'accusé : aucun texte perdu
@@ -260,6 +326,31 @@ impl Core {
         }
         self.inflight = Some(request);
         Ok(Some(frame))
+    }
+
+    fn voice_available(&self) -> Result<(), String> {
+        if !self.snapshot.foreground
+            || self.snapshot.hub_id.is_none()
+            || self.snapshot.connection != ConnectionState::Connected
+            || self.snapshot.gateway_session.is_none()
+            || self.snapshot.pending.is_some()
+            || !self.snapshot.cards.is_empty()
+            || self.snapshot.approval.is_some()
+            || self.snapshot.recovery_required
+        {
+            return Err("Tour vocal indisponible : confirmer la connexion, terminer la demande et traiter les cartes ou incertitudes".into());
+        }
+        if !self.snapshot.draft.is_empty() {
+            return Err("Un brouillon existe : l'envoyer ou l'effacer avant un tour vocal".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn invalidate_voice(&mut self) {
+        self.voice_started_at = None;
+        self.snapshot.voice_context_id = None;
+        self.snapshot.voice_request_id = None;
+        self.snapshot.voice_reply = None;
     }
 
     fn card_available(&self, card_id: u64) -> Result<(), String> {
@@ -411,6 +502,18 @@ impl Core {
                         frame.id == request_id && terminal_matches(&inflight, &message);
                     candidate.apply_message(&message, &inflight)?;
                     if final_reply {
+                        if let KernelToUi::HudReply { response, .. } = &message
+                            && candidate.snapshot.voice_request_id == Some(request_id)
+                            && let Some(context_id) = candidate.snapshot.voice_context_id
+                            && !response.trim().is_empty()
+                            && response.len() <= MAX_DRAFT_BYTES
+                        {
+                            candidate.snapshot.voice_reply = Some(VoiceReply {
+                                context_id,
+                                request_id,
+                                text: response.clone(),
+                            });
+                        }
                         if let KernelToUi::Toast { text } = &message {
                             // Un texte libre ne constitue pas un accusé d'effet.
                             // Une mutation sans ACK typé reste inconnue.
@@ -464,6 +567,7 @@ impl Core {
         match message {
             KernelToUi::Presence(presence) => self.snapshot.presence = Some(presence.clone()),
             KernelToUi::ShowCard(card) => {
+                self.invalidate_voice();
                 if let Some(existing) = self.snapshot.cards.iter_mut().find(|c| c.id == card.id) {
                     if existing != card {
                         *existing = card.clone();
@@ -540,6 +644,7 @@ impl Core {
     }
 
     pub fn interrupt(&mut self, reason: &str) {
+        self.invalidate_voice();
         if self.snapshot.pending.is_some() {
             self.finish_unknown(reason);
         }
@@ -569,6 +674,9 @@ impl Core {
     }
 
     fn complete(&mut self, state: &str, message: String, result: Option<KernelToUi>) {
+        if state != "confirmed" {
+            self.invalidate_voice();
+        }
         // Les listes consultées restent intégralement dans leurs champs de
         // snapshot ; ne pas les dupliquer dans chaque résultat historique.
         let result = result.filter(|reply| {
@@ -615,6 +723,7 @@ impl Core {
         self.snapshot.streaming = false;
     }
     fn clear_hub_views(&mut self) {
+        self.invalidate_voice();
         self.snapshot.cards.clear();
         self.snapshot.status = None;
         self.snapshot.memory.clear();

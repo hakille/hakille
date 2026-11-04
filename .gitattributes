@@ -1,3 +1,7 @@
 # Le fichier de jetons est généré en LF par `cargo xtask tokens` ; forcer LF
 # au checkout évite un faux "périmé" sur les runners Windows.
 crates/hakille-design/src/generated.rs text eol=lf
+# Licences tierces conservées octet pour octet (SHA-256 vérifié dans l'APK).
+# Leur texte amont contient un espace de fin de ligne intentionnellement préservé.
+mobile/android/app/src/main/res/raw/inter_ofl.txt text eol=lf whitespace=-blank-at-eol
+mobile/ios/Hakille/Fonts/OFL.txt text eol=lf whitespace=-blank-at-eol

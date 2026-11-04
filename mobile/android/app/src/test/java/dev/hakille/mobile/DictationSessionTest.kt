@@ -134,4 +134,25 @@ class DictationSessionTest {
         assertEquals(DictationIssue.PERMISSION_REVOKED, start.session.status.issue)
         assertEquals(1, start.engine.cancels); assertEquals(1, start.engine.destroys)
     }
+    @Test fun preparationMustAuthorizeContextBeforePermissionOrCapture() {
+        val platform = Platform().also { it.permitted = false }
+        val session = DictationSession(platform, { DictationContext(1, 0, "", true) },
+            { _, _ -> fail("Aucun résultat autorisé"); false }, {}, prepare = { false })
+        assertNull(session.requestStart("fr-FR"))
+        assertEquals(DictationIssue.CONTEXT_CHANGED, session.status.issue)
+        assertTrue(platform.engines.isEmpty())
+    }
+    @Test fun voiceContextChangeInvalidatesFinalBeforeCommit() {
+        val platform = Platform()
+        var context = DictationContext(1, 0, "", true, "17")
+        var commits = 0
+        val session = DictationSession(platform, { context }, { _, _ -> commits++; true }, {})
+        session.requestStart("fr-FR")
+        val engine = platform.engines.last()
+        context = context.copy(voiceContextId = "18")
+        engine.events.result("Transcription tardive")
+        assertEquals(0, commits)
+        assertEquals(DictationIssue.CONTEXT_CHANGED, session.status.issue)
+    }
+
 }

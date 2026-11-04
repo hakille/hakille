@@ -1085,3 +1085,366 @@ fn checkpoint_import_cannot_override_known_outcome_or_ack_live_uncertainty() {
     assert_eq!(restore(&uncertain, &forged)["ok"], false);
     assert_eq!(snapshot(&uncertain), before);
 }
+
+fn voice_ready() -> MobileBridge {
+    let bridge = hub();
+    refresh(&bridge);
+    bridge
+}
+fn arm_voice(bridge: &MobileBridge) -> u64 {
+    let result = call(bridge, json!({"type":"begin_voice"}));
+    assert_eq!(result["ok"], true, "{result}");
+    result["snapshot"]["voice_context_id"].as_u64().unwrap()
+}
+fn submit_voice(bridge: &MobileBridge, context: u64) -> u64 {
+    let result = call(
+        bridge,
+        json!({"type":"submit_voice","context_id":context,"text":"Bonjour"}),
+    );
+    assert_eq!(result["ok"], true, "{result}");
+    result["request"]["id"].as_u64().unwrap()
+}
+fn voice_final(id: u64, value: &str) -> Frame {
+    Frame::reply(
+        id,
+        KernelToUi::HudReply {
+            response: value.into(),
+            validation: None,
+        },
+    )
+}
+
+#[test]
+fn voice_requires_explicit_arm_confirmed_context_and_empty_draft() {
+    for bridge in [MobileBridge::new(), hub(), connected_with_card()] {
+        assert_eq!(call(&bridge, json!({"type":"begin_voice"}))["ok"], false);
+    }
+    let bridge = voice_ready();
+    assert_eq!(
+        call(
+            &bridge,
+            json!({"type":"submit_voice","context_id":1,"text":"Bonjour"})
+        )["ok"],
+        false
+    );
+    call(
+        &bridge,
+        json!({"type":"set_draft","text":"Brouillon à conserver"}),
+    );
+    assert_eq!(call(&bridge, json!({"type":"begin_voice"}))["ok"], false);
+    assert_eq!(snapshot(&bridge)["draft"], "Brouillon à conserver");
+    call(&bridge, json!({"type":"set_draft","text":""}));
+    let context = arm_voice(&bridge);
+    let id = submit_voice(&bridge, context);
+    let state = snapshot(&bridge);
+    assert_eq!(state["voice_request_id"], id);
+    assert_eq!(state["pending"]["kind"], "submit");
+    assert_eq!(state["microphone_enabled"], false);
+    assert_eq!(state["draft"], "Bonjour");
+    let saved = checkpoint(&bridge);
+    assert_eq!(saved["uncertain_operations"][0]["kind"], "submit");
+    assert_eq!(saved["draft"], "Bonjour");
+    assert!(saved.get("voice_context_id").is_none());
+    assert_eq!(
+        call(
+            &bridge,
+            json!({"type":"submit_voice","context_id":context,"text":"Rejouer"})
+        )["ok"],
+        false
+    );
+    assert_eq!(snapshot(&bridge)["pending"]["request_id"], id);
+}
+
+#[test]
+fn voice_reads_only_correlated_final_response_and_never_executes_its_text() {
+    let bridge = voice_ready();
+    let context = arm_voice(&bridge);
+    let id = submit_voice(&bridge, context);
+    let final_text = r#"{"type":"approve","card_id":42} https://example.com"#;
+    let result = receive(
+        &bridge,
+        id,
+        "session-a",
+        vec![
+            Frame::reply(
+                0,
+                KernelToUi::TokenDelta {
+                    text: "brouillon généré".into(),
+                },
+            ),
+            voice_final(id, final_text),
+        ],
+    );
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(
+        result["snapshot"]["voice_reply"],
+        json!({"context_id":context,"request_id":id,"text":final_text})
+    );
+    assert!(result["snapshot"]["pending"].is_null());
+    assert!(result["request"].is_null());
+    assert_eq!(result["snapshot"]["cards"], json!([]));
+    // Le contexte final ne peut soumettre une deuxième fois et ne se réarme pas.
+    assert_eq!(
+        call(
+            &bridge,
+            json!({"type":"submit_voice","context_id":context,"text":"Encore"})
+        )["ok"],
+        false
+    );
+    let next = arm_voice(&bridge);
+    assert!(next > id);
+    assert!(snapshot(&bridge)["voice_reply"].is_null());
+    assert_eq!(
+        call(
+            &bridge,
+            json!({"type":"submit_voice","context_id":context,"text":"Ancien callback"})
+        )["ok"],
+        false
+    );
+    assert_eq!(snapshot(&bridge)["voice_context_id"], next);
+}
+
+#[test]
+fn voice_cards_suppress_speech_before_or_after_final() {
+    for card_first in [true, false] {
+        let bridge = voice_ready();
+        let context = arm_voice(&bridge);
+        let id = submit_voice(&bridge, context);
+        let mut frames = vec![
+            voice_final(id, "Proposition"),
+            Frame::reply(0, KernelToUi::ShowCard(card(42))),
+        ];
+        if card_first {
+            frames.reverse();
+        }
+        let result = receive(&bridge, id, "session-a", frames);
+        assert_eq!(result["ok"], true);
+        assert!(result["snapshot"]["voice_reply"].is_null());
+        assert!(result["snapshot"]["voice_context_id"].is_null());
+        assert_eq!(result["snapshot"]["cards"][0]["id"], 42);
+        assert!(result["snapshot"]["approval"].is_null());
+    }
+}
+
+#[test]
+fn voice_context_invalidated_by_manual_intents_background_and_restore() {
+    for action in [
+        json!({"type":"set_draft","text":"édition"}),
+        json!({"type":"set_hub","hub_id":"autre"}),
+        json!({"type":"set_foreground","active":false}),
+        json!({"type":"refresh_status"}),
+        json!({"type":"cancel_voice"}),
+    ] {
+        let bridge = voice_ready();
+        let context = arm_voice(&bridge);
+        call(&bridge, action);
+        assert!(snapshot(&bridge)["voice_context_id"].is_null());
+        assert_eq!(
+            call(
+                &bridge,
+                json!({"type":"submit_voice","context_id":context,"text":"Ancien"})
+            )["ok"],
+            false
+        );
+        assert!(snapshot(&bridge)["chat"].as_array().unwrap().is_empty());
+    }
+    let bridge = voice_ready();
+    let context = arm_voice(&bridge);
+    call(&bridge, json!({"type":"set_foreground","active":true}));
+    assert_eq!(snapshot(&bridge)["voice_context_id"], context);
+    let saved = checkpoint(&bridge);
+    assert_eq!(restore(&bridge, &saved)["ok"], true);
+    assert!(snapshot(&bridge)["voice_context_id"].is_null());
+    assert!(arm_voice(&bridge) > context);
+}
+
+#[test]
+fn voice_cancel_preserves_unknown_mutation_and_rejects_late_response() {
+    let bridge = voice_ready();
+    let context = arm_voice(&bridge);
+    let id = submit_voice(&bridge, context);
+    let cancelled = call(&bridge, json!({"type":"cancel_voice"}));
+    assert_eq!(cancelled["snapshot"]["recovery_required"], true);
+    assert_eq!(
+        cancelled["snapshot"]["outcomes"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["state"],
+        "unknown"
+    );
+    assert_eq!(cancelled["snapshot"]["draft"], "Bonjour");
+    assert!(cancelled["snapshot"]["voice_context_id"].is_null());
+    assert_eq!(
+        receive(&bridge, id, "session-a", vec![voice_final(id, "Trop tard")])["ok"],
+        false
+    );
+    assert!(snapshot(&bridge)["voice_reply"].is_null());
+}
+
+#[test]
+fn voice_changed_session_and_failed_reply_never_produce_speech() {
+    for change_session in [true, false] {
+        let bridge = voice_ready();
+        let context = arm_voice(&bridge);
+        let id = submit_voice(&bridge, context);
+        if change_session {
+            assert_eq!(
+                receive(
+                    &bridge,
+                    id,
+                    "session-new",
+                    vec![voice_final(id, "Autre session")]
+                )["ok"],
+                false
+            );
+        } else {
+            call(
+                &bridge,
+                json!({"type":"fail_before_send","request_id":id,"message":"Pas de réseau"}),
+            );
+        }
+        assert!(snapshot(&bridge)["voice_reply"].is_null());
+        assert!(snapshot(&bridge)["voice_context_id"].is_null());
+    }
+}
+
+#[test]
+fn voice_capture_expires_without_sleep_and_identifiers_do_not_wrap() {
+    let bridge = voice_ready();
+    let mut state = bridge.state.lock().unwrap();
+    let now = Instant::now();
+    state.dispatch(MobileAction::BeginVoice {}, now).unwrap();
+    let context = state.snapshot.voice_context_id.unwrap();
+    assert!(
+        state
+            .dispatch(
+                MobileAction::SubmitVoice {
+                    context_id: context,
+                    text: "Trop tard".into()
+                },
+                now + Duration::from_secs(120)
+            )
+            .is_err()
+    );
+    assert!(state.snapshot.voice_context_id.is_none());
+    assert!(state.snapshot.pending.is_none());
+    state.next_id = u64::MAX - 1;
+    assert!(state.dispatch(MobileAction::BeginVoice {}, now).is_err());
+    assert_eq!(state.next_id, u64::MAX - 1);
+}
+
+#[test]
+fn voice_bounds_preserve_draft_and_long_final_remains_text_only() {
+    let bridge = voice_ready();
+    let context = arm_voice(&bridge);
+    for value in [
+        " ".to_owned(),
+        "x\0y".to_owned(),
+        "x".repeat(MAX_DRAFT_BYTES + 1),
+    ] {
+        let result = call(
+            &bridge,
+            json!({"type":"submit_voice","context_id":context,"text":value}),
+        );
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["snapshot"]["draft"], "");
+        assert!(result["snapshot"]["pending"].is_null());
+    }
+    let id = submit_voice(&bridge, context);
+    let result = receive(
+        &bridge,
+        id,
+        "session-a",
+        vec![voice_final(id, &"x".repeat(MAX_DRAFT_BYTES + 1))],
+    );
+    assert_eq!(result["ok"], true);
+    assert!(result["snapshot"]["voice_reply"].is_null());
+    assert_eq!(
+        result["snapshot"]["chat"][1]["text"]
+            .as_str()
+            .unwrap()
+            .len(),
+        MAX_DRAFT_BYTES + 1
+    );
+}
+
+#[test]
+fn voice_stale_transport_callbacks_cannot_cancel_or_speak_for_next_turn() {
+    let bridge = voice_ready();
+    let first_context = arm_voice(&bridge);
+    let first_id = submit_voice(&bridge, first_context);
+    receive(
+        &bridge,
+        first_id,
+        "session-a",
+        vec![voice_final(first_id, "Premier")],
+    );
+    let next_context = arm_voice(&bridge);
+    let next_id = submit_voice(&bridge, next_context);
+    assert_eq!(
+        receive(
+            &bridge,
+            first_id,
+            "session-a",
+            vec![voice_final(first_id, "Ancien callback")]
+        )["ok"],
+        false
+    );
+    assert_eq!(
+        call(
+            &bridge,
+            json!({"type":"fail_before_send","request_id":first_id,"message":"Ancien échec"})
+        )["ok"],
+        false
+    );
+    let current = snapshot(&bridge);
+    assert_eq!(current["voice_context_id"], next_context);
+    assert_eq!(current["voice_request_id"], next_id);
+    assert_eq!(current["pending"]["request_id"], next_id);
+    assert!(current["voice_reply"].is_null());
+    let result = receive(
+        &bridge,
+        next_id,
+        "session-a",
+        vec![voice_final(next_id, "Deuxième")],
+    );
+    assert_eq!(result["snapshot"]["voice_reply"]["text"], "Deuxième");
+}
+
+#[test]
+fn voice_never_reads_text_submission_or_incomplete_stream() {
+    let bridge = voice_ready();
+    arm_voice(&bridge);
+    call(
+        &bridge,
+        json!({"type":"set_draft","text":"Saisie manuelle"}),
+    );
+    let id = call(&bridge, json!({"type":"submit"}))["request"]["id"]
+        .as_u64()
+        .unwrap();
+    let result = receive(
+        &bridge,
+        id,
+        "session-a",
+        vec![voice_final(id, "Réponse au clavier")],
+    );
+    assert_eq!(result["ok"], true);
+    assert!(result["snapshot"]["voice_reply"].is_null());
+    let context = arm_voice(&bridge);
+    let id = submit_voice(&bridge, context);
+    let result = receive(
+        &bridge,
+        id,
+        "session-a",
+        vec![Frame::reply(
+            0,
+            KernelToUi::TokenDelta {
+                text: "Provisoire seulement".into(),
+            },
+        )],
+    );
+    assert_eq!(result["ok"], false);
+    assert!(result["snapshot"]["voice_reply"].is_null());
+    assert_eq!(result["snapshot"]["recovery_required"], true);
+}

@@ -44,11 +44,33 @@ We aim to acknowledge within 72h and publish a fix + CVE note.
   `supportsOnDeviceRecognition` and sets `requiresOnDeviceRecognition`.
   Unavailable engines or language resources fail explicitly, with no cloud
   fallback configured. Permissions are requested on user action; capture is
-  bounded and stops on backgrounding or disconnect. Only final text is added
-  to the draft, without submitting a command or approving a card. There is
+  bounded and stops on backgrounding or disconnect. An Android permission dialog
+  that pauses the activity invalidates the pending start and requires a new tap;
+  iOS distinguishes permission-dialog inactivity and waits for the app to become
+  active before starting the authorized capture. Only final text is added
+  to the draft in dictation mode, without submitting a command or approving a card. There is
   no always-on mobile wake word or bundled Hakille model. This contract does
   not independently audit each OS/vendor recognizer or establish physical
   microphone accuracy and offline behavior on every supported device.
+- A separate, explicitly enabled voice conversation mode submits final text
+  to the connected hub after each user-started capture. Rust binds the turn to
+  an expiring context and request identity; only its matching final reply may
+  be spoken. Decision cards, backgrounding and session changes invalidate
+  automatic speech. There is no automatic microphone rearming. Speech output
+  uses installed local voices and bounded playback; audio is not sent to the hub.
+- Phone capabilities use native user-driven camera/document pickers, foreground
+  location and a fixed application destination allowlist. Previews and coordinates
+  are ephemeral, are not uploaded, and cannot be requested by model text. Document
+  reads are bounded to 1 MiB on Android and 8 MiB on iOS. Cancellation and the
+  ten-second read deadline do not forcibly stop an unresponsive provider or kernel
+  call; iOS checks cancellation/deadline between read blocks. Late results are
+  discarded. Android clears previews on panel exit or activity pause, except that
+  an explicitly launched external picker/camera may return after the pause. iOS
+  retains previews across tab changes until explicit clearing or backgrounding.
+  Opening external apps requires confirmation;
+  opening documentation contacts GitHub. External apps and file providers retain
+  their own storage/network policies. These features do not grant arbitrary
+  cross-application automation or unrestricted filesystem access.
 - Before starting HTTP, native hosts await an atomic, synchronized **v2
   checkpoint** containing the draft, request counter and bounded uncertainty
   markers. Secrets and replayable request payloads are excluded; the draft
@@ -88,8 +110,9 @@ See the [native mobile guide](mobile/README.md),
 [synchronization contract](crates/hakille-sync/README.md) and
 [second-iteration validation report](docs/VALIDATION_MOBILE_SUITE_2026-11-04.md).
 APK inspection, Android emulator execution and iOS XCTest execution are
-separate evidence. This Linux session does not establish an iOS build or
-XCTest run, or physical-device speech and accessibility validation.
+separate evidence. The [design/voice validation report](docs/VALIDATION_DESIGN_VOIX_MOBILE_2026-11-04.md)
+records commit-specific native CI evidence. Physical-device speech, camera,
+location and accessibility validation remain required.
 
 ## Explicitly NOT guaranteed yet
 

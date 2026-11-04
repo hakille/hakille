@@ -1,3 +1,5 @@
 "NSLocalNetworkUsageDescription" = "Connect to the Hakille hub you explicitly selected on your local network.";
-"NSMicrophoneUsageDescription" = "Capture up to 30 seconds of speech after you tap Dictate. Audio recognition stays on this device; text only fills your draft.";
+"NSMicrophoneUsageDescription" = "Capture up to 30 seconds after you tap Speak. Recognition stays on this device. Dictation fills the draft; optional voice conversation sends the final text to your selected hub.";
 "NSSpeechRecognitionUsageDescription" = "Transcribe speech on this device after you tap Dictate. If local recognition is unavailable, dictation will not start.";
+"NSCameraUsageDescription" = "Take a photo only when you choose Camera. Its preview stays in memory and is not uploaded or saved to Photos.";
+"NSLocationWhenInUseUsageDescription" = "Get one location fix when you request it, while the app is active. It is shown locally and is not sent to the hub.";

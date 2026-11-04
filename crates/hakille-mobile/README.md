@@ -213,6 +213,44 @@ bridge vide ferait perdre les avertissements et le compteur. Le texte soumis
 reste dans le brouillon jusqu'à la réponse finale ; une modification faite
 pendant l'attente n'est pas effacée par cette réponse.
 
+## Tour vocal explicitement armé
+
+La dictée native édite le brouillon via `set_draft` et ne l'envoie pas. Le mode
+conversation requiert un choix explicite de l'utilisateur et un appui par tour.
+Après autorisation native et retour au premier plan, immédiatement avant la
+capture, l'hôte appelle `{"type":"begin_voice"}`. Le cœur exige une session
+confirmée, aucun brouillon (même blanc), aucune requête, carte ou incertitude.
+Il renvoie `snapshot.voice_context_id` (entier u64). Ce contrat ne démarre aucun
+microphone et n'accorde aucune permission système.
+
+Le résultat ASR final peut devenir
+`{"type":"submit_voice","context_id":42,"text":"Bonjour"}` seulement dans les
+120 secondes suivant l'armement. Le contexte est à usage unique ; le texte est
+borné à 8192 octets UTF-8, sans NUL ni texte vide. La requête reste `HudSubmit`
+et sa mutation persistée reste `submit` : mêmes protections, même checkpoint
+obligatoire avant HTTP, même brouillon conservé jusqu'à l'accusé. Le compteur
+persisté partage les IDs de contexte et de requête ; aucun armement ou résultat
+vocal n'est restauré depuis le checkpoint.
+
+Seul `snapshot.voice_reply = {context_id, request_id, text}` autorise une lecture
+native de la réponse finale corrélée (8192 octets maximum). Les deltas et le chat
+historique ne sont pas des sources TTS. Une réponse plus longue reste affichée
+sans lecture automatique. L'hôte vérifie sa génération/session et consomme une
+seule fois ce couple d'IDs ; une nouvelle capture requiert un nouvel appui, sans
+réarmement automatique après TTS. Le texte généré reste du texte : ni URL, ni
+JSON, ni instruction parlée ne déclenche une capability ou une approbation.
+Les effets locaux exigent une intention et les permissions natives propres à
+l'action ; les effets distants conservent les cartes et leur consentement.
+
+L'édition, les autres actions manuelles, le changement de hub/session, le passage
+en arrière-plan, une carte reçue même après la réponse finale, l'échec ou la
+restauration invalident la liaison vocale. `{"type":"cancel_voice"}` annule cette
+liaison et classe une requête vocale encore en vol comme inconnue ; l'hôte doit
+aussi annuler son HTTP et invalider ses callbacks. Un arrêt de lecture TTS seul
+reste local et ne doit pas appeler cette action. Une annulation ne prouve jamais
+que le hub n'a produit aucun effet. Le cœur ne vérifie pas les permissions OS,
+la capture ni la lecture effective ; ces responsabilités restent natives.
+
 ## Construction et vérification
 
 ```bash

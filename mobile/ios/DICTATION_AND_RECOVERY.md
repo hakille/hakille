@@ -1,7 +1,8 @@
 # Dictée locale et reprise iOS
 
 La dictée est un service natif iOS distinct du cœur Rust. Elle se déclenche
-uniquement par **Dicter dans le brouillon**, dans l'onglet Chat. Elle n'exige pas
+par le bouton **Parler**, dans l’onglet **Voix**, en mode **Dictée** par défaut.
+Elle n’exige pas
 un hub connecté. Le texte final complète le brouillon ; l'envoi exige toujours
 une action explicite sur **Envoyer**. Il n'y a ni mot d'éveil permanent, ni
 Whisper embarqué, ni démarrage automatique du microphone.
@@ -74,9 +75,14 @@ vérifient la politique de dictée, les callbacks périmés, les checkpoints et
 la liaison/exécution réelle de `MobileBridge`. Ils ne simulent pas un succès
 de reconnaissance et ne remplacent pas un essai de microphone physique.
 
-Dans cet environnement Linux, Xcode et les frameworks Apple ne sont pas
-présents : **ni compilation iOS, ni XCTest, ni dictée physique n'ont été
-exécutés ici**. Le résultat de la nouvelle CI reste à observer.
+La CI macOS du commit `22510d6` a compilé, lié et exécuté les **16 XCTest
+de la version précédente avec succès**. La présente refonte ajoute un mode
+conversation et des capacités natives, avec **10 tests supplémentaires :
+26 XCTest sont attendus au total**. La compilation et les résultats de ces
+26 tests doivent encore être vérifiés dans la nouvelle CI ; les 16 succès
+précédents ne valident pas ce nouveau lot. Aucun microphone physique n’a été
+validé ici.
+L’environnement de développement Linux n’exécute pas les frameworks Apple.
 
 Sur un iPhone compatible :
 
@@ -92,3 +98,74 @@ Sur un iPhone compatible :
 5. Interrompre l'app après l'émission d'une mutation au hub, puis la relancer.
    Vérifier l'avertissement inconnu sans rejeu, y compris après changement de
    hub ou effacement des credentials. Confirmer les effets dans le journal.
+
+
+## Conversation vocale explicite et interface
+
+L'accueil Voix utilise le logo officiel statique, Inter et les tokens partagés.
+Quatre destinations donnent accès à Voix, Mémoire, Activité (Journal/Agents)
+et Hub (Connexion/Statut/Téléphone). Les cartes de décision, les avertissements
+de résultat inconnu et le maintien Rust de 600 ms restent visibles. Le thème
+sombre est proposé par défaut ; clair, système et RTL sont disponibles. Le
+signe n'affiche aucun niveau sonore fictif et ne pulse jamais en veille.
+
+Le mode **Conversation** nécessite une confirmation : chaque appui sur Parler
+transcrit localement un tour, puis transmet son texte final au hub choisi.
+Il ne peut démarrer avec un brouillon existant, une décision en attente ou
+une session non confirmée. Les permissions sont obtenues avant `begin_voice`,
+appelé immédiatement avant la capture réelle ; `submit_voice` utilise ensuite
+le contexte monotone et mono-usage du cœur. Le checkpoint précède toujours HTTP.
+
+Seul `voice_reply`, corrélé par contexte et ID de requête, peut déclencher
+`AVSpeechSynthesizer`. Le dernier message de chat n'est jamais utilisé comme
+substitut. Les réponses trop longues ou sans version vocale restent lisibles
+à l'écran. La synthèse utilise une voix retournée par la liste système des
+voix installées, sans service de synthèse réseau ajouté par l'application.
+L'installation des ressources vocales relève d'iOS. Le début de lecture est
+annoncé au callback natif, avec arrêt immédiat et limite de deux minutes.
+Une voix qui ne démarre pas sous huit secondes est signalée indisponible.
+
+Ni le clavier ni le mode Dictée ne déclenchent une lecture automatique.
+Chaque nouveau tour exige un nouvel appui : aucun réarmement de microphone
+à la fin de la réponse. Quitter l'onglet Voix, désactiver le mode, passer en
+arrière-plan ou changer de contexte arrête la voix et invalide les callbacks.
+Aucune transcription n'approuve une carte et aucune réponse du modèle ne
+commande les capacités du téléphone.
+
+## Capacités locales ponctuelles
+
+L'onglet Hub/Téléphone propose quatre opérations séparées du transport hub :
+
+- **Caméra** : sélecteur caméra UIKit natif, permission au bouton, aperçu
+  rééchantillonné à 1536 pixels maximum et réencodé sans reprise des métadonnées
+  d'origine, limite 8 Mio. L'image reste en mémoire, sans écriture dans Photos
+  et sans upload. L'absence de caméra est explicite sur simulateur.
+- **Document** : un fichier texte/PDF/image choisi dans le sélecteur système,
+  scope temporaire, lecture d'un fichier ordinaire sans suivre les symlinks,
+  maximum 8 Mio. Lecture sur acteur séparé, contrôles d'annulation et délai
+  monotone de 10 s entre blocs. Un appel système bloqué ne peut pas être
+  préempté par ce délai ; aucun résultat tardif n'est publié après annulation.
+  Le fournisseur Fichiers choisi peut télécharger son document. Aucun accès
+  global, bookmark persistant ou envoi au hub n'est créé. L'aperçu texte est
+  limité à 4000 caractères ; les formats binaires affichent nom et taille.
+- **Position** : permission When In Use, demande unique au premier plan,
+  délai de 20 s après autorisation. Les positions de plus de 15 s, coordonnées
+  invalides, précision négative ou non finie sont refusées. La localisation
+  approximative reste autorisée (notamment 5000 m) et explicitement présentée
+  avec précision réelle et âge qui progresse ; aucun suivi en arrière-plan.
+- **Ouverture** : uniquement Plans, Calendrier, réglages de cette application
+  et URL fixe de documentation GitHub. La destination exacte est affichée
+  avant confirmation. Aucune URL issue du modèle, aucun pilotage d'application
+  tierce, aucun transfert de coordonnées implicite.
+
+Les aperçus sont supprimables et effacés au passage en arrière-plan. Aucun
+secret, audio ou document n'est journalisé. Les tests supplémentaires portent
+sur les générations vocales, les réponses corrélées, les URI, la précision
+approximative, les fichiers bornés/annulés, le chargement effectif du logo et
+d'Inter, et le refus d'armer la voix sans hub confirmé.
+
+Sur appareil, vérifier en plus les langues/voix installées, les cas permission
+refusée, la caméra sans enregistrement Photos, les fournisseurs Fichiers,
+la position approximative, l'interruption audio, VoiceOver, les grandes polices,
+la sortie d'onglet pendant capture et l'ouverture confirmée de chaque destination.
+Ces essais matériels restent à effectuer ; un résultat XCTest n'en tient pas lieu.

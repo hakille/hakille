@@ -15,6 +15,12 @@ pub enum MobileAction {
         text: String,
     },
     Submit {},
+    BeginVoice {},
+    CancelVoice {},
+    SubmitVoice {
+        context_id: u64,
+        text: String,
+    },
     RefreshStatus {},
     LoadMemory {
         query: Option<String>,
@@ -153,6 +159,14 @@ pub struct RequestOutcome {
     pub acknowledged: bool,
 }
 
+/// Réponse finale du seul tour vocal explicitement armé, jamais un extrait du chat.
+#[derive(Debug, Clone, Serialize)]
+pub struct VoiceReply {
+    pub context_id: u64,
+    pub request_id: u64,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MobileSnapshot {
     pub schema_version: u16,
@@ -160,8 +174,11 @@ pub struct MobileSnapshot {
     pub gateway_session: Option<String>,
     pub connection: ConnectionState,
     pub foreground: bool,
-    /// Toujours faux tant qu'aucun binding de capture native n'est raccordé.
+    /// Le cœur ne pilote pas le micro ; les permissions et l'état audio sont natifs.
     pub microphone_enabled: bool,
+    pub voice_context_id: Option<u64>,
+    pub voice_request_id: Option<u64>,
+    pub voice_reply: Option<VoiceReply>,
     pub draft: String,
     pub chat: Vec<ChatEntry>,
     pub streaming: bool,
@@ -193,6 +210,9 @@ impl Default for MobileSnapshot {
             connection: ConnectionState::Disconnected,
             foreground: true,
             microphone_enabled: false,
+            voice_context_id: None,
+            voice_request_id: None,
+            voice_reply: None,
             draft: String::new(),
             chat: vec![],
             streaming: false,

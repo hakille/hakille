@@ -1,0 +1,47 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+  <string name="device_intro">Photos, files and locations stay in Hakille without being sent to the hub. Opening an app or documentation may use that app’s services; the destination is shown before confirmation.</string>
+  <string name="device_waiting">Waiting for your choice in the system app…</string>
+  <string name="device_timeout">Timed out. No data was transmitted.</string>
+  <string name="device_cancelled">Action cancelled or result unavailable.</string>
+  <string name="device_reading">Reading the document locally…</string>
+  <string name="device_failed">Read or access denied, document too large, or provider unavailable.</string>
+  <string name="device_unavailable">No compatible app is available, or Android denied access.</string>
+  <string name="device_photo_ready">Preview received in memory only.</string>
+  <string name="device_document_ready">Document read locally. No persistent access permission retained.</string>
+  <string name="device_permission_denied">Permission denied or request interrupted. Try again explicitly if desired.</string>
+  <string name="device_permission_ready">Permission granted. Press again to request a location.</string>
+  <string name="device_location_unavailable">No compatible location provider is enabled. Approximate location requires an available network provider.</string>
+  <string name="device_locating">Requesting one location, up to 20 seconds…</string>
+  <string name="device_location_ready">Location received; tracking stopped.</string>
+  <string name="device_app_opened">Launch request handed to Android; no action performed inside the app.</string>
+  <string name="device_photo_title">Temporary photo</string>
+  <string name="device_photo_note">Opens the native camera for a thumbnail, not a full-resolution photo. Hakille keeps only this preview in memory and clears it when leaving this panel. The selected camera may apply its own storage policy.</string>
+  <string name="device_photo_action">Take a preview photo</string>
+  <string name="device_photo_preview">Temporary preview of the captured photo</string>
+  <string name="device_photo_dimensions">Preview: %1$d × %2$d pixels</string>
+  <string name="device_file_title">Local file</string>
+  <string name="device_file_note">The picker requests a local provider. Reading is limited to 1 MiB; text preview to 4 KiB. No upload to the hub and no durable copy. Local-only selection depends on the Android provider.</string>
+  <string name="device_file_action">Choose and read a file</string>
+  <string name="device_file_metadata">%1$s · %2$d bytes</string>
+  <string name="device_file_preview">Beginning of text only:</string>
+  <string name="device_location_title">One-time location</string>
+  <string name="device_location_note">Requests permission when selected. Location may be approximate; accuracy and age are shown. No background tracking or sending to the hub. Android location services may use their own networks.</string>
+  <string name="device_location_action">Get one location now</string>
+  <string name="device_location_result">Latitude %1$.5f · longitude %2$.5f\nReported accuracy: %3$.0f m · age: %4$d s</string>
+  <string name="device_location_mock">Android marks this location as mocked.</string>
+  <string name="device_apps_title">Open an app</string>
+  <string name="device_apps_note">Fixed destinations: settings, alarms, calendar, maps and GitHub documentation. Each launch requires confirmation. Model text never launches an app or performs an action for you.</string>
+  <string name="device_settings">Open Android settings</string>
+  <string name="device_clock">Open alarms</string>
+  <string name="device_calendar">Open calendar</string>
+  <string name="device_clear">Clear previews and stop</string>
+  <string name="device_app_confirmation">You will leave Hakille for this app. Hakille sends no content and performs no action for you; this app’s settings and data remain under your control.</string>
+  <string name="device_confirm">Open</string>
+  <string name="device_cancel">Cancel</string>
+  <string name="device_maps">Open Maps</string>
+  <string name="device_documentation">Open Hakille documentation</string>
+  <string name="device_maps_confirmation">Opens your maps app without passing any coordinates. That app may use its own networks, accounts and location permissions. Hakille does not create a route or control it.</string>
+  <string name="device_documentation_confirmation">Opens the browser at https://github.com/hakille/hakille. The browser will contact GitHub using its own cookies and network settings. No file, photo or location is attached.</string>
+  <string name="device_stream_unavailable">This provider exposes the document as a stream. On Android 8–10, choose a regular local file or use Android 11 or later. No content was sent.</string>
+</resources>
