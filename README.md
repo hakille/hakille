@@ -105,7 +105,7 @@ Hakille n'est ni une application de chat, ni un wrapper d'API, ni un agent promp
 
 ## 📦 Structure du Workspace (31 Crates + 5 Agents + Conformance)
 
-Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agents WASM de référence réellement exécutés**, **5 manifests métier déclaratifs**, une suite de conformité exhaustive (78 tests : 66 fast + 12 slow ignorés — 7 dans `conformance`, 5 dans `hakille-kernel` — voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
+Le projet est un monorepo Cargo structuré en **33 crates modulaires**, **2 agents WASM de référence réellement exécutés**, **5 manifests métier déclaratifs**, une suite de conformité exhaustive (78 tests : 66 fast + 12 slow ignorés — 7 dans `conformance`, 5 dans `hakille-kernel` — voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
 
 ### 1. Fondations & Substrates OS
 - [`hakille-core`](crates/hakille-core) : Primitives cryptographiques (Ed25519, ChaCha20Poly1305), jetons Biscuit, types temporels, bus de messages typés (`Message`) et niveaux de confiance (`TrustLevel`).
@@ -114,12 +114,12 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agen
 - [`hakille-substrate-linux`](crates/hakille-substrate-linux) : Backend Linux natif (compilateur Seccomp-BPF avec simulateur de bytecode, Namespaces PID/Mount/Net, Cgroups v2, télémétrie `/proc` et `/sys`, injection `/dev/uinput`, Wayland/X11).
 - [`hakille-substrate-macos`](crates/hakille-substrate-macos) : Backend macOS Darwin natif (profils Sandbox Seatbelt `(deny default)`, Endpoint Security muting, Mach `host_statistics64`, IOKit, capture Retina 2x CoreGraphics).
 - [`hakille-substrate-redox`](crates/hakille-substrate-redox) : Backend micro-noyau souverain Redox OS (schemes natifs `chan:`, `orbital:`, `disk:`, `sys:`, `audio:`, sérialisation `RedoxPacket`, table de capacités microkernel).
-- [`hakille-substrate-mobile`](crates/hakille-substrate-mobile) : Backend mobile Android/iOS (synchronisation d'ombre *Shadow Sync* avec horloges de Lamport, scoped storage, machine à états Doze).
+- [`hakille-substrate-mobile`](crates/hakille-substrate-mobile) : Substrat invité : conteneur de fichiers confiné, file de synchronisation avec ACK, politiques batterie/cycle de vie et pilotes natifs explicites. Voir le [guide mobile](mobile/README.md).
 - [`hakille-substrate-web`](crates/hakille-substrate-web) : Backend WebAssembly pour navigateur (bridge Web Audio avec rééchantillonnage 48kHz -> 16kHz, tampon anti-overrun, Canvas ImageData, limites WebGPU).
 
 ### 2. Mémoire & Synchronisation
 - [`hakille-memory`](crates/hakille-memory) : Graphe en triplets SPO avec triple indexation (SPO, POS, OSP), backend local ACID `redb`, index vectoriel sémantique HNSW `instant-distance`, GraphQueryLang DSL, déclin temporel et résolution des contradictions.
-- [`hakille-sync`](crates/hakille-sync) : Synchronisation CRDT (grow-only sets + tombstones, vector clocks), handoff de tâche cross-device et réplication TiKV.
+- [`hakille-sync`](crates/hakille-sync) : Fusion CRDT avec tombstones et horloges vectorielles, handoff signé v2 entre pairs explicitement approuvés. Le transport réseau et la réplication TiKV ne sont pas déployés ; voir les [limites de convergence et de persistance](crates/hakille-sync/README.md).
 
 ### 3. Perception, Voix & Inférence Neuronale
 - [`hakille-perception`](crates/hakille-perception) : Pipeline audio (SenseVoice-Small, Silero VAD, CAM++ et diarisation par clustering), client UI-TARS local, CameraPipeline et WorldModel. L’activation passe par Whisper puis un contrôleur lexical ; aucun frontend openWakeWord compatible ni modèle Nemotron n’est fourni.
@@ -142,7 +142,9 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agen
 - [`hakille-ui-platform`](crates/hakille-ui-platform) : Abstraction plateforme pour fenêtres, icône de zone de notification et intégration système.
 - [`hakille-ui-desktop`](crates/hakille-ui-desktop) : Rendu desktop (scène, texte multi-script, accessibilité, runtime) sous forme d'application native ; carte d'action 720×360, décision clavier/AccessKit et accusé d'audit réel.
 - [`hakille-metrics`](crates/hakille-metrics) : Tableau de bord des 3 métriques cardinales (Continuité, Initiative Bornée, Généralité Pratique) et détecteur de dérive des valeurs éthiques.
-- [`hakille-ipc`](crates/hakille-ipc) : Transport IPC local (named pipe Windows, socket Unix) pour les clients du démon ; pas de TCP exposé.
+- [`hakille-ipc`](crates/hakille-ipc) : Transport IPC local du démon (named pipe Windows, socket Unix).
+- [`hakille-mobile`](crates/hakille-mobile) : État du client mobile Rust et liaisons UniFFI pour les interfaces natives Android/iOS ; checkpoint v2 et suivi durable des opérations à l'issue inconnue.
+- [`hakille-mobile-gateway`](crates/hakille-mobile-gateway) : Passerelle HTTP loopback, lancée explicitement et authentifiée par un jeton distinct, vers le hub personnel. Voir [ADR-011](adr/011-mobile-native-client-and-hub.md) pour le périmètre et les limites mobiles.
 - [`hakille-spikes`](crates/hakille-spikes) : Spikes techniques isolés (arbre de rendu S1, rendu S2, accessibilité S3) utilisés pour valider l'UI avant intégration.
 - [`hakille-daemon`](crates/hakille-daemon) : Démon système exécutable orchestrant l'ensemble de la pile avec invite interactive REPL, mode `--serve` IPC et cartes d'action auditées.
 
@@ -171,7 +173,7 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agen
 | :--- | :--- | :--- | :--- | :--- |
 | **Souverain** | Station dédiée Redox OS / Linux Souverain | SenseVoice-Small + VibeVoice (60m) + Moshi (Full-Duplex sub-200ms) + UI-TARS 7B | Qwen3-8B local + escalade System 2 + redb / cluster TiKV | Contrôle total des schemes natifs, zéro sandbox intermédiaire. |
 | **Natif** | Laptop Windows, Linux, macOS | SenseVoice-Small (veille CPU) + CAM++ + CosyVoice2 / NeuTTS + UI-TARS (on demand) | Qwen 7B (Q4) local + redb local | Contrôle quasi-total via sandboxing OS (AppContainer, Seccomp, Seatbelt). |
-| **Invité** | Mobile Android / iOS / Web WASM | Moonshine + SenseVoice Mobile (NPU/CoreML) + WebAudio 16kHz | Ombre déportée sur Hub personnel via sync CRDT | Accès restreint par l'OS hôte, continuité portée par le cluster. |
+| **Invité (cible)** | Mobile Android / iOS / Web WASM | Android/iOS : dictée OS locale optionnelle selon moteur installé ; aucun poids Hakille embarqué. NPU mobile à raccorder. | Client du hub personnel ; réplication réseau CRDT à raccorder | Accès restreint par l'OS hôte ; voir [l'état mobile](adr/011-mobile-native-client-and-hub.md). |
 
 > Les modèles neuronaux non provisionnés (Moshi 7,6B, VibeVoice, CosyVoice2/NeuTTS,
 > UI-TARS 7B, Moonshine) sont des **cibles**. UI-TARS 2B est exécutable localement avec son projecteur et llama.cpp. Le runtime actuel signale leur état via
@@ -224,12 +226,43 @@ cargo run -p hakille-ui-desktop --bin hakille-desktop
 # Baseline headless de migration (snapshot, view-models — filet de sécurité) :
 cargo test -p hakille-ui-model -p hakille-ui-shell
 
-# Tokens design (source unique TOML → Rust/Swift/Kotlin/CSS, CI) :
+# Tokens design (vérifie aussi les exports Kotlin/Swift mobiles versionnés) :
 cargo xtask tokens --check
 cargo xtask tokens export-swift   # target/tokens/HakilleTokens.swift
 cargo xtask tokens export-kotlin  # target/tokens/HakilleTokens.kt
 cargo xtask tokens export-css     # target/tokens/hakille-tokens.css
 ```
+
+### Applications mobiles natives
+
+Les applications Kotlin/Compose et Swift/SwiftUI partagent le cœur Rust via
+UniFFI et rejoignent explicitement le hub personnel. La passerelle utilise
+un jeton distinct et écoute sur loopback ; un téléphone distant demande un
+reverse proxy ou tunnel HTTPS configuré. Le démon ne sert qu'une connexion
+IPC : déconnecter le HUD desktop pendant l'utilisation de la passerelle.
+
+La dictée est optionnelle et locale via l'OS : Android 12/API 31+ exige un
+moteur sur l'appareil disponible ; iOS 16+ exige la prise en charge locale
+de la langue choisie. Sans ce support, elle est indisponible, sans repli cloud.
+Une action explicite demande les permissions, puis le résultat final complète
+le brouillon ; **Envoyer** reste une action séparée. Aucun modèle Hakille
+n'est chargé sur le téléphone et aucun réveil vocal permanent n'y est fourni.
+
+Avant HTTP, les hôtes sauvegardent un checkpoint v2 durable. Une mutation
+interrompue revient comme `unknown` au redémarrage, sans rejeu automatique.
+Le statut et le journal restent consultables ; prendre en compte les
+avertissements permet la reprise mais ne confirme pas les effets métier.
+Le handoff signé v2 de la bibliothèque de synchronisation exige séparément
+une paire identité/clé approuvée ; il ne fournit pas un appairage ni une
+synchronisation réseau automatique de ces applications.
+
+Le [guide mobile](mobile/README.md) décrit la construction, la connexion et
+les scripts d'inspection APK, de parcours sur émulateur Android et de tests
+iOS sur simulateur. Le [rapport de seconde itération](docs/VALIDATION_MOBILE_SUITE_2026-11-04.md)
+sépare les résultats acquis des validations restantes. La compilation et
+les tests iOS nécessitent macOS/Xcode ; cette session Linux ne les établit
+pas. La dictée avec microphone physique, TalkBack et VoiceOver restent à
+valider sur les appareils ciblés.
 
 ### Cartes d'action (démon → desktop)
 

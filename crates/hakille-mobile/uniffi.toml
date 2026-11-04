@@ -1,0 +1,8 @@
+[bindings.kotlin]
+android = true
+package_name = "uniffi.hakille_mobile"
+cdylib_name = "hakille_mobile"
+
+[bindings.swift]
+module_name = "HakilleMobile"
+ffi_module_name = "HakilleMobileFFI"

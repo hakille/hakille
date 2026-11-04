@@ -1,10 +1,7 @@
-use crate::battery_conservation::BatteryConservationEngine;
-use crate::scoped_storage::{ScopedStorageSandbox, StorageScope};
-use crate::shadow::MobileShadowSync;
+use crate::scoped_storage::{AppContainerStorage, ScopedStorageSandbox, StorageScope};
 use async_trait::async_trait;
 use hakille_core::{
-    CapabilityScope, CapabilityToken, KeyPair, Result, SignedAttestation, Tier, Timestamp,
-    VirtualPath,
+    CapabilityScope, CapabilityToken, HakilleError, Result, SignedAttestation, Tier, VirtualPath,
 };
 use hakille_substrate::{
     AudioConfig, AudioStreamHandle, CameraConfig, CameraFrame, CameraStreamHandle, EgressPolicy,
@@ -12,77 +9,213 @@ use hakille_substrate::{
     ScreenCapture, Substrate, ThermalState,
 };
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::Arc;
 
 /// Missing native binding reported by every mobile camera method.
 const MOBILE_CAMERA_UNIMPLEMENTED: &str = "camera not implemented for mobile substrate: Camera2 (Android) / AVFoundation (iOS) binding missing \
      (no NDK camera device wiring; link Camera2/NDK bindings to enable)";
 
+/// Pilote audio installé par l'hôte Android/iOS. Chaque opération doit vérifier
+/// la permission OS courante et ne renvoyer un succès qu'après un effet réel.
+#[async_trait]
+pub trait MobileAudioDriver: Send + Sync {
+    async fn start_capture(&self, config: AudioConfig) -> Result<AudioStreamHandle>;
+    async fn stop_capture(&self, handle: AudioStreamHandle) -> Result<()>;
+    async fn play(&self, data: &[u8], config: AudioConfig) -> Result<()>;
+}
+
+/// Caméra native : le pilote possède les sessions et refuse les handles inconnus.
+#[async_trait]
+pub trait MobileCameraDriver: Send + Sync {
+    async fn start_capture(&self, config: CameraConfig) -> Result<CameraStreamHandle>;
+    async fn stop_capture(&self, handle: CameraStreamHandle) -> Result<()>;
+    async fn frame(&self, handle: CameraStreamHandle) -> Result<CameraFrame>;
+}
+
+#[async_trait]
+pub trait MobileInputDriver: Send + Sync {
+    async fn inject(&self, action: InputAction) -> Result<()>;
+}
+
+#[async_trait]
+pub trait MobileScreenDriver: Send + Sync {
+    async fn capture(&self) -> Result<ScreenCapture>;
+}
+
+/// Attestation native explicite : aucune clé éphémère ne simule une preuve OS.
+#[async_trait]
+pub trait MobileAttestationDriver: Send + Sync {
+    fn has_secure_enclave(&self) -> bool;
+    async fn attest(&self, data: &[u8], manifest: &PlatformManifest) -> Result<SignedAttestation>;
+}
+
+/// Observation du système, jamais une estimation issue du profil d'économie.
+pub trait MobilePowerDriver: Send + Sync {
+    fn power_state(&self) -> Result<PowerState>;
+    fn thermal_state(&self) -> Result<ThermalState>;
+}
+
 pub struct MobileSubstrate {
     manifest: PlatformManifest,
-    attestation_keypair: KeyPair,
-    shadow_sync: Mutex<MobileShadowSync>,
-    storage_sandbox: ScopedStorageSandbox,
-    battery_engine: Mutex<BatteryConservationEngine>,
-    /// Host allowlist egress policy. Default is loopback-only
-    /// (no external egress until hosts are explicitly allowed).
+    storage: Option<AppContainerStorage>,
+    audio: Option<Arc<dyn MobileAudioDriver>>,
+    camera: Option<Arc<dyn MobileCameraDriver>>,
+    input: Option<Arc<dyn MobileInputDriver>>,
+    screen: Option<Arc<dyn MobileScreenDriver>>,
+    attestation: Option<Arc<dyn MobileAttestationDriver>>,
+    power: Option<Arc<dyn MobilePowerDriver>>,
     egress_policy: EgressPolicy,
-    /// Pinned Biscuit root public key. When `None`, capability tokens are
-    /// still structurally verified but NOT pinned (legacy / tests).
-    /// Production MUST call `with_trusted_root`.
     trusted_capability_root: Option<biscuit_auth::PublicKey>,
 }
 
 impl MobileSubstrate {
+    /// État initial non configuré : aucune identité OS, RAM ou permission native
+    /// n'est inventée. Le réseau est disponible après épinglage d'une autorité.
     pub fn new() -> Self {
-        let manifest = PlatformManifest {
-            tier: Tier::Guest,
-            // Filesystem is granted SCOPED-ONLY: read_file/write_file enforce a
-            // Filesystem capability AND mediate every path through
-            // `ScopedStorageSandbox` (SAF / PhotoPicker scoped storage — app
-            // Documents scope, no raw full-filesystem access). This resolves
-            // the former manifest paradox where Filesystem was denied while
-            // the file methods enforced a Filesystem cap.
-            capabilities_granted: vec![
-                CapabilityScope::Audio,
-                CapabilityScope::Camera,
-                CapabilityScope::GuiInput,
-                CapabilityScope::Filesystem,
-            ],
-            capabilities_denied: vec![CapabilityScope::FullSystem, CapabilityScope::ModelInference],
-            // Honest: per-app RAM budget placeholder for the shadow runtime
-            // (the real budget comes from ActivityManager on Android /
-            // os_proc_available_memory on iOS — no JNI/ObjC binding linked).
-            max_memory_bytes: Some(4 * 1024 * 1024 * 1024),
-            gpu_vram_bytes: None,
-            has_secure_enclave: true,
-            has_tpm: false,
-            battery_powered: true,
-            // Honest: no PowerManager/thermal HAL binding linked; unknown.
-            thermal_envelope_watts: None,
-            os_name: "Mobile-Edge".to_string(),
-            // Honest placeholder: resolved from Build.VERSION / UIDevice
-            // once a platform binding is linked; labeled, not a measurement.
-            os_version: "iOS/Android-Shadow".to_string(),
-        };
-
-        Self {
-            manifest,
-            attestation_keypair: KeyPair::generate(),
-            shadow_sync: Mutex::new(MobileShadowSync::default()),
-            storage_sandbox: ScopedStorageSandbox::default(),
-            battery_engine: Mutex::new(BatteryConservationEngine::default()),
+        let mut substrate = Self {
+            manifest: PlatformManifest {
+                tier: Tier::Guest,
+                capabilities_granted: Vec::new(),
+                capabilities_denied: Vec::new(),
+                max_memory_bytes: None,
+                gpu_vram_bytes: None,
+                has_secure_enclave: false,
+                has_tpm: false,
+                battery_powered: cfg!(any(target_os = "android", target_os = "ios")),
+                thermal_envelope_watts: None,
+                os_name: if cfg!(target_os = "android") {
+                    "Android"
+                } else if cfg!(target_os = "ios") {
+                    "iOS"
+                } else {
+                    "Mobile — hôte non configuré"
+                }
+                .into(),
+                os_version: "inconnue — non observée".into(),
+            },
+            storage: None,
+            audio: None,
+            camera: None,
+            input: None,
+            screen: None,
+            attestation: None,
+            power: None,
             egress_policy: EgressPolicy::loopback_only(),
             trusted_capability_root: None,
-        }
+        };
+        substrate.refresh_manifest();
+        substrate
     }
 
-    /// Pin the Biscuit root public key used to verify ALL capability tokens
-    /// at the point of effect. Production must set this from the daemon's
-    /// `CapabilityAuthority::root_public_key()`.
+    fn refresh_manifest(&mut self) {
+        self.manifest.capabilities_granted.clear();
+        self.manifest.capabilities_denied.clear();
+        let pinned = self.trusted_capability_root.is_some();
+        for (scope, implemented) in [
+            (CapabilityScope::Network, true),
+            (CapabilityScope::Filesystem, self.storage.is_some()),
+            (CapabilityScope::Audio, self.audio.is_some()),
+            (CapabilityScope::Camera, self.camera.is_some()),
+            (CapabilityScope::GuiInput, self.input.is_some()),
+            (CapabilityScope::Sensor, self.screen.is_some()),
+            (CapabilityScope::ModelInference, false),
+            (CapabilityScope::Wallet, false),
+            (CapabilityScope::FullSystem, false),
+        ] {
+            if pinned && implemented {
+                self.manifest.capabilities_granted.push(scope);
+            } else {
+                self.manifest.capabilities_denied.push(scope);
+            }
+        }
+        self.manifest.has_secure_enclave = self
+            .attestation
+            .as_ref()
+            .is_some_and(|driver| driver.has_secure_enclave());
+    }
+
+    /// L'autorité doit être explicitement épinglée, y compris dans les tests.
     pub fn with_trusted_root(mut self, root: biscuit_auth::PublicKey) -> Self {
         self.trusted_capability_root = Some(root);
+        self.refresh_manifest();
         self
+    }
+
+    /// Conteneur existant fourni par l'OS (ou un répertoire temporaire de test).
+    /// Les effets FS utilisent des handles confinés, jamais le shadow en mémoire.
+    pub fn with_app_container(mut self, root: impl Into<PathBuf>) -> Result<Self> {
+        self.storage = Some(AppContainerStorage::open(root.into())?);
+        self.refresh_manifest();
+        Ok(self)
+    }
+
+    pub fn storage_sandbox(&self) -> Option<&ScopedStorageSandbox> {
+        self.storage.as_ref().map(AppContainerStorage::sandbox)
+    }
+
+    fn storage(&self) -> Result<&AppContainerStorage> {
+        self.storage.as_ref().ok_or_else(|| HakilleError::StorageError(
+            "conteneur applicatif absent : configurer with_app_container avec le répertoire fourni par l'OS".into()
+        ))
+    }
+
+    /// Le manifeste décrit les pilotes raccordés. Les permissions OS peuvent
+    /// être révoquées : chaque pilote doit encore les vérifier à chaque effet.
+    pub fn with_audio_driver(mut self, driver: Arc<dyn MobileAudioDriver>) -> Self {
+        self.audio = Some(driver);
+        self.refresh_manifest();
+        self
+    }
+    pub fn with_camera_driver(mut self, driver: Arc<dyn MobileCameraDriver>) -> Self {
+        self.camera = Some(driver);
+        self.refresh_manifest();
+        self
+    }
+    pub fn with_input_driver(mut self, driver: Arc<dyn MobileInputDriver>) -> Self {
+        self.input = Some(driver);
+        self.refresh_manifest();
+        self
+    }
+    pub fn with_screen_driver(mut self, driver: Arc<dyn MobileScreenDriver>) -> Self {
+        self.screen = Some(driver);
+        self.refresh_manifest();
+        self
+    }
+    pub fn with_attestation_driver(mut self, driver: Arc<dyn MobileAttestationDriver>) -> Self {
+        self.attestation = Some(driver);
+        self.refresh_manifest();
+        self
+    }
+    pub fn with_power_driver(mut self, driver: Arc<dyn MobilePowerDriver>) -> Self {
+        self.power = Some(driver);
+        self
+    }
+
+    /// None signifie absence de binding ; une erreur de mesure reste explicite.
+    pub fn power_observation(&self) -> Result<Option<PowerState>> {
+        let Some(driver) = &self.power else {
+            return Ok(None);
+        };
+        let state = driver.power_state()?;
+        if !state.battery_percent.is_finite() || !(0.0..=100.0).contains(&state.battery_percent) {
+            return Err(HakilleError::SubstrateError(
+                "mesure de batterie mobile invalide".into(),
+            ));
+        }
+        Ok(Some(state))
+    }
+
+    pub fn thermal_observation(&self) -> Result<Option<ThermalState>> {
+        let Some(driver) = &self.power else {
+            return Ok(None);
+        };
+        let state = driver.thermal_state()?;
+        if !state.temperature_celsius.is_finite() {
+            return Err(HakilleError::SubstrateError(
+                "mesure thermique mobile invalide".into(),
+            ));
+        }
+        Ok(Some(state))
     }
 
     fn enforce(
@@ -90,82 +223,14 @@ impl MobileSubstrate {
         cap: &CapabilityToken,
         scope: CapabilityScope,
         action: hakille_core::CapabilityAction,
-    ) -> hakille_core::Result<()> {
-        if let Some(root) = &self.trusted_capability_root {
-            hakille_core::verify_capability_with_root_key(cap, root, scope, action)
-        } else {
-            // Legacy fallback UNIQUEMENT en debug/tests : vérification
-            // structurelle sans pinning (accepte les tokens auto-signés).
-            // En release, panique fail-closed : `verify_unpinned` est interdit.
-            #[cfg(debug_assertions)]
-            {
-                #[allow(deprecated)]
-                {
-                    hakille_core::verify_capability_unpinned(cap, scope, action)
-                }
-            }
-            #[cfg(not(debug_assertions))]
-            {
-                panic!(
-                    "unpinned capability verification forbidden in release; call with_trusted_root in production"
-                );
-            }
-        }
-    }
-
-    /// Secure path resolution: component-level anti-traversal check (same
-    /// rules as other substrates) IN ADDITION TO the scoped-storage sandbox
-    /// check — never instead of it.
-    fn resolve_path(&self, path: &VirtualPath) -> hakille_core::Result<PathBuf> {
-        use std::path::Component;
-        if path.0.contains('\0') {
-            return Err(hakille_core::HakilleError::CapabilityDenied(
-                "NUL byte in virtual path".into(),
-            ));
-        }
-        let lower = path.0.to_ascii_lowercase();
-        if lower.contains(':') || path.0.starts_with(r"\\") {
-            return Err(hakille_core::HakilleError::CapabilityDenied(
-                "absolute / drive path rejected".into(),
-            ));
-        }
-        let mut saw_normal = false;
-        for comp in std::path::Path::new(&path.0).components() {
-            match comp {
-                Component::Normal(p) => {
-                    if p == std::ffi::OsStr::new("..") {
-                        return Err(hakille_core::HakilleError::CapabilityDenied(
-                            "path traversal (..) rejected".into(),
-                        ));
-                    }
-                    saw_normal = true;
-                }
-                Component::CurDir => {}
-                // Any ParentDir, RootDir, Prefix => reject
-                _ => {
-                    return Err(hakille_core::HakilleError::CapabilityDenied(
-                        "non-normal path component rejected".into(),
-                    ));
-                }
-            }
-        }
-        if !saw_normal {
-            return Err(hakille_core::HakilleError::CapabilityDenied(
-                "empty virtual path rejected".into(),
-            ));
-        }
-        // PLUS the scoped-storage sandbox check (SAF / PhotoPicker mediation).
-        self.storage_sandbox
-            .resolve_path(StorageScope::Documents, path)
-            .map_err(|e| {
-                hakille_core::HakilleError::CapabilityDenied(format!(
-                    "scoped storage rejected path: {e}"
-                ))
-            })
-    }
-
-    pub fn storage_sandbox(&self) -> &ScopedStorageSandbox {
-        &self.storage_sandbox
+    ) -> Result<()> {
+        let root = self.trusted_capability_root.as_ref().ok_or_else(|| {
+            HakilleError::CapabilityDenied(
+                "autorité Biscuit non configurée : appeler with_trusted_root avant tout effet"
+                    .into(),
+            )
+        })?;
+        hakille_core::verify_capability_with_root_key(cap, root, scope, action)
     }
 
     /// Configure the host allowlist egress policy (default: loopback-only).
@@ -193,13 +258,10 @@ impl Substrate for MobileSubstrate {
     }
 
     async fn attest(&self, data: &[u8]) -> Result<SignedAttestation> {
-        let sig = self.attestation_keypair.sign(data);
-        Ok(SignedAttestation {
-            manifest_hash: format!("sha256-mobile-shadow-{}", data.len()),
-            platform_id: "Mobile-Edge-Shadow-Terminal".to_string(),
-            timestamp: Timestamp::now(),
-            signature: sig,
-        })
+        let driver = self.attestation.as_ref().ok_or_else(|| HakilleError::SubstrateError(
+            "attestation mobile indisponible : aucun pilote KeyStore/App Attest raccordé ; aucune identité matérielle prouvée".into()
+        ))?;
+        driver.attest(data, &self.manifest).await
     }
 
     async fn read_file(&self, path: &VirtualPath, cap: &CapabilityToken) -> Result<Vec<u8>> {
@@ -208,11 +270,7 @@ impl Substrate for MobileSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Read,
         )?;
-        let _resolved = self.resolve_path(path)?;
-        let sync = self.shadow_sync.lock().unwrap();
-        sync.get_value(&path.0).ok_or_else(|| {
-            hakille_core::HakilleError::StorageError(format!("File not found: {}", path.0))
-        })
+        self.storage()?.read_file(StorageScope::Documents, path)
     }
 
     async fn write_file(
@@ -226,10 +284,8 @@ impl Substrate for MobileSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Write,
         )?;
-        let _resolved = self.resolve_path(path)?;
-        let mut sync = self.shadow_sync.lock().unwrap();
-        sync.queue_local_delta(&path.0, data);
-        Ok(())
+        self.storage()?
+            .write_file_atomic(StorageScope::Documents, path, data)
     }
 
     async fn list_dir(
@@ -242,27 +298,7 @@ impl Substrate for MobileSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Read,
         )?;
-        // Root ("" / "/" / ".") lists all materialized shadow keys; any other
-        // path must first pass the secure resolution above.
-        let prefix = if path.0.is_empty() || path.0 == "/" || path.0 == "." {
-            String::new()
-        } else {
-            let _resolved = self.resolve_path(path)?;
-            let mut p = path.0.trim_start_matches('/').to_string();
-            if !p.ends_with('/') {
-                p.push('/');
-            }
-            p
-        };
-        let sync = self.shadow_sync.lock().unwrap();
-        let keys = sync.list_keys(&prefix);
-        if keys.is_empty() {
-            return Err(hakille_core::HakilleError::StorageError(format!(
-                "Directory not found: {}",
-                path.0
-            )));
-        }
-        Ok(keys.into_iter().map(VirtualPath).collect())
+        self.storage()?.list_dir(StorageScope::Documents, path)
     }
 
     async fn delete_file(&self, path: &VirtualPath, cap: &CapabilityToken) -> Result<()> {
@@ -271,10 +307,7 @@ impl Substrate for MobileSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Delete,
         )?;
-        let _resolved = self.resolve_path(path)?;
-        let mut sync = self.shadow_sync.lock().unwrap();
-        sync.queue_local_deletion(&path.0);
-        Ok(())
+        self.storage()?.delete_file(StorageScope::Documents, path)
     }
 
     async fn http_request(&self, req: HttpRequest, cap: &CapabilityToken) -> Result<HttpResponse> {
@@ -293,7 +326,7 @@ impl Substrate for MobileSubstrate {
 
     async fn start_audio_capture(
         &self,
-        _config: AudioConfig,
+        config: AudioConfig,
         cap: &CapabilityToken,
     ) -> Result<AudioStreamHandle> {
         self.enforce(
@@ -301,12 +334,18 @@ impl Substrate for MobileSubstrate {
             CapabilityScope::Audio,
             hakille_core::CapabilityAction::Read,
         )?;
+        if let Some(driver) = &self.audio {
+            return driver.start_capture(config).await;
+        }
         Err(hakille_core::HakilleError::SubstrateError(
             "capture audio indisponible : backend audio non raccordé au substrat mobile; aucun flux démarré".to_string(),
         ))
     }
 
-    async fn stop_audio_capture(&self, _handle: AudioStreamHandle) -> Result<()> {
+    async fn stop_audio_capture(&self, handle: AudioStreamHandle) -> Result<()> {
+        if let Some(driver) = &self.audio {
+            return driver.stop_capture(handle).await;
+        }
         Err(hakille_core::HakilleError::SubstrateError(
             "arrêt audio indisponible : aucun flux audio natif géré par ce substrat".to_string(),
         ))
@@ -314,8 +353,8 @@ impl Substrate for MobileSubstrate {
 
     async fn play_audio(
         &self,
-        _data: &[u8],
-        _config: AudioConfig,
+        data: &[u8],
+        config: AudioConfig,
         cap: &CapabilityToken,
     ) -> Result<()> {
         self.enforce(
@@ -323,6 +362,9 @@ impl Substrate for MobileSubstrate {
             CapabilityScope::Audio,
             hakille_core::CapabilityAction::Write,
         )?;
+        if let Some(driver) = &self.audio {
+            return driver.play(data, config).await;
+        }
         Err(hakille_core::HakilleError::SubstrateError(
             "lecture audio indisponible : backend audio non raccordé au substrat mobile; aucun son joué".to_string(),
         ))
@@ -330,7 +372,7 @@ impl Substrate for MobileSubstrate {
 
     async fn start_camera_capture(
         &self,
-        _config: CameraConfig,
+        config: CameraConfig,
         cap: &CapabilityToken,
     ) -> Result<CameraStreamHandle> {
         self.enforce(
@@ -338,19 +380,27 @@ impl Substrate for MobileSubstrate {
             CapabilityScope::Camera,
             hakille_core::CapabilityAction::Read,
         )?;
+        if let Some(driver) = &self.camera {
+            return driver.start_capture(config).await;
+        }
         // Honest: no Camera2/AVFoundation wiring — refuse instead of synthesizing frames.
         Err(hakille_core::HakilleError::SubstrateError(
             MOBILE_CAMERA_UNIMPLEMENTED.into(),
         ))
     }
 
-    async fn stop_camera_capture(&self, _handle: CameraStreamHandle) -> Result<()> {
-        Ok(())
+    async fn stop_camera_capture(&self, handle: CameraStreamHandle) -> Result<()> {
+        if let Some(driver) = &self.camera {
+            return driver.stop_capture(handle).await;
+        }
+        Err(HakilleError::SubstrateError(
+            MOBILE_CAMERA_UNIMPLEMENTED.into(),
+        ))
     }
 
     async fn capture_camera_frame(
         &self,
-        _handle: CameraStreamHandle,
+        handle: CameraStreamHandle,
         cap: &CapabilityToken,
     ) -> Result<CameraFrame> {
         self.enforce(
@@ -358,6 +408,9 @@ impl Substrate for MobileSubstrate {
             CapabilityScope::Camera,
             hakille_core::CapabilityAction::Read,
         )?;
+        if let Some(driver) = &self.camera {
+            return driver.frame(handle).await;
+        }
         // Honest: no Camera2/AVFoundation wiring — refuse instead of synthesizing frames.
         Err(hakille_core::HakilleError::SubstrateError(
             MOBILE_CAMERA_UNIMPLEMENTED.into(),
@@ -370,17 +423,23 @@ impl Substrate for MobileSubstrate {
             CapabilityScope::Sensor,
             hakille_core::CapabilityAction::Read,
         )?;
+        if let Some(driver) = &self.screen {
+            return driver.capture().await;
+        }
         Err(hakille_core::HakilleError::SubstrateError(
             "capture d'écran indisponible : binding MediaProjection/ReplayKit non raccordé; aucune image du poste capturée".to_string(),
         ))
     }
 
-    async fn inject_input(&self, _action: InputAction, cap: &CapabilityToken) -> Result<()> {
+    async fn inject_input(&self, action: InputAction, cap: &CapabilityToken) -> Result<()> {
         self.enforce(
             cap,
             CapabilityScope::GuiInput,
             hakille_core::CapabilityAction::Execute,
         )?;
+        if let Some(driver) = &self.input {
+            return driver.inject(action).await;
+        }
         Err(hakille_core::HakilleError::SubstrateError(
             "injection d'entrée indisponible : binding accessibilité Android/iOS non raccordé; aucun événement émis".to_string(),
         ))
@@ -442,17 +501,371 @@ impl Substrate for MobileSubstrate {
     }
 
     fn power_state(&self) -> PowerState {
-        let eng = self.battery_engine.lock().unwrap();
-        PowerState {
-            on_battery: true,
-            battery_percent: 85.0,
-            charging: eng.current_tier() == crate::battery_conservation::BatteryTier::Charging,
+        match self.power_observation() {
+            Ok(Some(state)) => state,
+            other => {
+                if let Err(error) = other {
+                    tracing::warn!(%error, "observation batterie indisponible");
+                }
+                // Limite du contrat legacy sans Option : NaN signifie inconnu.
+                // Les appelants mobiles doivent préférer power_observation().
+                PowerState {
+                    on_battery: false,
+                    battery_percent: f32::NAN,
+                    charging: false,
+                }
+            }
         }
     }
 
     fn thermal_state(&self) -> ThermalState {
-        // Honest: no native thermal HAL binding is linked (PowerManager /
-        // thermal APIs unwired); Unknown, not an invented 36.5 °C.
-        ThermalState::Unknown
+        match self.thermal_observation() {
+            Ok(Some(state)) => state,
+            other => {
+                if let Err(error) = other {
+                    tracing::warn!(%error, "observation thermique indisponible");
+                }
+                ThermalState::Unknown
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod configured_mobile_tests {
+    use super::*;
+    use hakille_core::{CapabilityAction, CapabilityAuthority, Timestamp};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct TestContainer(PathBuf);
+    impl TestContainer {
+        fn new() -> Self {
+            let root =
+                std::env::temp_dir().join(format!("hakille-mobile-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+    }
+    impl Drop for TestContainer {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn token(
+        authority: &CapabilityAuthority,
+        scope: CapabilityScope,
+        actions: Vec<CapabilityAction>,
+    ) -> CapabilityToken {
+        authority
+            .create_root_token(
+                vec![scope],
+                actions,
+                Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
+            )
+            .unwrap()
+    }
+    fn fs_token(authority: &CapabilityAuthority) -> CapabilityToken {
+        token(
+            authority,
+            CapabilityScope::Filesystem,
+            vec![
+                CapabilityAction::Read,
+                CapabilityAction::Write,
+                CapabilityAction::Delete,
+            ],
+        )
+    }
+
+    #[tokio::test]
+    async fn file_effects_require_pinned_authority_and_explicit_container() {
+        let authority = CapabilityAuthority::new();
+        let cap = fs_token(&authority);
+        let path = VirtualPath("note.txt".into());
+        let unconfigured = MobileSubstrate::new();
+        assert!(matches!(
+            unconfigured.write_file(&path, b"no", &cap).await,
+            Err(HakilleError::CapabilityDenied(_))
+        ));
+        let pinned = MobileSubstrate::new().with_trusted_root(authority.root_public_key());
+        assert!(matches!(
+            pinned.write_file(&path, b"no", &cap).await,
+            Err(HakilleError::StorageError(_))
+        ));
+        assert!(
+            !pinned
+                .manifest()
+                .capabilities_granted
+                .contains(&CapabilityScope::Filesystem)
+        );
+        assert!(
+            pinned
+                .manifest()
+                .capabilities_granted
+                .contains(&CapabilityScope::Network)
+        );
+        assert!(pinned.read_file(&path, &cap).await.is_err());
+        assert!(
+            pinned
+                .list_dir(&VirtualPath(String::new()), &cap)
+                .await
+                .is_err()
+        );
+        assert!(pinned.delete_file(&path, &cap).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn files_persist_across_substrate_recreation_and_delete_is_real() {
+        let dir = TestContainer::new();
+        let authority = CapabilityAuthority::new();
+        let cap = fs_token(&authority);
+        let path = VirtualPath("notes/todo.txt".into());
+        let substrate = MobileSubstrate::new()
+            .with_trusted_root(authority.root_public_key())
+            .with_app_container(&dir.0)
+            .unwrap();
+        assert!(
+            substrate
+                .manifest()
+                .capabilities_granted
+                .contains(&CapabilityScope::Filesystem)
+        );
+        assert!(substrate.storage_sandbox().is_some());
+        assert!(
+            substrate
+                .list_dir(&VirtualPath(String::new()), &cap)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        substrate
+            .write_file(&path, b"premiere version", &cap)
+            .await
+            .unwrap();
+        substrate
+            .write_file(&path, b"version durable", &cap)
+            .await
+            .unwrap();
+        drop(substrate);
+        assert_eq!(
+            std::fs::read(dir.0.join("Documents/notes/todo.txt")).unwrap(),
+            b"version durable"
+        );
+        let reopened = MobileSubstrate::new()
+            .with_trusted_root(authority.root_public_key())
+            .with_app_container(&dir.0)
+            .unwrap();
+        assert_eq!(
+            reopened.read_file(&path, &cap).await.unwrap(),
+            b"version durable"
+        );
+        let listed = reopened
+            .list_dir(&VirtualPath("notes".into()), &cap)
+            .await
+            .unwrap();
+        assert!(listed.iter().any(|entry| entry.0.ends_with("todo.txt")));
+        reopened.delete_file(&path, &cap).await.unwrap();
+        assert!(!dir.0.join("Documents/notes/todo.txt").exists());
+        assert!(reopened.read_file(&path, &cap).await.is_err());
+        assert!(reopened.delete_file(&path, &cap).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn foreign_expired_wrong_scope_and_read_only_tokens_cannot_mutate_storage() {
+        let dir = TestContainer::new();
+        let authority = CapabilityAuthority::new();
+        let substrate = MobileSubstrate::new()
+            .with_trusted_root(authority.root_public_key())
+            .with_app_container(&dir.0)
+            .unwrap();
+        let path = VirtualPath("protected.txt".into());
+        let forged = fs_token(&CapabilityAuthority::new());
+        let wrong = token(
+            &authority,
+            CapabilityScope::Network,
+            vec![CapabilityAction::Write],
+        );
+        let read_only = token(
+            &authority,
+            CapabilityScope::Filesystem,
+            vec![CapabilityAction::Read],
+        );
+        let expired = authority
+            .create_root_token(
+                vec![CapabilityScope::Filesystem],
+                vec![CapabilityAction::Write],
+                Timestamp(chrono::Utc::now() - chrono::Duration::hours(1)),
+            )
+            .unwrap();
+        for cap in [&forged, &wrong, &read_only, &expired] {
+            assert!(
+                substrate
+                    .write_file(&path, b"forbidden", cap)
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(!dir.0.join("Documents/protected.txt").exists());
+        let cap = fs_token(&authority);
+        substrate
+            .write_file(&path, b"original", &cap)
+            .await
+            .unwrap();
+        assert!(substrate.delete_file(&path, &read_only).await.is_err());
+        assert_eq!(substrate.read_file(&path, &cap).await.unwrap(), b"original");
+    }
+
+    #[tokio::test]
+    async fn container_rejects_traversal_and_missing_root() {
+        let dir = TestContainer::new();
+        assert!(
+            MobileSubstrate::new()
+                .with_app_container(dir.0.join("missing"))
+                .is_err()
+        );
+        let authority = CapabilityAuthority::new();
+        let substrate = MobileSubstrate::new()
+            .with_trusted_root(authority.root_public_key())
+            .with_app_container(&dir.0)
+            .unwrap();
+        let cap = fs_token(&authority);
+        for path in [
+            "../escape",
+            "/absolute",
+            "C:\\escape",
+            "a/../../escape",
+            "a\\..\\escape",
+            "nul\0name",
+        ] {
+            let path = VirtualPath(path.into());
+            assert!(substrate.write_file(&path, b"escape", &cap).await.is_err());
+            assert!(substrate.read_file(&path, &cap).await.is_err());
+            assert!(substrate.delete_file(&path, &cap).await.is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn container_does_not_read_or_mutate_outside_symlink_target() {
+        let dir = TestContainer::new();
+        let outside = TestContainer::new();
+        std::fs::write(outside.0.join("secret"), b"original secret").unwrap();
+        let authority = CapabilityAuthority::new();
+        let substrate = MobileSubstrate::new()
+            .with_trusted_root(authority.root_public_key())
+            .with_app_container(&dir.0)
+            .unwrap();
+        std::os::unix::fs::symlink(&outside.0, dir.0.join("Documents/escape")).unwrap();
+        let path = VirtualPath("escape/secret".into());
+        let cap = fs_token(&authority);
+        assert!(substrate.read_file(&path, &cap).await.is_err());
+        assert!(substrate.write_file(&path, b"changed", &cap).await.is_err());
+        assert!(substrate.delete_file(&path, &cap).await.is_err());
+        assert_eq!(
+            std::fs::read(outside.0.join("secret")).unwrap(),
+            b"original secret"
+        );
+    }
+
+    struct DeniedInput(AtomicUsize);
+    #[async_trait]
+    impl MobileInputDriver for DeniedInput {
+        async fn inject(&self, _action: InputAction) -> Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(HakilleError::SubstrateError(
+                "permission native refusée (pilote de test)".into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_driver_still_checks_token_and_preserves_native_failure() {
+        let authority = CapabilityAuthority::new();
+        let driver = Arc::new(DeniedInput(AtomicUsize::new(0)));
+        let substrate = MobileSubstrate::new().with_input_driver(driver.clone());
+        assert!(
+            !substrate
+                .manifest()
+                .capabilities_granted
+                .contains(&CapabilityScope::GuiInput)
+        );
+        let substrate = substrate.with_trusted_root(authority.root_public_key());
+        assert!(
+            substrate
+                .manifest()
+                .capabilities_granted
+                .contains(&CapabilityScope::GuiInput)
+        );
+        let wrong = fs_token(&authority);
+        let action = || InputAction::Type {
+            text: "test".into(),
+        };
+        assert!(matches!(
+            substrate.inject_input(action(), &wrong).await,
+            Err(HakilleError::CapabilityDenied(_))
+        ));
+        assert_eq!(driver.0.load(Ordering::SeqCst), 0);
+        let cap = token(
+            &authority,
+            CapabilityScope::GuiInput,
+            vec![CapabilityAction::Execute],
+        );
+        assert!(
+            substrate
+                .inject_input(action(), &cap)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("permission native refusée")
+        );
+        assert_eq!(driver.0.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn camera_stop_without_driver_does_not_acknowledge_unknown_handle() {
+        assert!(
+            MobileSubstrate::new()
+                .stop_camera_capture(CameraStreamHandle(42))
+                .await
+                .is_err()
+        );
+    }
+
+    struct ObservedPower(f32);
+    impl MobilePowerDriver for ObservedPower {
+        fn power_state(&self) -> Result<PowerState> {
+            Ok(PowerState {
+                on_battery: true,
+                battery_percent: self.0,
+                charging: false,
+            })
+        }
+        fn thermal_state(&self) -> Result<ThermalState> {
+            Err(HakilleError::SubstrateError(
+                "capteur thermique indisponible (test)".into(),
+            ))
+        }
+    }
+
+    #[test]
+    fn power_observations_are_explicit_and_invalid_measurements_are_not_defaults() {
+        let observed = MobileSubstrate::new().with_power_driver(Arc::new(ObservedPower(17.0)));
+        assert_eq!(
+            observed
+                .power_observation()
+                .unwrap()
+                .unwrap()
+                .battery_percent,
+            17.0
+        );
+        assert_eq!(observed.power_state().battery_percent, 17.0);
+        assert!(observed.thermal_observation().is_err());
+        assert!(observed.thermal_state().is_unknown());
+        for invalid in [f32::NAN, f32::INFINITY, -1.0, 101.0] {
+            let substrate =
+                MobileSubstrate::new().with_power_driver(Arc::new(ObservedPower(invalid)));
+            assert!(substrate.power_observation().is_err());
+            assert!(substrate.power_state().battery_percent.is_nan());
+        }
     }
 }

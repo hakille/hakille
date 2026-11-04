@@ -8,7 +8,7 @@ use std::collections::HashMap;
 pub struct ReplicationDelta {
     pub new_triplets: Vec<Triplet>,
     pub new_tombstones: Vec<TripletId>,
-    /// Horodatages des tombstones (propagés pour un GC équitable).
+    /// Horodatages connus des tombstones (aucune purge sans preuve de convergence).
     /// `#[serde(default)]` pour compatibilité avec les deltas pré-LWW.
     #[serde(default)]
     pub tombstone_times: HashMap<TripletId, Timestamp>,
@@ -18,65 +18,28 @@ pub struct ReplicationDelta {
 pub struct ReplicationEngine;
 
 impl ReplicationEngine {
-    /// Construit un delta **différentiel** contre l'horloge du pair.
-    ///
-    /// - `from_clock = None` ⇒ **full-state** (l'état complet est envoyé) ;
-    ///   c'est le repli honnête quand on ne sait pas ce que le pair a déjà
-    ///   (première sync, horloge perdue).
-    /// - `from_clock = Some` + `since = Some(t)` ⇒ différentiel temporel :
-    ///   seuls les triplets avec `created_at > t` sont inclus. `t` est
-    ///   l'heure du dernier sync réussi avec ce pair (les horloges
-    ///   vectorielles seules n'ordonnent pas les créations murales, d'où ce
-    ///   paramètre explicite et documenté).
-    /// - `from_clock = Some` + `since = None` ⇒ repli conservateur
-    ///   full-state **filtré par l'horloge** : si l'horloge distante domine
-    ///   déjà la locale (rien de nouveau), delta vide ; sinon full-state
-    ///   (on ne peut pas prouver le différentiel sans `since`).
-    ///
-    /// Les tombstones sont toujours envoyées en totalité (ensemble petit,
-    /// sémantique de suppression prioritaire).
+    /// État complet conservateur. Les anciens paramètres de différentiel sont
+    /// conservés pour compatibilité mais ignorés : ni created_at, ni une horloge
+    /// globale égale ne prouvent que le pair possède chaque contenu courant.
+    /// Un différentiel sûr nécessiterait des versions/ACK par opération.
     pub fn build_delta(
         sync_state: &CrdtSync,
-        from_clock: Option<&VectorClock>,
-        since: Option<Timestamp>,
+        _from_clock: Option<&VectorClock>,
+        _since: Option<Timestamp>,
     ) -> ReplicationDelta {
-        let all: Vec<Triplet> = sync_state.active_triplets().into_iter().cloned().collect();
-        let new_triplets = match (from_clock, since) {
-            // Différentiel temporel précis.
-            (_, Some(since_ts)) => all
-                .into_iter()
-                .filter(|t| t.metadata.created_at.0 > since_ts.0)
-                .collect(),
-            // Sans `since` : si le pair est déjà à jour (horloges égales),
-            // rien à envoyer ; sinon full-state conservateur.
-            (Some(remote), None) => {
-                if remote == &sync_state.vector_clock {
-                    Vec::new()
-                } else {
-                    // Full-state : on ne peut pas calculer un diff fiable
-                    // avec la seule horloge vectorielle (pas d'ordre mural).
-                    all
-                }
-            }
-            // Clock absent ⇒ full-state + commentaire (voir doc).
-            (None, None) => all,
-        };
-        // Propage les horodatages des tombstones envoyées (GC équitable :
-        // le pair garde le plus ancien via `CrdtSync::merge`).
-        let tombstone_times: HashMap<TripletId, Timestamp> = sync_state
-            .tombstones
+        let mut new_triplets: Vec<_> = sync_state.active_triplets().into_iter().cloned().collect();
+        new_triplets.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut new_tombstones: Vec<_> = sync_state.tombstones.iter().cloned().collect();
+        new_tombstones.sort();
+        let tombstone_times = sync_state
+            .tombstone_times
             .iter()
-            .map(|id| {
-                let t = sync_state
-                    .tombstone_time(id)
-                    .cloned()
-                    .unwrap_or_else(Timestamp::now);
-                (id.clone(), t)
-            })
+            .filter(|(id, _)| sync_state.tombstones.contains(id))
+            .map(|(id, time)| (id.clone(), time.clone()))
             .collect();
         ReplicationDelta {
             new_triplets,
-            new_tombstones: sync_state.tombstones.iter().cloned().collect(),
+            new_tombstones,
             tombstone_times,
             clock: sync_state.vector_clock.clone(),
         }
@@ -94,11 +57,8 @@ impl ReplicationEngine {
         Self::encrypt_delta(&delta, encryption_key)
     }
 
-    /// Delta différentiel chiffré contre l'horloge du pair.
-    ///
-    /// `from_clock` vient typiquement de `SyncRequest.from_clock`
-    /// (voir `protocol.rs`) ; `since` est l'heure du dernier sync réussi
-    /// avec ce pair (`None` ⇒ repli full-state filtré par horloge).
+    /// État complet chiffré ; paramètres historiques conservés mais aucun
+    /// différentiel fiable n'est déduit de la date ou de l'horloge globale.
     pub fn build_encrypted_delta_from(
         sync_state: &CrdtSync,
         encryption_key: &[u8],
@@ -110,8 +70,16 @@ impl ReplicationEngine {
     }
 
     fn encrypt_delta(delta: &ReplicationDelta, encryption_key: &[u8]) -> Result<EncryptedBlob> {
+        for triplet in &delta.new_triplets {
+            crate::crdt::canonical_triplet(triplet)?;
+        }
         let serialized = serde_json::to_vec(&delta)
             .map_err(|e| hakille_core::HakilleError::SerializationError(e.to_string()))?;
+        if serialized.len() > 32 * 1024 * 1024 {
+            return Err(hakille_core::HakilleError::SerializationError(
+                "État de réplication limité à 32 Mio".into(),
+            ));
+        }
         encrypt_at_rest(&serialized, encryption_key)
     }
 
@@ -124,6 +92,11 @@ impl ReplicationEngine {
         encrypted_blob: &EncryptedBlob,
         decryption_key: &[u8],
     ) -> Result<()> {
+        if encrypted_blob.ciphertext.len() > 32 * 1024 * 1024 + 16 {
+            return Err(hakille_core::HakilleError::SerializationError(
+                "État de réplication limité à 32 Mio".into(),
+            ));
+        }
         let decrypted = decrypt_at_rest(encrypted_blob, decryption_key)?;
         let delta: ReplicationDelta = serde_json::from_slice(&decrypted)
             .map_err(|e| hakille_core::HakilleError::SerializationError(e.to_string()))?;
@@ -131,23 +104,29 @@ impl ReplicationEngine {
         // Reconstruit un état distant minimal puis fusionne (LWW + tombstones).
         let mut remote = CrdtSync::new();
         for triplet in delta.new_triplets {
-            remote.elements.insert(triplet.id.clone(), triplet);
+            if remote
+                .elements
+                .insert(triplet.id.clone(), triplet)
+                .is_some()
+            {
+                return Err(hakille_core::HakilleError::SerializationError(
+                    "ID de triplet dupliqué dans le delta".into(),
+                ));
+            }
         }
         for tombstone in delta.new_tombstones {
-            remote.tombstones.insert(tombstone.clone());
-            // Propage l'horodatage du delta ; `now` conservateur si absent
-            // (delta pré-LWW) — `merge` garde ensuite le plus ancien.
-            let t = delta
-                .tombstone_times
-                .get(&tombstone)
-                .cloned()
-                .unwrap_or_else(Timestamp::now);
-            remote.tombstone_times.insert(tombstone, t);
+            if !remote.tombstones.insert(tombstone.clone()) {
+                return Err(hakille_core::HakilleError::SerializationError(
+                    "Tombstone dupliquée dans le delta".into(),
+                ));
+            }
+            // Une date absente reste inconnue, sans dépendance à l'horloge locale.
+            if let Some(time) = delta.tombstone_times.get(&tombstone) {
+                remote.tombstone_times.insert(tombstone, time.clone());
+            }
         }
         remote.vector_clock = delta.clock;
-        sync_state.merge(&remote);
-
-        Ok(())
+        sync_state.merge(&remote)
     }
 }
 
@@ -182,53 +161,93 @@ mod tests {
     #[test]
     fn test_delta_full_state_when_clock_absent() {
         let mut state = CrdtSync::new();
-        state.insert_triplet(
-            triplet_at("a", chrono::Utc::now() - chrono::Duration::hours(2)),
-            "n1",
-        );
-        state.insert_triplet(triplet_at("b", chrono::Utc::now()), "n1");
+        state
+            .insert_triplet(
+                triplet_at("a", chrono::Utc::now() - chrono::Duration::hours(2)),
+                "n1",
+            )
+            .unwrap();
+        state
+            .insert_triplet(triplet_at("b", chrono::Utc::now()), "n1")
+            .unwrap();
         // Clock absent ⇒ full-state : tout est envoyé.
         let delta = ReplicationEngine::build_delta(&state, None, None);
         assert_eq!(delta.new_triplets.len(), 2);
     }
 
     #[test]
-    fn test_delta_differential_filters_by_created_at() {
+    fn test_delta_since_is_not_a_proof_of_complete_replication() {
         let mut state = CrdtSync::new();
-        state.insert_triplet(
-            triplet_at("vieux", chrono::Utc::now() - chrono::Duration::hours(2)),
-            "n1",
-        );
-        state.insert_triplet(triplet_at("neuf", chrono::Utc::now()), "n1");
+        state
+            .insert_triplet(
+                triplet_at("vieux", chrono::Utc::now() - chrono::Duration::hours(2)),
+                "n1",
+            )
+            .unwrap();
+        state
+            .insert_triplet(triplet_at("neuf", chrono::Utc::now()), "n1")
+            .unwrap();
         let since = Timestamp(chrono::Utc::now() - chrono::Duration::hours(1));
         let remote_clock = state.vector_clock.clone();
-        // Seul le triplet créé après `since` est inclus.
+        // Une date de création ne suffit pas : envoyer aussi les anciens contenus.
         let delta = ReplicationEngine::build_delta(&state, Some(&remote_clock), Some(since));
-        assert_eq!(delta.new_triplets.len(), 1);
-        match &delta.new_triplets[0].object {
-            NodeValue::Text(s) => assert_eq!(s, "neuf"),
-            _ => panic!("attendu du texte"),
-        }
+        assert_eq!(delta.new_triplets.len(), 2);
     }
 
     #[test]
-    fn test_delta_empty_when_peer_up_to_date() {
+    fn test_delta_equal_global_clock_is_not_a_content_ack() {
         let mut state = CrdtSync::new();
-        state.insert_triplet(triplet_at("a", chrono::Utc::now()), "n1");
+        state
+            .insert_triplet(triplet_at("a", chrono::Utc::now()), "n1")
+            .unwrap();
         let remote_clock = state.vector_clock.clone();
-        // Même horloge, pas de `since` ⇒ rien de nouveau (delta vide).
+        // Même horloge globale : aucun accusé de réception de contenu prouvé.
         let delta = ReplicationEngine::build_delta(&state, Some(&remote_clock), None);
-        assert!(delta.new_triplets.is_empty());
+        assert_eq!(delta.new_triplets.len(), 1);
     }
 
     #[test]
     fn test_encrypted_delta_roundtrip() {
         let mut state = CrdtSync::new();
-        state.insert_triplet(triplet_at("hello", chrono::Utc::now()), "n1");
+        state
+            .insert_triplet(triplet_at("hello", chrono::Utc::now()), "n1")
+            .unwrap();
         let key = [42u8; 32];
         let blob = ReplicationEngine::build_encrypted_delta(&state, &key).unwrap();
         let mut peer = CrdtSync::new();
         ReplicationEngine::apply_encrypted_delta(&mut peer, &blob, &key).unwrap();
         assert_eq!(peer.active_triplets().len(), 1);
+    }
+    #[test]
+    fn old_creation_date_does_not_hide_a_changed_content() {
+        let old = chrono::Utc::now() - chrono::Duration::days(30);
+        let mut triplet = triplet_at("old", old);
+        let mut state = CrdtSync::new();
+        state.insert_triplet(triplet.clone(), "node").unwrap();
+        let clock = state.vector_clock.clone();
+        triplet.object = NodeValue::Text("modified".into());
+        triplet.metadata.last_activated = Timestamp::now();
+        state.insert_triplet(triplet.clone(), "node").unwrap();
+        let delta = ReplicationEngine::build_delta(&state, Some(&clock), Some(Timestamp::now()));
+        assert_eq!(delta.new_triplets, vec![triplet]);
+    }
+
+    #[test]
+    fn duplicate_wire_ids_fail_without_mutating_receiver() {
+        let triplet = triplet_at("one", chrono::Utc::now());
+        let mut duplicate = triplet.clone();
+        duplicate.object = NodeValue::Text("two".into());
+        let delta = ReplicationDelta {
+            new_triplets: vec![triplet, duplicate],
+            new_tombstones: vec![],
+            tombstone_times: HashMap::new(),
+            clock: VectorClock::new(),
+        };
+        let key = [7; 32];
+        let encrypted = ReplicationEngine::encrypt_delta(&delta, &key).unwrap();
+        let mut state = CrdtSync::new();
+        assert!(ReplicationEngine::apply_encrypted_delta(&mut state, &encrypted, &key).is_err());
+        assert!(state.elements.is_empty() && state.tombstones.is_empty());
+        assert!(state.vector_clock.clock.is_empty());
     }
 }

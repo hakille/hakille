@@ -17,6 +17,8 @@ members = [
     "crates/hakille-ui",
     "crates/hakille-ui-shell",
     "crates/hakille-ipc",
+    "crates/hakille-mobile",
+    "crates/hakille-mobile-gateway",
     "crates/hakille-ui-protocol",
     "crates/hakille-design",
     "crates/hakille-ui-model",

@@ -34,7 +34,7 @@ cd hakille
 
 ## 2. Compilation du Projet
 
-Le workspace Cargo est configuré pour compiler les 31 crates (+ 5 crates d'agents de référence, `conformance`, `xtask`) de façon unifiée :
+Le workspace Cargo est configuré pour compiler les 33 crates (+ 5 crates d'agents de référence, `conformance`, `xtask`) de façon unifiée :
 
 ```bash
 # 1. Vérification statique rapide de l'ensemble des crates
@@ -48,6 +48,16 @@ cargo build --workspace --release
 ```
 
 ---
+
+### Client mobile Android/iOS
+
+Le [guide mobile](../mobile/README.md) décrit les projets Compose/SwiftUI,
+UniFFI et la connexion au hub. Android exige un **JDK complet** (avec `javac`),
+SDK 35 et NDK 27.2.12479018 ; iOS exige macOS/Xcode. Le script
+`scripts/build-mobile-rust.sh android|ios` compile les bibliothèques et régénère
+les bindings. Il n'installe pas automatiquement les SDK ou cibles Rust.
+Le [workflow mobile](../.github/workflows/mobile.yml) ajoute les contrôles
+natifs ; une compilation ne constitue pas un essai sur téléphone.
 
 ## 3. Exécution des Suites de Tests et Validation Formelle
 

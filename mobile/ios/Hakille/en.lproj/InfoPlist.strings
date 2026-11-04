@@ -1,0 +1,3 @@
+"NSLocalNetworkUsageDescription" = "Connect to the Hakille hub you explicitly selected on your local network.";
+"NSMicrophoneUsageDescription" = "Capture up to 30 seconds of speech after you tap Dictate. Audio recognition stays on this device; text only fills your draft.";
+"NSSpeechRecognitionUsageDescription" = "Transcribe speech on this device after you tap Dictate. If local recognition is unavailable, dictation will not start.";

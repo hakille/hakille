@@ -17,3 +17,4 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 bytes = { workspace = true }
 async-trait = { workspace = true }
+cap-primitives = "=4.0.3"

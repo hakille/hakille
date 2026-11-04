@@ -1,0 +1,3 @@
+"NSLocalNetworkUsageDescription" = "Se connecter au hub Hakille que vous avez explicitement choisi sur votre réseau local.";
+"NSMicrophoneUsageDescription" = "Capturer jusqu’à 30 secondes de parole après votre appui sur Dicter. La reconnaissance reste sur cet appareil ; le texte remplit uniquement votre brouillon.";
+"NSSpeechRecognitionUsageDescription" = "Transcrire la parole sur cet appareil après votre appui sur Dicter. Si la reconnaissance locale est indisponible, la dictée ne démarre pas.";

@@ -41,8 +41,9 @@ async fn test_all_substrates_manifest_and_attestation() {
 
     let mob = MobileSubstrate::new();
     assert_eq!(mob.manifest().tier, Tier::Guest);
-    let att = mob.attest(b"test").await.unwrap();
-    assert_eq!(att.platform_id, "Mobile-Edge-Shadow-Terminal");
+    assert!(mob.attest(b"test").await.is_err());
+    assert!(!mob.manifest().has_secure_enclave);
+    assert!(mob.manifest().max_memory_bytes.is_none());
 
     let web = WebSubstrate::new();
     assert_eq!(web.manifest().tier, Tier::Guest);
@@ -71,7 +72,12 @@ async fn test_all_compute_backends() {
 
     let mob_comp = MobileComputeBackend::new();
     assert!(!mob_comp.available_backends().is_empty());
-    assert!(mob_comp.supports_quantization("int8"));
+    assert_eq!(
+        mob_comp.available_backends(),
+        vec![hakille_substrate::ComputeBackend::Cpu]
+    );
+    assert!(!mob_comp.supports_quantization("int8"));
+    assert_eq!(mob_comp.ram_available_bytes(), 0);
 
     let web_comp = WebComputeBackend::new();
     assert!(!web_comp.available_backends().is_empty());
@@ -82,7 +88,8 @@ async fn test_all_compute_backends() {
 async fn test_cross_substrate_screen_capture_conformance() {
     // Token Sensor+GuiInput / Read+Execute : capture_screen exige Sensor/Read
     // (cohérent Windows). Expiration future pour ne pas expirer mid-test.
-    let cap = hakille_core::CapabilityAuthority::new()
+    let authority = hakille_core::CapabilityAuthority::new();
+    let cap = authority
         .create_root_token(
             vec![CapabilityScope::Sensor, CapabilityScope::GuiInput],
             vec![
@@ -117,7 +124,7 @@ async fn test_cross_substrate_screen_capture_conformance() {
         Box::new(LinuxSubstrate::new()),
         Box::new(MacosSubstrate::new()),
         Box::new(RedoxSubstrate::new()),
-        Box::new(MobileSubstrate::new()),
+        Box::new(MobileSubstrate::new().with_trusted_root(authority.root_public_key())),
         Box::new(WebSubstrate::new()),
     ];
     for substrate in substrates {
@@ -220,7 +227,12 @@ async fn test_substrate_forged_token_refused_when_pinned() {
     let mac = MacosSubstrate::new().with_trusted_root(honest.root_public_key());
     assert!(mac.write_file(&path, b"evil", &forged).await.is_err());
 
-    let mob = MobileSubstrate::new().with_trusted_root(honest.root_public_key());
+    let mobile_root = dir.path().join("mobile");
+    std::fs::create_dir(&mobile_root).unwrap();
+    let mob = MobileSubstrate::new()
+        .with_trusted_root(honest.root_public_key())
+        .with_app_container(mobile_root)
+        .unwrap();
     assert!(mob.write_file(&path, b"evil", &forged).await.is_err());
     assert!(mob.write_file(&path, b"legit", &legit).await.is_ok());
 
@@ -322,15 +334,18 @@ fn test_redox_conformance_schemes_and_capabilities() {
 #[test]
 fn test_mobile_conformance_shadow_and_battery() {
     let mut shadow = MobileShadowSync::default();
-    shadow.queue_local_delta("draft.txt", b"secret draft");
-    assert!(shadow.connect().is_ok());
-    assert_eq!(shadow.state(), ShadowState::ActiveStreaming);
+    shadow
+        .queue_local_delta("draft.txt", b"secret draft")
+        .unwrap();
+    assert!(shadow.connect().is_err()); // Aucun transport natif intégré.
+    assert_eq!(shadow.state(), ShadowState::Disconnected);
+    assert_eq!(shadow.pending_count(), 1);
     assert_eq!(
         shadow.get_value("draft.txt"),
         Some(b"secret draft".to_vec())
     );
 
-    // CRDT LWW resolution
+    // Fusion LWW : le contenu remplacé reste observable dans les conflits.
     let remote_delta = hakille_substrate_mobile::ShadowDelta {
         key: "draft.txt".to_string(),
         value: b"newer draft from TiKV".to_vec(),
@@ -338,7 +353,9 @@ fn test_mobile_conformance_shadow_and_battery() {
         timestamp: hakille_core::Timestamp::now(),
         is_deleted: false,
     };
-    shadow.push_remote_delta(remote_delta);
+    shadow.push_remote_delta(remote_delta).unwrap();
+    assert_eq!(shadow.pending_count(), 1);
+    assert_eq!(shadow.conflicts().len(), 1);
     assert_eq!(
         shadow.get_value("draft.txt"),
         Some(b"newer draft from TiKV".to_vec())

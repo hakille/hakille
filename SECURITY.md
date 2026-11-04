@@ -37,7 +37,72 @@ We aim to acknowledge within 72h and publish a fix + CVE note.
   Formant TTS and CV grounding remain separate non-neural components.
   Missing artifacts produce explicit errors or `SKIP`, never simulated output.
 
+## Mobile and synchronization contracts (2026-11-04)
+
+- Native mobile dictation is opt-in and uses the OS on-device recognizer:
+  Android API 31+ requires an available local engine; iOS 16+ requires
+  `supportsOnDeviceRecognition` and sets `requiresOnDeviceRecognition`.
+  Unavailable engines or language resources fail explicitly, with no cloud
+  fallback configured. Permissions are requested on user action; capture is
+  bounded and stops on backgrounding or disconnect. Only final text is added
+  to the draft, without submitting a command or approving a card. There is
+  no always-on mobile wake word or bundled Hakille model. This contract does
+  not independently audit each OS/vendor recognizer or establish physical
+  microphone accuracy and offline behavior on every supported device.
+- Before starting HTTP, native hosts await an atomic, synchronized **v2
+  checkpoint** containing the draft, request counter and bounded uncertainty
+  markers. Secrets and replayable request payloads are excluded; the draft
+  itself can contain personal data. Android uses private app storage with
+  backups disabled; iOS uses protected files excluded from cloud backup.
+  Corrupt checkpoints are refused without replacement. An in-flight mutation
+  restores as `unknown`, with no automatic replay. A known storage failure
+  before transmission is reported as not sent; after transmission starts,
+  cancellation cannot prove that the hub stopped or that no effect occurred.
+- Status and journal reads remain available during recovery. Mutations remain
+  blocked until uncertainty warnings are explicitly acknowledged. Acknowledging
+  a warning only archives it locally: it neither confirms success nor undoes
+  the operation. Disconnecting or changing hubs preserves warnings. Their
+  bounded archives are not a durable audit history and contain no hub identity;
+  users must consult the relevant hub's journal. Last-keystroke durability is
+  distinct from the mandatory checkpoint barrier before network transmission.
+- Signed handoff protocol **v2** in `hakille-sync` requires an explicitly
+  approved `(device identity, public key)` pair from a trusted channel.
+  Incoming messages cannot approve their own key. Legacy v1 handoffs are
+  rejected; key rotation and revocation are explicit. Signatures bind the
+  destination and content; bounded expiry and replay checks reject invalid
+  transfers. The gateway bearer token is not this peer identity. Hosts must
+  protect keys, persist the replay snapshot before using a received context,
+  and restore it before accepting further transfers after restart. Protected
+  persistence and network pairing are not automatically integrated into the
+  mobile applications; rollback-resistant replay storage is not established.
+- CRDT merging retains one deterministic version per identifier and gives
+  deletion tombstones precedence. It is not lossless semantic conflict
+  resolution; a global vector clock is not per-element causality. Transfers
+  currently carry full state. Tombstones are retained rather than deleted by
+  age alone, so storage growth remains a limitation. Applying the CRDT to the
+  knowledge graph does not yet propagate deletions. These primitives do not
+  establish a deployed, convergent multi-device graph service.
+
+See the [native mobile guide](mobile/README.md),
+[checkpoint contract](crates/hakille-mobile/README.md),
+[synchronization contract](crates/hakille-sync/README.md) and
+[second-iteration validation report](docs/VALIDATION_MOBILE_SUITE_2026-11-04.md).
+APK inspection, Android emulator execution and iOS XCTest execution are
+separate evidence. This Linux session does not establish an iOS build or
+XCTest run, or physical-device speech and accessibility validation.
+
 ## Explicitly NOT guaranteed yet
+
+- The optional mobile gateway adds an authenticated HTTP listener on IPv4
+  loopback. It is a separate process with a separate bearer token, which grants
+  access to the exposed hub operations. Remote mobile access requires a trusted
+  HTTPS reverse proxy or tunnel; the gateway supplies no TLS or automatic device
+  pairing. The daemon still serves one IPC client at a time. See
+  [ADR-011](adr/011-mobile-native-client-and-hub.md).
+- Mobile native credential storage does not establish hardware attestation or
+  a paired-device identity. The mobile substrate reports absent drivers and
+  unknown measurements explicitly. Its shadow queue is an acknowledged local
+  synchronization primitive, not a deployed TiKV/APNs/FCM service.
 
 - No TPM/VBS hardware attestation (local dev signature only).
 - UI-TARS accepts only an explicitly configured loopback server. Model alias

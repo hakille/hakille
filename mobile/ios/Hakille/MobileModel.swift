@@ -1,0 +1,209 @@
+import Foundation
+import Combine
+
+@MainActor final class MobileModel: ObservableObject {
+    @Published private(set) var snapshot: JSONValue = .object([:])
+    @Published private(set) var error = ""
+    @Published private(set) var storageError = ""
+    @Published private(set) var savedEndpoint = ""
+    @Published private(set) var dictationStatus = DictationStatus()
+    private var bridge = MobileBridge()
+    private let store = CredentialStore()
+    private let stateStore: MobileStateIO
+    private var persistenceTail: Task<Bool, Never>?
+    private var restorationTask: Task<Void, Never>?
+    private let gateway = GatewayTransport()
+    private var stateLoaded = false
+    private var credentials: HubCredentials?
+    private var generation: UInt64 = 0
+    private var requestTask: Task<Void, Never>?
+    private var transportStartedID: UInt64?
+    private var configurationTask: Task<Void, Never>?
+    private var isForeground = false
+    private var dictationOriginal = ""
+    private lazy var dictation = NativeDictationController(
+        onStatus: { [weak self] in self?.dictationStatus = $0 },
+        onFinal: { [weak self] text in
+            guard let self else { throw DictationFailure.interrupted }
+            return try self.applyDictatedText(text)
+        })
+
+    init(stateStore: MobileStatePersistence = MobileStateStore()) {
+        self.stateStore = MobileStateIO(stateStore)
+        snapshot = (try? .parse(bridge.snapshotJson())) ?? .null
+        retryPersistence()
+        let epoch = generation
+        Task {
+            do { let saved = try await store.load(); if generation == epoch { savedEndpoint = saved?.endpoint ?? "" } }
+            catch { if generation == epoch { self.error = String(localized: "Saved credentials unavailable. Reconnect or erase them.") } }
+        }
+    }
+    var persistenceReady: Bool { stateLoaded && storageError.isEmpty }
+    func retryPersistence() {
+        guard restorationTask == nil else { return }
+        restorationTask = Task {
+            defer { restorationTask = nil }
+            do {
+                if !stateLoaded {
+                    if let checkpoint = try await stateStore.load() {
+                        let result = try JSONValue.parse(bridge.restoreDraftJson(draftJson: checkpoint))
+                        guard result["ok"] == .bool(true) else { throw MobileStateError.invalidCheckpoint }
+                        snapshot = result["snapshot"]
+                    }
+                    stateLoaded = true
+                }
+                _ = await enqueueSave(bridge.draftJson()).value
+            } catch { storageError = String(localized: "Recovery storage is unavailable. No request will be sent. Unlock the device and retry.") }
+        }
+    }
+    private func enqueueSave(_ checkpoint: String) -> Task<Bool, Never> {
+        let previous = persistenceTail
+        let task = Task { [self] in
+            // Attendre aussi un échec précédent : une nouvelle sauvegarde
+            // explicite ne doit jamais être dépassée par une écriture ancienne.
+            _ = await previous?.value
+            do {
+                try await stateStore.save(checkpoint)
+                storageError = ""
+                return true
+            } catch {
+                storageError = String(localized: "Recovery storage is unavailable. No request will be sent. Unlock the device and retry.")
+                return false
+            }
+        }
+        persistenceTail = task
+        return task
+    }
+    @discardableResult private func resetConnection() -> UInt64 {
+        generation &+= 1; configurationTask?.cancel(); requestTask?.cancel(); requestTask = nil; credentials = nil
+        dictation.cancel()
+        cancelUnsentRequest()
+        transportStartedID = nil
+        // Interrompre avant l'export : une opération en vol devient inconnue.
+        // Le nouveau bridge conserve son compteur et tous les avertissements,
+        // y compris lors d'un changement de hub ou d'un effacement du token.
+        _ = accept(bridge.dispatchJson(actionJson: "{\"type\":\"set_foreground\",\"active\":false}"))
+        let replacement = MobileBridge()
+        if let result = try? JSONValue.parse(replacement.restoreDraftJson(draftJson: bridge.draftJson())), result["ok"] == .bool(true) {
+            bridge = replacement; snapshot = result["snapshot"]
+            _ = accept(bridge.dispatchJson(actionJson: "{\"type\":\"set_foreground\",\"active\":\(isForeground)}"))
+        } else { storageError = String(localized: "Recovery storage is unavailable. No request will be sent. Unlock the device and retry.") }
+        return generation
+    }
+    func connect(endpoint: String, token: String, useSaved: Bool = false) {
+        guard persistenceReady else { return }
+        let epoch = resetConnection()
+        guard persistenceReady else { return }
+        configurationTask = Task {
+            do {
+                let candidate: HubCredentials
+                if useSaved {
+                    guard let saved = try await store.load() else { throw GatewayError.storage }; candidate = saved
+                } else { candidate = HubCredentials(endpoint: endpoint.trimmingCharacters(in: .whitespacesAndNewlines), token: token.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                let checked = HubCredentials(endpoint: try EndpointPolicy.canonical(candidate.endpoint), token: candidate.token)
+                try EndpointPolicy.validateToken(checked.token); try Task.checkCancellation()
+                guard generation == epoch else { return }
+                try await store.save(checked, generation: epoch); try Task.checkCancellation()
+                guard generation == epoch else { return }
+                credentials = checked; savedEndpoint = checked.endpoint; error = ""
+                dispatch("set_hub", ["hub_id": .string(checked.endpoint)]); dispatch("refresh_status")
+            } catch is CancellationError { }
+            catch { if generation == epoch { self.error = String(localized: "Connection configuration failed. Check URL, token and secure storage.") } }
+        }
+    }
+    func disconnect() {
+        let epoch = resetConnection(); savedEndpoint = ""
+        Task { do { try await store.clear(generation: epoch) } catch { if generation == epoch { self.error = String(localized: "Could not erase saved credentials.") } } }
+    }
+    func dispatch(_ type: String, _ fields: [String: JSONValue] = [:]) {
+        guard persistenceReady else { return }
+        guard !dictationStatus.isBusy || type == "cancel_approval" else {
+            error = DictationFailure.busy.localizedDescription; return
+        }
+        var action = fields; action["type"] = .string(type)
+        guard let json = try? JSONValue.object(action).encoded() else { return }
+        _ = accept(bridge.dispatchJson(actionJson: json))
+    }
+    func foreground(_ active: Bool, background: Bool = false) {
+        isForeground = active
+        dictation.foreground(active, background: background)
+        if !active {
+            generation &+= 1; requestTask?.cancel(); requestTask = nil; configurationTask?.cancel()
+            cancelUnsentRequest(); transportStartedID = nil
+        }
+        // Toujours interrompre le cœur, même si sa sauvegarde est indisponible.
+        _ = accept(bridge.dispatchJson(actionJson: "{\"type\":\"set_foreground\",\"active\":\(active)}"))
+    }
+    func startDictation(localeIdentifier: String) {
+        guard persistenceReady, snapshot["pending"].isNull, snapshot["approval"].isNull, !dictationStatus.isBusy else {
+            error = DictationFailure.busy.localizedDescription; return
+        }
+        dictationOriginal = snapshot["draft"].text
+        dictation.start(localeIdentifier: localeIdentifier)
+    }
+    func stopDictation() { dictation.stop() }
+    func cancelDictation() { dictation.cancel() }
+    private func applyDictatedText(_ text: String) throws -> Task<Bool, Never> {
+        guard isForeground else { throw DictationFailure.interrupted }
+        let draft = try DictationPolicy.completedDraft(original: dictationOriginal, current: snapshot["draft"].text, transcript: text)
+        guard persistenceReady else { throw DictationFailure.storageUnavailable }
+        let action = try JSONValue.object(["type": .string("set_draft"), "text": .string(draft)]).encoded()
+        // Aucun submit : seul le bouton Envoyer peut émettre ce brouillon.
+        return accept(bridge.dispatchJson(actionJson: action))
+    }
+    func cancelRequest() {
+        guard let id = snapshot["pending"]["request_id"].id else { return }
+        generation &+= 1; requestTask?.cancel(); requestTask = nil
+        let response = transportStartedID == id
+            ? bridge.failRequest(requestId: id, message: "Transport cancelled; outcome unknown / Transport annulé, résultat inconnu")
+            : failBeforeSend(id: id, message: "Cancelled before transport / Annulée avant émission")
+        transportStartedID = nil
+        _ = accept(response)
+    }
+    private func cancelUnsentRequest() {
+        guard let id = snapshot["pending"]["request_id"].id, transportStartedID != id else { return }
+        _ = accept(failBeforeSend(id: id, message: "Interrupted before transport / Interrompue avant émission"))
+    }
+    @discardableResult private func accept(_ json: String) -> Task<Bool, Never> {
+        guard let result = try? JSONValue.parse(json), !result["snapshot"].isNull else {
+            error = String(localized: "Invalid core response."); return Task { false }
+        }
+        snapshot = result["snapshot"]; error = result["error"].text
+        guard stateLoaded else { return Task { false } }
+        let frame = result["request"]
+        let epoch = generation
+        let sessionID = snapshot["gateway_session"].text
+        let checkpoint = enqueueSave(bridge.draftJson())
+        return Task {
+            let saved = await checkpoint.value
+            guard !frame.isNull, let id = frame["id"].id else { return saved && result["ok"] == .bool(true) }
+            // Une interruption/reconnexion pendant fsync annule l'émission.
+            guard generation == epoch, snapshot["pending"]["request_id"].id == id else { return false }
+            guard saved else {
+                let failed = failBeforeSend(id: id, message: "Checkpoint unavailable; request was not sent / Sauvegarde indisponible ; requête non envoyée")
+                if let value = try? JSONValue.parse(failed) { snapshot = value["snapshot"] }
+                return false
+            }
+            guard let credentials else {
+                return await accept(failBeforeSend(id: id, message: "Connect to a hub first; request was not sent / Connectez d’abord un hub ; requête non envoyée")).value
+            }
+            requestTask = Task {
+                do {
+                    try Task.checkCancellation()
+                    guard generation == epoch, snapshot["pending"]["request_id"].id == id else { return }
+                    transportStartedID = id
+                    let response = try await gateway.send(credentials: credentials, frame: frame.encoded(), sessionID: sessionID)
+                    try Task.checkCancellation()
+                    if generation == epoch { requestTask = nil; transportStartedID = nil; _ = accept(bridge.receiveJson(requestId: id, responseJson: response)) }
+                } catch is CancellationError { }
+                catch { if generation == epoch { requestTask = nil; transportStartedID = nil; _ = accept(bridge.failRequest(requestId: id, message: "Gateway request failed; no automatic retry / Requête interrompue, aucune relance automatique")) } }
+            }
+            return true
+        }
+    }
+    private func failBeforeSend(id: UInt64, message: String) -> String {
+        let action = JSONValue.object(["type": .string("fail_before_send"), "request_id": .unsigned(id), "message": .string(message)])
+        guard let json = try? action.encoded() else { return bridge.snapshotJson() }
+        return bridge.dispatchJson(actionJson: json)
+    }
+}

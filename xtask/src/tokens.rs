@@ -4,6 +4,35 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Vérifie les exports réellement embarqués dans les applications natives.
+/// Le même contrôle que le desktop doit détecter une dérive mobile en CI.
+pub fn check_mobile_exports(root: &Path) -> Result<(), String> {
+    let color = parse_toml(&root.join("tokens/color.toml"))?;
+    let motion = parse_toml(&root.join("tokens/motion.toml"))?;
+    let ty = parse_toml(&root.join("tokens/type.toml"))?;
+    for (relative, expected, command) in [
+        (
+            "mobile/android/app/src/main/java/hakille/tokens/HakilleTokens.kt",
+            emit_kotlin(&color, &motion, &ty),
+            "export-kotlin",
+        ),
+        (
+            "mobile/ios/Hakille/HakilleTokens.swift",
+            emit_swift(&color, &motion, &ty),
+            "export-swift",
+        ),
+    ] {
+        let current = std::fs::read_to_string(root.join(relative))
+            .map_err(|error| format!("lecture de {relative} impossible : {error}"))?;
+        if current.replace("\r\n", "\n") != expected {
+            return Err(format!(
+                "{relative} périmé : exécuter `cargo xtask tokens {command}`, puis copier l'export comme indiqué dans mobile/README.md"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Normalise le source généré avec rustfmt (même résultat que
 /// `cargo fmt --all`), pour que `--check` reste stable après un fmt.
 pub fn rustfmt_str(_src: &str) -> Option<String> {

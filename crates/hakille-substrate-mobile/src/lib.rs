@@ -1,11 +1,13 @@
 pub mod battery_conservation;
 pub mod compute_impl;
+pub mod lifecycle;
 pub mod scoped_storage;
 pub mod shadow;
 pub mod substrate_impl;
 
 pub use battery_conservation::*;
 pub use compute_impl::*;
+pub use lifecycle::*;
 pub use scoped_storage::*;
 pub use shadow::*;
 pub use substrate_impl::*;
@@ -21,97 +23,73 @@ mod tests {
         let substrate = MobileSubstrate::new();
         let manifest = substrate.manifest();
         assert_eq!(manifest.tier, Tier::Guest);
-        assert_eq!(manifest.os_name, "Mobile-Edge");
-        assert!(manifest.has_secure_enclave);
+        assert!(!manifest.has_secure_enclave);
         assert!(!manifest.has_tpm);
+        assert!(manifest.max_memory_bytes.is_none());
+        assert!(manifest.capabilities_granted.is_empty());
+        for scope in [
+            CapabilityScope::Audio,
+            CapabilityScope::Camera,
+            CapabilityScope::GuiInput,
+            CapabilityScope::FullSystem,
+            CapabilityScope::Filesystem,
+        ] {
+            assert!(manifest.capabilities_denied.contains(&scope));
+        }
+        let error = substrate.attest(b"mobile-state").await.unwrap_err();
         assert!(
-            manifest
-                .capabilities_granted
-                .contains(&CapabilityScope::Audio)
+            error
+                .to_string()
+                .contains("attestation mobile indisponible")
         );
-        assert!(
-            manifest
-                .capabilities_denied
-                .contains(&CapabilityScope::FullSystem)
-        );
-
-        let attestation = substrate
-            .attest(b"mobile-nonce")
-            .await
-            .expect("Attestation failed");
-        assert_eq!(attestation.platform_id, "Mobile-Edge-Shadow-Terminal");
-        assert!(!attestation.signature.0.is_empty());
+        assert!(substrate.power_state().battery_percent.is_nan());
+        assert!(substrate.power_observation().unwrap().is_none());
     }
 
     #[test]
     fn test_mobile_compute_backends_and_quantization() {
         let compute = MobileComputeBackend::new();
-        let backends = compute.available_backends();
-        assert!(backends.contains(&hakille_substrate::ComputeBackend::Cpu));
-        assert!(backends.contains(&hakille_substrate::ComputeBackend::Npu));
-        assert!(compute.supports_quantization("q4_0"));
-        assert!(compute.supports_quantization("int8"));
-        assert!(!compute.supports_quantization("unsupported_quant"));
+        assert_eq!(
+            compute.available_backends(),
+            vec![hakille_substrate::ComputeBackend::Cpu]
+        );
+        assert_eq!(
+            compute.preferred_backend(),
+            hakille_substrate::ComputeBackend::Cpu
+        );
+        assert!(!compute.has_configured_driver());
+        assert_eq!(compute.ram_available_bytes(), 0);
+        assert_eq!(compute.vram_available_bytes(), 0);
+        assert!(!compute.has_enough_ram(1));
+        for quant in ["q4_0", "int8", "unsupported_quant"] {
+            assert!(!compute.supports_quantization(quant));
+        }
     }
 
     #[test]
     fn test_mobile_shadow_sync_state_machine() {
-        let mut sync = MobileShadowSync::default();
-        assert_eq!(sync.state(), ShadowState::Disconnected);
-
-        // Queue local edits while offline
-        sync.queue_local_delta("notes/todo.txt", b"buy milk");
-        sync.queue_local_delta("notes/plan.md", b"# Project Hakille");
-
-        // Verify local materialized state
-        assert_eq!(sync.get_value("notes/todo.txt"), Some(b"buy milk".to_vec()));
-
-        // Connect to TiKV shadow daemon
-        assert!(sync.connect().is_ok());
+        let mut sync = MobileShadowSync::new(ShadowDaemonConfig {
+            cluster_endpoint: "https://shadow.example.invalid".into(),
+            ..ShadowDaemonConfig::default()
+        });
+        sync.queue_local_delta("notes/todo.txt", b"buy milk")
+            .unwrap();
+        assert!(sync.connect().is_err()); // Aucun transport intégré.
+        assert_eq!(sync.pending_count(), 1);
+        let epoch = sync.begin_connect().unwrap();
+        sync.confirm_transport_connected(epoch).unwrap();
+        let batch = sync.prepare_batch(8, 4096).unwrap();
+        let ids: Vec<_> = batch.items.iter().map(|item| item.id).collect();
+        assert!(sync.acknowledge(epoch, &ids).is_err());
+        sync.mark_batch_sent(epoch, &ids).unwrap();
+        assert_eq!(sync.acknowledge(epoch, &ids).unwrap(), 1);
         assert_eq!(sync.state(), ShadowState::ActiveStreaming);
-
-        // Remote delta arriving with higher version
-        let remote_update = ShadowDelta {
-            key: "notes/todo.txt".to_string(),
-            value: b"buy milk and eggs".to_vec(),
-            version: 10,
-            timestamp: hakille_core::Timestamp::now(),
-            is_deleted: false,
-        };
-        sync.push_remote_delta(remote_update);
-        assert_eq!(
-            sync.get_value("notes/todo.txt"),
-            Some(b"buy milk and eggs".to_vec())
-        );
-
-        // Stale remote delta with lower version (version 1) must be ignored
-        let stale_update = ShadowDelta {
-            key: "notes/todo.txt".to_string(),
-            value: b"stale text".to_vec(),
-            version: 1,
-            timestamp: hakille_core::Timestamp::now(),
-            is_deleted: false,
-        };
-        sync.push_remote_delta(stale_update);
-        assert_eq!(
-            sync.get_value("notes/todo.txt"),
-            Some(b"buy milk and eggs".to_vec())
-        );
-
-        // Deletion tombstone
-        sync.queue_local_deletion("notes/todo.txt");
-        assert_eq!(sync.get_value("notes/todo.txt"), None);
-
-        // Enter Doze / background
+        sync.queue_local_deletion("notes/todo.txt").unwrap();
         sync.enter_doze();
-        assert_eq!(sync.state(), ShadowState::SuspendedDozing);
-
-        // Wake from APNs / FCM push
-        let drained = sync.wake_and_resync();
-        assert_eq!(sync.state(), ShadowState::ActiveStreaming);
-        assert_eq!(drained, 1); // Synced local deletion tombstone
-
-        // Network failure backoff
+        assert_eq!(sync.wake_and_resync(), 0);
+        assert_eq!(sync.state(), ShadowState::Disconnected);
+        assert_eq!(sync.pending_count(), 1);
+        assert_eq!(sync.get_value("notes/todo.txt"), None);
         sync.handle_network_disconnect();
         assert_eq!(sync.state(), ShadowState::ReconnectingBackoff);
         assert!(sync.backoff_delay_ms() > 0);
@@ -160,13 +138,17 @@ mod tests {
                 .is_err()
         );
 
-        // Grant permission via picker SAF
-        sandbox.grant_media_access("photos/receipt.jpg");
+        // Une URI SAF reste une URI, jamais un faux chemin local.
+        let uri = "content://media/document/receipt";
+        sandbox.grant_media_access(uri).unwrap();
+        assert!(sandbox.has_media_access(uri));
         assert!(
             sandbox
-                .resolve_path(StorageScope::ScopedExternalMedia, &media_path)
-                .is_ok()
+                .resolve_path(StorageScope::ScopedExternalMedia, &VirtualPath(uri.into()))
+                .is_err()
         );
+        assert!(sandbox.read_external_media(uri).is_err());
+        assert!(sandbox.revoke_media_access(uri));
     }
 
     #[test]
@@ -177,11 +159,13 @@ mod tests {
         assert!(!engine.should_offload_inference_to_shadow());
 
         // Low battery -> Conserve
-        engine.update_power_state(&hakille_substrate::PowerState {
-            on_battery: true,
-            battery_percent: 22.0,
-            charging: false,
-        });
+        engine
+            .update_power_state(&hakille_substrate::PowerState {
+                on_battery: true,
+                battery_percent: 22.0,
+                charging: false,
+            })
+            .unwrap();
         assert_eq!(engine.current_tier(), BatteryTier::Conserve);
         assert_eq!(engine.perception_fps(), 1);
         assert!(engine.should_offload_inference_to_shadow());
@@ -191,36 +175,43 @@ mod tests {
         assert!(engine.should_offload_inference_with_network(true));
 
         // Critical battery
-        engine.update_power_state(&hakille_substrate::PowerState {
-            on_battery: true,
-            battery_percent: 8.0,
-            charging: false,
-        });
+        engine
+            .update_power_state(&hakille_substrate::PowerState {
+                on_battery: true,
+                battery_percent: 8.0,
+                charging: false,
+            })
+            .unwrap();
         assert_eq!(engine.current_tier(), BatteryTier::Critical);
         assert_eq!(engine.perception_fps(), 0);
 
         // Plugged into charger -> Charging
-        engine.update_power_state(&hakille_substrate::PowerState {
-            on_battery: false,
-            battery_percent: 12.0,
-            charging: true,
-        });
+        engine
+            .update_power_state(&hakille_substrate::PowerState {
+                on_battery: false,
+                battery_percent: 12.0,
+                charging: true,
+            })
+            .unwrap();
         assert_eq!(engine.current_tier(), BatteryTier::Charging);
         assert_eq!(engine.perception_fps(), 30);
         assert!(!engine.should_offload_inference_to_shadow());
 
         // Energy profiler
-        engine.record_agent_energy("MailAgent", 1500);
-        engine.record_agent_energy("MailAgent", 500);
-        assert_eq!(engine.get_agent_energy("MailAgent"), 2000);
+        engine.record_agent_energy("MailAgent", 1500).unwrap();
+        engine.record_agent_energy("MailAgent", 500).unwrap();
+        assert_eq!(engine.get_agent_energy("MailAgent").unwrap(), 2000);
     }
 
     fn future_expiry() -> hakille_core::Timestamp {
         hakille_core::Timestamp(chrono::Utc::now() + chrono::Duration::hours(1))
     }
 
-    fn network_cap(action: hakille_core::CapabilityAction) -> hakille_core::CapabilityToken {
-        hakille_core::CapabilityAuthority::new()
+    fn network_cap(
+        authority: &hakille_core::CapabilityAuthority,
+        action: hakille_core::CapabilityAction,
+    ) -> hakille_core::CapabilityToken {
+        authority
             .create_root_token(
                 vec![CapabilityScope::Network],
                 vec![action],
@@ -262,8 +253,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_mobile_http_egress_refuses_without_network_cap() {
-        let substrate = MobileSubstrate::new();
-        let wrong_cap = hakille_core::CapabilityAuthority::new()
+        let authority = hakille_core::CapabilityAuthority::new();
+        let substrate = MobileSubstrate::new().with_trusted_root(authority.root_public_key());
+        let wrong_cap = authority
             .create_root_token(
                 vec![CapabilityScope::Filesystem],
                 vec![hakille_core::CapabilityAction::Read],
@@ -283,7 +275,7 @@ mod tests {
             "unexpected error: {err}"
         );
 
-        let expired_cap = hakille_core::CapabilityAuthority::new()
+        let expired_cap = authority
             .create_root_token(
                 vec![CapabilityScope::Network],
                 vec![hakille_core::CapabilityAction::Read],
@@ -302,10 +294,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_mobile_http_egress_refuses_host_off_allowlist() {
-        let substrate = MobileSubstrate::new().with_egress_policy(
-            hakille_substrate::EgressPolicy::with_allowlist(["example.com"]),
-        );
-        let cap = network_cap(hakille_core::CapabilityAction::Read);
+        let authority = hakille_core::CapabilityAuthority::new();
+        let substrate = MobileSubstrate::new()
+            .with_trusted_root(authority.root_public_key())
+            .with_egress_policy(hakille_substrate::EgressPolicy::with_allowlist([
+                "example.com",
+            ]));
+        let cap = network_cap(&authority, hakille_core::CapabilityAction::Read);
         let addr = spawn_local_http_server(r#"{"ok":true}"#).await;
         let err = substrate
             .http_request(get_request(format!("http://{addr}/")), &cap)
@@ -319,9 +314,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_mobile_http_egress_loopback_success() {
-        let substrate = MobileSubstrate::new();
+        let authority = hakille_core::CapabilityAuthority::new();
+        let substrate = MobileSubstrate::new().with_trusted_root(authority.root_public_key());
         assert!(substrate.egress_policy().is_loopback_only());
-        let cap = network_cap(hakille_core::CapabilityAction::Read);
+        let cap = network_cap(&authority, hakille_core::CapabilityAction::Read);
         let addr = spawn_local_http_server(r#"{"ok":true}"#).await;
         let response = substrate
             .http_request(get_request(format!("http://{addr}/status")), &cap)
@@ -333,8 +329,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_mobile_camera_honest_unimplemented() {
-        let substrate = MobileSubstrate::new();
-        let cap = hakille_core::CapabilityAuthority::new()
+        let authority = hakille_core::CapabilityAuthority::new();
+        let substrate = MobileSubstrate::new().with_trusted_root(authority.root_public_key());
+        let cap = authority
             .create_root_token(
                 vec![CapabilityScope::Camera],
                 vec![hakille_core::CapabilityAction::Read],
