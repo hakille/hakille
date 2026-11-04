@@ -142,7 +142,12 @@ jobs:
           toolchain: "1.95"
       - name: cibles Apple x86_64/arm64
         run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
-      - name: check cross x86_64-apple-darwin
+      - name: check cross x86_64-apple-darwin (types, sans runtime ONNX Intel)
+        # ORT 1.31 ne distribue plus de binaire macOS Intel. Option officielle
+        # ort-sys pour cargo check : conserve les types et un symbole non résolu
+        # qui fera échouer une vraie liaison sans runtime. Aucun stub fourni.
+        env:
+          ORT_SKIP_DOWNLOAD: "1"
         run: >
           cargo check --all-targets --locked --target x86_64-apple-darwin
           -p hakille-design -p hakille-ui-protocol -p hakille-ui-model

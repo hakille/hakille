@@ -233,6 +233,10 @@ cargo xtask tokens export-kotlin  # target/tokens/HakilleTokens.kt
 cargo xtask tokens export-css     # target/tokens/hakille-tokens.css
 ```
 
+Le contrôle de types macOS Intel ne démontre pas une exécution ONNX :
+ONNX Runtime 1.31 ne distribue plus de binaire Intel. La liaison et les
+moteurs ONNX sur cette architecture restent à valider avec un runtime compatible.
+
 ### Applications mobiles natives
 
 Les applications Kotlin/Compose et Swift/SwiftUI partagent le cœur Rust via
