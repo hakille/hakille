@@ -46,7 +46,7 @@ le [guide mobile](../mobile/README.md) précise les fonctions et leurs limites.
 | Inspection APK | Signature, ZIP/ELF 16 Kio, TLS, logo et Inter vérifiés |
 
 APK local SHA-256 :
-`c6c63b555cb8a8693a371d17eb95699d7ba608e155380d8ec27e2e5cabb51be0`.
+`9cffa963452ce7cc29d094b228e943f291a77322e099fc05b87cda539d31c2f9`.
 Les APK CI utilisent leur propre signature debug et leur propre empreinte.
 
 Les tests de décodage Qwen longs ignorés ne sont pas relancés pour cette
@@ -90,6 +90,24 @@ le pont UniFFI et le chargement réel de la fonte et de l’image de marque.
 La capture `screenshots/home-settled.png` a été inspectée : accueil Voix,
 logo, commandes et navigation sont présents. Le libellé de marque de la barre
 supérieure était tronqué sur iOS 26 ; un correctif ciblé suit cette mesure.
+
+## Captures corrigées et contrôle de contraste
+
+La [CI Mobile de `c20254f`](https://github.com/hakille/hakille/actions/runs/41782237912)
+est entièrement réussie : **31 tests JVM**, **26 étapes Android en 91,59 s**,
+**26 XCTest iOS**, sans échec. APK CI SHA-256 :
+`3a34275d8a544c47ad5c123151f8f0491d27818721adde36e34c4f31fd46828a`.
+Les captures confirment la marque iOS sans troncature et la barre d’état Android
+lisible. Les contrôles Apple Intel/ARM et macOS natif de cette révision passent.
+
+Une revue complémentaire a mesuré seulement 1,97:1 de contraste pour les trois
+boutons de navigation système Android. Le style sombre explicite désactivait
+la protection de contraste Android. La retouche suivante conserve le thème
+réel de Hakille via `SystemBarStyle.auto` et réactive cette protection, sans
+API privée ni remplacement des boutons de l’OS. Les diagnostics de fenêtre et
+de SystemUI sont désormais conservés par le smoke, avec un budget facultatif
+strictement inclus dans les vingt secondes de nettoyage. Une nouvelle capture
+est nécessaire pour qualifier le résultat de cette dernière retouche.
 
 ## Vérifications matérielles encore nécessaires
 

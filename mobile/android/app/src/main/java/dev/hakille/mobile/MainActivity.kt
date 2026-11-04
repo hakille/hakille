@@ -23,7 +23,6 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -45,7 +44,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.parseColor(HakilleTokens.colorSurface1Dark)),
+            navigationBarStyle = SystemBarStyle.auto(
+                lightScrim = android.graphics.Color.parseColor(HakilleTokens.colorSurface1Light),
+                darkScrim = android.graphics.Color.parseColor(HakilleTokens.colorSurface1Dark),
+                detectDarkMode = { true },
+            ),
         )
         setContent {
             var forceRtl by rememberSaveable { mutableStateOf(false) }
@@ -53,14 +56,17 @@ class MainActivity : ComponentActivity() {
             val systemDirection = LocalLayoutDirection.current
             HakilleTheme(appearance) {
                 val dark = LocalHakilleDark.current
-                val navigationScrim = MaterialTheme.colorScheme.surface.toArgb()
                 // Les icônes système suivent le thème affiché, pas uniquement celui du téléphone.
                 SideEffect {
                     this@MainActivity.enableEdgeToEdge(
                         statusBarStyle = if (dark) SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
                             else SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
-                        navigationBarStyle = if (dark) SystemBarStyle.dark(navigationScrim)
-                            else SystemBarStyle.light(navigationScrim, android.graphics.Color.parseColor(HakilleTokens.colorSurface1Dark)),
+                        // AUTO conserve la protection de contraste de la navigation à trois boutons.
+                        navigationBarStyle = SystemBarStyle.auto(
+                            lightScrim = android.graphics.Color.parseColor(HakilleTokens.colorSurface1Light),
+                            darkScrim = android.graphics.Color.parseColor(HakilleTokens.colorSurface1Dark),
+                            detectDarkMode = { dark },
+                        ),
                     )
                 }
                 CompositionLocalProvider(LocalLayoutDirection provides if (forceRtl) LayoutDirection.Rtl else systemDirection) {

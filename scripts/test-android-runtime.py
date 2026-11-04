@@ -50,6 +50,29 @@ class AndroidSmoke:
         self.deadline = time.monotonic() + 20
         print("CLEANUP (budget total 20s)", flush=True)
 
+    def system_bar_diagnostics(self):
+        """Observation facultative sur l'émulateur dédié, après les vérifications critiques."""
+        previous_phase = self.phase_deadline
+        self.phase_deadline = min(self.deadline, time.monotonic() + 8)
+        observations = {}
+        try:
+            for name, command in [
+                ("window-windows", ("window", "windows")),
+                ("window-policy", ("window", "policy")),
+                ("system-statusbar", ("statusbar",)),
+            ]:
+                try:
+                    data = self.adb("shell", "dumpsys", *command, timeout=2)
+                    filename = name + ".txt"
+                    (self.artifacts / filename).write_text(data)
+                    observations[name] = {"status": "captured", "file": filename}
+                except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                    observations[name] = {"status": "unavailable", "error_type": type(error).__name__}
+                    print(f"DIAGNOSTIC FACULTATIF {name} indisponible : {type(error).__name__}", flush=True)
+        finally:
+            self.phase_deadline = previous_phase
+        return observations
+
     def adb(self, *arguments, timeout=45, binary=False):
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
@@ -439,6 +462,7 @@ def main():
         if diagnostic_error:
             result["passed"] = False
             result["error"] = diagnostic_error
+        result["system_bar_diagnostics"] = smoke.system_bar_diagnostics()
         result["elapsed_seconds"] = round(time.monotonic() - smoke.started, 2)
         (args.artifacts / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
         if diagnostic_error:
