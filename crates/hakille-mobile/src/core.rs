@@ -116,11 +116,25 @@ impl Core {
             }
             MobileAction::SetForeground { active } => {
                 if !active {
-                    self.interrupt("Application en arrière-plan : résultat en vol non confirmé");
+                    self.detach_active_flight();
                     self.cancel_hold();
                     self.snapshot.microphone_enabled = false;
                 }
                 self.snapshot.foreground = active;
+                return Ok(None);
+            }
+            MobileAction::DetachInFlight { request_id } => {
+                if let Some(op) = self
+                    .snapshot
+                    .uncertain_operations
+                    .iter_mut()
+                    .find(|op| op.request_id == request_id)
+                {
+                    if op.phase == OperationPhase::InFlight {
+                        op.phase = OperationPhase::InFlightDetached;
+                    }
+                }
+                self.refresh_recovery();
                 return Ok(None);
             }
             MobileAction::SetMicrophone { enabled } => {
@@ -648,6 +662,25 @@ impl Core {
         if self.snapshot.pending.is_some() {
             self.finish_unknown(reason);
         }
+    }
+
+    pub fn detach_active_flight(&mut self) {
+        self.invalidate_voice();
+        if let Some(pending) = &self.snapshot.pending {
+            if pending.mutating {
+                if let Some(op) = self
+                    .snapshot
+                    .uncertain_operations
+                    .iter_mut()
+                    .find(|op| op.request_id == pending.request_id)
+                {
+                    if op.phase == OperationPhase::InFlight {
+                        op.phase = OperationPhase::InFlightDetached;
+                    }
+                }
+            }
+        }
+        self.refresh_recovery();
     }
 
     fn finish_unknown(&mut self, message: &str) {

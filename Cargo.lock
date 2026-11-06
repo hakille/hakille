@@ -2812,9 +2812,12 @@ name = "hakille-mobile"
 version = "0.1.0"
 dependencies = [
  "hakille-ipc",
+ "hakille-substrate",
+ "hakille-substrate-mobile",
  "hakille-ui-protocol",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
  "uniffi",
 ]
 

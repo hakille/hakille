@@ -1448,3 +1448,81 @@ fn voice_never_reads_text_submission_or_incomplete_stream() {
     assert!(result["snapshot"]["voice_reply"].is_null());
     assert_eq!(result["snapshot"]["recovery_required"], true);
 }
+
+#[test]
+fn detached_in_flight_on_background_does_not_lock_recovery() {
+    let bridge = hub();
+    call(&bridge, json!({"type":"set_draft","text":"message urgent"}));
+    let id = call(&bridge, json!({"type":"submit"}))["request"]["id"]
+        .as_u64()
+        .unwrap();
+
+    let snap_before = snapshot(&bridge);
+    assert_eq!(snap_before["pending"]["request_id"], id);
+    assert_eq!(snap_before["uncertain_operations"][0]["phase"], "in_flight");
+    assert_eq!(snap_before["recovery_required"], false);
+
+    // App passe en arrière-plan
+    call(&bridge, json!({"type":"set_foreground","active":false}));
+    let snap_bg = snapshot(&bridge);
+    assert_eq!(snap_bg["foreground"], false);
+    assert_eq!(snap_bg["uncertain_operations"][0]["phase"], "in_flight_detached");
+    // CRITIQUE : l'application n'est PAS verrouillée avec recovery_required = true
+    assert_eq!(snap_bg["recovery_required"], false);
+
+    // App revient au premier plan
+    call(&bridge, json!({"type":"set_foreground","active":true}));
+    let snap_fg = snapshot(&bridge);
+    assert_eq!(snap_fg["foreground"], true);
+    assert_eq!(snap_fg["recovery_required"], false);
+
+    // Réception de la réponse du daemon pour la requête détachée
+    let res = receive(
+        &bridge,
+        id,
+        "session-1",
+        vec![Frame::reply(
+            id,
+            KernelToUi::HudReply {
+                response: "Traîté avec succès".into(),
+                validation: None,
+            },
+        )],
+    );
+    assert_eq!(res["ok"], true);
+    let snap_after = snapshot(&bridge);
+    assert!(snap_after["pending"].is_null());
+    assert_eq!(snap_after["uncertain_operations"].as_array().unwrap().len(), 0);
+    assert_eq!(snap_after["recovery_required"], false);
+    assert_eq!(snap_after["chat"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn mobile_battery_and_shadow_sync_bindings() {
+    let bridge = MobileBridge::new();
+    assert_eq!(bridge.battery_tier(90.0, false), "normal");
+    assert_eq!(bridge.battery_tier(20.0, false), "conserve");
+    assert_eq!(bridge.battery_tier(5.0, false), "critical");
+    assert_eq!(bridge.battery_tier(10.0, true), "charging");
+
+    assert_eq!(bridge.perception_fps_limit(90.0, false), 30);
+    assert_eq!(bridge.perception_fps_limit(20.0, false), 1);
+    assert_eq!(bridge.perception_fps_limit(5.0, false), 0);
+
+    assert_eq!(bridge.should_offload_inference(20.0, false, true), true);
+    assert_eq!(bridge.should_offload_inference(20.0, false, false), false);
+
+    let battery = MobileBatteryManager::new(85.0, false);
+    assert_eq!(battery.tier(), "normal");
+    assert_eq!(battery.perception_fps(), 30);
+    assert_eq!(battery.record_energy("AgentMail".into(), 1200), Ok(()));
+    assert_eq!(battery.get_energy("AgentMail".into()), 1200);
+
+    let shadow = MobileShadowSyncBridge::new("https://shadow.example.com".into(), "device-123".into());
+    assert_eq!(shadow.state(), "disconnected");
+    assert_eq!(shadow.pending_count(), 0);
+    assert_eq!(shadow.queue_delta("notes/test".into(), b"data".to_vec()), Ok(()));
+    assert_eq!(shadow.pending_count(), 1);
+    shadow.enter_doze();
+    assert_eq!(shadow.wake_and_resync(), 0);
+}

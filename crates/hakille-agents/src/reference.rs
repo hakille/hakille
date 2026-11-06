@@ -118,6 +118,71 @@ pub fn materialize_reference_agents(dir: &Path) -> Result<Vec<ReferenceArtifact>
     Ok(artifacts)
 }
 
+/// Compile les agents métier WAT en WASM binaire.
+pub fn business_agents_wasm() -> Result<Vec<(&'static str, Vec<u8>)>, AgentError> {
+    crate::wasm_runner::business_agents()
+        .into_iter()
+        .map(|(name, wat)| {
+            let wasm = wat::parse_str(wat).map_err(|e| AgentError::InvalidModule {
+                agent: name.to_string(),
+                message: format!("compilation WAT métier impossible : {e}"),
+            })?;
+            Ok((name, wasm))
+        })
+        .collect()
+}
+
+/// Matérialise les agents métier sous `dir`.
+pub fn materialize_business_agents(dir: &Path) -> Result<Vec<ReferenceArtifact>, AgentError> {
+    fs::create_dir_all(dir).map_err(|e| AgentError::ArtifactIo {
+        path: dir.display().to_string(),
+        message: e.to_string(),
+    })?;
+
+    let mut artifacts = Vec::new();
+    for (name, wasm) in business_agents_wasm()? {
+        let sha256 = sha256_hex(&wasm);
+        let path = dir.join(format!("{name}-{sha256}.wasm"));
+        if path.exists() {
+            let existing = fs::read(&path).map_err(|e| AgentError::ArtifactIo {
+                path: path.display().to_string(),
+                message: e.to_string(),
+            })?;
+            let actual = sha256_hex(&existing);
+            if actual != sha256 {
+                return Err(AgentError::ArtifactHashMismatch {
+                    path: path.display().to_string(),
+                    expected: sha256,
+                    actual,
+                });
+            }
+        } else {
+            write_atomic(&path, &wasm)?;
+        }
+
+        let written = fs::read(&path).map_err(|e| AgentError::ArtifactIo {
+            path: path.display().to_string(),
+            message: e.to_string(),
+        })?;
+        let actual = sha256_hex(&written);
+        if actual != sha256 {
+            return Err(AgentError::ArtifactHashMismatch {
+                path: path.display().to_string(),
+                expected: sha256,
+                actual,
+            });
+        }
+
+        artifacts.push(ReferenceArtifact {
+            name: name.to_string(),
+            path,
+            sha256,
+            bytes_len: written.len(),
+        });
+    }
+    Ok(artifacts)
+}
+
 /// Écriture atomique best-effort : fichier temporaire dans le même répertoire
 /// puis `rename`. Un `rename` qui échoue parce qu'un autre processus a déjà
 /// créé le fichier content-addressed est accepté ; la relecture et le hash
@@ -224,5 +289,50 @@ mod tests {
             matches!(err, AgentError::ArtifactHashMismatch { .. }),
             "attendu ArtifactHashMismatch, vu {err:?}"
         );
+    }
+
+    #[test]
+    fn business_agents_materialize_load_and_run() {
+        let dir = tempfile::tempdir().expect("répertoire temporaire");
+        let artifacts = materialize_business_agents(dir.path()).expect("matérialisation métier");
+        assert_eq!(artifacts.len(), 5);
+        let sandbox = AgentSandbox::new().expect("bac à sable");
+        let input = r#"{"probe":true}"#;
+
+        for artifact in &artifacts {
+            let bytes = fs::read(&artifact.path).unwrap();
+            assert_eq!(sha256_hex(&bytes), artifact.sha256);
+            let mut agent = sandbox
+                .load(&artifact.name, &bytes)
+                .expect("chargement de l'agent métier");
+            let output = agent.run(input, RunLimits::default()).expect("exécution métier");
+            let val: serde_json::Value = serde_json::from_str(&output).expect("JSON valide");
+            assert_eq!(val["status"], "ready");
+            assert_eq!(val["agent"], artifact.name.as_str());
+        }
+    }
+
+    #[test]
+    fn write_business_agents_to_repo() {
+        let pairs = business_agents_wasm().expect("compilation");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let targets = [
+            ("agent-mail", "agents/mail/mail.wasm"),
+            ("agent-calendar", "agents/calendar/calendar.wasm"),
+            ("agent-code", "agents/code/code.wasm"),
+            ("agent-home", "agents/home/home.wasm"),
+            ("agent-wallet-readonly", "agents/wallet-readonly/wallet-readonly.wasm"),
+        ];
+        for (name, path) in targets {
+            let wasm = pairs.iter().find(|(n, _)| *n == name).unwrap().1.clone();
+            let dest = root.join(path);
+            if dest.parent().unwrap().exists() {
+                fs::write(&dest, &wasm).unwrap();
+            }
+        }
     }
 }

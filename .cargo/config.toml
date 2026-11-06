@@ -1,5 +1,6 @@
 [build]
-incremental = true
+incremental = false
+rustflags = ["-C", "debuginfo=0"]
 
 [alias]
 xtask = "run --package xtask --"

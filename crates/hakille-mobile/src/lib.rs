@@ -14,6 +14,19 @@ use types::{GatewayResponse, SavedDraft};
 #[cfg(feature = "ffi")]
 uniffi::setup_scaffolding!();
 
+#[cfg_attr(feature = "ffi", derive(uniffi::Error))]
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
+pub enum MobileError {
+    #[error("{message}")]
+    OperationFailed { message: String },
+}
+
+impl From<String> for MobileError {
+    fn from(message: String) -> Self {
+        Self::OperationFailed { message }
+    }
+}
+
 /// Une instance par session d'application. Aucun appel n'effectue d'accès
 /// réseau. Le résultat `request` doit être envoyé explicitement par l'hôte.
 #[cfg_attr(feature = "ffi", derive(uniffi::Object))]
@@ -140,6 +153,173 @@ impl MobileBridge {
         };
         let outcome = parsed.and_then(|draft| state.restore_saved(draft).map(|_| None));
         result(&state, outcome)
+    }
+
+    pub fn battery_tier(&self, battery_percent: f32, charging: bool) -> String {
+        let engine = hakille_substrate_mobile::BatteryConservationEngine::new(battery_percent, charging);
+        match engine.current_tier() {
+            hakille_substrate_mobile::BatteryTier::Normal => "normal".into(),
+            hakille_substrate_mobile::BatteryTier::Conserve => "conserve".into(),
+            hakille_substrate_mobile::BatteryTier::Critical => "critical".into(),
+            hakille_substrate_mobile::BatteryTier::Charging => "charging".into(),
+            hakille_substrate_mobile::BatteryTier::Unknown => "unknown".into(),
+        }
+    }
+
+    pub fn should_offload_inference(&self, battery_percent: f32, charging: bool, network_available: bool) -> bool {
+        let engine = hakille_substrate_mobile::BatteryConservationEngine::new(battery_percent, charging);
+        engine.should_offload_inference_with_network(network_available)
+    }
+
+    pub fn perception_fps_limit(&self, battery_percent: f32, charging: bool) -> u32 {
+        let engine = hakille_substrate_mobile::BatteryConservationEngine::new(battery_percent, charging);
+        engine.perception_fps()
+    }
+}
+
+#[cfg_attr(feature = "ffi", derive(uniffi::Object))]
+pub struct MobileBatteryManager {
+    engine: Mutex<hakille_substrate_mobile::BatteryConservationEngine>,
+}
+
+#[cfg_attr(feature = "ffi", uniffi::export)]
+impl MobileBatteryManager {
+    #[cfg_attr(feature = "ffi", uniffi::constructor)]
+    pub fn new(battery_percent: f32, charging: bool) -> Self {
+        Self {
+            engine: Mutex::new(hakille_substrate_mobile::BatteryConservationEngine::new(
+                battery_percent,
+                charging,
+            )),
+        }
+    }
+
+    pub fn update(&self, battery_percent: f32, charging: bool) -> Result<(), MobileError> {
+        let mut engine = self
+            .engine
+            .lock()
+            .map_err(|e| MobileError::from(e.to_string()))?;
+        engine
+            .update_power_state(&hakille_substrate::PowerState {
+                on_battery: !charging,
+                battery_percent,
+                charging,
+            })
+            .map_err(|e| MobileError::from(e.to_string()))
+    }
+
+    pub fn tier(&self) -> String {
+        let Ok(engine) = self.engine.lock() else {
+            return "unknown".into();
+        };
+        match engine.current_tier() {
+            hakille_substrate_mobile::BatteryTier::Normal => "normal".into(),
+            hakille_substrate_mobile::BatteryTier::Conserve => "conserve".into(),
+            hakille_substrate_mobile::BatteryTier::Critical => "critical".into(),
+            hakille_substrate_mobile::BatteryTier::Charging => "charging".into(),
+            hakille_substrate_mobile::BatteryTier::Unknown => "unknown".into(),
+        }
+    }
+
+    pub fn perception_fps(&self) -> u32 {
+        self.engine.lock().map(|e| e.perception_fps()).unwrap_or(0)
+    }
+
+    pub fn should_offload(&self, network_available: bool) -> bool {
+        self.engine
+            .lock()
+            .map(|e| e.should_offload_inference_with_network(network_available))
+            .unwrap_or(false)
+    }
+
+    pub fn record_energy(&self, agent: String, micro_watt_hours: u64) -> Result<(), MobileError> {
+        let engine = self
+            .engine
+            .lock()
+            .map_err(|e| MobileError::from(e.to_string()))?;
+        engine
+            .record_agent_energy(&agent, micro_watt_hours)
+            .map_err(|e| MobileError::from(e.to_string()))
+    }
+
+    pub fn get_energy(&self, agent: String) -> u64 {
+        self.engine
+            .lock()
+            .map(|e| e.get_agent_energy(&agent).unwrap_or(0))
+            .unwrap_or(0)
+    }
+}
+
+#[cfg_attr(feature = "ffi", derive(uniffi::Object))]
+pub struct MobileShadowSyncBridge {
+    sync: Mutex<hakille_substrate_mobile::MobileShadowSync>,
+}
+
+#[cfg_attr(feature = "ffi", uniffi::export)]
+impl MobileShadowSyncBridge {
+    #[cfg_attr(feature = "ffi", uniffi::constructor)]
+    pub fn new(cluster_endpoint: String, device_id: String) -> Self {
+        Self {
+            sync: Mutex::new(hakille_substrate_mobile::MobileShadowSync::new(
+                hakille_substrate_mobile::ShadowDaemonConfig {
+                    cluster_endpoint,
+                    device_id,
+                    ..Default::default()
+                },
+            )),
+        }
+    }
+
+    pub fn state(&self) -> String {
+        let Ok(sync) = self.sync.lock() else {
+            return "unknown".into();
+        };
+        match sync.state() {
+            hakille_substrate_mobile::ShadowState::Disconnected => "disconnected".into(),
+            hakille_substrate_mobile::ShadowState::Connecting => "connecting".into(),
+            hakille_substrate_mobile::ShadowState::SyncingState => "syncing_state".into(),
+            hakille_substrate_mobile::ShadowState::ActiveStreaming => "active_streaming".into(),
+            hakille_substrate_mobile::ShadowState::SuspendedDozing => "suspended_dozing".into(),
+            hakille_substrate_mobile::ShadowState::ReconnectingBackoff => "reconnecting_backoff".into(),
+        }
+    }
+
+    pub fn pending_count(&self) -> u32 {
+        self.sync
+            .lock()
+            .map(|s| s.pending_count() as u32)
+            .unwrap_or(0)
+    }
+
+    pub fn queue_delta(&self, key: String, value: Vec<u8>) -> Result<(), MobileError> {
+        let mut sync = self
+            .sync
+            .lock()
+            .map_err(|e| MobileError::from(e.to_string()))?;
+        sync.queue_local_delta(&key, &value)
+            .map_err(|e| MobileError::from(e.to_string()))
+    }
+
+    pub fn queue_deletion(&self, key: String) -> Result<(), MobileError> {
+        let mut sync = self
+            .sync
+            .lock()
+            .map_err(|e| MobileError::from(e.to_string()))?;
+        sync.queue_local_deletion(&key)
+            .map_err(|e| MobileError::from(e.to_string()))
+    }
+
+    pub fn enter_doze(&self) {
+        if let Ok(mut sync) = self.sync.lock() {
+            sync.enter_doze();
+        }
+    }
+
+    pub fn wake_and_resync(&self) -> u32 {
+        self.sync
+            .lock()
+            .map(|mut s| s.wake_and_resync() as u32)
+            .unwrap_or(0)
     }
 }
 

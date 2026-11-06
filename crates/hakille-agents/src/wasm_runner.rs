@@ -703,6 +703,52 @@ pub fn reference_agents() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+pub const MAIL_AGENT_WAT: &str = r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 16) "{\"agent\":\"agent-mail\",\"status\":\"ready\",\"messages\":[]}")
+  (func (export "run") (param i32 i32) (result i32 i32)
+    (i32.const 16)
+    (i32.const 53)))"#;
+
+pub const CALENDAR_AGENT_WAT: &str = r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 16) "{\"agent\":\"agent-calendar\",\"status\":\"ready\",\"events\":[]}")
+  (func (export "run") (param i32 i32) (result i32 i32)
+    (i32.const 16)
+    (i32.const 55)))"#;
+
+pub const CODE_AGENT_WAT: &str = r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 16) "{\"agent\":\"agent-code\",\"status\":\"ready\",\"symbols\":[]}")
+  (func (export "run") (param i32 i32) (result i32 i32)
+    (i32.const 16)
+    (i32.const 52)))"#;
+
+pub const HOME_AGENT_WAT: &str = r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 16) "{\"agent\":\"agent-home\",\"status\":\"ready\",\"devices\":[]}")
+  (func (export "run") (param i32 i32) (result i32 i32)
+    (i32.const 16)
+    (i32.const 52)))"#;
+
+pub const WALLET_AGENT_WAT: &str = r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 16) "{\"agent\":\"agent-wallet-readonly\",\"status\":\"ready\",\"accounts\":[]}")
+  (func (export "run") (param i32 i32) (result i32 i32)
+    (i32.const 16)
+    (i32.const 64)))"#;
+
+/// Agents métier compilables sous l'ABI minimale AEl sans import hôte.
+pub fn business_agents() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("agent-mail", MAIL_AGENT_WAT),
+        ("agent-calendar", CALENDAR_AGENT_WAT),
+        ("agent-code", CODE_AGENT_WAT),
+        ("agent-home", HOME_AGENT_WAT),
+        ("agent-wallet-readonly", WALLET_AGENT_WAT),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

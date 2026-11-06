@@ -105,3 +105,9 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.gemm-f32]
 opt-level = 3
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0

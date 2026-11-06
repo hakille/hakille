@@ -15,8 +15,11 @@ cli = ["ffi", "uniffi/cli"]
 [dependencies]
 hakille-ui-protocol = { path = "../hakille-ui-protocol" }
 hakille-ipc = { path = "../hakille-ipc" }
+hakille-substrate = { path = "../hakille-substrate" }
+hakille-substrate-mobile = { path = "../hakille-substrate-mobile" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 uniffi = { version = "=0.32.2", optional = true }
 
 [[bin]]

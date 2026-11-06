@@ -62,6 +62,10 @@ pub enum MobileAction {
     AcknowledgeUnknown {
         request_id: u64,
     },
+    /// Détachement explicite d’une opération en vol (cycle de vie arrière-plan).
+    DetachInFlight {
+        request_id: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +104,7 @@ impl MutationKind {
 #[serde(rename_all = "snake_case")]
 pub enum OperationPhase {
     InFlight,
+    InFlightDetached,
     Unknown,
 }
 
