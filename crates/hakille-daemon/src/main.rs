@@ -210,10 +210,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Persistent dirs first: keys + outbox + journal all live under
     // LOCALAPPDATA/Hakille (or ./hakille_data/Hakille fallback) so reboots keep
     // identity (signing key, capability root) instead of regenerating.
-    let data_dir = std::env::var("LOCALAPPDATA")
+    let data_dir = std::env::var("HAKILLE_DATA_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("./hakille_data"))
-        .join("Hakille");
+        .or_else(|_| std::env::var("LOCALAPPDATA").map(|l| PathBuf::from(l).join("Hakille")))
+        .unwrap_or_else(|_| PathBuf::from("./hakille_data").join("Hakille"));
     // Refus explicite si l'état persistant ne peut pas être créé : démarrer
     // avec un chemin différent reviendrait à perdre identité, journal et
     // mémoire sans que l'utilisateur le sache.
