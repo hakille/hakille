@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 hakille-core = { path = "../hakille-core" }
 hakille-substrate = { path = "../hakille-substrate" }
+hakille-spatial = { path = "../hakille-spatial" }
+hakille-constitution = { path = "../hakille-constitution" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

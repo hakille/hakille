@@ -2577,6 +2577,7 @@ version = "0.1.0"
 dependencies = [
  "cpal",
  "hakille-core",
+ "serde",
  "thiserror 2.0.21",
  "tracing",
 ]
@@ -2718,7 +2719,9 @@ dependencies = [
  "candle-transformers",
  "chrono",
  "futures-util",
+ "hakille-constitution",
  "hakille-core",
+ "hakille-spatial",
  "hakille-substrate",
  "ort",
  "reqwest",

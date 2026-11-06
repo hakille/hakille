@@ -3,7 +3,9 @@ pub mod candle_runtime;
 pub mod catalog;
 pub mod downloader;
 pub mod embed_onnx;
+pub mod facemesh_onnx;
 pub mod gguf_runtime;
+pub mod hsemotion_onnx;
 pub mod llm_engine;
 pub mod manager;
 pub mod mel;
@@ -12,9 +14,11 @@ pub mod model_registry;
 pub mod onnx_runtime;
 pub mod ort_env;
 pub mod ort_vad;
+pub mod pose_onnx;
 pub mod quantization;
 pub mod sensevoice_onnx;
 pub mod speaker_onnx;
+pub mod ssrnet_onnx;
 pub mod whisper_engine;
 
 pub use audio_resample::*;
@@ -22,7 +26,9 @@ pub use candle_runtime::*;
 pub use catalog::*;
 pub use downloader::*;
 pub use embed_onnx::*;
+pub use facemesh_onnx::*;
 pub use gguf_runtime::*;
+pub use hsemotion_onnx::*;
 pub use llm_engine::*;
 pub use manager::*;
 pub use mel::*;
@@ -31,9 +37,11 @@ pub use model_registry::*;
 pub use onnx_runtime::*;
 pub use ort_env::shared_ort_env;
 pub use ort_vad::*;
+pub use pose_onnx::*;
 pub use quantization::*;
 pub use sensevoice_onnx::*;
 pub use speaker_onnx::*;
+pub use ssrnet_onnx::*;
 
 // ---------------------------------------------------------------------------
 // Honnêteté Inspector vs Engine (RÉEL prouvé par goldens, sauf legacy).

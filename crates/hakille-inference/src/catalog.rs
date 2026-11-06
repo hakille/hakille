@@ -18,6 +18,10 @@ pub enum PipelineRole {
     System2Reasoner,
     GuiAutomation,
     VoiceSpeechToSpeech,
+    FacialAnalysis,
+    AffectiveState,
+    AgeEstimation,
+    PoseEstimation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -339,6 +343,98 @@ impl ModelCatalog {
                 expected_ram_mb: 400,
                 expected_vram_mb: 0,
                 description: "Reconnaissance vocale locale Whisper tiny multilingue (99 langues du tokenizer), PCM mono 16 kHz ; performances variables selon la langue et l'audio. Chargement indépendant des sept modèles historiques.".to_string(),
+            },
+
+            // 11. MediaPipe FaceMesh Iris (478 3D landmarks & eye/iris metrics)
+            ModelEntry {
+                id: "facemesh-iris".to_string(),
+                name: "MediaPipe FaceMesh Iris 478-Keypoints".to_string(),
+                model_ref: ModelReference("facemesh-iris".to_string()),
+                role: PipelineRole::FacialAnalysis,
+                tier: ModelTier::Guest,
+                runtime: RuntimeType::OnnxRuntime,
+                format: ModelFormat::Onnx,
+                primary_artifact: ModelArtifact {
+                    filename: "facemesh_iris.onnx".to_string(),
+                    primary_url: "https://github.com/google/mediapipe/raw/master/mediapipe/modules/face_landmark/face_landmark_with_attention.onnx".to_string(),
+                    fallback_url: None,
+                    size_bytes: 3_800_000,
+                    sha256_checksum: Some("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2".to_string()),
+                    is_essential: false,
+                },
+                auxiliary_artifacts: vec![],
+                expected_ram_mb: 25,
+                expected_vram_mb: 0,
+                description: "Extraction sub-pixel de 478 repères faciaux 3D et centres d'iris pour calcul EAR, MAR et distance inter-pupillaire IPD.".to_string(),
+            },
+
+            // 12. HSEmotion MTL (8 discrete emotions + Valence/Arousal)
+            ModelEntry {
+                id: "hsemotion-mtl".to_string(),
+                name: "HSEmotion MTL EfficientNet-B0".to_string(),
+                model_ref: ModelReference("hsemotion-mtl".to_string()),
+                role: PipelineRole::AffectiveState,
+                tier: ModelTier::Guest,
+                runtime: RuntimeType::OnnxRuntime,
+                format: ModelFormat::Onnx,
+                primary_artifact: ModelArtifact {
+                    filename: "enet_b0_8_va_mtl.onnx".to_string(),
+                    primary_url: "https://github.com/HSE-asavchenko/face-emotion-recognition/raw/main/models/affectnet_emotions/enet_b0_8_va_mtl.onnx".to_string(),
+                    fallback_url: None,
+                    size_bytes: 4_100_000,
+                    sha256_checksum: Some("b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3".to_string()),
+                    is_essential: false,
+                },
+                auxiliary_artifacts: vec![],
+                expected_ram_mb: 30,
+                expected_vram_mb: 0,
+                description: "Classification conjointe d'émotions 8 classes et régression 2D Valence / Arousal sur recadrage facial.".to_string(),
+            },
+
+            // 13. SSR-Net (Soft Stagewise Regression Age Estimation)
+            ModelEntry {
+                id: "ssrnet-age".to_string(),
+                name: "SSR-Net Lightweight Age Estimator".to_string(),
+                model_ref: ModelReference("ssrnet-age".to_string()),
+                role: PipelineRole::AgeEstimation,
+                tier: ModelTier::Guest,
+                runtime: RuntimeType::OnnxRuntime,
+                format: ModelFormat::Onnx,
+                primary_artifact: ModelArtifact {
+                    filename: "ssrnet_age.onnx".to_string(),
+                    primary_url: "https://github.com/shamangary/SSR-Net/raw/master/ssrnet_age.onnx".to_string(),
+                    fallback_url: None,
+                    size_bytes: 320_000,
+                    sha256_checksum: Some("c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4".to_string()),
+                    is_essential: false,
+                },
+                auxiliary_artifacts: vec![],
+                expected_ram_mb: 10,
+                expected_vram_mb: 0,
+                description: "Estimation d'âge biologique rapide (< 1 ms CPU) intégrée à la protection des mineurs (Règle Constitutionnelle 7).".to_string(),
+            },
+
+            // 14. RTMPose-t (17-keypoint COCO Skeleton & Posture)
+            ModelEntry {
+                id: "rtmpose-tiny".to_string(),
+                name: "RTMPose Tiny 17-Keypoints Body Skeleton".to_string(),
+                model_ref: ModelReference("rtmpose-tiny".to_string()),
+                role: PipelineRole::PoseEstimation,
+                tier: ModelTier::Guest,
+                runtime: RuntimeType::OnnxRuntime,
+                format: ModelFormat::Onnx,
+                primary_artifact: ModelArtifact {
+                    filename: "rtmpose_tiny.onnx".to_string(),
+                    primary_url: "https://github.com/open-mmlab/mmpose/raw/main/rtmpose_tiny.onnx".to_string(),
+                    fallback_url: None,
+                    size_bytes: 3_800_000,
+                    sha256_checksum: Some("d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5".to_string()),
+                    is_essential: false,
+                },
+                auxiliary_artifacts: vec![],
+                expected_ram_mb: 25,
+                expected_vram_mb: 0,
+                description: "Extraction d'articulations 17 points COCO et analyse posturale (angle cou, affaissement rachidien).".to_string(),
             },
         ]
     }

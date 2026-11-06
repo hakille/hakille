@@ -8,6 +8,7 @@ pub mod capture;
 pub mod diagnostics;
 pub mod playback;
 pub mod resample;
+pub mod yin;
 
 use cpal::traits::HostTrait;
 
@@ -17,6 +18,10 @@ pub use diagnostics::{
 };
 pub use playback::{PlaybackHandle, play_pcm, play_pcm_async};
 pub use resample::{downmix_to_mono, resample_linear};
+pub use yin::{
+    AcousticFeatures, YinPitchDetector, YinWorkspace, DEFAULT_MAX_F0_HZ, DEFAULT_MIN_F0_HZ,
+    DEFAULT_YIN_THRESHOLD, YIN_WORKSPACE_SIZE,
+};
 
 /// Fréquence d'échantillonnage cible du pipeline Hakille (16 kHz mono f32).
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
