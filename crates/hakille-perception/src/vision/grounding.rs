@@ -83,8 +83,8 @@ impl UiTarsGroundingEngine {
             FrameFormat::Rgb8 => Some(cv::PixelLayout::RGB),
             FrameFormat::Rgba8 => Some(cv::PixelLayout::RGBA),
             FrameFormat::Bgra8 => Some(cv::PixelLayout::BGRA),
-            // Jpeg indécodable en std pur (aucun décodeur) → honnêtement ignoré.
-            FrameFormat::Jpeg => None,
+            // Jpeg et Yuyv nécessitent décodage/conversion préalable -> None
+            FrameFormat::Jpeg | FrameFormat::Yuyv => None,
         }
     }
 

@@ -1,3 +1,4 @@
+pub mod camera_v4l2;
 pub mod cgroups;
 pub mod compute_impl;
 pub mod daemon;
@@ -8,6 +9,7 @@ pub mod seccomp;
 pub mod substrate_impl;
 pub mod telemetry;
 
+pub use camera_v4l2::*;
 pub use cgroups::*;
 pub use compute_impl::*;
 pub use daemon::*;
@@ -319,7 +321,7 @@ SwapFree:        4194304 kB
     }
 
     #[tokio::test]
-    async fn test_linux_camera_honest_unimplemented() {
+    async fn test_linux_camera_v4l2_or_honest_refusal() {
         let substrate = LinuxSubstrate::new();
         let cap = hakille_core::CapabilityAuthority::new()
             .create_root_token(
@@ -335,16 +337,68 @@ SwapFree:        4194304 kB
             facing: hakille_substrate::CameraFacing::Front,
         };
         assert!(!config.is_available());
-        let err = substrate
+        match substrate.start_camera_capture(config.clone(), &cap).await {
+            Ok(handle) => {
+                let frame = substrate
+                    .capture_camera_frame(handle, &cap)
+                    .await
+                    .expect("frame must be captured");
+                assert!(matches!(frame.format, hakille_substrate::ImageFormat::Rgb8));
+                substrate
+                    .stop_camera_capture_with_cap(handle, &cap)
+                    .await
+                    .expect("stop must succeed");
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("camera unavailable") || msg.contains("camera not implemented"),
+                    "error must name failure mode, got: {msg}"
+                );
+                assert!(
+                    msg.contains("V4L2"),
+                    "must name V4L2 backend, got: {msg}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_linux_camera_emulation_integration() {
+        unsafe { std::env::set_var("HAKILLE_CAMERA_EMULATION", "1") };
+        let substrate = LinuxSubstrate::new();
+        let cap = hakille_core::CapabilityAuthority::new()
+            .create_root_token(
+                vec![CapabilityScope::Camera],
+                vec![hakille_core::CapabilityAction::Read],
+                future_expiry(),
+            )
+            .unwrap();
+        let config = hakille_substrate::CameraConfig {
+            width: 640,
+            height: 480,
+            fps: 30,
+            facing: hakille_substrate::CameraFacing::Front,
+        };
+
+        let handle = substrate
             .start_camera_capture(config, &cap)
             .await
-            .expect_err("camera without V4L2 binding must be refused");
-        let msg = err.to_string();
-        assert!(msg.contains("camera not implemented"), "got: {msg}");
-        assert!(
-            msg.contains("V4L2"),
-            "must name the missing backend, got: {msg}"
-        );
+            .expect("emulated stream should start cleanly");
+        let frame = substrate
+            .capture_camera_frame(handle, &cap)
+            .await
+            .expect("emulated frame should be received");
+        assert_eq!(frame.width, 640);
+        assert_eq!(frame.height, 480);
+        assert!(matches!(frame.format, hakille_substrate::ImageFormat::Rgb8));
+        assert_eq!(frame.data.len(), 640 * 480 * 3);
+
+        substrate
+            .stop_camera_capture_with_cap(handle, &cap)
+            .await
+            .expect("emulated stream should stop cleanly");
+        unsafe { std::env::remove_var("HAKILLE_CAMERA_EMULATION") };
     }
 
     #[test]

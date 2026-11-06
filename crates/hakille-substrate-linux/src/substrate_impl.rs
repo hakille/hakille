@@ -14,10 +14,8 @@ use hakille_substrate::{
     ScreenCapture, Substrate, ThermalState,
 };
 use std::path::{Path, PathBuf};
-
-/// Missing native binding reported by every Linux camera method.
-const LINUX_CAMERA_UNIMPLEMENTED: &str = "camera not implemented for Linux substrate: V4L2 binding missing \
-     (no /dev/video* device wiring; link a V4L2 crate with ioctl bindings to enable)";
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 pub struct LinuxSubstrate {
     manifest: PlatformManifest,
@@ -32,6 +30,11 @@ pub struct LinuxSubstrate {
     /// still structurally verified but NOT pinned (legacy / tests).
     /// Production MUST call `with_trusted_root`.
     trusted_capability_root: Option<biscuit_auth::PublicKey>,
+    /// Active V4L2 camera streams (thread per stream, latest-only frames).
+    camera_counter: AtomicU64,
+    camera_streams: Mutex<
+        std::collections::HashMap<u64, crate::camera_v4l2::CameraStream>,
+    >,
 }
 
 /// Pure parser for `os-release` style content: `PRETTY_NAME` wins, otherwise
@@ -128,6 +131,8 @@ impl LinuxSubstrate {
             virtual_fs_root: PathBuf::from("/var/lib/hakille/vfs"),
             egress_policy: EgressPolicy::loopback_only(),
             trusted_capability_root: None,
+            camera_counter: AtomicU64::new(1),
+            camera_streams: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -299,8 +304,7 @@ impl LinuxSubstrate {
         ))
     }
 
-    /// Capability-checked stop for a camera stream. See
-    /// `stop_audio_capture_with_cap` — same ownership rationale (Camera/Read).
+    /// Capability-checked stop for a camera stream.
     pub async fn stop_camera_capture_with_cap(
         &self,
         handle: CameraStreamHandle,
@@ -311,7 +315,20 @@ impl LinuxSubstrate {
             CapabilityScope::Camera,
             hakille_core::CapabilityAction::Read,
         )?;
-        let _ = handle;
+        let stream = {
+            let mut streams = self.camera_streams.lock().map_err(|_| {
+                hakille_core::HakilleError::SubstrateError(
+                    "camera stream registry poisoned".into(),
+                )
+            })?;
+            streams.remove(&handle.0)
+        };
+        if let Some(stream) = stream {
+            match tokio::task::spawn_blocking(move || stream.stop_and_join()).await {
+                Ok(()) => {}
+                Err(e) => tracing::warn!("camera stop task failed: {e}"),
+            }
+        }
         Ok(())
     }
 }
@@ -492,7 +509,7 @@ impl Substrate for LinuxSubstrate {
 
     async fn start_camera_capture(
         &self,
-        _config: CameraConfig,
+        config: CameraConfig,
         cap: &CapabilityToken,
     ) -> Result<CameraStreamHandle> {
         self.enforce(
@@ -500,22 +517,44 @@ impl Substrate for LinuxSubstrate {
             CapabilityScope::Camera,
             hakille_core::CapabilityAction::Read,
         )?;
-        // Honest: no V4L2 wiring — refuse instead of synthesizing frames.
-        Err(hakille_core::HakilleError::SubstrateError(
-            LINUX_CAMERA_UNIMPLEMENTED.into(),
-        ))
+        let stream = crate::camera_v4l2::start(&config)
+            .map_err(hakille_core::HakilleError::SubstrateError)?;
+        let id = self.camera_counter.fetch_add(1, Ordering::SeqCst);
+        self.camera_streams
+            .lock()
+            .map_err(|_| {
+                hakille_core::HakilleError::SubstrateError(
+                    "camera stream registry poisoned".into(),
+                )
+            })?
+            .insert(id, stream);
+        Ok(CameraStreamHandle(id))
     }
 
-    async fn stop_camera_capture(&self, _handle: CameraStreamHandle) -> Result<()> {
+    async fn stop_camera_capture(&self, handle: CameraStreamHandle) -> Result<()> {
         tracing::warn!(
             "stop_camera_capture(handle) without capability is deprecated; use stop_camera_capture_with_cap(handle, cap) with Camera/Read ownership proof"
         );
+        let stream = {
+            let mut streams = self.camera_streams.lock().map_err(|_| {
+                hakille_core::HakilleError::SubstrateError(
+                    "camera stream registry poisoned".into(),
+                )
+            })?;
+            streams.remove(&handle.0)
+        };
+        if let Some(stream) = stream {
+            match tokio::task::spawn_blocking(move || stream.stop_and_join()).await {
+                Ok(()) => {}
+                Err(e) => tracing::warn!("camera stop task failed: {e}"),
+            }
+        }
         Ok(())
     }
 
     async fn capture_camera_frame(
         &self,
-        _handle: CameraStreamHandle,
+        handle: CameraStreamHandle,
         cap: &CapabilityToken,
     ) -> Result<CameraFrame> {
         self.enforce(
@@ -523,10 +562,24 @@ impl Substrate for LinuxSubstrate {
             CapabilityScope::Camera,
             hakille_core::CapabilityAction::Read,
         )?;
-        // Honest: no V4L2 wiring — refuse instead of synthesizing frames.
-        Err(hakille_core::HakilleError::SubstrateError(
-            LINUX_CAMERA_UNIMPLEMENTED.into(),
-        ))
+        let receiver = {
+            let streams = self.camera_streams.lock().map_err(|_| {
+                hakille_core::HakilleError::SubstrateError(
+                    "camera stream registry poisoned".into(),
+                )
+            })?;
+            streams
+                .get(&handle.0)
+                .map(|stream| stream.latest())
+                .ok_or_else(|| {
+                    hakille_core::HakilleError::SubstrateError(
+                        "camera capture failed: unknown or stopped camera stream handle".into(),
+                    )
+                })?
+        };
+        crate::camera_v4l2::next_frame(receiver, std::time::Duration::from_secs(5))
+            .await
+            .map_err(hakille_core::HakilleError::SubstrateError)
     }
 
     async fn capture_screen(&self, cap: &CapabilityToken) -> Result<ScreenCapture> {

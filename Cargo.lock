@@ -2912,6 +2912,7 @@ dependencies = [
  "chrono",
  "hakille-core",
  "hakille-substrate",
+ "libc",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

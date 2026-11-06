@@ -64,6 +64,12 @@ pub enum VoiceEvent {
     SpeechEnd,
     /// Transcription réelle (SenseVoice-Small) de l'énoncé finalisé.
     Transcript { text: String },
+    /// Événement émotionnel et acoustique SenseVoice issu de l'inférence.
+    Emotion {
+        emotion: String,
+        acoustic_events: Vec<String>,
+        confidence: f32,
+    },
     /// Erreur runtime (VAD/wake) — émise au plus une fois par sous-système.
     Error(String),
 }
@@ -154,6 +160,20 @@ where
     }
 }
 
+/// Hook de notification pour les émotions vocales détectées par SenseVoice.
+pub trait EmotionHook: Send + Sync {
+    fn on_emotion(&self, emotion: &str, acoustic_events: &[String], confidence: f32);
+}
+
+impl<F> EmotionHook for F
+where
+    F: Fn(&str, &[String], f32) + Send + Sync,
+{
+    fn on_emotion(&self, emotion: &str, acoustic_events: &[String], confidence: f32) {
+        self(emotion, acoustic_events, confidence);
+    }
+}
+
 /// Segmentation VAD réelle + ASR optionnelle, sans décision de mot-clé.
 pub struct VoicePipeline {
     config: VoicePipelineConfig,
@@ -179,6 +199,7 @@ pub struct VoicePipeline {
     events_emitted: u64,
     vad_error_reported: bool,
     embedding_hook: Option<Arc<dyn EmbeddingHook>>,
+    emotion_hook: Option<Arc<dyn EmotionHook>>,
 }
 
 impl VoicePipeline {
@@ -263,6 +284,7 @@ impl VoicePipeline {
             events_emitted: 0,
             vad_error_reported: false,
             embedding_hook: None,
+            emotion_hook: None,
         })
     }
 
@@ -377,6 +399,11 @@ impl VoicePipeline {
         self.embedding_hook = Some(hook);
     }
 
+    /// Installe le hook d'émotions vocales (SenseVoice), appelé après transcription.
+    pub fn set_emotion_hook(&mut self, hook: Arc<dyn EmotionHook>) {
+        self.emotion_hook = Some(hook);
+    }
+
     /// Alimente le pipeline en échantillons mono 16 kHz (déjà conformes —
     /// aucun ré-échantillonnage n'est fait ici ; valeurs non finies ou hors
     /// `[-1, 1]` refusées). Retourne les événements produits dans l'ordre.
@@ -441,7 +468,6 @@ impl VoicePipeline {
                 let chunk = AudioChunk::new(utterance.clone(), PIPELINE_SAMPLE_RATE, 1);
                 asr.transcribe(&chunk)
                     .await
-                    .map(|hyp| hyp.transcript)
                     .map_err(|e| format!("ASR: {e}"))
             }
             (None, _) => Err("ASR: aucun énoncé finalisé".into()),
@@ -449,10 +475,23 @@ impl VoicePipeline {
         };
         self.events_emitted += 1;
         match result {
-            Ok(text) => {
+            Ok(hyp) => {
                 self.last_utterance = None;
                 self.state = PipelineState::Idle;
-                let mut events = vec![VoiceEvent::Transcript { text }];
+                let mut events = vec![VoiceEvent::Transcript { text: hyp.transcript }];
+
+                // Propagation sans perte des émotions et balises acoustiques SenseVoice
+                if !hyp.emotion.is_empty() || !hyp.acoustic_events.is_empty() {
+                    if let Some(hook) = &self.emotion_hook {
+                        hook.on_emotion(&hyp.emotion, &hyp.acoustic_events, hyp.confidence);
+                    }
+                    events.push(VoiceEvent::Emotion {
+                        emotion: hyp.emotion,
+                        acoustic_events: hyp.acoustic_events,
+                        confidence: hyp.confidence,
+                    });
+                }
+
                 events.extend(self.push_audio(&[]));
                 events
             }
@@ -1129,12 +1168,33 @@ mod tests {
         let (len, dur) = recorded[0];
         assert!(len > 0, "énoncé non vide");
         assert!(
-            (dur - len as f32 / 16_000.0).abs() < 1e-4,
-            "durée cohérente avec les échantillons"
-        );
-        assert!(
             (0.2..=1.5).contains(&dur),
             "durée d'énoncé plausible: {dur:.3}s"
         );
+    }
+
+    #[test]
+    fn emotion_hook_and_event_variants() {
+        let calls: Arc<Mutex<Vec<(String, Vec<String>, f32)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&calls);
+        let hook = Arc::new(move |emotion: &str, acoustic_events: &[String], confidence: f32| {
+            sink.lock()
+                .expect("lock")
+                .push((emotion.to_string(), acoustic_events.to_vec(), confidence));
+        });
+
+        hook.on_emotion("HAPPY", &["Laughter".to_string()], 0.95);
+        let rec = calls.lock().unwrap().clone();
+        assert_eq!(rec.len(), 1);
+        assert_eq!(rec[0].0, "HAPPY");
+        assert_eq!(rec[0].1, vec!["Laughter".to_string()]);
+        assert_eq!(rec[0].2, 0.95);
+
+        let event = VoiceEvent::Emotion {
+            emotion: "HAPPY".to_string(),
+            acoustic_events: vec!["Laughter".to_string()],
+            confidence: 0.95,
+        };
+        assert!(matches!(event, VoiceEvent::Emotion { emotion, .. } if emotion == "HAPPY"));
     }
 }

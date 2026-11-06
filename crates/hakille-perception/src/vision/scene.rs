@@ -85,7 +85,7 @@ impl SceneAnalyzer for DefaultSceneAnalyzer {
             FrameFormat::Rgb8 => cv::PixelLayout::RGB,
             FrameFormat::Rgba8 => cv::PixelLayout::RGBA,
             FrameFormat::Bgra8 => cv::PixelLayout::BGRA,
-            FrameFormat::Jpeg => return Ok(Self::empty(0.0, "IndecodableFormat")),
+            FrameFormat::Jpeg | FrameFormat::Yuyv => return Ok(Self::empty(0.0, "IndecodableFormat")),
         };
         let gray = match cv::to_grayscale(&frame.data, frame.width, frame.height, layout) {
             Some(g) => g,
