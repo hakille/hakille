@@ -2865,6 +2865,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hakille-spatial"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hakille-spikes"
 version = "0.1.0"
 dependencies = [

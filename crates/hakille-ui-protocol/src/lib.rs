@@ -129,6 +129,215 @@ pub struct AgentDto {
     pub sha256: String,
 }
 
+// ============================================================================
+// DTOs Perceptuels & Cognitifs Multimodaux (M1 Additif v1)
+// ============================================================================
+
+/// Masques de canaux perceptuels pour `PerceptionControl`.
+pub const PERCEPTION_CHANNEL_VISION: u32 = 1 << 0;     // 0x01
+pub const PERCEPTION_CHANNEL_AUDIO: u32 = 1 << 1;      // 0x02
+pub const PERCEPTION_CHANNEL_EMOTION: u32 = 1 << 2;    // 0x04
+pub const PERCEPTION_CHANNEL_POSTURE: u32 = 1 << 3;    // 0x08
+pub const PERCEPTION_CHANNEL_FATIGUE: u32 = 1 << 4;    // 0x10
+pub const PERCEPTION_CHANNEL_GAZE: u32 = 1 << 5;       // 0x20
+pub const PERCEPTION_CHANNEL_ALL: u32 = 0x3F;
+
+/// État qualifié de la présence physique de l'utilisateur face au poste.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserPresenceKind {
+    /// Utilisateur présent et attentif en face de l'écran.
+    Present,
+    /// Utilisateur absent du champ visuel (> 3 secondes d'absence confirmée).
+    Absent,
+    /// Utilisateur physiquement présent mais distrait (regard fuyant, tête tournée > 75°).
+    Distracted,
+    /// Alerte de confidentialité : plusieurs personnes détectées (shoulder surfing).
+    MultiplePeople,
+}
+
+/// DTO rapportant l'état de présence physique de l'utilisateur.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct UserPresenceDto {
+    /// Catégorie de présence.
+    pub kind: UserPresenceKind,
+    /// Confiance normalisée de la détection [0.0, 1.0].
+    pub confidence: f32,
+    /// Distance estimée en mètres (par annulation focale IPD ou sténopé).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance_meters: Option<f32>,
+    /// Nombre de visages / silhouettes détectés dans le champ visuel.
+    pub people_count: u32,
+    /// Horodatage Unix en millisecondes.
+    pub timestamp_ms: u64,
+}
+
+/// Catégorie qualifiée du niveau d'attention.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttentionKind {
+    /// Regard convergent fixé sur l'écran actif (GazeRay intersecting screen).
+    Focused,
+    /// Attention partagée (regard mobile, clignements réguliers).
+    Divided,
+    /// Utilisateur distrait (regard hors écran, pitch/yaw dévié).
+    Distracted,
+    /// Absence d'attention ou yeux fermés.
+    Absent,
+}
+
+/// DTO rapportant l'attention et le regard de l'utilisateur.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct AttentionLevelDto {
+    /// Catégorie d'attention.
+    pub level: AttentionKind,
+    /// Score continu d'attention [0.0, 1.0].
+    pub score: f32,
+    /// `true` si le regard converge sur la surface de l'écran.
+    pub gaze_on_screen: bool,
+    /// Durée de fixation continue sur l'écran en millisecondes.
+    pub fixation_duration_ms: u64,
+    /// Horodatage Unix en millisecondes.
+    pub timestamp_ms: u64,
+}
+
+/// Classification ergonomique de la posture corporelle de l'utilisateur.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PostureKindDto {
+    /// Buste droit, colonne alignée.
+    Upright,
+    /// Buste affalé / dos voûté.
+    Slouched,
+    /// Buste penché vers l'avant (concentration ou fatigue visuelle).
+    LeaningForward,
+    /// Buste adossé / incliné vers l'arrière (relaxation).
+    Reclined,
+    /// Posture debout.
+    Standing,
+    /// Posture assise standard.
+    Seated,
+    /// Posture indéterminée (occlusion ou cadrage serré).
+    Unknown,
+}
+
+/// DTO rapportant la posture physique et les métriques ergonomiques.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PostureStatusDto {
+    /// Posture dominante classifiée.
+    pub posture: PostureKindDto,
+    /// `true` si l'utilisateur est détecté en position assise.
+    pub is_sitting: bool,
+    /// Angle d'inclinaison de la colonne vertébrale en degrés (0° = vertical droit).
+    pub spine_inclination_deg: f32,
+    /// Taille / stature physique estimée en centimètres (via annulation focale IPD 63 mm et ratio vitruvien 52%).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_height_cm: Option<f32>,
+    /// Indice de confiance de la pose corporelle [0.0, 1.0].
+    pub confidence: f32,
+    /// Horodatage Unix en millisecondes.
+    pub timestamp_ms: u64,
+}
+
+/// Sévérité de l'alerte de fatigue.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FatigueSeverity {
+    /// Fatigue légère.
+    Mild,
+    /// Fatigue modérée (PERCLOS 10-15%).
+    Moderate,
+    /// Somnolence critique (PERCLOS > 15%, micro-sommeils imminents).
+    Critical,
+}
+
+/// DTO d'alerte de fatigue émis pour action préventive.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct FatigueAlertEvent {
+    /// Niveau de sévérité.
+    pub severity: FatigueSeverity,
+    /// PERCLOS P80 calculé sur fenêtre glissante de 60 secondes [0.0, 1.0].
+    pub perclos_p80: f32,
+    /// Eye Aspect Ratio (EAR) instantané.
+    pub ear: f32,
+    /// Mouth Aspect Ratio (MAR) instantané pour détection de bâillement.
+    pub mar: f32,
+    /// Nombre de bâillements récents détectés.
+    pub yawn_count: u32,
+    /// Recommandation contextuelle (ex. "Pause conseillée").
+    pub recommendation: String,
+    /// Horodatage Unix en millisecondes.
+    pub timestamp_ms: u64,
+}
+
+/// DTO rapportant les mises à jour affectives et émotionnelles.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct EmotionUpdateEvent {
+    /// Émotion dominante (ex. "Neutral", "Happy", "Sad", "Surprised", "Anger", "Disgust", "Fear", "Contempt").
+    pub primary_emotion: String,
+    /// Indice de confiance normalisé [0.0, 1.0].
+    pub confidence: f32,
+    /// Valence continue circumplex de Russell [-1.0, 1.0].
+    pub valence: f32,
+    /// Arousal continu circumplex de Russell [-1.0, 1.0].
+    pub arousal: f32,
+    /// Source multimodale de l'inférence : "Facial", "Vocal", "MultimodalFusion".
+    pub source: String,
+    /// Balises acoustiques optionnelles SenseVoice (ex. ["Laughter", "Applause"]).
+    pub acoustic_tags: Vec<String>,
+    /// Horodatage Unix en millisecondes.
+    pub timestamp_ms: u64,
+}
+
+/// Déclencheur d'un événement de garde de souveraineté et vie privée.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum PrivacyGuardTrigger {
+    /// Détection de tiers regardant l'écran (shoulder surfing).
+    ShoulderSurfingDetected { people_count: u32 },
+    /// Tentative bloquée d'exfiltration de données brutes sans capability.
+    RawDataExfiltrationBlocked { blocked_scope: String },
+    /// Coupure matérielle (interrupteur physique caméra ou microphone coupé).
+    HardwareKillSwitchActivated { device: String },
+    /// Purge physique des données biométriques éphémères (TTL RAM expiré).
+    EphemeralTtlPurged,
+}
+
+/// DTO émis lors de l'activation d'une protection de vie privée.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct PrivacyGuardEvent {
+    /// Déclencheur de l'alerte.
+    pub trigger: PrivacyGuardTrigger,
+    /// Description explicite de l'événement.
+    pub description: String,
+    /// Action préventive appliquée ou recommandée (ex. "Floutage écran activé").
+    pub recommended_action: String,
+    /// Horodatage Unix en millisecondes.
+    pub timestamp_ms: u64,
+}
+
+/// Synthèse unifiée et cohérente du contexte utilisateur.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct UserContextEvent {
+    /// État de présence physique de l'utilisateur.
+    pub presence: UserPresenceDto,
+    /// Attention et regard.
+    pub attention: AttentionLevelDto,
+    /// Posture et ergonomie corporelle.
+    pub posture: PostureStatusDto,
+    /// Âge estimé par inférence faciale continue (SSR-Net).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_age: Option<f32>,
+    /// Genre estimé par inférence faciale ("Male", "Female").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_gender: Option<String>,
+    /// Émotion dominante actuelle.
+    pub primary_emotion: String,
+    /// Valence circumplex courante [-1.0, 1.0].
+    pub valence: f32,
+    /// Arousal circumplex courant [-1.0, 1.0].
+    pub arousal: f32,
+    /// Indice de fatigue global [0.0, 1.0] (PERCLOS P80).
+    pub fatigue_index: f32,
+    /// Horodatage Unix en millisecondes.
+    pub timestamp_ms: u64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum UiToKernel {
     Approve {
@@ -182,9 +391,16 @@ pub enum UiToKernel {
         name: String,
         input_json: String,
     },
+    /// Commande de pilotage de la perception multimodale et souveraineté matérielle (M1 additif v1).
+    PerceptionControl {
+        hardware_camera_enabled: bool,
+        hardware_mic_enabled: bool,
+        cognitive_inference_enabled: bool,
+        active_channels_mask: u32,
+    },
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum KernelToUi {
     Presence(PresenceState),
     ShowCard(ActionCard),
@@ -256,6 +472,14 @@ pub enum KernelToUi {
         #[serde(default)]
         effect: Option<String>,
     },
+    /// Contexte utilisateur multimodal complet unifié (M1 additif v1).
+    UserContext(UserContextEvent),
+    /// Mise à jour affective / émotionnelle (M1 additif v1).
+    EmotionUpdate(EmotionUpdateEvent),
+    /// Alerte de fatigue et somnolence pour ActionCard ou notification (M1 additif v1).
+    FatigueAlert(FatigueAlertEvent),
+    /// Alerte de garde de vie privée et souveraineté matérielle (M1 additif v1).
+    PrivacyGuardAlert(PrivacyGuardEvent),
 }
 
 /// Message UI → noyau versionné : champ `version` transporté sur le fil
@@ -268,7 +492,7 @@ pub struct UiMessage {
 }
 
 /// Message noyau → UI versionné (même contrat que `UiMessage`).
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct KernelMessage {
     pub version: u16,
     pub inner: KernelToUi,
@@ -617,5 +841,103 @@ mod tests {
             inner: KernelToUi::Presence(PresenceState::Idle),
         };
         assert!(kstale.check().is_err());
+    }
+
+    #[test]
+    fn test_perception_control_roundtrip_v1() {
+        let cmd = UiToKernel::PerceptionControl {
+            hardware_camera_enabled: true,
+            hardware_mic_enabled: false,
+            cognitive_inference_enabled: true,
+            active_channels_mask: PERCEPTION_CHANNEL_VISION | PERCEPTION_CHANNEL_EMOTION,
+        };
+        let msg = UiMessage::new(cmd.clone());
+        assert!(msg.check().is_ok());
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"PerceptionControl\""));
+        assert!(json.contains("\"hardware_camera_enabled\":true"));
+        assert!(json.contains("\"hardware_mic_enabled\":false"));
+        assert!(json.contains("\"cognitive_inference_enabled\":true"));
+        let back: UiMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.inner, cmd);
+        assert!(back.check().is_ok());
+    }
+
+    #[test]
+    fn test_cognitive_events_roundtrip_v1() {
+        let presence = UserPresenceDto {
+            kind: UserPresenceKind::Present,
+            confidence: 0.98,
+            distance_meters: Some(0.65),
+            people_count: 1,
+            timestamp_ms: 1794078900000,
+        };
+        let attention = AttentionLevelDto {
+            level: AttentionKind::Focused,
+            score: 0.95,
+            gaze_on_screen: true,
+            fixation_duration_ms: 4500,
+            timestamp_ms: 1794078900000,
+        };
+        let posture = PostureStatusDto {
+            posture: PostureKindDto::Upright,
+            is_sitting: true,
+            spine_inclination_deg: 4.2,
+            estimated_height_cm: Some(178.5),
+            confidence: 0.92,
+            timestamp_ms: 1794078900000,
+        };
+        let ctx = UserContextEvent {
+            presence,
+            attention,
+            posture,
+            estimated_age: Some(34.5),
+            estimated_gender: Some("Male".into()),
+            primary_emotion: "Neutral".into(),
+            valence: 0.15,
+            arousal: -0.05,
+            fatigue_index: 0.04,
+            timestamp_ms: 1794078900000,
+        };
+        let emo = EmotionUpdateEvent {
+            primary_emotion: "Happy".into(),
+            confidence: 0.89,
+            valence: 0.75,
+            arousal: 0.40,
+            source: "MultimodalFusion".into(),
+            acoustic_tags: vec!["Laughter".into()],
+            timestamp_ms: 1794078900000,
+        };
+        let fatigue = FatigueAlertEvent {
+            severity: FatigueSeverity::Moderate,
+            perclos_p80: 0.14,
+            ear: 0.18,
+            mar: 0.65,
+            yawn_count: 3,
+            recommendation: "Pause conseillée".into(),
+            timestamp_ms: 1794078900000,
+        };
+        let guard = PrivacyGuardEvent {
+            trigger: PrivacyGuardTrigger::ShoulderSurfingDetected { people_count: 2 },
+            description: "Deuxième personne détectée dans le champ visuel".into(),
+            recommended_action: "Floutage des cartes confidentielles activé".into(),
+            timestamp_ms: 1794078900000,
+        };
+
+        let cases = [
+            KernelToUi::UserContext(ctx),
+            KernelToUi::EmotionUpdate(emo),
+            KernelToUi::FatigueAlert(fatigue),
+            KernelToUi::PrivacyGuardAlert(guard),
+        ];
+
+        for r in cases {
+            let msg = KernelMessage::new(r.clone());
+            assert!(msg.check().is_ok());
+            let json = serde_json::to_string(&msg).unwrap();
+            let back: KernelMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.inner, r);
+            assert!(back.check().is_ok());
+        }
     }
 }

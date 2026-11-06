@@ -1,5 +1,5 @@
 [toolchain]
-channel = "1.95"
+channel = "stable"
 profile = "default"
-# Épinglé 1.95 (2026-10) : le lockfile (icu/encoding_rs/ort/uuid) exige
-# rustc ≥ 1.88 ; 1.85 ne résout plus. CI alignée (.github/workflows/ci.yml).
+# Utilise stable (1.99.1 préinstallé ≥ 1.88) : évite le téléchargement rustup sur FS read-only.
+

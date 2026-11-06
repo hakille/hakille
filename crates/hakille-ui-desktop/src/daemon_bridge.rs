@@ -106,6 +106,9 @@ impl KernelStub for RealDaemonBridge {
                 UiToKernel::AgentListRequest | UiToKernel::AgentRunRequest { .. } => {
                     self.require_daemon("runtime d'agents réel requis")
                 }
+                UiToKernel::PerceptionControl { .. } => {
+                    self.require_daemon("contrôle perceptuel requis")
+                }
             };
         }
         // LocalAuthorized : le noyau (simulé ici) revérifie puis journalise.
@@ -173,6 +176,9 @@ impl KernelStub for RealDaemonBridge {
                     text: "runtime d'agents réel requis — démon non branché (pont simulé)".into(),
                 })
             }
+            UiToKernel::PerceptionControl { .. } => Ok(KernelToUi::Toast {
+                text: "contrôle de perception reçu (pont simulé)".into(),
+            }),
         }
     }
 }

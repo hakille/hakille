@@ -407,7 +407,8 @@ fn allowed(message: &UiToKernel) -> bool {
         | UiToKernel::Reject { .. }
         | UiToKernel::Edit { .. }
         | UiToKernel::StatusRequest
-        | UiToKernel::AgentListRequest => true,
+        | UiToKernel::AgentListRequest
+        | UiToKernel::PerceptionControl { .. } => true,
         UiToKernel::Undo { .. }
         | UiToKernel::RevokeAll
         | UiToKernel::SettingsToggle { .. }

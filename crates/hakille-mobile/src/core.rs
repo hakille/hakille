@@ -643,7 +643,12 @@ impl Core {
                 }
             }
             KernelToUi::JournalAppended { id } => self.snapshot.last_journal_entry_id = Some(*id),
-            KernelToUi::MemoryRememberAck { .. } | KernelToUi::AgentRunReply { .. } => {}
+            KernelToUi::MemoryRememberAck { .. }
+            | KernelToUi::AgentRunReply { .. }
+            | KernelToUi::UserContext(_)
+            | KernelToUi::EmotionUpdate(_)
+            | KernelToUi::FatigueAlert(_)
+            | KernelToUi::PrivacyGuardAlert(_) => {}
         }
         Ok(())
     }

@@ -4,6 +4,7 @@ members = [
     "crates/hakille-core",
     "crates/hakille-substrate",
     "crates/hakille-memory",
+    "crates/hakille-spatial",
     "crates/hakille-kernel",
     "crates/hakille-perception",
     "crates/hakille-inference",
