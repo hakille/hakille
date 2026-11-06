@@ -135,12 +135,11 @@ impl ContinuousAudioRingBuffer {
 
         let mut inner = self.inner.write().unwrap_or_else(|e| e.into_inner());
         let head = inner.write_head;
-        let old_len = inner.current_len;
-        let evicted = if n + old_len > cap {
-            (n + old_len - cap) as u64
-        } else {
-            0
-        };
+
+        let evicted_this_push = (inner.current_len + n).saturating_sub(cap);
+        if evicted_this_push > 0 {
+            self.evicted_total.fetch_add(evicted_this_push as u64, Ordering::Relaxed);
+        }
 
         if n >= cap {
             // Le bloc dépasse la capacité totale : on ne retient que les `cap` plus récents.
@@ -159,13 +158,10 @@ impl ContinuousAudioRingBuffer {
                 inner.buffer[..remainder].copy_from_slice(&samples[space_to_end..]);
                 inner.write_head = remainder;
             }
-            inner.current_len = (old_len + n).min(cap);
+            inner.current_len = (inner.current_len + n).min(cap);
         }
 
         self.total_written.fetch_add(n as u64, Ordering::Relaxed);
-        if evicted > 0 {
-            self.evicted_total.fetch_add(evicted, Ordering::Relaxed);
-        }
     }
 
     /// Extraction d'une fenêtre temporelle récente dans un buffer fourni par l'appelant.
