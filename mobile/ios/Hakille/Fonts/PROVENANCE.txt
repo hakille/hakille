@@ -1,0 +1,32 @@
+Inter Variable — provenance de la police embarquée
+
+Auteur : The Inter Project Authors, https://github.com/rsms/inter
+Licence : SIL Open Font License 1.1, copie intégrale dans OFL.txt / res/raw/inter_ofl.txt.
+Source de distribution officielle : google/fonts, dossier ofl/inter.
+Révision de distribution épinglée : 0b58fb370093f9a9f4ff785d94405710b79de67c.
+Révision amont (METADATA.pb) : 66647c0bbbe41a850d79d9c76fb13add3378940f.
+Version interne nameID 5 : Version 4.001;git-66647c0bb.
+Ne pas confondre la version interne avec le nom de l'archive amont Inter-4.1-GoogleFonts.zip.
+Date d'intégration : 2026-11-04.
+
+Fichier téléchargé : Inter[opsz,wght].ttf
+URL : https://raw.githubusercontent.com/google/fonts/0b58fb370093f9a9f4ff785d94405710b79de67c/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf
+Taille : 876576 octets.
+SHA-256 : 29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031
+Licence URL : https://raw.githubusercontent.com/google/fonts/0b58fb370093f9a9f4ff785d94405710b79de67c/ofl/inter/OFL.txt
+Licence SHA-256 : 5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57
+Métadonnées : https://raw.githubusercontent.com/google/fonts/0b58fb370093f9a9f4ff785d94405710b79de67c/ofl/inter/METADATA.pb
+
+Copies binaires strictement identiques :
+- Android res/font/inter_variable.ttf, ressource R.font.inter_variable.
+- iOS Hakille/Fonts/InterVariable.ttf, entrée UIAppFonts Fonts/InterVariable.ttf
+  si le dossier Fonts est préservé dans le bundle, sinon InterVariable.ttf.
+  Le nom PostScript est Inter-Regular ; famille Inter ; style Regular.
+
+Axes variables : wght 100..900 (défaut400), opsz 14..32 (défaut14).
+Aucune transformation, sous-ensemble, instanciation statique ou modification des glyphes.
+Seul le nom du fichier copié change pour les conventions des ressources natives.
+Aucun téléchargement de police à l'exécution. L'italique n'est pas embarqué.
+Les caractères absents de cette police utilisent les substitutions natives Unicode.
+La présence de ce fichier ne prouve pas son chargement dans un écran : vérifier
+la référence Compose et UIAppFonts/nom PostScript dans l'application construite.

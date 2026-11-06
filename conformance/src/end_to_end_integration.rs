@@ -244,22 +244,26 @@ async fn test_full_system_end_to_end_integration() {
     let shared_id = shared_triplet.id.clone();
 
     // Node A creates a state entry
-    node_desktop.insert_triplet(shared_triplet, "desktop-01");
+    node_desktop
+        .insert_triplet(shared_triplet, "desktop-01")
+        .unwrap();
     assert!(node_desktop.elements.contains_key(&shared_id));
 
     // Exchange CRDT delta with Node B
-    node_mobile.merge(&node_desktop);
+    node_mobile.merge(&node_desktop).unwrap();
 
     // Node B now has exact convergent state
     assert!(node_mobile.elements.contains_key(&shared_id));
     assert_eq!(node_mobile.vector_clock.get("desktop-01"), 1);
 
     // Tombstone deletion test
-    node_desktop.remove_triplet(shared_id.clone(), "desktop-01");
+    node_desktop
+        .remove_triplet(shared_id.clone(), "desktop-01")
+        .unwrap();
     assert!(node_desktop.tombstones.contains(&shared_id));
     assert_eq!(node_desktop.active_triplets().len(), 0);
 
-    node_mobile.merge(&node_desktop);
+    node_mobile.merge(&node_desktop).unwrap();
     assert!(node_mobile.tombstones.contains(&shared_id));
     assert_eq!(node_mobile.active_triplets().len(), 0);
 

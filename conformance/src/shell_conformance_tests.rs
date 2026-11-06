@@ -44,9 +44,8 @@ fn test_shell_snapshot_dashboard_and_honesty() {
     assert_eq!(payload["theme"]["bg"], "#0B0C0F");
 
     // 2. Honnêteté : les statuts sont dérivés d'artefacts réellement présents.
-    // Fixture temporaire complète : chaque moteur RÉEL doit citer son
-    // mécanisme, Mimi reste SIMULÉ (projection, pas de codec neural) et
-    // UI-TARS reste INSPECTÉ (pas de forward VLM).
+    // Une fixture présente ne prouve ni un parsing ni un forward. L'inventaire
+    // doit rester PRÉSENT/NON TESTÉ, même lorsque le moteur est implémenté.
     let models_dir = std::env::temp_dir().join(format!(
         "hakille-conformance-shell-models-{}",
         std::process::id()
@@ -57,6 +56,7 @@ fn test_shell_snapshot_dashboard_and_honesty() {
         "qwen2.5-0.5b-instruct-q4_k_m.gguf",
         "tokenizer.json",
         "ui-tars-2b-sft-q4_k_m.gguf",
+        "mmproj-UI-TARS-2B-SFT-f16.gguf",
         "mimi_candle.safetensors",
         "sensevoice_small.int8.onnx",
         "tokens.txt",
@@ -67,25 +67,20 @@ fn test_shell_snapshot_dashboard_and_honesty() {
     ] {
         std::fs::write(models_dir.join(name), b"fixture").unwrap();
     }
-    let rows = honest_engine_rows(&models_dir, 2.1, 10);
+    let rows = honest_engine_rows(&models_dir, 2.1, 11);
     assert_eq!(rows.len(), 7);
     for row in &rows {
-        match row.status {
-            hakille_ui_shell::InferenceStatus::Real => assert!(
-                row.detail.contains("ort")
-                    || row.detail.contains("Candle")
-                    || row.detail.contains("RVQ")
-                    || row.detail.contains("formantique")
-                    || row.detail.contains("vision classique"),
-                "moteur RÉEL sans preuve citée : {}",
-                row.name
-            ),
-            _ => assert!(
-                row.detail.contains("pas de forward"),
-                "moteur non-RÉEL sans limite explicite : {}",
-                row.name
-            ),
-        }
+        assert_eq!(row.status, hakille_ui_shell::InferenceStatus::Available);
+        assert!(
+            !row.status.is_real(),
+            "simple fichier promu RÉEL : {}",
+            row.name
+        );
+        assert!(
+            row.detail.contains("non vérifiés"),
+            "absence de preuve non explicitée : {}",
+            row.name
+        );
     }
     std::fs::remove_dir_all(&models_dir).ok();
     assert_eq!(reference_agent_cards().len(), 5);

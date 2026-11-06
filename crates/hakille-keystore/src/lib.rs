@@ -23,7 +23,8 @@
 //! - `revoke()` -> `delete_credential` (idempotent : absent = deja revoque).
 //! - Tout secret en memoire est porte par `Zeroizing`, les buffers
 //!   intermediaires sont effaces, et **aucun secret n'est jamais logge**
-//!   (pas de `Debug`/`Display` sur les seeds ; les messages d'erreur ne
+//!   (les conteneurs masquent leurs seeds dans `Debug` ; ne jamais formater
+//!   directement un `Seed`. Les messages d'erreur ne
 //!   contiennent que service/user, jamais d'octets secrets).
 //! - Tests : roundtrip via keychain **moquee** (`MemoryStore`). `OsStore`
 //!   (prod, `keyring::Entry`) n'est jamais utilise dans les tests.
@@ -40,7 +41,6 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
@@ -122,9 +122,15 @@ struct MemoryInner {
 
 /// Backend memoire pour tests (et secours documente hors-prod).
 /// Partageable par `clone()` (meme `Arc` : deux registres voient le meme contenu).
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct MemoryStore {
     inner: Arc<Mutex<MemoryInner>>,
+}
+
+impl std::fmt::Debug for MemoryStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryStore").finish_non_exhaustive()
+    }
 }
 
 impl MemoryStore {
@@ -244,10 +250,18 @@ impl SecretStore for OsStore {
 
 /// Resultat d'un `load_or_create` : le seed + si cette machine vient de le creer.
 /// `created == true` (premier boot) doit etre affiche honnetement au boot.
-#[derive(Debug)]
 pub struct LoadOutcome {
     pub seed: Seed,
     pub created: bool,
+}
+
+impl std::fmt::Debug for LoadOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadOutcome")
+            .field("seed", &"[CONFIDENTIEL]")
+            .field("created", &self.created)
+            .finish()
+    }
 }
 
 /// Rapport de rotation (serialisable pour audit boot).
@@ -451,272 +465,13 @@ impl<S: SecretStore> KeyRegistry<S> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// F1 : repli fichier CHIFFRE (quand le keychain OS est indisponible).
-// ---------------------------------------------------------------------------
-//
-// Contexte : `hakille-daemon` utilisait `keys/*.bin` avec 32 octets BRUTS en
-// clair comme repli si `OsStore` echouait. Ce module fournit le SEUL repli
-// fichier acceptable :
-//
-// - header versionne (`ANRKEY01` + version u32 BE) + sel 16 o + 32 o
-//   "chiffres" => le fichier ne contient JAMAIS 32 octets bruts (60 o total) ;
-// - permissions `0600` sur Unix (proprietaire seul) ;
-// - "chiffrement" par mot de passe OS : XOR avec un keystream derive
-//   (FNV-1a sur password+salt+compteur). C'est une OBFUSCATION MINIMALE,
-//   PAS un chiffrement authentifie de niveau DPAPI : le keychain OS reste
-//   OBLIGATOIRE en prod. En prod (`HAKILLE_PROD=1`) ou sans mot de passe,
-//   ces fonctions REFUSENT (Err explicite, boot interrompu), jamais de
-//   regeneration silencieuse en memoire seule.
-//
-// Le daemon doit appeler `load_or_create_encrypted_file` au lieu d'ecrire
-// des `.bin` bruts, avec un mot de passe fourni par l'OS / l'operateur
-// (jamais hardcode), puis migrer vers le keychain via `rotate()` des que
-// le trousseau est debloque. TODO prod : remplacer le XOR par
-// ChaCha20Poly1305 + cle DPAPI (CryptProtectData) quand `winapi` sera
-// disponible sans `unsafe` dans ce crate (`#![forbid(unsafe_code)]`).
-
-/// Magic du repli fichier chiffre (8 o,ences ASCII).
-pub const ENCRYPTED_FILE_MAGIC: &[u8; 8] = b"ANRKEY01";
-/// Version du format de repli fichier (u32 BE apres le magic).
-pub const ENCRYPTED_FILE_VERSION: u32 = 1;
-const FILE_SALT_LEN: usize = 16;
-const FILE_CT_LEN: usize = SEED_LEN;
-const FILE_TOTAL_LEN: usize = 8 + 4 + FILE_SALT_LEN + FILE_CT_LEN;
-
-/// Derive un keystream pseudo-aleatoire (FNV-1a 64, compteur) — obfuscation
-/// minimale, PAS un KDF resistant (documente ci-dessus).
-fn fallback_keystream(password: &[u8], salt: &[u8], len: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(len);
-    let mut counter = 0u64;
-    while out.len() < len {
-        // FNV-1a 64 sur (password || salt || counter LE).
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in password
-            .iter()
-            .chain(salt.iter())
-            .chain(counter.to_le_bytes().iter())
-        {
-            h ^= *b as u64;
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        // Diffuse le hash sur 8 octets par tour (xorshift local).
-        let mut x = h;
-        for _ in 0..8 {
-            if out.len() >= len {
-                break;
-            }
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            out.push((x & 0xff) as u8);
-        }
-        counter = counter.wrapping_add(1);
-    }
-    out
-}
-
-fn fallback_is_prod() -> bool {
-    std::env::var("HAKILLE_PROD")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
-fn fallback_write_locked(path: &Path, bytes: &[u8]) -> Result<(), KeystoreError> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            KeystoreError::FileFallback(format!("create_dir_all {}: {e}", parent.display()))
-        })?;
-    }
-    std::fs::write(path, bytes)
-        .map_err(|e| KeystoreError::FileFallback(format!("write {}: {e}", path.display())))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perm = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(path, perm).map_err(|e| {
-            KeystoreError::FileFallback(format!("chmod 0600 {}: {e}", path.display()))
-        })?;
-    }
-    #[cfg(not(unix))]
-    {
-        // Windows : pas d'ACL fine sans winapi (forbid unsafe) — le fichier
-        // reste dans le profil utilisateur ; DPAPI reste le TODO prod.
-        eprintln!(
-            "keystore: repli chiffre ecrit sans ACL 0600 (non-Unix, DPAPI TODO) : {}",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-/// Charge le seed depuis le repli fichier chiffre, ou le cree (alea OS) +
-/// persiste + relit. Refuse (Err explicite) si : mot de passe vide,
-/// `HAKILLE_PROD=1`, header invalide, taille inattendue.
-pub fn load_or_create_encrypted_file(
-    path: &Path,
-    password: &[u8],
-) -> Result<LoadOutcome, KeystoreError> {
-    load_or_create_encrypted_file_impl(path, password, fallback_is_prod())
-}
-
-/// Noyau testable sans toucher aux variables d'environnement (dont la
-/// mutation est `unsafe` en edition 2024 et interdite par
-/// `#![forbid(unsafe_code)]`) : `is_prod=true` simule `HAKILLE_PROD=1`.
-fn load_or_create_encrypted_file_impl(
-    path: &Path,
-    password: &[u8],
-    is_prod: bool,
-) -> Result<LoadOutcome, KeystoreError> {
-    if password.is_empty() {
-        return Err(KeystoreError::InsecureBoot(
-            "repli fichier chiffre exige un mot de passe OS non vide (refus)".to_string(),
-        ));
-    }
-    if is_prod {
-        return Err(KeystoreError::InsecureBoot(
-            "prod refuse le repli fichier (meme chiffre) : debloquez le trousseau OS puis migrez via rotation".to_string(),
-        ));
-    }
-    eprintln!(
-        "keystore: ATTENTION repli fichier chiffre utilise (keychain OS indisponible) : {} — migrez via rotation des que possible",
-        path.display()
-    );
-    if path.exists() {
-        let raw = std::fs::read(path)
-            .map_err(|e| KeystoreError::FileFallback(format!("read {}: {e}", path.display())))?;
-        if raw.len() != FILE_TOTAL_LEN {
-            return Err(KeystoreError::FileFallback(format!(
-                "header invalide ({}): attendu {} octets, trouve {}",
-                path.display(),
-                FILE_TOTAL_LEN,
-                raw.len()
-            )));
-        }
-        if &raw[..8] != ENCRYPTED_FILE_MAGIC {
-            return Err(KeystoreError::FileFallback(format!(
-                "magic invalide pour {} (fichier non chiffre ou corrompu)",
-                path.display()
-            )));
-        }
-        let ver = u32::from_be_bytes([raw[8], raw[9], raw[10], raw[11]]);
-        if ver != ENCRYPTED_FILE_VERSION {
-            return Err(KeystoreError::FileFallback(format!(
-                "version {} non supportee pour {} (attendu {})",
-                ver,
-                path.display(),
-                ENCRYPTED_FILE_VERSION
-            )));
-        }
-        let salt = &raw[12..12 + FILE_SALT_LEN];
-        let ct = &raw[12 + FILE_SALT_LEN..];
-        let ks = fallback_keystream(password, salt, FILE_CT_LEN);
-        let mut seed = [0u8; SEED_LEN];
-        for i in 0..SEED_LEN {
-            seed[i] = ct[i] ^ ks[i];
-        }
-        Ok(LoadOutcome {
-            seed: Zeroizing::new(seed),
-            created: false,
-        })
-    } else {
-        // Creation : seed alea OS + sel alea OS, jamais 32 o bruts sur disque.
-        let mut seed = [0u8; SEED_LEN];
-        getrandom::getrandom(&mut seed).map_err(|e| KeystoreError::Randomness(e.to_string()))?;
-        let mut salt = [0u8; FILE_SALT_LEN];
-        getrandom::getrandom(&mut salt).map_err(|e| KeystoreError::Randomness(e.to_string()))?;
-        let ks = fallback_keystream(password, &salt, FILE_CT_LEN);
-        let mut raw = Vec::with_capacity(FILE_TOTAL_LEN);
-        raw.extend_from_slice(ENCRYPTED_FILE_MAGIC);
-        raw.extend_from_slice(&ENCRYPTED_FILE_VERSION.to_be_bytes());
-        raw.extend_from_slice(&salt);
-        for i in 0..SEED_LEN {
-            raw.push(seed[i] ^ ks[i]);
-        }
-        // Efface le keystream intermediaire.
-        let mut ks = ks;
-        ks.zeroize();
-        fallback_write_locked(path, &raw)?;
-        // Relecture de verification (prouve la persistance immediate).
-        let reread = std::fs::read(path).map_err(|e| {
-            KeystoreError::FileFallback(format!("read-back {}: {e}", path.display()))
-        })?;
-        if reread != raw {
-            return Err(KeystoreError::VerificationFailed {
-                user: path.display().to_string(),
-                reason: "read-back differs right after write".to_string(),
-            });
-        }
-        Ok(LoadOutcome {
-            seed: Zeroizing::new(seed),
-            created: true,
-        })
-    }
-}
-
-/// Regenere le seed du repli fichier (mot de passe identique ou nouveau) :
-/// charge avec l'ancien, genere un frais, persiste + relit + compare.
-/// Refuse si le fichier n'existe pas (pas de rotation a partir de rien).
-pub fn rotate_encrypted_file(
-    path: &Path,
-    old_password: &[u8],
-    new_password: &[u8],
-) -> Result<(), KeystoreError> {
-    rotate_encrypted_file_impl(path, old_password, new_password, fallback_is_prod())
-}
-
-/// Noyau testable de rotation (cf. `load_or_create_encrypted_file_impl`).
-fn rotate_encrypted_file_impl(
-    path: &Path,
-    old_password: &[u8],
-    new_password: &[u8],
-    is_prod: bool,
-) -> Result<(), KeystoreError> {
-    if old_password.is_empty() || new_password.is_empty() {
-        return Err(KeystoreError::InsecureBoot(
-            "rotation du repli chiffre exige des mots de passe non vides".to_string(),
-        ));
-    }
-    if is_prod {
-        return Err(KeystoreError::InsecureBoot(
-            "prod refuse la rotation du repli fichier : debloquez le trousseau OS".to_string(),
-        ));
-    }
-    if !path.exists() {
-        return Err(KeystoreError::MissingBaseline {
-            user: path.display().to_string(),
-        });
-    }
-    // Prouve que l'ancien est lisible avant d'ecraser.
-    let _baseline = load_or_create_encrypted_file_impl(path, old_password, false)?;
-    let mut fresh = [0u8; SEED_LEN];
-    getrandom::getrandom(&mut fresh).map_err(|e| KeystoreError::Randomness(e.to_string()))?;
-    let mut salt = [0u8; FILE_SALT_LEN];
-    getrandom::getrandom(&mut salt).map_err(|e| KeystoreError::Randomness(e.to_string()))?;
-    let ks = fallback_keystream(new_password, &salt, FILE_CT_LEN);
-    let mut raw = Vec::with_capacity(FILE_TOTAL_LEN);
-    raw.extend_from_slice(ENCRYPTED_FILE_MAGIC);
-    raw.extend_from_slice(&ENCRYPTED_FILE_VERSION.to_be_bytes());
-    raw.extend_from_slice(&salt);
-    for i in 0..SEED_LEN {
-        raw.push(fresh[i] ^ ks[i]);
-    }
-    let mut ks = ks;
-    ks.zeroize();
-    fallback_write_locked(path, &raw)?;
-    // Double verification transitoire : relit avec le nouveau mot de passe.
-    let reread = load_or_create_encrypted_file_impl(path, new_password, is_prod)?;
-    if *reread.seed != fresh {
-        return Err(KeystoreError::VerificationFailed {
-            user: path.display().to_string(),
-            reason: "rotated read-back differs".to_string(),
-        });
-    }
-    fresh.zeroize();
-    Ok(())
-}
+mod encrypted_file;
+pub use encrypted_file::{
+    ENCRYPTED_FILE_MAGIC, ENCRYPTED_FILE_VERSION, load_or_create_encrypted_file,
+    rotate_encrypted_file,
+};
+#[cfg(test)]
+use encrypted_file::{load_or_create_encrypted_file_impl, rotate_encrypted_file_impl};
 
 #[cfg(test)]
 mod tests {
@@ -904,21 +659,21 @@ mod tests {
         let first = load_or_create_encrypted_file_impl(&path, pw, false).expect("create");
         assert!(first.created);
         let raw = std::fs::read(&path).unwrap();
-        // Jamais 32 octets bruts : header + sel + ct = 60 o.
-        assert_eq!(raw.len(), 60, "repli chiffre ne fait jamais 32 o bruts");
-        assert_eq!(&raw[..8], b"ANRKEY01");
-        assert_eq!(u32::from_be_bytes([raw[8], raw[9], raw[10], raw[11]]), 1);
+        // Format v2 authentifié, jamais 32 octets bruts.
+        assert_eq!(raw.len(), 88, "header + sel + nonce + ciphertext + tag");
+        assert_eq!(&raw[..8], ENCRYPTED_FILE_MAGIC);
+        assert_eq!(u32::from_be_bytes([raw[8], raw[9], raw[10], raw[11]]), 2);
         assert_ne!(
-            &raw[28..],
+            &raw[40..72],
             &first.seed[..],
             "le seed ne dort jamais en clair"
         );
         let second = load_or_create_encrypted_file_impl(&path, pw, false).expect("reload");
         assert!(!second.created);
         assert_eq!(*first.seed, *second.seed);
-        // Mauvais mot de passe => seed different (pas de faux positif silencieux).
-        let wrong = load_or_create_encrypted_file_impl(&path, b"mauvais-mdp", false).expect("read");
-        assert_ne!(*wrong.seed, *first.seed);
+        // Un mauvais mot de passe est une erreur, jamais un nouveau seed.
+        assert!(load_or_create_encrypted_file_impl(&path, b"mauvais-mdp", false).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), raw);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

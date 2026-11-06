@@ -95,12 +95,13 @@ pub const EOS_IM_END_STR: &str = "<|im_end|>";
 /// Token de fin de texte (`bos/pad` = 151643).
 pub const EOS_TEXT_STR: &str = "<|endoftext|>";
 /// IDs connus (GGUF `tokenizer.ggml.*` + `added_tokens` du tokenizer.json).
-/// Utilisés en fallback si le vocab du tokenizer ne les expose pas.
+/// Identifiants attendus : leur présence dans le tokenizer est obligatoire.
+/// Les noms historiques *_FALLBACK sont conservés pour compatibilité d'API.
 pub const EOS_IM_END_ID_FALLBACK: u32 = 151645;
 pub const EOS_TEXT_ID_FALLBACK: u32 = 151643;
 /// Prompt système par défaut (instruction réellement envoyée au modèle,
 /// PAS une réponse — le modèle génère la suite).
-pub const DEFAULT_SYSTEM_PROMPT: &str = "Tu es Hakille, un système d'exploitation cognitif souverain et local fonctionnant sous Windows. Réponds de façon concise, précise et rigoureuse sans dépendre d'un serveur distant.";
+pub const DEFAULT_SYSTEM_PROMPT: &str = "Tu es Hakille, un système d'exploitation cognitif souverain et local fonctionnant sur cet appareil. Réponds de façon concise, précise et rigoureuse sans dépendre d'un serveur distant.";
 
 // ---------------------------------------------------------------------------
 // Sortie de génération
@@ -152,9 +153,32 @@ type StreamCallback = Box<dyn FnMut(&TokenEvent) + Send + 'static>;
 ///
 /// ATTENTION : il est invoqué PENDANT que le verrou du moteur Qwen est tenu
 /// (`global_qwen_engine()`). Il ne doit JAMAIS rappeler le moteur (deadlock),
-/// ni `set_token_stream_callback`/`clear_token_stream_callback` (deadlock du
-/// registre), et doit rester rapide (chaque appel bloque le décodage).
-static STREAM_CALLBACK: std::sync::Mutex<Option<StreamCallback>> = std::sync::Mutex::new(None);
+/// et doit rester rapide (chaque appel bloque le décodage). Le registre est
+/// relâché pendant le callback, qui peut donc se retirer ou se remplacer.
+struct StreamRegistry {
+    callback: Option<std::sync::Arc<std::sync::Mutex<StreamCallback>>>,
+}
+
+static STREAM_CALLBACK: std::sync::Mutex<StreamRegistry> =
+    std::sync::Mutex::new(StreamRegistry { callback: None });
+
+fn shared_callback(callback: StreamCallback) -> std::sync::Arc<std::sync::Mutex<StreamCallback>> {
+    std::sync::Arc::new(std::sync::Mutex::new(callback))
+}
+
+fn dispatch_stream_event(registry: &std::sync::Mutex<StreamRegistry>, event: &TokenEvent) {
+    let callback = match registry.lock() {
+        Ok(guard) => guard.callback.clone(),
+        Err(_) => return,
+    };
+    if let Some(callback) = callback {
+        // Le registre reste libre pour un retrait/remplacement. Le verrou du
+        // callback sérialise deux émetteurs sans perdre leurs événements.
+        if let Ok(mut callback) = callback.lock() {
+            callback(event);
+        }
+    }
+}
 
 /// Enregistre (ou remplace) le callback global de streaming.
 ///
@@ -163,7 +187,9 @@ static STREAM_CALLBACK: std::sync::Mutex<Option<StreamCallback>> = std::sync::Mu
 /// (le callback ne doit jamais rappeler le moteur).
 pub fn set_token_stream_callback(cb: Option<StreamCallback>) {
     match STREAM_CALLBACK.lock() {
-        Ok(mut guard) => *guard = cb,
+        Ok(mut guard) => {
+            guard.callback = cb.map(shared_callback);
+        }
         Err(_) => tracing::warn!(
             "Registre de streaming empoisonné — callback global non enregistré (pas de panic)"
         ),
@@ -244,6 +270,11 @@ impl StreamDecodeState {
 /// `HAKILLE_MODELS_DIR`. Retourne le dossier `models/` s'il contient (ou
 /// peut contenir) les artefacts.
 pub fn resolve_models_dir() -> PathBuf {
+    if let Some((gguf, _)) = GLOBAL_PATHS.get()
+        && let Some(directory) = gguf.parent()
+    {
+        return directory.to_path_buf();
+    }
     if let Ok(dir) = std::env::var("HAKILLE_MODELS_DIR") {
         let p = PathBuf::from(dir);
         if p.is_dir() {
@@ -276,16 +307,24 @@ pub fn resolve_models_dir() -> PathBuf {
     PathBuf::from("models")
 }
 
-/// Chemin du GGUF (override `HAKILLE_QWEN_GGUF` prioritaire).
+/// Chemin du GGUF : configuration explicite, sinon `HAKILLE_QWEN_GGUF`,
+/// sinon le dossier de modèles résolu.
 pub fn resolve_gguf_path() -> PathBuf {
+    if let Some((gguf, _)) = GLOBAL_PATHS.get() {
+        return gguf.clone();
+    }
     if let Ok(p) = std::env::var("HAKILLE_QWEN_GGUF") {
         return PathBuf::from(p);
     }
     resolve_models_dir().join(DEFAULT_GGUF_FILENAME)
 }
 
-/// Chemin du tokenizer (override `HAKILLE_QWEN_TOKENIZER` prioritaire).
+/// Chemin du tokenizer : configuration explicite, sinon
+/// `HAKILLE_QWEN_TOKENIZER`, sinon le dossier de modèles résolu.
 pub fn resolve_tokenizer_path() -> PathBuf {
+    if let Some((_, tokenizer)) = GLOBAL_PATHS.get() {
+        return tokenizer.clone();
+    }
     if let Ok(p) = std::env::var("HAKILLE_QWEN_TOKENIZER") {
         return PathBuf::from(p);
     }
@@ -295,6 +334,102 @@ pub fn resolve_tokenizer_path() -> PathBuf {
 // ---------------------------------------------------------------------------
 // Moteur Qwen réel
 // ---------------------------------------------------------------------------
+
+/// Contrôle coopératif de génération. Les tenseurs Candle en cours de calcul
+/// ne peuvent pas être interrompus ; le drapeau est relu entre les forwards.
+#[derive(Clone, Copy, Default)]
+pub struct GenerationControl<'a> {
+    pub deadline: Option<Instant>,
+    pub cancellation: Option<&'a std::sync::atomic::AtomicBool>,
+}
+
+impl GenerationControl<'_> {
+    fn check(&self) -> Result<()> {
+        if self
+            .cancellation
+            .is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return Err(HakilleError::InferenceError(
+                "Génération Qwen annulée".into(),
+            ));
+        }
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(HakilleError::InferenceError(
+                "échéance de génération dépassée".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn validate_sampling(max_tokens: usize, temperature: f64, top_p: f64) -> Result<()> {
+    if max_tokens == 0
+        || !temperature.is_finite()
+        || temperature < 0.0
+        || !top_p.is_finite()
+        || !(0.0 < top_p && top_p <= 1.0)
+    {
+        return Err(HakilleError::InferenceError(
+            "Paramètres invalides : max_tokens > 0, température finie >= 0, top_p fini dans (0,1]"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_context(prompt_tokens: usize, max_tokens: usize, context_length: usize) -> Result<()> {
+    if prompt_tokens == 0
+        || prompt_tokens
+            .checked_add(max_tokens)
+            .is_none_or(|sum| sum > context_length)
+    {
+        return Err(HakilleError::InferenceError(format!(
+            "Contexte dépassé : prompt {prompt_tokens} + max {max_tokens}, capacité GGUF {context_length}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_qwen_tokenizer(
+    tokenizer: &tokenizers::Tokenizer,
+    meta: &crate::gguf_runtime::GgufModel,
+) -> Result<()> {
+    if tokenizer.get_truncation().is_some() || tokenizer.get_padding().is_some() {
+        return Err(HakilleError::InferenceError(
+            "Tokenizer Qwen avec troncature/padding implicite refusé".into(),
+        ));
+    }
+    for (token, expected) in [
+        ("<|im_start|>", 151644),
+        (EOS_IM_END_STR, EOS_IM_END_ID_FALLBACK),
+        (EOS_TEXT_STR, EOS_TEXT_ID_FALLBACK),
+    ] {
+        if tokenizer.token_to_id(token) != Some(expected) {
+            return Err(HakilleError::InferenceError(format!(
+                "Tokenizer incompatible : {token} doit avoir l'identifiant {expected}"
+            )));
+        }
+    }
+    let vocab_size = meta
+        .tensors
+        .get("token_embd.weight")
+        .and_then(|tensor| tensor.dimensions.get(1))
+        .copied()
+        .ok_or_else(|| HakilleError::InferenceError("GGUF sans dimension de vocabulaire".into()))?;
+    if tokenizer
+        .get_vocab(true)
+        .values()
+        .any(|&id| u64::from(id) >= vocab_size)
+    {
+        return Err(HakilleError::InferenceError(
+            "Tokenizer incompatible : identifiant hors du vocabulaire des poids".into(),
+        ));
+    }
+    Ok(())
+}
 
 /// Moteur LLM Qwen 100% réel : forward quantifié candle sur CPU + BPE Qwen.
 ///
@@ -311,6 +446,7 @@ pub struct QwenEngine {
     eos_text_id: u32,
     gguf_path: PathBuf,
     tokenizer_path: PathBuf,
+    context_length: usize,
 }
 
 // `ModelWeights` + `Tokenizer` sont `Send` (tensors + BPE) ; le singleton
@@ -406,6 +542,36 @@ impl QwenEngine {
             "GGUF header validé via gguf_runtime (réutilisation, pas de duplication)"
         );
 
+        let context_length = usize::try_from(meta.context_length().ok_or_else(|| {
+            HakilleError::InferenceError("GGUF Qwen sans longueur de contexte".into())
+        })?)
+        .map_err(|_| HakilleError::InferenceError("Contexte GGUF trop grand".into()))?;
+        if context_length == 0 {
+            return Err(HakilleError::InferenceError("Contexte GGUF nul".into()));
+        }
+
+        let required_positive = |key: &str| -> Result<u64> {
+            meta.metadata_raw
+                .get(key)
+                .and_then(|value| value.as_u64())
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    HakilleError::InferenceError(format!("Métadonnée Qwen absente/nulle : {key}"))
+                })
+        };
+        let heads = required_positive("qwen2.attention.head_count")?;
+        let kv_heads = required_positive("qwen2.attention.head_count_kv")?;
+        let embedding = required_positive("qwen2.embedding_length")?;
+        required_positive("qwen2.block_count")?;
+        if !heads.is_multiple_of(kv_heads)
+            || !embedding.is_multiple_of(heads)
+            || !(embedding / heads).is_multiple_of(2)
+        {
+            return Err(HakilleError::InferenceError(
+                "Dimensions d'attention Qwen incompatibles".into(),
+            ));
+        }
+
         // 3. Tokenizer BPE réel (jamais synthétique).
         let tokenizer =
             tokenizers::Tokenizer::from_file(&tokenizer_path).map_err(|e| {
@@ -416,6 +582,8 @@ impl QwenEngine {
                     TOKENIZER_HF_URL
                 ))
             })?;
+
+        validate_qwen_tokenizer(&tokenizer, &meta)?;
 
         // 4. Modèle quantifié candle (lecture directe Q4_K_M, CPU v1 explicite).
         //    Backends : voir `SUPPORTED_BACKENDS` ("CPU only, CUDA/Metal planned").
@@ -460,16 +628,16 @@ impl QwenEngine {
             ))
         })?;
 
-        // 5. IDs EOS (vocab réel, fallback sur IDs GGUF connus).
+        // 5. IDs EOS vérifiés dans le vocabulaire réel avant le chargement.
         let vocab = tokenizer.get_vocab(true);
         let eos_im_end_id = vocab
             .get(EOS_IM_END_STR)
             .copied()
-            .unwrap_or(EOS_IM_END_ID_FALLBACK);
+            .ok_or_else(|| HakilleError::InferenceError("EOS de tour Qwen absent".into()))?;
         let eos_text_id = vocab
             .get(EOS_TEXT_STR)
             .copied()
-            .unwrap_or(EOS_TEXT_ID_FALLBACK);
+            .ok_or_else(|| HakilleError::InferenceError("EOS texte Qwen absent".into()))?;
         tracing::info!(
             im_end = eos_im_end_id,
             endoftext = eos_text_id,
@@ -485,6 +653,7 @@ impl QwenEngine {
             eos_text_id,
             gguf_path,
             tokenizer_path,
+            context_length,
         })
     }
 
@@ -494,44 +663,37 @@ impl QwenEngine {
     /// réseau est indisponible, retourne une erreur LOUD (pas de silencieux).
     pub async fn ensure_tokenizer_downloaded() -> Result<PathBuf> {
         let path = resolve_tokenizer_path();
-        if path.is_file() {
-            return Ok(path);
-        }
-        tracing::info!(url = TOKENIZER_HF_URL, path = %path.display(), "Téléchargement tokenizer.json Qwen2.5-0.5B-Instruct…");
-        let resp = reqwest::get(TOKENIZER_HF_URL).await.map_err(|e| {
-            HakilleError::InferenceError(format!(
-                "Téléchargement tokenizer impossible (réseau ?) depuis {} : {}. \
-                 Téléchargez manuellement vers '{}'.",
-                TOKENIZER_HF_URL,
-                e,
-                path.display()
-            ))
-        })?;
-        if !resp.status().is_success() {
-            return Err(HakilleError::InferenceError(format!(
-                "HF a répondu {} pour {} — vérifiez l'URL ou téléchargez manuellement vers '{}'.",
-                resp.status(),
-                TOKENIZER_HF_URL,
-                path.display()
-            )));
-        }
-        let bytes = resp.bytes().await.map_err(|e| {
-            HakilleError::InferenceError(format!("Lecture corps tokenizer.json : {}", e))
-        })?;
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                HakilleError::InferenceError(format!(
-                    "Création dossier models '{}' : {}",
-                    parent.display(),
-                    e
-                ))
+        let artifact = crate::catalog::ModelCatalog::official_catalog()
+            .into_iter()
+            .find(|entry| entry.id == "qwen2.5-0.5b-instruct-q4km")
+            .and_then(|entry| {
+                entry
+                    .auxiliary_artifacts
+                    .into_iter()
+                    .find(|artifact| artifact.filename == DEFAULT_TOKENIZER_FILENAME)
+            })
+            .ok_or_else(|| {
+                HakilleError::InferenceError("Tokenizer Qwen absent du catalogue".into())
             })?;
-        }
-        tokio::fs::write(&path, &bytes).await.map_err(|e| {
-            HakilleError::InferenceError(format!("Écriture tokenizer '{}' : {}", path.display(), e))
+        let checksum = artifact.sha256_checksum.as_deref().ok_or_else(|| {
+            HakilleError::InferenceError("Tokenizer Qwen sans empreinte de confiance".into())
         })?;
-        tracing::info!(bytes = bytes.len(), path = %path.display(), "Tokenizer téléchargé");
-        Ok(path)
+        // Même chaîne de vérification que les poids : taille + SHA-256,
+        // fichier partiel et promotion atomique. Un fichier existant est vérifié.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(300),
+            crate::downloader::ModelDownloader::new().download_file(
+                &artifact.primary_url,
+                &path,
+                Some(artifact.size_bytes),
+                Some(checksum),
+                None,
+            ),
+        )
+        .await
+        .map_err(|_| {
+            HakilleError::InferenceError("Délai de téléchargement du tokenizer Qwen dépassé".into())
+        })?
     }
 
     /// Compte les tokens BPE réels d'un texte (remplace `len/4`).
@@ -558,6 +720,11 @@ impl QwenEngine {
 
     pub fn tokenizer_path(&self) -> &Path {
         &self.tokenizer_path
+    }
+
+    /// Capacité de contexte issue du GGUF réellement chargé.
+    pub fn context_length(&self) -> usize {
+        self.context_length
     }
 
     /// Génération réelle (prompt utilisateur brut + prompt système par défaut).
@@ -597,11 +764,11 @@ impl QwenEngine {
             temperature,
             top_p,
             &mut |_| {},
-            None,
+            GenerationControl::default(),
         )
     }
 
-    /// Génération réelle avec **échéance dure** (deadline).
+    /// Génération réelle avec **échéance coopérative** (deadline).
     ///
     /// Le deadline est vérifié avant le préfill et à chaque token poussé :
     /// à l'échéance, la génération **s'arrête** et renvoie une erreur
@@ -623,14 +790,17 @@ impl QwenEngine {
             temperature,
             top_p,
             &mut |_| {},
-            deadline,
+            GenerationControl {
+                deadline,
+                cancellation: None,
+            },
         )
     }
 
     /// Génération réelle avec callback token par token (streaming explicite).
     ///
     /// `on_token` est appelé PENDANT la génération, verrou moteur tenu : il ne
-    /// doit JAMAIS rappeler le moteur (deadlock), ni toucher au registre
+    /// doit JAMAIS rappeler le moteur (deadlock). Il peut modifier le registre
     /// global de streaming. Il doit rester rapide (chaque appel bloque le
     /// décodage). Un événement est émis pour CHAQUE token poussé, donc
     /// `nombre d'événements == GenerateOutput::tokens_generated`.
@@ -652,18 +822,34 @@ impl QwenEngine {
             temperature,
             top_p,
             on_token,
-            None,
+            GenerationControl::default(),
         )
     }
 
-    /// Cœur de génération partagé (validation + forward + décodage final).
-    ///
-    /// Le streaming est un MEILLEUR EFFORT : le texte FINAL reste décodé en
-    /// one-shot (`tokenizer.decode` de toute la séquence), chemin inchangé.
-    ///
-    /// `deadline` : échéance dure. Vérifiée avant le préfill et à chaque
-    /// token ; dépassée ⇒ erreur explicite (le verrou moteur est relâché
-    /// normalement, aucune génération ne continue en arrière-plan).
+    /// Génération avec streaming et arrêt coopératif. Un forward Candle en
+    /// cours n'est pas préemptible ; l'arrêt est vérifié entre les forwards.
+    #[allow(clippy::too_many_arguments)]
+    pub fn generate_with_control(
+        &mut self,
+        user_prompt: &str,
+        system_prompt: Option<&str>,
+        max_tokens: usize,
+        temperature: f64,
+        top_p: f64,
+        control: GenerationControl<'_>,
+        on_token: &mut dyn FnMut(&TokenEvent),
+    ) -> Result<GenerateOutput> {
+        self.generate_core(
+            user_prompt,
+            system_prompt,
+            max_tokens,
+            temperature,
+            top_p,
+            on_token,
+            control,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn generate_core(
         &mut self,
@@ -673,27 +859,54 @@ impl QwenEngine {
         temperature: f64,
         top_p: f64,
         on_token: &mut dyn FnMut(&TokenEvent),
-        deadline: Option<Instant>,
+        control: GenerationControl<'_>,
     ) -> Result<GenerateOutput> {
-        if max_tokens == 0 {
+        self.model.clear_kv_cache();
+        let result = self.generate_inner(
+            user_prompt,
+            system_prompt,
+            max_tokens,
+            temperature,
+            top_p,
+            on_token,
+            control,
+        );
+        // Libérer le cache aussi après timeout, erreur de forward ou EOS.
+        self.model.clear_kv_cache();
+        result
+    }
+
+    /// Cœur de génération partagé (validation + forward + décodage final).
+    ///
+    /// Le streaming est un MEILLEUR EFFORT : le texte FINAL reste décodé en
+    /// one-shot (`tokenizer.decode` de toute la séquence), chemin inchangé.
+    ///
+    /// `deadline` : échéance coopérative entre les forwards. Vérifiée avant le préfill et à chaque
+    /// token ; dépassée ⇒ erreur explicite (le verrou moteur est relâché
+    /// normalement, aucune génération ne continue en arrière-plan).
+    #[allow(clippy::too_many_arguments)]
+    fn generate_inner(
+        &mut self,
+        user_prompt: &str,
+        system_prompt: Option<&str>,
+        max_tokens: usize,
+        temperature: f64,
+        top_p: f64,
+        on_token: &mut dyn FnMut(&TokenEvent),
+        control: GenerationControl<'_>,
+    ) -> Result<GenerateOutput> {
+        validate_sampling(max_tokens, temperature, top_p)?;
+        control.check()?;
+        let system = system_prompt.unwrap_or(DEFAULT_SYSTEM_PROMPT);
+        if user_prompt
+            .len()
+            .checked_add(system.len())
+            .is_none_or(|len| len > 4 * 1024 * 1024)
+        {
             return Err(HakilleError::InferenceError(
-                "max_tokens=0 : rien à générer (borne invalide)".into(),
+                "Prompt brut supérieur à 4 Mio".into(),
             ));
         }
-        if temperature < 0.0 {
-            return Err(HakilleError::InferenceError(format!(
-                "temperature={} invalide (attendu >= 0 ; 0 = greedy explicite)",
-                temperature
-            )));
-        }
-        if temperature > 0.0 && !(0.0 < top_p && top_p <= 1.0) {
-            return Err(HakilleError::InferenceError(format!(
-                "top_p={} invalide (attendu dans (0,1] quand T>0)",
-                top_p
-            )));
-        }
-
-        let system = system_prompt.unwrap_or(DEFAULT_SYSTEM_PROMPT);
         let formatted = Self::format_chatml(system, user_prompt);
 
         // Encodage BPE réel (tokens spéciaux ajoutés).
@@ -707,24 +920,10 @@ impl QwenEngine {
                 "Prompt ChatML encodé en 0 token (tokenizer vide ?)".into(),
             ));
         }
-        // Garde contexte (32768 pour ce checkpoint) : erreur honnête si dépassé.
-        if prompt_ids.len() + max_tokens > 32768 {
-            return Err(HakilleError::InferenceError(format!(
-                "Contexte dépassé : prompt {} + max {} > 32768 (qwen2.context_length). Réduisez le prompt ou max_tokens.",
-                prompt_ids.len(),
-                max_tokens
-            )));
-        }
-
-        // Sampling RÉEL : seul T==0 est greedy (documenté, pas déguisé).
-        // Seed OS par génération (nanos + pid) → multinomial non rejouable.
-        let seed: u64 = {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0x9E3779B97F4A7C15);
-            nanos ^ ((std::process::id() as u64).wrapping_mul(0x9E3779B97F4A7C15))
-        };
+        validate_context(prompt_ids.len(), max_tokens, self.context_length)?;
+        control.check()?;
+        // UUIDv4 utilise l'aléa OS, contrairement à un horodatage prévisible.
+        let seed = uuid::Uuid::new_v4().as_u128() as u64;
         let sampling = if temperature <= 0.0 {
             Sampling::ArgMax
         } else if top_p >= 1.0 {
@@ -738,34 +937,30 @@ impl QwenEngine {
         let mut logits_processor = LogitsProcessor::from_sampling(seed, sampling);
 
         let start = Instant::now();
-        // KV-cache : reset entre conversations (pas de fuite inter-requêtes).
-        self.model.clear_kv_cache();
+        control.check()?;
 
-        // Échéance dure : si elle est déjà dépassée, on ne démarre aucun
-        // forward (pas de CPU gaspillé, erreur immédiate et honnête).
-        if let Some(limit) = deadline
-            && Instant::now() >= limit
-        {
-            return Err(HakilleError::InferenceError(format!(
-                "échéance de génération dépassée avant le préfill ({} token(s) de prompt)",
-                prompt_ids.len()
-            )));
+        // Préfill par blocs : réduit le pic de mémoire de l'attention et
+        // permet de vérifier l'annulation entre deux blocs du prompt.
+        let mut prefill_logits = None;
+        const PREFILL_CHUNK_TOKENS: usize = 256;
+        for (chunk_index, chunk) in prompt_ids.chunks(PREFILL_CHUNK_TOKENS).enumerate() {
+            control.check()?;
+            let input = Tensor::new(chunk, &self.device)
+                .and_then(|input| input.unsqueeze(0))
+                .map_err(|e| HakilleError::InferenceError(format!("Tensor préfill : {e}")))?;
+            prefill_logits = Some(
+                self.model
+                    .forward(&input, chunk_index * PREFILL_CHUNK_TOKENS)
+                    .map_err(|e| {
+                        HakilleError::InferenceError(format!(
+                            "Forward préfill bloc {chunk_index} : {e}"
+                        ))
+                    })?,
+            );
+            control.check()?;
         }
-
-        // Préfill : forward complet du prompt à pos 0 (seuls les logits du
-        // dernier token sont utilisés, cf. `ModelWeights::forward`).
-        let input = Tensor::new(prompt_ids.clone(), &self.device)
-            .map_err(|e| HakilleError::InferenceError(format!("Tensor prompt : {}", e)))?;
-        let input = input
-            .unsqueeze(0)
-            .map_err(|e| HakilleError::InferenceError(format!("Unsqueeze prompt : {}", e)))?;
-        let logits = self.model.forward(&input, 0).map_err(|e| {
-            HakilleError::InferenceError(format!(
-                "Forward préfill (prompt {} tokens) : {}",
-                prompt_ids.len(),
-                e
-            ))
-        })?;
+        let logits = prefill_logits
+            .ok_or_else(|| HakilleError::InferenceError("Prompt vide au préfill".into()))?;
         let logits = logits
             .squeeze(0)
             .map_err(|e| HakilleError::InferenceError(format!("Squeeze logits préfill : {}", e)))?;
@@ -779,18 +974,7 @@ impl QwenEngine {
         let mut stream_state = StreamDecodeState::default();
         // Boucle autoregressive : 1 token → forward(pos) → sample → stop EOS.
         for index in 0..max_tokens {
-            // Échéance dure : on arrête ICI, pas après un timeout externe.
-            // Sans ce garde-fou, le décodage continuerait en arrière-plan et
-            // garderait le verrou moteur (requêtes suivantes bloquées).
-            if let Some(limit) = deadline
-                && Instant::now() >= limit
-            {
-                return Err(HakilleError::InferenceError(format!(
-                    "échéance de génération dépassée après {} token(s) ({} ms écoulés)",
-                    generated.len(),
-                    start.elapsed().as_millis()
-                )));
-            }
+            control.check()?;
             if next_token == self.eos_im_end_id || next_token == self.eos_text_id {
                 break;
             }
@@ -805,14 +989,8 @@ impl QwenEngine {
                 text_delta: stream_state.push_token(&self.tokenizer, &generated),
             };
             on_token(&event);
-            // Forme explicite verrou→callback (pas de let-chain) : jamais de
-            // panic si le registre est empoisonné.
-            #[allow(clippy::collapsible_if)]
-            if let Ok(mut guard) = STREAM_CALLBACK.lock() {
-                if let Some(cb) = guard.as_mut() {
-                    cb(&event);
-                }
-            }
+            dispatch_stream_event(&STREAM_CALLBACK, &event);
+            control.check()?;
             if generated.len() >= max_tokens {
                 break;
             }
@@ -836,6 +1014,7 @@ impl QwenEngine {
                 HakilleError::InferenceError(format!("Sampling step {} : {}", index, e))
             })?;
         }
+        control.check()?;
         // Si le dernier `next_token` est EOS, on ne l'ajoute pas (déjà break).
         let latency_ms = start.elapsed().as_millis() as u64;
 
@@ -878,6 +1057,53 @@ impl QwenEngine {
 // Singleton paresseux (lazy, thread-safe, honnête)
 // ---------------------------------------------------------------------------
 
+static ENGINE_INITIALIZATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static GLOBAL_PATHS: std::sync::OnceLock<(PathBuf, PathBuf)> = std::sync::OnceLock::new();
+
+fn absolute_models_directory(path: &Path) -> Result<PathBuf> {
+    let directory = std::path::absolute(path).map_err(|e| {
+        HakilleError::InferenceError(format!("Chemin Qwen impossible à absolutiser : {e}"))
+    })?;
+    if directory.exists() && !directory.is_dir() {
+        return Err(HakilleError::InferenceError(
+            "Le chemin Qwen n'est pas un répertoire".into(),
+        ));
+    }
+    Ok(directory)
+}
+
+/// Fixe le répertoire du singleton sans modifier l'environnement du processus.
+/// À appeler avant le premier chargement ; un second appel identique est
+/// idempotent, un changement après configuration/chargement est refusé.
+/// Le répertoire peut être absent avant provisionnement ; son chemin absolu
+/// est conservé et son existence sera contrôlée au chargement.
+pub fn configure_global_qwen_paths(models_dir: impl AsRef<Path>) -> Result<()> {
+    let directory = absolute_models_directory(models_dir.as_ref())?;
+    let paths = (
+        directory.join(DEFAULT_GGUF_FILENAME),
+        directory.join(DEFAULT_TOKENIZER_FILENAME),
+    );
+    let _initialization = ENGINE_INITIALIZATION
+        .lock()
+        .map_err(|_| HakilleError::InferenceError("Initialisation Qwen empoisonnée".into()))?;
+    if let Some(existing) = GLOBAL_PATHS.get() {
+        return if existing == &paths {
+            Ok(())
+        } else {
+            Err(HakilleError::InferenceError(
+                "Répertoire du singleton Qwen déjà configuré ; redémarrage requis".into(),
+            ))
+        };
+    }
+    if GLOBAL_ENGINE.get().is_some() {
+        return Err(HakilleError::InferenceError(
+            "Moteur Qwen déjà chargé ; configurer les chemins avant son chargement".into(),
+        ));
+    }
+    GLOBAL_PATHS
+        .set(paths)
+        .map_err(|_| HakilleError::InferenceError("Chemins Qwen déjà configurés".into()))
+}
 static GLOBAL_ENGINE: std::sync::OnceLock<std::sync::Mutex<QwenEngine>> =
     std::sync::OnceLock::new();
 
@@ -888,15 +1114,26 @@ static GLOBAL_ENGINE: std::sync::OnceLock<std::sync::Mutex<QwenEngine>> =
 /// - Appels suivants : verrou sur l'instance existante (KV-cache reset à
 ///   chaque `generate`, donc pas de fuite entre requêtes).
 /// - Si le checkpoint/tokenizer manque : `Err` LOUD (jamais de fallback
-///   synthétique). En cas de course d'initialisation, le perdant est
-///   abandonné (double chargement ponctuel, résultat identique).
+///   synthétique). L'initialisation est sérialisée : aucun double chargement
+///   de plusieurs centaines de Mio lors de deux premiers appels concurrents.
 pub fn global_qwen_engine() -> Result<std::sync::MutexGuard<'static, QwenEngine>> {
     if let Some(m) = GLOBAL_ENGINE.get() {
         return m.lock().map_err(|e| {
             HakilleError::InferenceError(format!("Mutex moteur Qwen empoisonné : {}", e))
         });
     }
-    let engine = QwenEngine::load_default()?;
+    let _initialization = ENGINE_INITIALIZATION
+        .lock()
+        .map_err(|_| HakilleError::InferenceError("Initialisation Qwen empoisonnée".into()))?;
+    if let Some(engine) = GLOBAL_ENGINE.get() {
+        return engine
+            .lock()
+            .map_err(|_| HakilleError::InferenceError("Moteur Qwen empoisonné".into()));
+    }
+    let engine = match GLOBAL_PATHS.get() {
+        Some((gguf, tokenizer)) => QwenEngine::load_with_paths(gguf, tokenizer)?,
+        None => QwenEngine::load_default()?,
+    };
     let _ = GLOBAL_ENGINE.set(std::sync::Mutex::new(engine));
     GLOBAL_ENGINE.get().unwrap().lock().map_err(|e| {
         HakilleError::InferenceError(format!("Mutex moteur Qwen empoisonné après init : {}", e))
@@ -910,6 +1147,157 @@ pub fn global_qwen_engine() -> Result<std::sync::MutexGuard<'static, QwenEngine>
 #[cfg(test)]
 mod llm_engine_tests {
     use super::*;
+
+    #[test]
+    fn explicit_models_directory_routes_all_resolvers() {
+        const CHILD: &str = "HAKILLE_QWEN_PATH_TEST_CHILD";
+        if let Some(directory) = std::env::var_os(CHILD) {
+            let directory = PathBuf::from(directory);
+            configure_global_qwen_paths(&directory).unwrap();
+            configure_global_qwen_paths(&directory).unwrap();
+            assert_eq!(resolve_models_dir(), directory);
+            assert_eq!(resolve_gguf_path(), directory.join(DEFAULT_GGUF_FILENAME));
+            assert_eq!(
+                resolve_tokenizer_path(),
+                directory.join(DEFAULT_TOKENIZER_FILENAME)
+            );
+            assert!(configure_global_qwen_paths(directory.join("different")).is_err());
+            return;
+        }
+        // Processus isolé : ne pas modifier le singleton des autres tests.
+        let directory =
+            std::env::temp_dir().join(format!("hakille-config-{}", uuid::Uuid::new_v4()));
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("llm_engine::llm_engine_tests::explicit_models_directory_routes_all_resolvers")
+            .env(CHILD, &directory)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !directory.exists(),
+            "la configuration ne provisionne pas de fichiers"
+        );
+    }
+
+    #[test]
+    fn models_directory_can_be_fixed_before_provisioning() {
+        let absent =
+            std::env::temp_dir().join(format!("hakille-not-created-{}", uuid::Uuid::new_v4()));
+        assert!(!absent.exists());
+        assert_eq!(absolute_models_directory(&absent).unwrap(), absent);
+        assert!(!absent.exists(), "résolution sans effet de bord");
+        assert!(
+            absolute_models_directory(Path::new("models"))
+                .unwrap()
+                .is_absolute()
+        );
+    }
+
+    #[test]
+    fn sampling_and_context_validation_reject_nonfinite_and_overflow() {
+        for temperature in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.1] {
+            assert!(validate_sampling(1, temperature, 1.0).is_err());
+        }
+        for top_p in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, 1.01] {
+            assert!(validate_sampling(1, 0.0, top_p).is_err());
+            assert!(validate_sampling(1, 0.7, top_p).is_err());
+        }
+        assert!(validate_sampling(0, 0.7, 1.0).is_err());
+        assert!(validate_sampling(1, 0.0, 1.0).is_ok());
+        assert!(validate_context(100, usize::MAX, 32768).is_err());
+        assert!(validate_context(4095, 1, 4096).is_ok());
+        assert!(validate_context(4095, 2, 4096).is_err());
+    }
+
+    #[test]
+    fn cooperative_control_rejects_expired_or_cancelled_work() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let cancel = AtomicBool::new(false);
+        let control = GenerationControl {
+            deadline: None,
+            cancellation: Some(&cancel),
+        };
+        assert!(control.check().is_ok());
+        cancel.store(true, Ordering::Release);
+        assert!(control.check().unwrap_err().to_string().contains("annulée"));
+        let expired = GenerationControl {
+            deadline: Some(Instant::now()),
+            cancellation: None,
+        };
+        assert!(
+            expired
+                .check()
+                .unwrap_err()
+                .to_string()
+                .contains("échéance")
+        );
+    }
+
+    #[test]
+    fn streaming_callback_can_clear_itself_without_deadlock_or_resurrection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        let registry = Arc::new(Mutex::new(StreamRegistry { callback: None }));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inside_registry = Arc::clone(&registry);
+        let inside_calls = Arc::clone(&calls);
+        registry.lock().unwrap().callback = Some(shared_callback(Box::new(move |_| {
+            inside_calls.fetch_add(1, Ordering::Relaxed);
+            let mut guard = inside_registry
+                .try_lock()
+                .expect("registre relâché pendant callback");
+            guard.callback = None;
+        })));
+        let event = TokenEvent {
+            index: 0,
+            token_id: 42,
+            text_delta: "texte".into(),
+        };
+        dispatch_stream_event(&registry, &event);
+        dispatch_stream_event(&registry, &event);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert!(registry.lock().unwrap().callback.is_none());
+    }
+
+    #[test]
+    fn concurrent_stream_emitters_do_not_lose_events() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let inside_calls = Arc::clone(&calls);
+        let registry = Arc::new(Mutex::new(StreamRegistry {
+            callback: Some(shared_callback(Box::new(move |_| {
+                inside_calls.fetch_add(1, Ordering::Relaxed);
+                std::thread::yield_now();
+            }))),
+        }));
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let registry = Arc::clone(&registry);
+                std::thread::spawn(move || {
+                    for index in 0..100 {
+                        dispatch_stream_event(
+                            &registry,
+                            &TokenEvent {
+                                index,
+                                token_id: 42,
+                                text_delta: String::new(),
+                            },
+                        );
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 400);
+    }
 
     #[test]
     fn test_supported_backends_cpu_only_explicite() {
@@ -1011,6 +1399,51 @@ mod llm_engine_tests {
         assert!(engine.is_real());
         assert_eq!(engine.status(), crate::ModelStatus::Real);
 
+        assert_eq!(engine.context_length(), 32768);
+        assert!(
+            engine
+                .generate_with_deadline("ne pas décoder", 1, 0.0, 1.0, Some(Instant::now()))
+                .is_err()
+        );
+        let cancellation = std::sync::atomic::AtomicBool::new(true);
+        assert!(
+            engine
+                .generate_with_control(
+                    "ne pas décoder",
+                    None,
+                    1,
+                    0.0,
+                    1.0,
+                    GenerationControl {
+                        deadline: None,
+                        cancellation: Some(&cancellation)
+                    },
+                    &mut |_| {}
+                )
+                .is_err()
+        );
+
+        cancellation.store(false, std::sync::atomic::Ordering::Release);
+        let mut cancelled_events = 0;
+        let cancelled = engine.generate_with_control(
+            "2+2=",
+            None,
+            1,
+            0.0,
+            1.0,
+            GenerationControl {
+                deadline: None,
+                cancellation: Some(&cancellation),
+            },
+            &mut |_| {
+                cancelled_events += 1;
+                cancellation.store(true, std::sync::atomic::Ordering::Release);
+            },
+        );
+        assert_eq!(cancelled_events, 1, "un vrai token généré avant annulation");
+        assert!(cancelled.unwrap_err().to_string().contains("annulée"));
+        // La génération suivante réutilise le même moteur après cet arrêt.
+
         // Streaming sur la MÊME génération (zéro coût supplémentaire) :
         // compteur d'événements + concaténation des deltas affichables.
         let mut events: Vec<TokenEvent> = Vec::new();
@@ -1059,6 +1492,11 @@ mod llm_engine_tests {
             "indices de streaming 0-based et croissants"
         );
         let streamed: String = events.iter().map(|ev| ev.text_delta.as_str()).collect();
+        assert_eq!(
+            streamed.trim(),
+            out.text,
+            "streaming et décodage final cohérents"
+        );
         if !out.text.is_empty() {
             assert!(
                 !streamed.trim().is_empty(),

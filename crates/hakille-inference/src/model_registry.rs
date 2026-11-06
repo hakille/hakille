@@ -1,4 +1,4 @@
-use hakille_core::{LoadingStrategy, ModelReference, Result, Timestamp};
+use hakille_core::{HakilleError, LoadingStrategy, ModelReference, Result, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -11,6 +11,8 @@ pub struct ModelMetadata {
     pub is_paged_out: bool,
 }
 
+/// Comptabilité des réservations, pas un allocateur de tenseurs : l'appelant
+/// reste responsable du chargement et du déchargement effectifs des moteurs.
 pub struct ModelRegistry {
     max_memory_budget_mb: u64,
     current_memory_used_mb: u64,
@@ -36,13 +38,48 @@ impl ModelRegistry {
         memory_size_mb: u64,
         strategy: LoadingStrategy,
     ) -> Result<()> {
-        while self.current_memory_used_mb + memory_size_mb > self.max_memory_budget_mb {
-            if !self.evict_lru() {
+        if memory_size_mb > self.max_memory_budget_mb {
+            return Err(HakilleError::InferenceError(
+                "Modèle trop volumineux pour le budget mémoire".into(),
+            ));
+        }
+        let previous = self
+            .loaded_models
+            .get(&model_ref)
+            .map_or(0, |m| m.memory_size_mb);
+        let remaining = self.current_memory_used_mb - previous;
+        let available_for_others = self.max_memory_budget_mb - memory_size_mb;
+        let mut reclaim = remaining.saturating_sub(available_for_others);
+        let mut candidates: Vec<_> = self
+            .loaded_models
+            .iter()
+            .filter(|(id, m)| {
+                **id != model_ref && m.loading_strategy != LoadingStrategy::AlwaysResident
+            })
+            .map(|(id, m)| (id.clone(), m.last_used.clone(), m.memory_size_mb))
+            .collect();
+        candidates.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.0.cmp(&b.0.0)));
+        let mut evictions = Vec::new();
+        for (id, _, size) in candidates {
+            if reclaim == 0 {
                 break;
             }
+            reclaim = reclaim.saturating_sub(size);
+            evictions.push(id);
         }
-
-        self.current_memory_used_mb += memory_size_mb;
+        // Un refus ne vide pas les réservations existantes avant de découvrir
+        // qu'un résident permanent empêche finalement le chargement.
+        if reclaim != 0 {
+            return Err(HakilleError::InferenceError(
+                "Budget mémoire insuffisant : modèles résidents non évictables".into(),
+            ));
+        }
+        for id in evictions {
+            if let Some(removed) = self.loaded_models.remove(&id) {
+                self.current_memory_used_mb -= removed.memory_size_mb;
+            }
+        }
+        self.current_memory_used_mb = self.current_memory_used_mb - previous + memory_size_mb;
         self.loaded_models.insert(
             model_ref.clone(),
             ModelMetadata {
@@ -95,5 +132,45 @@ impl ModelRegistry {
 
     pub fn budget_mb(&self) -> u64 {
         self.max_memory_budget_mb
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn id(name: &str) -> ModelReference {
+        ModelReference(name.into())
+    }
+    #[test]
+    fn memory_budget_replacement_and_failed_reservation_are_atomic() {
+        let mut registry = ModelRegistry::new(100);
+        registry
+            .load_model(id("resident"), 70, LoadingStrategy::AlwaysResident)
+            .unwrap();
+        registry
+            .load_model(id("small"), 20, LoadingStrategy::OnDemand)
+            .unwrap();
+        registry
+            .load_model(id("small"), 25, LoadingStrategy::OnDemand)
+            .unwrap();
+        assert_eq!(registry.memory_used_mb(), 95);
+        assert!(
+            registry
+                .load_model(id("too_large"), 40, LoadingStrategy::OnDemand)
+                .is_err()
+        );
+        assert!(registry.is_loaded(&id("small")));
+        assert_eq!(registry.memory_used_mb(), 95);
+        assert!(
+            registry
+                .load_model(id("overflow"), u64::MAX, LoadingStrategy::OnDemand)
+                .is_err()
+        );
+        registry
+            .load_model(id("replacement"), 30, LoadingStrategy::OnDemand)
+            .unwrap();
+        assert!(!registry.is_loaded(&id("small")));
+        assert!(registry.is_loaded(&id("resident")));
+        assert_eq!(registry.memory_used_mb(), 100);
     }
 }

@@ -17,10 +17,10 @@
 //! ## REAL vs v1 (documenté)
 //! - REAL : recherche nearest-neighbor L2, boucle résiduelle, reconstruction
 //!   par somme de centroïdes, poids lus du fichier (float32 little-endian).
-//! - v1 (documenté, pas du faux-neural) : le forward encodeur complet
-//!   (convolutions + transformer Mimi) n'est PAS exécuté dans ce crate
-//!   (std uniquement, pas de runtime Candle) — voir `codec.rs` pour la
-//!   projection d'entrée qui remplace cet étage.
+//! - Ce module constitue le chemin RVQ historique et le diagnostic des poids.
+//!   Le codec neuronal complet de `codec.rs` délègue ses forwards SEANet et
+//!   transformers au `MimiEngine` Candle ; il n'utilise pas la projection
+//!   déterministe ni la somme de centroïdes comme décodeur audio final.
 //! - SECOURS (`synthetic_v1`, tests / absence de checkpoint) : codebooks
 //!   déterministes (xorshift, seed fixe) avec la MÊME géométrie que Mimi.
 //!   Marqué `RvqSource::SyntheticV1`, jamais présenté comme poids Mimi.

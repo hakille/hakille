@@ -1,23 +1,8 @@
-//! MOTEUR RÉEL — frontend log-mel + LFR + MVN pur Rust (zéro dépendance).
-//!
-//! - Pré-accentuation 0.97, fenêtres 25 ms / pas 10 ms @ 16 kHz, fenêtre
-//!   de Hamming (comme `WavFrontend(window="hamming")` de FunASR).
-//! - FFT radix-2 implémentée ici même (pas de crate FFT).
-//! - 80 bancs mel triangulaires (HTK) de 125 Hz à 7600 Hz,
-//!   `ln(max(énergie, 1e-10))` puis centrage moyen par utterance.
-//! - LFR (`lfr_m = 7`, `lfr_n = 6`) : port fidèle de
-//!   `funasr/frontends/wav_frontend.py::apply_lfr` (pré-padding ×3 avec la
-//!   première trame, concat de 7 trames, post-padding avec la dernière).
-//!   Sortie `[T_lfr, 560]` avec `T_lfr = ceil(T / 6)`.
-//! - MVN utterance (moyenne + variance par dim sur l'énoncé) : approximation
-//!   documentée du CMVN global `am.mvn` (fichier absent de `models/`).
-//! - Sortie [`pcm_to_sensevoice_feats`] `[T_lfr, 560]`, au moins 1 trame.
-//!
-//! Deltas v1 vs FunASR exact (documentés, pas simulés) : pas de `dither`,
-//! pas d'upscale ×32768 (inutile sous MVN utterance : gain constant absorbé
-//! par la normalisation), échelle mel HTK (l'option exacte de
-//! `funasr/utils/fbank.py` n'est pas versionnée ici), MVN utterance au lieu
-//! du stats globales `am.mvn`.
+//! Frontend Kaldi/FunASR pur Rust : fenêtre Hamming, retrait DC et
+//! préaccentuation par trame, FFT puissance, 80 mels 20–8000 Hz, LFR(7,6).
+//! Le chemin global conserve l'échelle int16 et applique am.mvn sans CMN
+//! préalable. Dither de graine fixe : reproductible, pas bit-identique au
+//! générateur aléatoire Kaldi. Le chemin MVN par énoncé reste utilitaire.
 
 use std::f32::consts::PI;
 
@@ -32,13 +17,13 @@ pub const N_FFT: usize = 512;
 /// Nombre de bancs mel (standard SenseVoice).
 pub const N_MELS: usize = 80;
 /// Borne basse des bancs mel (Hz).
-pub const MEL_FMIN_HZ: f32 = 125.0;
+pub const MEL_FMIN_HZ: f32 = 20.0;
 /// Borne haute des bancs mel (Hz).
-pub const MEL_FMAX_HZ: f32 = 7600.0;
+pub const MEL_FMAX_HZ: f32 = 8000.0;
 /// Coefficient de pré-accentuation (kaldi/funasr).
 pub const PREEMPHASIS: f32 = 0.97;
 /// Plancher d'énergie avant log (évite `ln(0)`).
-pub const LOG_FLOOR: f32 = 1e-10;
+pub const LOG_FLOOR: f32 = f32::EPSILON;
 /// Fenêtre LFR (7 trames concaténées : 80 × 7 = 560).
 pub const LFR_M: usize = 7;
 /// Pas LFR (1 trame empilée toutes les 6 trames mel).
@@ -75,44 +60,25 @@ fn hz_to_mel(hz: f32) -> f32 {
     2595.0 * (1.0 + hz / 700.0).log10()
 }
 
-fn mel_to_hz(mel: f32) -> f32 {
-    700.0 * (10.0_f32.powf(mel / 2595.0) - 1.0)
-}
-
 /// Matrice des filtres triangulaires `[N_MELS, N_FFT/2 + 1]` (échelle HTK).
 pub fn mel_filterbank() -> Vec<Vec<f32>> {
-    let n_bins = N_FFT / 2 + 1;
     let mel_lo = hz_to_mel(MEL_FMIN_HZ);
     let mel_hi = hz_to_mel(MEL_FMAX_HZ);
-    let mut points = Vec::with_capacity(N_MELS + 2);
-    for i in 0..N_MELS + 2 {
-        let m = mel_lo + (mel_hi - mel_lo) * i as f32 / (N_MELS + 1) as f32;
-        points.push(mel_to_hz(m));
-    }
-    let mut fb = vec![vec![0.0f32; n_bins]; N_MELS];
-    for m in 0..N_MELS {
-        let f_lo = points[m];
-        let f_c = points[m + 1];
-        let f_hi = points[m + 2];
-        for (k, slot) in fb[m].iter_mut().enumerate() {
-            let freq = k as f32 * SAMPLE_RATE_HZ as f32 / N_FFT as f32;
-            let w = if freq < f_lo || freq > f_hi {
-                0.0
-            } else if freq <= f_c {
-                if f_c > f_lo {
-                    (freq - f_lo) / (f_c - f_lo)
-                } else {
-                    0.0
-                }
-            } else if f_hi > f_c {
-                (f_hi - freq) / (f_hi - f_c)
-            } else {
-                0.0
-            };
-            *slot = w.max(0.0);
+    let step = (mel_hi - mel_lo) / (N_MELS + 1) as f32;
+    let mut bank = vec![vec![0.0; N_FFT / 2 + 1]; N_MELS];
+    for (index, row) in bank.iter_mut().enumerate() {
+        let left = mel_lo + index as f32 * step;
+        let center = left + step;
+        let right = center + step;
+        // Kaldi interpole en MEL, pas sur des indices FFT arrondis.
+        for (bin, value) in row.iter_mut().enumerate().take(N_FFT / 2) {
+            let mel = hz_to_mel(bin as f32 * SAMPLE_RATE_HZ as f32 / N_FFT as f32);
+            *value = ((mel - left) / step)
+                .min((right - mel) / step)
+                .clamp(0.0, 1.0);
         }
     }
-    fb
+    bank
 }
 
 /// FFT directe radix-2 en place (`re`/`im` de longueur puissance de 2).
@@ -197,12 +163,8 @@ pub fn center_mel(log_mel: &mut [Vec<f32>]) {
                 }
             }
         }
-    } else if !log_mel[0].is_empty() {
-        let n = log_mel[0].len() as f32;
-        let mean = log_mel[0].iter().sum::<f32>() / n;
-        for v in log_mel[0].iter_mut() {
-            *v -= mean;
-        }
+    } else {
+        log_mel[0].fill(0.0);
     }
 }
 
@@ -210,51 +172,73 @@ pub fn center_mel(log_mel: &mut [Vec<f32>]) {
 /// valider l'axe fréquentiel (le centrage utterance annule les moyennes
 /// par construction et ne peut pas servir à localiser un pic).
 pub fn pcm_to_log_mel_raw(pcm: &[f32]) -> Vec<Vec<f32>> {
-    let n_frames = frame_count(pcm.len());
-    let window = hamming_window();
-    let fb = mel_filterbank();
-    let n_bins = N_FFT / 2 + 1;
+    let clean: Vec<f32> = pcm
+        .iter()
+        .map(|&x| {
+            if x.is_finite() {
+                x.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    kaldi_fbank(&clean, false)
+}
 
-    let mut clean = Vec::with_capacity(pcm.len().max(1));
-    for &s in pcm.iter() {
-        clean.push(if s.is_finite() {
-            s.clamp(-1.0, 1.0)
-        } else {
-            0.0
-        });
-    }
-
-    let mut log_mel = vec![vec![0.0f32; N_MELS]; n_frames];
-    let mut re = vec![0.0f32; N_FFT];
-    let mut im = vec![0.0f32; N_FFT];
-    let mut prev = 0.0f32;
-
-    // `f` indexe à la fois `clean` (fenêtre glissante) et `log_mel` : le
-    // parcours par index est le plus lisible ici.
-    #[allow(clippy::needless_range_loop)]
-    for f in 0..n_frames {
-        re.fill(0.0);
-        im.fill(0.0);
-        for n in 0..WIN_SAMPLES {
-            let idx = f * HOP_SAMPLES + n;
-            let x = if idx < clean.len() { clean[idx] } else { 0.0 };
-            let y = x - PREEMPHASIS * prev;
-            prev = x;
-            re[n] = y * window[n];
+/// Fbank compatible Kaldi (dither fourni par l'appelant) : retrait DC et
+/// préaccentuation PAR TRAME, puissance FFT non divisée par 512, mel 20–8000Hz.
+/// Hamming pour SenseVoice ; Povey pour CAM++ (3D-Speaker FBank / torchaudio).
+/// Les signaux courts sont complétés par zéros pour une seule trame.
+pub(crate) fn kaldi_fbank(pcm: &[f32], povey: bool) -> Vec<Vec<f32>> {
+    let count = frame_count(pcm.len());
+    let window: Vec<f32> = if povey {
+        (0..WIN_SAMPLES)
+            .map(|i| {
+                (0.5 - 0.5 * (2.0 * PI * i as f32 / (WIN_SAMPLES - 1) as f32).cos()).powf(0.85)
+            })
+            .collect()
+    } else {
+        hamming_window()
+    };
+    let bank = mel_filterbank();
+    let mut features = Vec::with_capacity(count);
+    for frame in 0..count {
+        let mut samples = [0.0; WIN_SAMPLES];
+        for (i, sample) in samples.iter_mut().enumerate() {
+            *sample = pcm.get(frame * HOP_SAMPLES + i).copied().unwrap_or(0.0);
+        }
+        let mean = samples.iter().sum::<f32>() / WIN_SAMPLES as f32;
+        for sample in &mut samples {
+            *sample -= mean;
+        }
+        let mut re = vec![0.0; N_FFT];
+        let mut im = vec![0.0; N_FFT];
+        for i in 0..WIN_SAMPLES {
+            let previous = samples[i.saturating_sub(1)];
+            re[i] = (samples[i] - PREEMPHASIS * previous) * window[i];
         }
         fft_in_place(&mut re, &mut im);
-        // Spectre de puissance (normalisé par N_FFT) -> bancs mel -> log.
-        for m in 0..N_MELS {
-            let mut e = 0.0f32;
-            for k in 0..n_bins {
-                let p = (re[k] * re[k] + im[k] * im[k]) / N_FFT as f32;
-                e += p * fb[m][k];
-            }
-            log_mel[f][m] = e.max(LOG_FLOOR).ln();
-        }
+        let power: Vec<f32> = re
+            .iter()
+            .zip(&im)
+            .take(N_FFT / 2 + 1)
+            .map(|(r, i)| r * r + i * i)
+            .collect();
+        features.push(
+            bank.iter()
+                .map(|filter| {
+                    filter
+                        .iter()
+                        .zip(&power)
+                        .map(|(w, p)| w * p)
+                        .sum::<f32>()
+                        .max(LOG_FLOOR)
+                        .ln()
+                })
+                .collect(),
+        );
     }
-
-    log_mel
+    features
 }
 
 /// Empilement LFR `[T, D]` -> `[ceil(T/6), 7·D]`.
@@ -429,20 +413,10 @@ pub fn pcm_to_sensevoice_feats_global(
         );
     }
     add_dither(&mut wave, 1.0);
-    // fbank sur le signal upscalé : on réutilise le chemin log-mel en
-    // divisant l'upscale (le shift log constant est absorbé par le CMVN
-    // global) — le dither, lui, reste (plancher réaliste).
-    let pcm_scaled: Vec<f32> = wave.iter().map(|v| v / UPSCALE_I16).collect();
-    let mel = pcm_to_log_mel(&pcm_scaled);
+    // Ne pas centrer par énoncé avant le CMVN global : cela détruirait les
+    // statistiques apprises. Conserver ici l'échelle int16 de FunASR.
+    let mel = kaldi_fbank(&wave, false);
     let mut stacked = apply_lfr(&mel);
-    for row in stacked.iter_mut() {
-        row.resize(STACKED_DIM, 0.0);
-        // Compense le shift log de l'upscale : ln(E·G²) = ln(E) + ln(G²).
-        let shift = 2.0 * UPSCALE_I16.ln();
-        for v in row.iter_mut() {
-            *v += shift;
-        }
-    }
     apply_global_cmvn(&mut stacked, neg_mean, inv_stddev);
     stacked
 }
@@ -455,6 +429,41 @@ mod tests {
         (0..len)
             .map(|t| (t as f32 / SAMPLE_RATE_HZ as f32 * 440.0f32 * 2.0 * PI).sin() * 0.5)
             .collect()
+    }
+
+    /// Référence indépendante kaldi-native-fbank 1.22.5, dither=0,
+    /// snip_edges=true, low_freq=20, high_freq=0, 80 bandes, PCM non normalisé.
+    #[test]
+    fn kaldi_reference_hamming_and_povey() {
+        let pcm: Vec<_> = (0..880)
+            .map(|i| ((i * 37 % 997) as f32 - 498.0) * 0.01)
+            .collect();
+        let expected = [
+            [
+                [-3.525949, -3.0397522, 7.545207, 7.807347, 9.138579],
+                [-1.1453053, -2.0749896, 7.503691, 7.8410964, 9.127551],
+                [-2.0560398, -3.5360029, 7.5225577, 7.8100433, 9.138026],
+            ],
+            [
+                [-2.6022925, -3.70518, 7.589958, 7.8290505, 9.151306],
+                [-1.9485403, -2.4251678, 7.5725827, 7.857535, 9.140503],
+                [-3.3321116, -3.955228, 7.589794, 7.829432, 9.151202],
+            ],
+        ];
+        for (mode, reference) in expected.iter().enumerate() {
+            let actual = kaldi_fbank(&pcm, mode == 1);
+            assert_eq!(actual.len(), 4);
+            for (i, frame) in [0, 1, 3].into_iter().enumerate() {
+                for (j, band) in [0, 1, 17, 40, 79].into_iter().enumerate() {
+                    assert!(
+                        (actual[frame][band] - reference[i][j]).abs() < 0.002,
+                        "mode={mode} frame={frame} band={band}: {} vs {}",
+                        actual[frame][band],
+                        reference[i][j]
+                    );
+                }
+            }
+        }
     }
 
     #[test]

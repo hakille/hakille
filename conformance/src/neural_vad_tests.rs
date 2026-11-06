@@ -1,7 +1,9 @@
 //! Conformité VAD neurale réelle (Silero v5 via `ort`).
 //!
 //! - Skip gracieux si `models/silero_vad.onnx` absent (`println!` + `return`, PAS de panic).
-//! - Ordre relatif seul (pas de seuil absolu fragile).
+//! - Silence et tons stationnaires restent sous le seuil de parole (0.5).
+//! - Les compteurs attestent les forwards réels, sans imposer un classement
+//!   arbitraire entre deux entrées qui ne sont pas de la parole.
 //! - Les autres moteurs réels (MiniLM/SenseVoice/CAM++/Qwen/RVQ/formant/CV)
 //!   sont golden-testés dans leurs crates respectives (non testés ici).
 
@@ -52,7 +54,7 @@ fn neural_vad_real_session_opens() {
 }
 
 #[test]
-fn neural_vad_silence_below_tone() {
+fn neural_vad_silence_and_tone_are_not_speech() {
     let path = silero_path();
     if !Path::new(&path).exists() {
         println!("ignoré : modèle absent");
@@ -62,7 +64,10 @@ fn neural_vad_silence_below_tone() {
     let silence = vec![0.0f32; 512];
     let tone = tone_440hz_512(0.5);
     let p_silence = sess.score(&silence).expect("score silence");
+    assert_eq!(sess.forward_calls(), 1);
+    sess.reset_state(); // Deux signaux indépendants, aucun contexte partagé.
     let p_tone = sess.score(&tone).expect("score tone");
+    assert_eq!(sess.forward_calls(), 2);
     assert!(
         (0.0..=1.0).contains(&p_silence),
         "proba silence dans [0,1], vu {p_silence}"
@@ -71,10 +76,8 @@ fn neural_vad_silence_below_tone() {
         (0.0..=1.0).contains(&p_tone),
         "proba tone dans [0,1], vu {p_tone}"
     );
-    assert!(
-        p_silence < p_tone,
-        "ordre relatif : silence ({p_silence}) < 440Hz ({p_tone})"
-    );
+    assert!(p_silence < 0.5, "silence non-parole: {p_silence}");
+    assert!(p_tone < 0.5, "ton stationnaire non-parole: {p_tone}");
 }
 
 #[test]
@@ -122,23 +125,36 @@ fn neural_vad_last_used_real_flag() {
         "proba dans [0,1]"
     );
 
-    // Repli honnête sans modèle : Ok + flag faux.
-    // NOTE : avec le modèle présent, le VAD est 100 % réel (pas d'heuristique) ;
-    // le vrai Silero peut scorer ~0.5+ sur 512 zéros d'un coup (état récurrent
-    // vierge) — on compare donc en relatif (silence < ton), jamais en absolu.
-    let mut vad_fallback = VoiceActivityDetector::default_silero_profile();
-    let silent = AudioChunk::new(vec![0.0f32; 512], 16_000, 1);
-    let res_fb = vad_fallback
-        .process_real(&silent)
-        .expect("le chemin réel doit réussir (modèle présent)");
-    assert!(
-        vad_fallback.last_used_real(),
-        "chemin 100 % réel, flag vrai"
+    assert_eq!(
+        vad.real_forward_calls(),
+        Some(3),
+        "1600 samples: trois fenêtres complètes"
     );
+    assert!(!res.is_speech);
+    assert!(res.speech_probability < 0.5);
+
+    // Un détecteur indépendant sur silence utilise lui aussi le vrai graphe.
+    // Le silence et un ton pur sont tous deux non-parole; leur classement
+    // relatif ne constitue pas un contrat de ce classifieur.
+    let mut silent_vad = VoiceActivityDetector::with_onnx_model(&path);
+    let silent = AudioChunk::new(vec![0.0f32; 512], 16_000, 1);
+    let result = silent_vad
+        .process_real(&silent)
+        .expect("forward silence réel");
+    assert!(silent_vad.last_used_real());
+    assert_eq!(silent_vad.real_forward_calls(), Some(1));
+    assert!((0.0..0.5).contains(&result.speech_probability));
+    assert!(!result.is_speech);
+
+    let empty = AudioChunk::new(vec![], 16_000, 1);
+    silent_vad.process_real(&empty).unwrap();
     assert!(
-        res_fb.speech_probability < res.speech_probability,
-        "relatif : silence ({}) < ton 440Hz ({})",
-        res_fb.speech_probability,
-        res.speech_probability
+        !silent_vad.last_used_real(),
+        "aucun forward pour une entrée vide"
+    );
+    assert_eq!(
+        silent_vad.real_forward_calls(),
+        Some(1),
+        "compteur inchangé"
     );
 }

@@ -17,6 +17,8 @@ members = [
     "crates/hakille-ui",
     "crates/hakille-ui-shell",
     "crates/hakille-ipc",
+    "crates/hakille-mobile",
+    "crates/hakille-mobile-gateway",
     "crates/hakille-ui-protocol",
     "crates/hakille-design",
     "crates/hakille-ui-model",
@@ -71,7 +73,7 @@ proptest = "1"
 sha2 = "0.10"
 bincode = "1.3"
 semver = { version = "1.0", features = ["serde"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "stream", "json"] }
 futures-util = "0.3"
 toml = "0.9"
 
@@ -90,3 +92,16 @@ opt-level = 3
 [profile.dev.package.tokenizers]
 opt-level = 3
 
+# Le catalogue contient plusieurs Go : garder les SHA-256 obligatoires sans
+# ralentir chaque ouverture de modèles avec une boucle cryptographique debug.
+[profile.dev.package.sha2]
+opt-level = 3
+
+
+# Whisper CPU utilise les noyaux FP32 GEMM, même lorsque Candle est optimisé.
+[profile.dev.package.gemm]
+opt-level = 3
+[profile.dev.package.gemm-common]
+opt-level = 3
+[profile.dev.package.gemm-f32]
+opt-level = 3

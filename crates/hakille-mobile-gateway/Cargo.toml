@@ -1,0 +1,29 @@
+[package]
+name = "hakille-mobile-gateway"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Passerelle HTTP locale authentifiée vers la session IPC Hakille"
+
+[dependencies]
+hakille-ipc = { path = "../hakille-ipc" }
+hakille-ui-protocol = { path = "../hakille-ui-protocol" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+bytes = { workspace = true }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+subtle = "2.6"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+hakille-mobile = { path = "../hakille-mobile" }
+reqwest = { workspace = true }

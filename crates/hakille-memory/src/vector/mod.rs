@@ -65,6 +65,7 @@ impl BruteForceVectorStore {
         query: &[f32],
         k: usize,
     ) -> hakille_core::Result<Vec<(TripletId, f32)>> {
+        check_embedding_values(query, "BruteForceVectorStore::search")?;
         check_dimension(
             self.expected_dim,
             query.len(),
@@ -161,6 +162,7 @@ pub trait VectorIndex: Send + Sync {
 
 impl VectorIndex for BruteForceVectorStore {
     fn insert(&mut self, id: TripletId, embedding: Vec<f32>) -> hakille_core::Result<()> {
+        check_embedding_values(&embedding, "VectorIndex::insert")?;
         check_dimension(
             self.expected_dim,
             embedding.len(),
@@ -344,6 +346,7 @@ impl HnswVectorStore {
 
 impl VectorIndex for HnswVectorStore {
     fn insert(&mut self, id: TripletId, embedding: Vec<f32>) -> hakille_core::Result<()> {
+        check_embedding_values(&embedding, "VectorIndex::insert")?;
         check_dimension(
             self.expected_dim,
             embedding.len(),
@@ -396,6 +399,7 @@ impl VectorIndex for HnswVectorStore {
     }
 
     fn search(&self, query: &[f32], k: usize) -> hakille_core::Result<Vec<(TripletId, f32)>> {
+        check_embedding_values(query, "HnswVectorStore::search")?;
         check_dimension(self.expected_dim, query.len(), "HnswVectorStore::search")?;
         if k == 0 {
             return Ok(Vec::new());
@@ -535,17 +539,31 @@ impl VectorIndex for HnswVectorStore {
 /// plutôt que NaN pour ne jamais propager de NaN au tri — fonction totale,
 /// jamais de panique. Les appelants valident les dimensions en amont).
 pub fn cosine_sim(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
+    if a.len() != b.len() || a.is_empty() || a.iter().chain(b).any(|v| !v.is_finite()) {
         return 0.0;
     }
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let dot: f64 = a
+        .iter()
+        .zip(b)
+        .map(|(&x, &y)| f64::from(x) * f64::from(y))
+        .sum();
+    let norm_a = a.iter().map(|&v| f64::from(v).powi(2)).sum::<f64>().sqrt();
+    let norm_b = b.iter().map(|&v| f64::from(v).powi(2)).sum::<f64>().sqrt();
     if norm_a == 0.0 || norm_b == 0.0 {
         0.0
     } else {
-        (dot / (norm_a * norm_b)).clamp(-1.0, 1.0)
+        (dot / (norm_a * norm_b)).clamp(-1.0, 1.0) as f32
     }
+}
+
+/// Refuse les sorties non finies avant qu'elles atteignent un index ou son WAL.
+pub fn check_embedding_values(vector: &[f32], what: &str) -> hakille_core::Result<()> {
+    if vector.iter().any(|value| !value.is_finite()) {
+        return Err(hakille_core::HakilleError::Internal(format!(
+            "{what}: embedding non fini interdit"
+        )));
+    }
+    Ok(())
 }
 
 /// Valide la dimension d'un embedding contre la dimension attendue du store.
@@ -790,5 +808,33 @@ mod tests {
         assert!(store.search(&query, 0).unwrap().is_empty());
         store.remove(&id_c).unwrap();
         assert_eq!(store.dimension(), Some(EMBEDDING_DIM));
+    }
+    #[test]
+    fn nonfinite_embeddings_do_not_mutate_indexes_or_dimension_lock() {
+        let mut brute = BruteForceVectorStore::new();
+        assert!(brute.insert(triplet_id(), vec![f32::NAN, 0.0]).is_err());
+        assert!(brute.is_empty());
+        let id = triplet_id();
+        brute.insert(id.clone(), vec![1.0, 0.0, 0.0]).unwrap();
+        assert!(brute.insert(id.clone(), vec![f32::INFINITY; 3]).is_err());
+        assert_eq!(brute.search(&[1.0, 0.0, 0.0], 1).unwrap()[0].0, id);
+        assert!(brute.search(&[f32::NAN; 3], 1).is_err());
+        let mut hnsw = HnswVectorStore::new();
+        assert!(
+            hnsw.insert(triplet_id(), vec![f32::NEG_INFINITY; EMBEDDING_DIM])
+                .is_err()
+        );
+        assert!(hnsw.is_empty());
+        assert!(hnsw.search(&[f32::NAN; EMBEDDING_DIM], 1).is_err());
+    }
+
+    #[test]
+    fn cosine_scores_remain_finite_for_extreme_values() {
+        assert_eq!(
+            cosine_sim(&[f32::MAX, f32::MAX], &[f32::MAX, f32::MAX]),
+            1.0
+        );
+        assert_eq!(cosine_sim(&[f32::MIN_POSITIVE], &[f32::MIN_POSITIVE]), 1.0);
+        assert_eq!(cosine_sim(&[f32::NAN], &[1.0]), 0.0);
     }
 }

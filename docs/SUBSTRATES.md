@@ -180,20 +180,31 @@ Redox OS représente la cible d'accueil souveraine d'Hakille : un système d'exp
 
 ### 2.5. Mobile (`hakille-substrate-mobile`) — Tier Invité
 
-Les plateformes Android et iOS interdisent l'exécution de démons en arrière-plan permanent et limitent l'accès aux périphériques. L'implémentation mobile contourne ces contraintes via le concept d'**Ombre Cognitive** (*Shadow Node*).
+Android et iOS limitent le travail en arrière-plan et l'accès aux périphériques.
+Le client natif utilise le noyau sur un hub personnel ; voir
+[ADR-011](../adr/011-mobile-native-client-and-hub.md) et le
+[guide mobile](../mobile/README.md). Les fonctions suivantes sont distinctes :
 
-- **Synchronisation d'Ombre (*Shadow Sync*) avec Horloge de Lamport** :
-  Une instance légère d'Hakille tourne en continu sur le hub domestique ou le cluster TiKV. Lorsque le terminal mobile se connecte, le moteur `MobileShadowSync` réconcilie l'état local avec l'ombre distante selon la règle Last-Write-Wins (LWW) et les horloges de Lamport.
-  - Gestion des conflits hors-ligne : les modifications locales en file d'attente (`queue_local_delta`) sont propagées au réveil.
-  - Tombstones de suppression : les suppressions locales créent un delta marqué `is_deleted = true`, empêchant les résurrections de données obsolètes.
-- **Machine à États d'Économie d'Énergie (*Battery Conservation*)** :
-  Le substrate mobile bascule dynamiquement entre quatre états :
-  1. `ActiveStreaming` : App au premier plan, streaming audio et websocket ouverts.
-  2. `SuspendedDozing` : App mise en veille par l'OS (Android Doze / iOS Background Suspension) ; arrêt de l'écoute active.
-  3. `ReconnectingBackoff` : Perte de réseau ; temporisation exponentielle ($2^n \times 100\text{ ms}$) pour préserver la batterie.
-  4. `Disconnected` : Mode avion ou hors-ligne complet.
-- **Stockage Scopé (Scoped Storage)** :
-  Respecte les contraintes Android SAF (Storage Access Framework) et iOS App Sandbox : les fichiers ne peuvent être écrits que dans le conteneur sandbox privé attribué par l'OS.
+- **File de synchronisation locale** : `MobileShadowSync` conserve les opérations
+  avec UUID jusqu'à un ACK d'un lot déclaré envoyé dans la session courante.
+  Un réveil ou une reconnexion n'efface pas la file. Les snapshots restaurent
+  l'identité et les opérations, mais jamais une connexion supposée active.
+  Le choix LWW est déterministe et les valeurs en conflit sont conservées dans
+  une liste bornée. L'hôte doit fournir transport authentifié, déduplication et
+  écriture durable ; aucun endpoint TiKV, APNs, FCM ou WebSocket n'est implicite.
+- **Énergie et cycle de vie** : batterie et température restent inconnues sans
+  observation native valide. Les politiques produisent des recommandations
+  d'arrêt/suspension, à appliquer par l'hôte. Elles ne prétendent pas contrôler
+  Android Doze ou iOS Background Suspension, ni maintenir une écoute permanente.
+- **Stockage réel** : `AppContainerStorage` ouvre le conteneur existant fourni
+  par l'hôte et confine lecture, écriture atomique, liste et suppression sous
+  des handles de répertoire. Le contrôle Biscuit exige une racine de confiance
+  épinglée. Les URI SAF sont des grants exacts et révocables ; leur lecture exige
+  encore un fournisseur natif. Le trousseau sécurisé n'est jamais un dossier.
+- **Matériel** : audio, caméra, écran, entrées et attestation passent par des
+  interfaces de pilotes explicites. Aucun NPU, Secure Enclave ou montant de RAM
+  n'est annoncé sans fournisseur. Le client mobile n'embarque pas de modèle
+  neuronal ; la passerelle rejoint les moteurs du hub.
 
 ---
 
@@ -220,9 +231,32 @@ L'implémentation Web permet à Hakille de tourner dans n'importe quel navigateu
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Palier (Tier)** | Native | Native | Native | **Sovereign** | Guest | Guest |
 | **Niveau de Contrôle** | Élevé (Win32) | Quasi total | Quasi total | Élevé (schemes) | Restreint (OS) | Minimal (Browser) |
-| **Mécanisme de Sandbox (v1)** | AppContainer décrit, enforcement non branché | Seccomp simulé + namespaces décrits | Profils Seatbelt générés, application non validée | Schemes en-process, partiel | Scoped storage décrit | Wasm Sandbox navigateur |
+| **Mécanisme de Sandbox (v1)** | AppContainer décrit, enforcement non branché | Seccomp simulé + namespaces décrits | Profils Seatbelt générés, application non validée | Schemes en-process, partiel | Conteneur confiné réel, SAF à raccorder | Wasm Sandbox navigateur |
 | **Injection d'Entrées** | `SendInput` | `/dev/uinput` | CGEventCreateMouseEvent | Schemes `orbital:` | Non supporté | Événements DOM |
 | **Capture d'Écran** | GDI BitBlt | Wayland Portal / X11 | CoreGraphics Retina 2x | Surface `orbital:` | Délégué au Hub | Canvas ImageData |
-| **Attestation (v1)** | Signature dev locale | Signature dev locale | Signature dev locale | Signature dev locale | Signature dev locale | Non disponible |
-| **Gestion Alimentation** | `GetSystemPowerStatus` | `/sys/class/power_supply` | IOKit IOPMPowerSource | `sys:power` | BatteryManager | Battery API (opt) |
-| **Continuité de Session** | Locale persistante | Locale persistante | Locale persistante | Locale persistante | **Shadow Sync TiKV** | Déportée Hub |
+| **Attestation (v1)** | Signature dev locale | Signature dev locale | Signature dev locale | Signature dev locale | Fournisseur requis, erreur sinon | Non disponible |
+| **Gestion Alimentation** | `GetSystemPowerStatus` | `/sys/class/power_supply` | IOKit IOPMPowerSource | `sys:power` | Mesure native requise, inconnue sinon | Battery API (opt) |
+| **Continuité de Session** | Locale persistante | Locale persistante | Locale persistante | Locale persistante | Client du hub ; file locale avec ACK | Déportée Hub |
+
+## Durcissement commun — novembre 2026
+
+Les six implémentations délèguent le transport HTTP à `hakille-substrate::fetch_via_egress`
+après vérification de la capability réseau. La liste des hôtes autorisés est désormais
+vérifiée à chaque redirection, avec une limite de redirections et refus du passage
+HTTPS vers HTTP. Les adresses IPv6 sont normalisées ; les identifiants intégrés à
+l'URL sont refusés. Les erreurs réseau ne reproduisent ni l'URL complète ni les
+entrées brutes de configuration pouvant contenir des secrets.
+
+Le plafond de réponse de 5 Mio est contrôlé pendant la lecture, y compris sans
+`Content-Length` et avec un transfert chunked. Une réponse trop grande est refusée
+sans attendre sa fin. Ces garanties sont testées avec de vrais serveurs HTTP
+locaux dans `crates/hakille-substrate/tests/egress_limits.rs`. Il s'agit d'une
+politique d'hôtes, pas d'un filtrage des adresses IP après résolution DNS.
+
+`spawn_sandboxed` refuse explicitement le lancement sur chacun des six substrats :
+aucun moteur n'est raccordé à cette méthode. Les capabilities restent vérifiées
+avant ce refus. Le runtime Wasmtime distinct de `hakille-agents` exécute les deux
+agents de référence ; cela ne rend pas les cinq manifests métier exécutables.
+
+Voir [l'analyse multiplateforme](ANALYSE_MULTIPLATEFORME_2026-11-03.md) pour la
+matrice des fonctions, les tests réalisés et les limites matérielles restantes.

@@ -11,6 +11,8 @@
 *.pdb
 *.exe
 .DS_Store
+__pycache__/
+*.pyc
 Thumbs.db
 models/*
 !models/.gitkeep

@@ -1,4 +1,4 @@
-﻿//! Mode `--serve` : serveur IPC local (pipe nommé Windows / socket Unix)
+//! Mode `--serve` : serveur IPC local (pipe nommé Windows / socket Unix)
 //! exposant le contrat `hakille-ipc` au HUD desktop, sans REPL.
 //!
 //! Un seul client à la fois, requêtes servies séquentiellement. Aucun succès
@@ -10,6 +10,7 @@
 //! les données proviennent des API réelles (journal, graphe, orchestrateurs,
 //! compteurs), jamais d'une liste inventée.
 
+use crate::persistence::{copy_outbox, replace_outbox, update_outbox};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -26,8 +27,7 @@ use hakille_ui_protocol::{
 };
 
 use crate::{
-    audit_action_with_id, audit_memory_event, persist_memory_to, run_turn_core, save_outbox,
-    turn_error_hint,
+    audit_action_with_id, audit_memory_event, persist_memory_to, run_turn_core, turn_error_hint,
 };
 
 /// Plafond de lignes renvoyées par consultation (marge sous `MAX_FRAME_BYTES`
@@ -192,6 +192,8 @@ fn decide_card(
     // qui a réellement eu lieu, pas une intention. L'action mise en file
     // PORTE le plan approuvé (étapes + risque) : un exécuteur futur saura
     // quoi faire.
+    let before = copy_outbox(outbox);
+    let mut added_to_outbox = false;
     let (effect_kind, effect_detail) = if approved {
         let dedup_key = format!(
             "card#{}|{}|{}",
@@ -214,10 +216,17 @@ fn decide_card(
             steps
         );
         let entry = OutboxEntry::new(&card.verb, &queued_object, &dedup_key);
-        let added = outbox.enqueue(entry);
+        let added = match update_outbox(data_dir, outbox, |q| q.enqueue(entry)) {
+            Ok(added) => added,
+            Err(error) => {
+                return KernelToUi::Toast {
+                    text: format!("décision non confirmée — persistance indisponible : {error}"),
+                };
+            }
+        };
+        added_to_outbox = added;
         if added {
-            // Persistance crash-safe : l'effet doit survivre au redémarrage.
-            save_outbox(data_dir, outbox);
+            // Le remplacement du snapshot a réussi avant de déclarer cet effet.
             (
                 "outbox_enqueued",
                 Some(format!("action mise en file (clé {dedup_key})")),
@@ -262,17 +271,14 @@ fn decide_card(
             }
         }
         Err(e) => {
-            // L'audit a échoué : on ANNULE l'effet mis en file (la décision
-            // n'est pas validée, donc rien ne doit être durable).
-            if approved {
-                let dedup_key = format!(
-                    "card#{}|{}|{}",
-                    card.id,
-                    card.verb.to_lowercase(),
-                    card.object.to_lowercase()
-                );
-                outbox.remove(&dedup_key);
-                save_outbox(data_dir, outbox);
+            // Restaurer seulement l'ajout de cette décision, jamais un doublon
+            // préexistant. Un échec de restauration reste explicitement signalé.
+            if added_to_outbox && let Err(rollback) = replace_outbox(data_dir, outbox, before) {
+                return KernelToUi::Toast {
+                    text: format!(
+                        "décision non confirmée — audit indisponible : {e} ; restauration de l'outbox non confirmée : {rollback}. Vérifier la file avant de réessayer."
+                    ),
+                };
             }
             KernelToUi::Toast {
                 text: format!("décision refusée — audit indisponible: {e}"),
@@ -361,8 +367,12 @@ pub async fn run_serve(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = hakille_ipc::transport::default_endpoint();
     let token_path = hakille_ipc::transport::default_token_path();
-    let token = hakille_ipc::transport::fresh_token_hex();
-    hakille_ipc::transport::write_token_file(&token_path, &token)?;
+    // Préparer le répertoire sans remplacer le jeton d'un démon déjà actif.
+    if let Some(parent) = token_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
     let listener = match hakille_ipc::transport::IpcListener::bind(&endpoint).await {
         Ok(listener) => listener,
         Err(e) => {
@@ -370,6 +380,8 @@ pub async fn run_serve(
             return Err(e.into());
         }
     };
+    let token = hakille_ipc::transport::fresh_token_hex();
+    hakille_ipc::transport::write_token_file(&token_path, &token)?;
     println!("IPC: endpoint {endpoint}");
     println!("IPC: token file {}", token_path.display());
     println!("IPC: prêt — en attente du HUD (hakille-desktop)");
@@ -419,7 +431,7 @@ pub async fn run_serve(
 /// Sert un client connecté : lit les trames une à une, répond toujours
 /// (Reply, Toast ou Error), et rend la main à l'accept à la déconnexion.
 #[allow(clippy::too_many_arguments)]
-async fn serve_client<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+async fn serve_client<S: tokio::io::AsyncBufRead + tokio::io::AsyncWrite + Unpin>(
     stream: &mut S,
     orchestrator: &mut CognitiveOrchestrator,
     presence: &mut PresenceIndicator,
@@ -1203,6 +1215,21 @@ mod tests {
             },
         );
         let mut outbox = Outbox::new();
+
+        // Régression : l'ancien code annonçait un accusé durable même si
+        // l'écriture échouait. Un chemin occupé par un dossier force cet échec
+        // indépendamment des droits root du runner.
+        let blocked_path = dir.join("outbox.json");
+        std::fs::create_dir(&blocked_path).unwrap();
+        let denied = decide_card(&mut cards, &journal, &mut outbox, &dir, 42, true);
+        assert!(matches!(denied, KernelToUi::Toast { .. }));
+        assert!(cards.contains_key(&42), "la décision reste réessayable");
+        assert!(outbox.is_empty(), "aucun ajout RAM non persisté");
+        assert!(
+            journal.all_entries().unwrap().is_empty(),
+            "aucun audit de succès inventé"
+        );
+        std::fs::remove_dir(blocked_path).unwrap();
 
         let reply = decide_card(&mut cards, &journal, &mut outbox, &dir, 42, true);
         let KernelToUi::CardDecisionAck {

@@ -1,0 +1,54 @@
+<resources>
+<string name="app_name">Hakille</string>
+<string name="chat">Conversation</string><string name="status">Statut</string><string name="memory">Mémoire</string><string name="journal">Journal</string><string name="agents">Agents</string><string name="connection">Connexion</string>
+<string name="endpoint">URL de base de la passerelle</string><string name="token">Jeton mobile de la passerelle</string><string name="connect">Connecter et enregistrer de façon sécurisée</string><string name="saved_hub">Reconnecter le hub enregistré</string><string name="forget">Déconnecter et effacer les identifiants</string>
+<string name="connection_help">Votre passerelle relie cette application à Hakille. Utilisez HTTPS, ou 127.0.0.1 avec un tunnel local explicite. Gardez le client desktop déconnecté pendant son utilisation.</string>
+<string name="message">Message à Hakille</string><string name="send">Envoyer</string><string name="refresh">Actualiser</string><string name="cancel_request">Annuler l’attente — résultat potentiellement inconnu</string><string name="waiting">Requête en cours. Aucune relance automatique.</string>
+<string name="microphone_unavailable">Microphone indisponible : la capture vocale native n’est pas raccordée dans cette application.</string>
+<string name="empty">Aucune donnée reçue.</string><string name="search">Rechercher dans la mémoire</string><string name="remember">Enregistrer en mémoire</string><string name="memory_text">Texte à mémoriser</string>
+<string name="agent_input">Entrée de l’agent (JSON)</string><string name="run_agent">Exécuter cet agent</string><string name="agent_unavailable">Binaire de l’agent indisponible</string>
+<string name="decision">Décision requise</string><string name="reason">Motif</string><string name="cost">Coût</string><string name="data_exit">Destination des données</string><string name="provenance">Provenance</string><string name="reversible">Annulable</string><string name="irreversible">Définitif</string>
+<string name="hold_approve">Maintenir 600 ms puis relâcher pour approuver</string><string name="confirm_ready">Confirmer après 600 ms</string><string name="approval_a11y">Approuver en deux étapes. Activer une première fois pour commencer la confirmation, puis une seconde après 600 millisecondes.</string><string name="reject">Refuser</string><string name="cancel_approval">Annuler la confirmation</string>
+<string name="outcomes">Résultats des requêtes</string><string name="connected">Connecté</string><string name="disconnected">Déconnecté</string><string name="connecting">Connexion en cours</string><string name="unknown">Connexion ou résultat inconnu</string>
+<string name="you">Vous</string><string name="assistant">Hakille</string><string name="yes">Oui</string><string name="no">Non</string>
+<string name="history_trimmed">Des entrées anciennes sont masquées. Consultez le journal.</string>
+<string name="data_local">Reste sur votre hub</string>
+<string name="data_cloud">Fournisseur cloud</string>
+<string name="external_origin">Origine externe</string>
+<string name="verified_skill">Compétence vérifiée</string>
+<string name="metadata_unknown">Métadonnée inconnue — vérifier avant d’approuver</string>
+<string name="rtl_layout">Disposition de droite à gauche</string>
+<string name="dictation_explanation">Dictée sur l’appareil, déclenchée uniquement par ce bouton. Le texte rejoint le brouillon : relisez-le avant d’envoyer. Ce n’est pas une écoute permanente de « Hakille ».</string>
+<string name="dictation_start">Dicter dans le brouillon</string>
+<string name="dictation_finish">Terminer la dictée</string>
+<string name="dictation_cancel">Arrêter et abandonner la dictée</string>
+<string name="dictation_system_language">Langue de l’appareil</string>
+<string name="dictation_french">Français</string>
+<string name="dictation_english">Anglais</string>
+<string name="dictation_idle">Microphone coupé</string>
+<string name="dictation_permission">Autorisation du microphone demandée. Aucune capture n’a démarré.</string>
+<string name="dictation_starting">Préparation du moteur de l’appareil…</string>
+<string name="dictation_listening">Microphone actif — vous pouvez parler.</string>
+<string name="dictation_finishing">Arrêt de la capture demandé…</string>
+<string name="dictation_processing">Reconnaissance sur cet appareil…</string>
+<string name="dictation_finished">Texte ajouté au brouillon. Rien n’a été envoyé.</string>
+<string name="dictation_cancelled">Dictée arrêtée. Touchez Dicter pour démarrer une nouvelle session.</string>
+<string name="dictation_android_version">La dictée sur l’appareil nécessite Android 12 (API 31) ou ultérieur. Aucun moteur réseau n’est utilisé en remplacement.</string>
+<string name="dictation_engine_missing">Aucun moteur de reconnaissance sur l’appareil n’est disponible. Aucun repli cloud.</string>
+<string name="dictation_permission_denied">Autorisation du microphone refusée. Vous pouvez l’accorder dans les réglages Android, puis toucher Dicter.</string>
+<string name="dictation_permission_revoked">L’autorisation du microphone n’est plus disponible. La dictée est arrêtée.</string>
+<string name="dictation_busy">Le moteur de l’appareil est occupé. Réessayez plus tard.</string>
+<string name="dictation_audio_error">Échec de capture. Vérifiez l’accès au microphone dans Android et votre périphérique.</string>
+<string name="dictation_language_error">Cette langue n’est pas disponible dans le moteur de l’appareil. Choisissez une langue installée.</string>
+<string name="dictation_no_match">Aucun texte final exploitable n’a été reconnu. Le brouillon est inchangé.</string>
+<string name="dictation_timeout">Dictée arrêtée après 30 secondes. Aucun texte inachevé n’a été ajouté.</string>
+<string name="dictation_context_changed">La dictée a été abandonnée car le brouillon ou la session a changé.</string>
+<string name="dictation_result_invalid">Le brouillon résultant dépasse 8192 octets UTF-8. Aucun texte n’a été tronqué ni ajouté.</string>
+<string name="dictation_engine_error">Le moteur de l’appareil a échoué. La dictée est arrêtée, sans repli cloud.</string>
+<string name="draft_restoring">Restauration du brouillon et des marqueurs des opérations précédentes…</string>
+<string name="draft_restore_failed">L’état local enregistré ne peut pas être lu de manière fiable. Aucune requête ne sera envoyée. Conservez les données de l’application pour la récupération tant que les opérations précédentes restent à vérifier.</string>
+<string name="draft_save_failed">Impossible de sauvegarder l’état local. Les modifications récentes risquent d’être perdues à la fermeture. Vérifiez l’espace disponible ; aucune nouvelle requête ne partira sans sauvegarde préalable.</string>
+<string name="recovery_explanation">Une opération précédente a un résultat inconnu, éventuellement sur un autre hub. Aucune relance automatique. Consultez le journal du hub avant toute nouvelle tentative. Prendre connaissance de cet avertissement n’annule pas l’opération et ne confirme pas son résultat.</string>
+<string name="recovery_acknowledge">J’ai lu cet avertissement — l’archiver</string>
+<string name="draft_request_not_sent">La requête n’a pas été envoyée : son marqueur local de reprise n’a pas pu être sauvegardé.</string>
+</resources>

@@ -1,20 +1,7 @@
-//! Session VAD réelle via ONNX Runtime (`ort` v2, binaires précompilés).
-//!
-//! - Modèle : `models/silero_vad.onnx` (Silero VAD v5, ~2.3 MB).
-//! - Signature nominale v5 : `input[1,512]f32`, `state[2,1,128]f32` récurrent,
-//!   `sr[1]int64` (=16000) -> `output[1,1]f32`, `stateN[2,1,128]f32`.
-//! - La signature RÉELLE est lue au runtime via `session.inputs()` /
-//!   `session.outputs()` ; si `state`/`sr` (ou `stateN`) sont absents, le
-//!   forward dégrade gracieusement vers le seul `input`
-//!   (fallback documenté, pas de panic).
-//! - `score()` applique une sigmoïde si la sortie brute ressemble à des logits
-//!   (hors `[0,1]`), conserve l'état récurrent entre chunks, et ne contient
-//!   aucun appel paniquant sur le chemin audio : toute anomalie remonte en
-//!   [`hakille_core::HakilleError::InferenceError`].
-//! - `process_stream()` découpe un flux quelconque en fenêtres 512 avec carry
-//!   de reste inter-appels : aucun échantillon n'est perdu.
-//! - `is_real() == true` / `status() == Real` car chaque probabilité provient
-//!   d'un forward `ort` réellement exécuté (voir `InferenceEngine`).
+//! Silero VAD v5 réel : fenêtres 512 @16kHz précédées de 64 échantillons
+//! de contexte, état récurrent [2,1,128]. Signature/sorties vérifiées, aucun
+//! repli input-seul ni conversion arbitraire de logits en probabilités.
+//! `finish_stream` traite le reliquat final ; `reset_state` isole les flux.
 
 use hakille_core::{HakilleError, Result};
 use ort::session::Session;
@@ -25,6 +12,8 @@ use std::sync::Arc;
 
 /// Fenêtre Silero : 512 échantillons @ 16 kHz (32 ms).
 pub const VAD_CHUNK: usize = 512;
+/// Contexte requis par le wrapper Silero v5 à 16 kHz.
+pub const VAD_CONTEXT: usize = 64;
 /// Dimension de l'état récurrent : 2*1*128.
 pub const VAD_STATE_LEN: usize = 256;
 /// Sample-rate attendu par Silero.
@@ -103,6 +92,7 @@ pub struct OrtVadSession {
     output_name: String,
     state_output_name: Option<String>,
     state: Vec<f32>,
+    context: [f32; VAD_CONTEXT],
     sample_rate: i64,
     /// Reste d'échantillons (< 512) en attente du prochain `process_stream`.
     carry: Vec<f32>,
@@ -133,6 +123,8 @@ impl OrtVadSession {
         let env = shared_env()?;
         let session = Session::builder(&env)
             .map_err(|e| ort_err("open(builder)", e))?
+            .with_intra_threads(4)
+            .map_err(|e| ort_err("open(threads)", e))?
             .commit_from_file(path)
             .map_err(|e| ort_err("open(commit_from_file)", e))?;
 
@@ -174,15 +166,20 @@ impl OrtVadSession {
                 None => "output".to_string(),
             },
         };
-        // Fallback documenté : sans `state`/`sr` le forward reste valide (input seul).
         let state_name = pick("state", &input_names);
         let sr_name = pick("sr", &input_names);
         let state_output_name = pick("stateN", &output_names);
-        if state_name.is_none() || sr_name.is_none() {
-            tracing::warn!(
-                inputs = ?input_names,
-                "OrtVadSession::open: signature sans state/sr — fallback input-seul"
-            );
+        if input_name != "input"
+            || output_name != "output"
+            || input_names.len() != 3
+            || state_name.is_none()
+            || sr_name.is_none()
+            || state_output_name.is_none()
+        {
+            return Err(ort_err(
+                "open",
+                "signature Silero incompatible : input/state/sr et output/stateN requis",
+            ));
         }
 
         Ok(Self {
@@ -195,6 +192,7 @@ impl OrtVadSession {
             output_name,
             state_output_name,
             state: vec![0.0f32; VAD_STATE_LEN],
+            context: [0.0; VAD_CONTEXT],
             sample_rate: VAD_SAMPLE_RATE,
             carry: Vec::new(),
             next_chunk_idx: 0,
@@ -261,16 +259,15 @@ impl OrtVadSession {
     /// Ne touche pas à `forward_calls` (compteur cumulé honnête).
     pub fn reset_state(&mut self) {
         self.state = vec![0.0f32; VAD_STATE_LEN];
+        self.context.fill(0.0);
         self.carry.clear();
         self.next_chunk_idx = 0;
     }
 
     /// Probabilité de parole pour exactement 512 échantillons mono @16kHz.
     ///
-    /// - Sanitize : `NaN`/`Inf` -> `0.0`, clamp `[-1,1]`.
-    /// - Sigmoïde appliquée uniquement si la sortie brute est hors `[0,1]`
-    ///   (logits) ; sinon valeur clampée telle quelle.
-    /// - L'état récurrent est mis à jour depuis `stateN` quand disponible.
+    /// Les samples invalides et les probabilités hors [0,1] sont refusés.
+    /// Le contexte et l'état récurrent ne changent qu'après validation des sorties.
     pub fn score(&mut self, chunk512: &[f32]) -> Result<f32> {
         if chunk512.len() != VAD_CHUNK {
             return Err(HakilleError::InferenceError(format!(
@@ -278,23 +275,18 @@ impl OrtVadSession {
                 chunk512.len()
             )));
         }
-        let mut clean = Vec::with_capacity(VAD_CHUNK);
-        for s in chunk512.iter() {
-            let v = *s;
-            clean.push(if v.is_finite() {
-                v.clamp(-1.0, 1.0)
-            } else {
-                0.0
-            });
+        if chunk512.iter().any(|x| !x.is_finite() || x.abs() > 1.0) {
+            return Err(ort_err("score", "PCM normalisé fini dans [-1,1] requis"));
         }
-        let prob = self.forward(&clean)?;
+        let clean = chunk512;
+        let prob = self.forward(clean)?;
         self.forward_calls += 1;
         Ok(prob)
     }
 
     /// Découpe un flux quelconque en fenêtres 512 @16kHz avec carry inter-appels.
     ///
-    /// - Sanitize d'entrée (`NaN`/`Inf` -> `0.0`, clamp `[-1,1]`).
+    /// - Entrées non finies ou hors `[-1,1]` refusées avant mutation.
     /// - Les échantillons qui ne forment pas une fenêtre complète sont conservés
     ///   dans le carry (`pending_carry_len() < 512`) pour l'appel suivant :
     ///   **aucune perte d'échantillon**.
@@ -302,28 +294,54 @@ impl OrtVadSession {
     /// - Retourne `(chunk_idx, prob)` avec `chunk_idx` strictement croissant
     ///   depuis l'ouverture / le dernier `reset_state()`.
     pub fn process_stream(&mut self, pcm_16k: &[f32]) -> Result<Vec<(usize, f32)>> {
-        for s in pcm_16k.iter() {
-            let v = *s;
-            self.carry.push(if v.is_finite() {
-                v.clamp(-1.0, 1.0)
-            } else {
-                0.0
-            });
+        if pcm_16k.len() > 16_000 * 120 || pcm_16k.iter().any(|x| !x.is_finite() || x.abs() > 1.0) {
+            return Err(ort_err(
+                "process_stream",
+                "PCM invalide ou bloc supérieur à 120 secondes",
+            ));
         }
-        let mut out = Vec::new();
-        while self.carry.len() >= VAD_CHUNK {
-            let window: Vec<f32> = self.carry.drain(..VAD_CHUNK).collect();
-            if window.len() != VAD_CHUNK {
-                return Err(HakilleError::InferenceError(format!(
-                    "OrtVadSession::process_stream: fenêtre incohérente ({})",
-                    window.len()
-                )));
+        // Le graphe porte son état dans les entrées, donc un échec peut être
+        // annulé intégralement côté flux. Le compteur de forwards reste réel.
+        let previous_state = self.state.clone();
+        let previous_context = self.context;
+        let previous_carry = self.carry.clone();
+        let previous_index = self.next_chunk_idx;
+        let result = (|| {
+            let mut out = Vec::new();
+            for part in pcm_16k.chunks(VAD_CHUNK) {
+                self.carry.extend_from_slice(part);
+                while self.carry.len() >= VAD_CHUNK {
+                    let window = self.carry[..VAD_CHUNK].to_vec();
+                    let prob = self.score(&window)?;
+                    self.carry.drain(..VAD_CHUNK);
+                    out.push((self.next_chunk_idx, prob));
+                    self.next_chunk_idx += 1;
+                }
             }
-            let prob = self.score(&window)?;
-            out.push((self.next_chunk_idx, prob));
-            self.next_chunk_idx += 1;
+            Ok(out)
+        })();
+        if result.is_err() {
+            self.state = previous_state;
+            self.context = previous_context;
+            self.carry = previous_carry;
+            self.next_chunk_idx = previous_index;
         }
-        Ok(out)
+        result
+    }
+
+    /// Termine le flux : score le dernier fragment complété par des zéros.
+    /// Un second appel sans nouveaux échantillons ne produit aucun forward.
+    pub fn finish_stream(&mut self) -> Result<Option<(usize, f32)>> {
+        if self.carry.is_empty() {
+            return Ok(None);
+        }
+        let mut tail = self.carry.clone();
+        tail.resize(VAD_CHUNK, 0.0);
+        let probability = self.score(&tail)?;
+        self.carry.clear();
+        let index = self.next_chunk_idx;
+        self.next_chunk_idx += 1;
+        Ok(Some((index, probability)))
     }
 
     /// Forward `ort` réel sur une fenêtre déjà sanitizée (512 échantillons).
@@ -337,11 +355,11 @@ impl OrtVadSession {
                 clean512.len()
             )));
         }
-        let mut owned = Vec::with_capacity(VAD_CHUNK);
-        for s in clean512.iter() {
-            owned.push(*s);
-        }
-        let input_tensor = Tensor::<f32>::from_array(([1usize, VAD_CHUNK], owned))
+        // Source : silero_vad/utils_vad.py::OnnxWrapper.__call__.
+        let mut owned = Vec::with_capacity(VAD_CONTEXT + VAD_CHUNK);
+        owned.extend_from_slice(&self.context);
+        owned.extend_from_slice(clean512);
+        let input_tensor = Tensor::<f32>::from_array(([1usize, VAD_CONTEXT + VAD_CHUNK], owned))
             .map_err(|e| ort_err("score(input_tensor)", e))?;
         let state_tensor =
             Tensor::<f32>::from_array(([2usize, 1usize, 128usize], self.state.clone()))
@@ -391,39 +409,38 @@ impl OrtVadSession {
                 .map_err(|e| ort_err("score(run1)", e))?
         };
 
-        let raw: f32 = outputs
+        let (shape, data) = outputs
             .get(&output_key)
-            .and_then(|v| v.try_extract_tensor::<f32>().ok())
-            .and_then(|(_, data)| data.first().copied())
-            .ok_or_else(|| {
-                HakilleError::InferenceError(format!(
-                    "OrtVadSession::score: output '{output_key}' illisible"
-                ))
-            })?;
-        if !raw.is_finite() {
-            return Err(HakilleError::InferenceError(
-                "OrtVadSession::score: sortie non-finie".to_string(),
+            .ok_or_else(|| ort_err("score", "probabilité absente"))?
+            .try_extract_tensor::<f32>()
+            .map_err(|e| ort_err("score(probabilité)", e))?;
+        if shape.as_ref() != [1, 1]
+            || data.len() != 1
+            || !data[0].is_finite()
+            || !(0.0..=1.0).contains(&data[0])
+        {
+            return Err(ort_err(
+                "score",
+                "probabilité Silero invalide (forme [1,1], valeur [0,1] requises)",
             ));
         }
-        // Si `stateN` présent, l'état récurrent est conservé entre chunks.
-        if let Some(skey) = state_out_key
-            && let Some((_, data)) = outputs
-                .get(&skey)
-                .and_then(|v| v.try_extract_tensor::<f32>().ok())
-            && data.len() == VAD_STATE_LEN
+        let prob = data[0];
+        let skey = state_out_key.ok_or_else(|| ort_err("score", "état récurrent absent"))?;
+        let (shape, data) = outputs
+            .get(&skey)
+            .ok_or_else(|| ort_err("score", "stateN absent"))?
+            .try_extract_tensor::<f32>()
+            .map_err(|e| ort_err("score(stateN)", e))?;
+        if shape.as_ref() != [2, 1, 128]
+            || data.len() != VAD_STATE_LEN
+            || data.iter().any(|x| !x.is_finite())
         {
-            let mut next = Vec::with_capacity(VAD_STATE_LEN);
-            for v in data.iter() {
-                let x = *v;
-                next.push(if x.is_finite() { x } else { 0.0 });
-            }
-            self.state = next;
+            return Err(ort_err("score", "état récurrent invalide"));
         }
-        let prob = if (0.0..=1.0).contains(&raw) {
-            raw.clamp(0.0, 1.0)
-        } else {
-            sigmoid(raw).clamp(0.0, 1.0)
-        };
+        // Publication de l'état seulement lorsque toutes les sorties sont valides.
+        self.state.copy_from_slice(data);
+        self.context
+            .copy_from_slice(&clean512[VAD_CHUNK - VAD_CONTEXT..]);
         Ok(prob)
     }
 }
@@ -682,6 +699,56 @@ mod real_model_tests {
     }
 
     #[test]
+    #[ignore = "nécessite modèle Silero et HAKILLE_TEST_PCM16K_F32"]
+    fn official_voice_fixture_detects_speech() {
+        let path = std::env::var("HAKILLE_TEST_PCM16K_F32").expect("fixture requise");
+        let bytes = std::fs::read(path).unwrap();
+        let pcm: Vec<_> = bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        let model = resolve_vad_model_path(None).expect("modèle requis");
+        let mut vad = OrtVadSession::open(model).unwrap();
+        let mut probabilities = vad.process_stream(&pcm).unwrap();
+        probabilities.extend(vad.finish_stream().unwrap());
+        let hot = probabilities.iter().filter(|(_, p)| *p >= 0.5).count();
+        let peak = probabilities.iter().map(|(_, p)| *p).fold(0.0, f32::max);
+        eprintln!(
+            "SILERO fixture: {hot}/{} fenêtres de parole, max={peak}",
+            probabilities.len()
+        );
+        assert_eq!(probabilities.len(), pcm.len().div_ceil(VAD_CHUNK));
+        assert!(hot > probabilities.len() / 3 && peak > 0.9);
+        assert_eq!(vad.pending_carry_len(), 0);
+    }
+
+    #[test]
+    fn final_tail_matches_explicit_padding_and_invalid_input_preserves_state() {
+        let Some(mut stream) = open_real_session() else {
+            return;
+        };
+        let Some(mut reference) = open_real_session() else {
+            return;
+        };
+        let pcm = sine_16k(150.0, 0.3, 700);
+        let first = stream.process_stream(&pcm).unwrap();
+        assert_eq!(stream.pending_carry_len(), 188);
+        assert!(stream.process_stream(&[f32::NAN]).is_err());
+        assert!(stream.score(&[2.0; 512]).is_err());
+        assert_eq!(stream.pending_carry_len(), 188);
+        let tail = stream.finish_stream().unwrap().unwrap();
+        assert!(stream.finish_stream().unwrap().is_none());
+        assert_eq!(stream.pending_carry_len(), 0);
+        let mut padded = pcm;
+        padded.resize(1024, 0.0);
+        let expected = reference.process_stream(&padded).unwrap();
+        assert_eq!(first[0].0, expected[0].0);
+        assert_eq!(tail.0, expected[1].0);
+        assert!((first[0].1 - expected[0].1).abs() < 1e-6);
+        assert!((tail.1 - expected[1].1).abs() < 1e-6);
+    }
+
+    #[test]
     fn golden_silence_low_probability() {
         let Some(mut sess) = open_real_session() else {
             return;
@@ -809,8 +876,8 @@ mod real_model_tests {
             let max_p: f32 = probs.iter().map(|(_, p)| *p).fold(0.0, f32::max);
             eprintln!("golden sélectivité {name}: max={max_p:.4}");
             assert!(
-                max_p < 0.05,
-                "{name} doit être rejeté (non-parole): max={max_p:.4}"
+                max_p < 0.5,
+                "{name} doit rester sous le seuil de parole 0.5: max={max_p:.4}"
             );
         }
     }

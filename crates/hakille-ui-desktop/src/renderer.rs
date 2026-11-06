@@ -34,6 +34,34 @@ pub enum GpuStatus {
 /// Hauteur logique du panneau de consultation (HUD 64 px + contenu lisible).
 pub const CONSULT_HEIGHT: u32 = 360;
 
+/// Nombre de lignes visibles ; partagé avec la navigation du HUD.
+pub const CONSULT_PAGE_LINES: usize = 8;
+
+/// Découpe toutes les lignes avec la même largeur que le panneau rendu.
+pub fn wrapped_consult_lines(view: &ConsultView) -> Vec<ConsultLine> {
+    let width = HUD_WIDTH as f32 - 6.0 * ty::LAYOUT_GRID_PT_BASE as f32;
+    view.lines
+        .iter()
+        .flat_map(|line| {
+            wrap_ui_text_weighted(
+                &line.text,
+                14.0,
+                width,
+                if line.kind == ConsultLineKind::Strong {
+                    ty::TYPE_BODY_STRONG_WEIGHT as u16
+                } else {
+                    WEIGHT_NORMAL
+                },
+            )
+            .into_iter()
+            .map(|text| ConsultLine {
+                text,
+                kind: line.kind,
+            })
+        })
+        .collect()
+}
+
 /// Rôle visuel d'une ligne du panneau (jamais de couleur codée en dur par
 /// l'appelant : le thème reste la seule source).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,9 +99,13 @@ pub struct ConsultView {
 }
 
 /// Découpe un texte en lignes tenant dans `max_width` (mots, sauts `\n`
-/// préservés). Les mots trop longs sont laissés tels quels puis ellipsés au
-/// rendu — jamais de panne ni de dépassement.
+/// préservés). Les mots trop longs sont répartis sur plusieurs lignes aux
+/// frontières UTF-8, pour conserver aussi les URL et textes sans espaces.
 pub fn wrap_ui_text(text: &str, size: f32, max_width: f32) -> Vec<String> {
+    wrap_ui_text_weighted(text, size, max_width, WEIGHT_NORMAL)
+}
+
+fn wrap_ui_text_weighted(text: &str, size: f32, max_width: f32, weight: u16) -> Vec<String> {
     let max_width = max_width.max(1.0);
     let mut out = Vec::new();
     for paragraph in text.split('\n') {
@@ -83,12 +115,28 @@ pub fn wrap_ui_text(text: &str, size: f32, max_width: f32) -> Vec<String> {
         }
         let mut line = String::new();
         for word in paragraph.split_whitespace() {
+            if measure_ui_text_weighted(word, size, weight) > max_width {
+                if !line.is_empty() {
+                    out.push(std::mem::take(&mut line));
+                }
+                for ch in word.chars() {
+                    let mut candidate = line.clone();
+                    candidate.push(ch);
+                    if !line.is_empty()
+                        && measure_ui_text_weighted(&candidate, size, weight) > max_width
+                    {
+                        out.push(std::mem::take(&mut line));
+                    }
+                    line.push(ch);
+                }
+                continue;
+            }
             let candidate = if line.is_empty() {
                 word.to_string()
             } else {
                 format!("{line} {word}")
             };
-            if line.is_empty() || measure_ui_text(&candidate, size) <= max_width {
+            if line.is_empty() || measure_ui_text_weighted(&candidate, size, weight) <= max_width {
                 line = candidate;
             } else {
                 out.push(std::mem::take(&mut line));
@@ -548,6 +596,51 @@ const BODY_BASELINE: f32 = 40.0;
 /// anneau de présence 2 px + halo interpolé, texte body 16 (baseline 40 px)
 /// et caption 13 px secondaire à droite (coût). Braise réservée décision
 /// requise / urgence / validation (spec §3).
+/// Cible visible du contrôle micro, partagée avec le hit-test et AccessKit.
+pub fn voice_button_rect() -> Rect {
+    Rect::new(HUD_WIDTH as f32 - 182.0, 12.0, 168.0, 40.0).rounded(8.0)
+}
+
+pub fn append_voice_indicator(scene: &mut Scene, state: &crate::app::VoiceState, focused: bool) {
+    use crate::app::VoiceState;
+    let p = hud_palette(scene.theme_dark);
+    let rect = voice_button_rect();
+    let active = matches!(
+        state,
+        VoiceState::Listening
+            | VoiceState::Speech
+            | VoiceState::WakeDetected
+            | VoiceState::Transcribing
+    );
+    let color = if matches!(state, VoiceState::Error(_)) {
+        Color::from_hex(p.braise)
+    } else if active {
+        Color::from_hex(p.lueur)
+    } else {
+        Color::from_hex(p.text2)
+    };
+    scene.fill(
+        rect,
+        Color::from_hex(if focused { p.lueur } else { p.line }),
+    );
+    scene.fill(
+        Rect::new(rect.x + 1.0, rect.y + 1.0, rect.w - 2.0, rect.h - 2.0).rounded(7.0),
+        Color::from_hex(p.surface1),
+    );
+    scene.text(rect.x + 8.0, rect.y + 16.0, 12.0, color, state.label());
+    scene.text(
+        rect.x + 8.0,
+        rect.y + 31.0,
+        10.0,
+        Color::from_hex(p.text2),
+        if matches!(state, VoiceState::Inactive | VoiceState::Error(_)) {
+            "F8 · Activer le microphone"
+        } else {
+            "F8 · Arrêter le microphone"
+        },
+    );
+}
+
 pub fn hud_scene(snap: &hakille_ui_model::StableSnapshot, theme_dark: bool) -> Scene {
     let p = hud_palette(theme_dark);
     let grid = ty::LAYOUT_GRID_PT_BASE as f32;
@@ -613,7 +706,7 @@ pub fn hud_scene(snap: &hakille_ui_model::StableSnapshot, theme_dark: bool) -> S
 
     // Texte body + caption secondaire à droite (coût), ellipse sans débordement.
     let text_x = bar.x + grid * 13.0;
-    let right = bar.x + bar.w - grid * 3.0;
+    let right = voice_button_rect().x - grid * 2.0;
     let body_max = (right - text_x).max(0.0);
     let caption = if snap.hud_validation {
         let cost = snap.hud_validation_cost.trim();
@@ -762,15 +855,8 @@ pub fn consult_scene(
     let line_height = 20.0;
     let max_lines = (((footer_y - 16.0 - content_top) / line_height).floor()).max(0.0) as usize;
 
-    let mut wrapped: Vec<ConsultLine> = Vec::new();
-    for line in &view.lines {
-        for text in wrap_ui_text(&line.text, 14.0, text_width) {
-            wrapped.push(ConsultLine {
-                text,
-                kind: line.kind,
-            });
-        }
-    }
+    debug_assert_eq!(max_lines, CONSULT_PAGE_LINES);
+    let mut wrapped = wrapped_consult_lines(view);
     let truncated = wrapped.len() > max_lines;
     if truncated && max_lines > 0 {
         wrapped.truncate(max_lines - 1);
@@ -1383,5 +1469,76 @@ mod tests {
             .filter(|c| c[0] != 0x0B || c[1] != 0x0C || c[2] != 0x0F)
             .count();
         assert!(ink > 20, "glyphe de repli réellement peint (ink={ink})");
+    }
+    #[test]
+    fn renderer_wrap_long_unicode_words_without_losing_characters() {
+        let original = "日本語é🙂".repeat(40);
+        let lines = wrap_ui_text(&original, 14.0, 120.0);
+        assert!(lines.len() > 1);
+        assert_eq!(lines.concat(), original);
+        for line in lines {
+            assert!(measure_ui_text(&line, 14.0) <= 120.01);
+        }
+    }
+    #[test]
+    fn renderer_voice_control_preserves_query_and_cost_without_overlap() {
+        use crate::app::VoiceState;
+        let mut snap = snapshot_with_state(0, false);
+        snap.hud_query = "une longue requête avec des accents ".repeat(15);
+        snap.cost_level = 2;
+        snap.cost_total_cents = 100;
+        snap.cost_budget_cents = 500;
+        let mut scene = hud_scene(&snap, true);
+        let rect = voice_button_rect();
+        for cmd in &scene.cmds {
+            if let DrawCmd::GlyphRun {
+                x,
+                text,
+                size,
+                weight,
+                ..
+            } = cmd
+            {
+                assert!(
+                    *x + measure_ui_text_weighted(text, *size, *weight) <= rect.x,
+                    "texte derrière le microphone : {text}"
+                );
+            }
+        }
+        assert!(
+            scene
+                .cmds
+                .iter()
+                .any(|cmd| matches!(cmd, DrawCmd::GlyphRun { text, .. } if text.contains("EUR")))
+        );
+        for state in [
+            VoiceState::Inactive,
+            VoiceState::Starting,
+            VoiceState::Listening,
+            VoiceState::Speech,
+            VoiceState::WakeDetected,
+            VoiceState::Transcribing,
+            VoiceState::Processing,
+            VoiceState::Error("absent".into()),
+        ] {
+            scene.cmds.clear();
+            append_voice_indicator(&mut scene, &state, false);
+            for cmd in &scene.cmds {
+                if let DrawCmd::GlyphRun {
+                    x,
+                    text,
+                    size,
+                    weight,
+                    ..
+                } = cmd
+                {
+                    assert!(
+                        *x >= rect.x
+                            && *x + measure_ui_text_weighted(text, *size, *weight)
+                                <= rect.x + rect.w
+                    );
+                }
+            }
+        }
     }
 }

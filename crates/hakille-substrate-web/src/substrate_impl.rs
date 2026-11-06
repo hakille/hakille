@@ -14,7 +14,6 @@ use hakille_substrate::{
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Missing native binding reported by every web camera method.
 const WEB_CAMERA_UNIMPLEMENTED: &str = "camera not implemented for web substrate: getUserMedia binding missing \
@@ -23,8 +22,6 @@ const WEB_CAMERA_UNIMPLEMENTED: &str = "camera not implemented for web substrate
 pub struct WebSubstrate {
     manifest: PlatformManifest,
     attestation_keypair: KeyPair,
-    audio_counter: AtomicU64,
-    process_counter: AtomicU64,
     audio_bridge: Mutex<WebAudioBridge>,
     screen_capture: WebScreenCaptureAdapter,
     gpu_detector: WebGpuDetector,
@@ -74,8 +71,6 @@ impl WebSubstrate {
         Self {
             manifest,
             attestation_keypair: KeyPair::generate(),
-            audio_counter: AtomicU64::new(1),
-            process_counter: AtomicU64::new(1),
             audio_bridge: Mutex::new(WebAudioBridge::default()),
             screen_capture: WebScreenCaptureAdapter::default(),
             gpu_detector: WebGpuDetector::default(),
@@ -337,17 +332,20 @@ impl Substrate for WebSubstrate {
             CapabilityScope::Audio,
             hakille_core::CapabilityAction::Read,
         )?;
-        let id = self.audio_counter.fetch_add(1, Ordering::SeqCst);
-        Ok(AudioStreamHandle(id))
+        Err(hakille_core::HakilleError::SubstrateError(
+            "capture audio indisponible : backend audio non raccordé au substrat web; aucun flux démarré".to_string(),
+        ))
     }
 
     async fn stop_audio_capture(&self, _handle: AudioStreamHandle) -> Result<()> {
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "arrêt audio indisponible : aucun flux audio natif géré par ce substrat".to_string(),
+        ))
     }
 
     async fn play_audio(
         &self,
-        data: &[u8],
+        _data: &[u8],
         _config: AudioConfig,
         cap: &CapabilityToken,
     ) -> Result<()> {
@@ -356,9 +354,9 @@ impl Substrate for WebSubstrate {
             CapabilityScope::Audio,
             hakille_core::CapabilityAction::Write,
         )?;
-        let mut bridge = self.audio_bridge.lock().unwrap();
-        bridge.buffer_mut().push_playback_audio(data);
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "lecture audio indisponible : backend audio non raccordé au substrat web; aucun son joué".to_string(),
+        ))
     }
 
     async fn start_camera_capture(
@@ -403,7 +401,9 @@ impl Substrate for WebSubstrate {
             CapabilityScope::Sensor,
             hakille_core::CapabilityAction::Read,
         )?;
-        Ok(self.screen_capture.capture_frame())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "capture d'écran indisponible : binding getDisplayMedia non raccordé; aucune image du poste capturée".to_string(),
+        ))
     }
 
     async fn inject_input(&self, _action: InputAction, cap: &CapabilityToken) -> Result<()> {
@@ -412,7 +412,9 @@ impl Substrate for WebSubstrate {
             CapabilityScope::GuiInput,
             hakille_core::CapabilityAction::Execute,
         )?;
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "injection d'entrée indisponible : binding événements navigateur non raccordé; aucun événement émis".to_string(),
+        ))
     }
 
     async fn spawn_sandboxed(
@@ -462,8 +464,12 @@ impl Substrate for WebSubstrate {
                 )));
             }
         }
-        let id = self.process_counter.fetch_add(1, Ordering::SeqCst);
-        Ok(ProcessHandle(id))
+        // Aucun moteur WASM n'est relié à cette API : ne jamais inventer
+        // un handle de processus. Le runtime des agents de référence est distinct.
+        Err(hakille_core::HakilleError::SubstrateError(
+            "spawn_sandboxed indisponible : moteur WASM non raccordé au substrat web; aucun processus lancé"
+                .to_string(),
+        ))
     }
 
     fn power_state(&self) -> PowerState {

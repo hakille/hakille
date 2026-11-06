@@ -32,3 +32,101 @@ fn test_code_integration_index_and_patch() {
     );
     assert!(CodePatchEngine::apply_patch(&patch, "divergent").is_err());
 }
+
+/// Les patches exportés sont consommables par Git sans perdre les octets.
+#[test]
+fn exported_patches_apply_with_git_and_preserve_line_endings() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let root = std::env::temp_dir().join(format!(
+        "hakille-code-patches-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+    assert!(
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&root)
+            .status()
+            .expect("Git requis pour vérifier le format de patch")
+            .success()
+    );
+    for (name, before, after) in [
+        ("file.rs", "abc", "abc\n"),
+        ("file.rs", "abc\n", "abc"),
+        ("file.rs", "a\r\nb\r\n", "a\nb\n"),
+        ("file.rs", "a\nb\n", "a\r\nb\r\n"),
+        ("file.rs", "", "nouveau\n"),
+        ("file.rs", "ancien\n", ""),
+        ("fichier avec espace.txt", "漢字\n", "été\nfin"),
+        ("file.rs", "alpha\nbeta\ngamma\n", "avant\nalpha\ngamma\n"),
+    ] {
+        std::fs::write(root.join(name), before).unwrap();
+        let patch = CodePatchEngine::create_patch(name, before, after, "test exact");
+        // Vérifier les octets du patch, sans conversion de fins de ligne
+        // imposée par la configuration Git globale (autocrlf sur Windows).
+        let mut child = Command::new("git")
+            .args([
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "core.eol=lf",
+                "apply",
+                "--whitespace=nowarn",
+                "-",
+            ])
+            .current_dir(&root)
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(patch.unified_diff.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            patch.unified_diff
+        );
+        assert_eq!(std::fs::read(root.join(name)).unwrap(), after.as_bytes());
+    }
+}
+
+#[test]
+fn no_op_patch_is_empty_and_path_cannot_inject_headers() {
+    assert!(
+        CodePatchEngine::create_patch("x", "identique", "identique", "")
+            .unified_diff
+            .is_empty()
+    );
+    let patch = CodePatchEngine::create_patch("a\n+++ b/victime", "x", "y", "");
+    assert!(
+        patch
+            .unified_diff
+            .starts_with("--- \"a/a\\012+++ b/victime\"\n")
+    );
+    assert_eq!(
+        patch
+            .unified_diff
+            .lines()
+            .filter(|line| line.starts_with("+++ "))
+            .count(),
+        1
+    );
+}

@@ -4,13 +4,13 @@
 //!
 //! - Fenêtre glissante 1.5 s / pas 0.75 s -> un embedding CAM++ réel
 //!   (`CampplusOnnx`, forward `ort`) par fenêtre.
-//! - Clustering agglomératif sur similarité cosinus (seuil 0.92 calibré,
+//! - Clustering agglomératif sur similarité cosinus (seuil conventionnel 0.92,
 //!   `max_speakers` respecté ; fenêtres frontières/mixtes isolées rattachées
 //!   au plus proche voisin) -> `SpeakerTurn` réels avec timestamps.
 //! - Marque honnête : `diarisation par clustering d'embeddings CAM++ réels
 //!   (checkpoint Nemotron non provisionné)` — le checkpoint Sortformer
 //!   Nemotron n'est pas provisionné dans `models/`, la séparation est donc
-//!   assurée par la biométrie CAM++ réelle, pas par une heuristique.
+//!   estimée par les embeddings CAM++ et un clustering heuristique.
 //!   `backend = CAM++ clustering, Nemotron planned` : le moteur effectif
 //!   est [`CampPlusClusteringDiarizer`] ; [`NemotronDiarizer`] n'est qu'un
 //!   alias de compatibilité (même backend réel).
@@ -27,24 +27,37 @@ use std::path::{Path, PathBuf};
 const DIAR_WIN_SAMPLES: usize = 24_000;
 /// Pas 0.75 s @16 kHz.
 const DIAR_HOP_SAMPLES: usize = 12_000;
-/// Seuil cosinus pour fusionner deux clusters.
-/// Calibré empiriquement sur le vrai forward CAM++ (fenêtres 1.5 s/0.75 s,
-/// signaux voisés synthétiques) : fenêtres du même locuteur ≥ 0.934,
-/// locuteurs distincts ≤ 0.904, fenêtre mixte ≤ 0.586. Le seuil 0.92 sépare
-/// proprement ces régimes mesurés.
+/// Seuil de fusion conventionnel. Une calibration biométrique exige un corpus
+/// annoté de vrais locuteurs; des sinusoïdes ne fournissent pas cette preuve.
 const DIAR_MERGE_THRESHOLD: f32 = 0.92;
-
-/// Similarité max sous laquelle un cluster isolé est une fenêtre frontière/
-/// mixte (pas un locuteur) : mesuré ≤ 0.586 pour la fenêtre mixte, contre
-/// ≥ 0.934 même locuteur et ≤ 0.904 locuteurs distincts. 0.75 sépare le
-/// régime frontière du régime locuteurs distincts.
+/// Heuristique de rattachement des clusters les moins cohérents.
 const DIAR_FRONTIER_MAX_SIM: f32 = 0.75;
+
+fn peer_cohesion(embeddings: &[Vec<f32>], labels: &[usize], index: usize) -> f32 {
+    let peers: Vec<_> = labels
+        .iter()
+        .enumerate()
+        .filter(|(i, label)| *i != index && **label == labels[index])
+        .map(|(i, _)| i)
+        .collect();
+    if peers.is_empty() {
+        return 0.0;
+    }
+    (peers
+        .iter()
+        .map(|i| cosine_similarity(&embeddings[index], &embeddings[*i]))
+        .sum::<f32>()
+        / peers.len() as f32)
+        .clamp(0.0, 1.0)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpeakerTurn {
     pub speaker_id: String,
     pub start_time: f32,
     pub end_time: f32,
+    /// Cohésion cosinus moyenne hors auto-comparaison, bornée [0,1].
+    /// Zéro si aucun autre segment comparable; pas une probabilité d’identité.
     pub confidence: f32,
 }
 
@@ -114,52 +127,11 @@ impl CampPlusClusteringDiarizer {
     }
 
     fn mono_16k(chunk: &AudioChunk) -> Result<Vec<f32>> {
-        if chunk.sample_rate == 0 {
-            return Err(HakilleError::InferenceError(
-                "CampPlusClusteringDiarizer: sample_rate nul".to_string(),
-            ));
-        }
-        let mono: Vec<f32> = if chunk.channels > 1 {
-            let ch = chunk.channels as usize;
-            let frames = chunk.samples.len() / ch.max(1);
-            let mut m = Vec::with_capacity(frames);
-            for f in 0..frames {
-                let mut acc = 0.0f32;
-                for c in 0..ch {
-                    let s = chunk.samples[f * ch + c];
-                    acc += if s.is_finite() { s } else { 0.0 };
-                }
-                m.push((acc / ch as f32).clamp(-1.0, 1.0));
-            }
-            m
-        } else {
-            chunk
-                .samples
-                .iter()
-                .map(|s| {
-                    if s.is_finite() {
-                        s.clamp(-1.0, 1.0)
-                    } else {
-                        0.0
-                    }
-                })
-                .collect()
-        };
-        if chunk.sample_rate == 16_000 {
-            return Ok(mono);
-        }
-        let ratio = 16_000.0 / chunk.sample_rate as f64;
-        let out_len = ((mono.len() as f64 * ratio).round() as usize).max(1);
-        let mut out = Vec::with_capacity(out_len);
-        for i in 0..out_len {
-            let pos = i as f64 / ratio;
-            let i0 = pos.floor() as usize;
-            let frac = (pos - i0 as f64) as f32;
-            let s0 = mono.get(i0).copied().unwrap_or(0.0);
-            let s1 = mono.get(i0 + 1).copied().unwrap_or(s0);
-            out.push(s0 + (s1 - s0) * frac);
-        }
-        Ok(out)
+        hakille_inference::audio_resample::try_to_mono_16k(
+            &chunk.samples,
+            chunk.channels,
+            chunk.sample_rate,
+        )
     }
 }
 
@@ -172,11 +144,11 @@ impl Default for CampPlusClusteringDiarizer {
 #[async_trait]
 impl Diarizer for CampPlusClusteringDiarizer {
     async fn diarize(&self, chunk: &AudioChunk) -> Result<Vec<SpeakerTurn>> {
-        let dur = chunk.duration_seconds();
+        let pcm = Self::mono_16k(chunk)?;
+        let dur = pcm.len() as f32 / 16000.0;
         if dur < 0.1 {
             return Ok(vec![]);
         }
-        let pcm = Self::mono_16k(chunk)?;
         if pcm.is_empty() {
             return Ok(vec![]);
         }
@@ -381,16 +353,7 @@ impl Diarizer for CampPlusClusteringDiarizer {
                 end = start + 0.01;
             }
             // Cohésion locale comme confiance (fenêtre vs moyenne du cluster).
-            let members: Vec<usize> = (0..n).filter(|i| win_speaker[*i] == *sp).collect();
-            let mut coh = 0.0f32;
-            for m in members.iter() {
-                coh += cosine_similarity(&embs[w], &embs[*m]);
-            }
-            coh = if members.is_empty() {
-                0.75
-            } else {
-                (coh / members.len() as f32).clamp(0.5, 0.99)
-            };
+            let coh = peer_cohesion(&embs, &win_speaker, w);
             if let Some(last) = turns.last_mut()
                 && last.speaker_id == format!("Speaker_{sp}")
                 && start <= last.end_time + 0.80
@@ -424,6 +387,15 @@ mod diarization_tests {
     }
 
     #[test]
+    fn cohesion_uses_other_segments_without_invented_minimum() {
+        let embeddings = vec![vec![1.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
+        assert_eq!(peer_cohesion(&embeddings, &[0, 0, 1], 0), 1.0);
+        assert_eq!(peer_cohesion(&embeddings, &[0, 0, 1], 2), 0.0);
+        assert_eq!(peer_cohesion(&embeddings, &[0, 1, 0], 0), 0.0);
+        assert_eq!(peer_cohesion(&embeddings, &[0, 0, 0], 0), 0.5);
+    }
+
+    #[test]
     fn test_backend_note_campp_nemotron_planned() {
         let d = CampPlusClusteringDiarizer::new(2);
         let note = d.backend_note();
@@ -441,10 +413,29 @@ mod diarization_tests {
         assert_eq!(legacy.max_speakers(), 2);
     }
 
-    /// 2 locuteurs distincts (f0 120 Hz puis 220 Hz, 3 s chacun) → 2 tours
-    /// avec 2 `speaker_id` distincts via clustering CAM++ réel.
     #[tokio::test]
-    async fn test_deux_locuteurs_distincts_clustering_reel() {
+    async fn malformed_audio_is_rejected_before_model_loading() {
+        let diarizer = CampPlusClusteringDiarizer::with_model_path("/absent", 2);
+        for chunk in [
+            AudioChunk::new(vec![f32::NAN; 1600], 16000, 1),
+            AudioChunk::new(vec![0.0; 1600], 0, 1),
+            AudioChunk::new(vec![0.0; 1601], 16000, 2),
+        ] {
+            assert!(
+                diarizer
+                    .diarize(&chunk)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("audio invalide")
+            );
+        }
+    }
+
+    /// Signaux synthétiques pour vérifier bornes et déterminisme numérique,
+    /// sans leur attribuer une identité humaine.
+    #[tokio::test]
+    async fn clustering_real_obeys_budget_and_is_deterministic() {
         let Some(model_path) = CampplusOnnx::default_model_path() else {
             eprintln!("SKIP diarisation 2 locuteurs : checkpoint CAM++ absent");
             return;
@@ -458,7 +449,7 @@ mod diarization_tests {
             channels: 1,
             timestamp: hakille_core::Timestamp::now(),
         };
-        let diarizer = CampPlusClusteringDiarizer::new(4);
+        let diarizer = CampPlusClusteringDiarizer::new(2);
         let turns = diarizer.diarize(&chunk).await.expect("diarisation réelle");
         eprintln!("turns 2 locuteurs: {turns:?}");
         assert!(
@@ -468,17 +459,18 @@ mod diarization_tests {
         let mut ids: Vec<String> = turns.iter().map(|t| t.speaker_id.clone()).collect();
         ids.sort();
         ids.dedup();
+        assert!(!ids.is_empty() && ids.len() <= diarizer.max_speakers());
+        let again = diarizer.diarize(&chunk).await.unwrap();
         assert_eq!(
-            ids.len(),
-            2,
-            "2 locuteurs distincts attendus (f0 120 vs 220 Hz), got: {turns:?}"
+            serde_json::to_value(&turns).unwrap(),
+            serde_json::to_value(&again).unwrap()
         );
         // Timestamps ordonnés et finis.
         for t in &turns {
             assert!(t.start_time < t.end_time);
             assert!(t.start_time.is_finite() && t.end_time.is_finite());
             assert!(
-                (0.5..=1.0).contains(&t.confidence),
+                (0.0..=1.0).contains(&t.confidence),
                 "confiance {}",
                 t.confidence
             );

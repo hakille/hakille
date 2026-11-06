@@ -1,12 +1,13 @@
-/// Resample linéaire + downmix mono vers 16 kHz (std seul, sans DSP lourde).
+/// Downmix mono puis ré-échantillonnage vers 16 kHz (std seul).
 ///
 /// - Downmix : moyenne arithmétique des canaux (entrelacé `[L0,R0,L1,R1,...]`).
-/// - Resample : interpolation linéaire vers 16000 Hz.
+/// - Downsampling : sinc fenêtrée avec filtre anti-repliement.
+/// - Upsampling : interpolation linéaire.
 /// - Sanitize : `NaN`/`Inf` -> `0.0`, puis clamp `[-1.0, 1.0]`.
 /// - Cas limites : entrée vide, `channels == 0` ou `sample_rate == 0` -> `Vec` vide.
 ///
-/// [`to_mono_16k`] ne fait aucune allocation autre que le vecteur de sortie
-/// et ne panique jamais (retourne un `Vec` vide sur entrée dégénérée).
+/// Les entrées dégénérées retournent un vecteur vide. Les API métier utilisent
+/// [`try_to_mono_16k`] pour refuser les entrées invalides explicitement.
 pub fn to_mono_16k(samples: &[f32], channels: u16, sample_rate: u32) -> Vec<f32> {
     const TARGET_RATE: u32 = 16_000;
     if samples.is_empty() || channels == 0 || sample_rate == 0 {
@@ -43,6 +44,50 @@ pub fn to_mono_16k(samples: &[f32], channels: u16, sample_rate: u32) -> Vec<f32>
         let v = mono.first().copied().unwrap_or(0.0);
         return vec![v.clamp(-1.0, 1.0)];
     }
+    if sample_rate > TARGET_RATE {
+        // Filtre polyphasé, 32 zéros de sinc par sortie. Les coefficients sont
+        // calculés une fois par phase, jamais de trigonométrie par sample.
+        let radius = (16.0 / ratio).ceil() as isize;
+        const PHASES: usize = 1024;
+        let cutoff = ratio * 0.95;
+        let filters: Vec<Vec<f32>> = (0..PHASES)
+            .map(|phase| {
+                let frac = phase as f64 / PHASES as f64;
+                let mut taps: Vec<_> = (-radius..=radius)
+                    .map(|offset| {
+                        let x = offset as f64 - frac;
+                        let z = std::f64::consts::PI * x * cutoff;
+                        let sinc = if z.abs() < 1e-12 { 1.0 } else { z.sin() / z };
+                        let window =
+                            0.5 + 0.5 * (std::f64::consts::PI * x / (radius + 1) as f64).cos();
+                        (cutoff * sinc * window) as f32
+                    })
+                    .collect();
+                let sum: f32 = taps.iter().sum();
+                for tap in &mut taps {
+                    *tap /= sum;
+                }
+                taps
+            })
+            .collect();
+        return (0..out_len)
+            .map(|i| {
+                let pos = i as f64 / ratio;
+                let base = pos.floor() as isize;
+                let phase = ((pos.fract() * PHASES as f64) as usize).min(PHASES - 1);
+                filters[phase]
+                    .iter()
+                    .enumerate()
+                    .map(|(j, weight)| {
+                        let index =
+                            (base + j as isize - radius).clamp(0, frames as isize - 1) as usize;
+                        mono[index] * weight
+                    })
+                    .sum::<f32>()
+                    .clamp(-1.0, 1.0)
+            })
+            .collect();
+    }
     // Resample linéaire sans dérive de phase : la grille de sortie est
     // uniformément répartie sur l'entrée (`pos = i * frames / out_len`),
     // pas de recalage cumulatif (l'ancienne cartographie `[0,frames-1] ->
@@ -67,9 +112,60 @@ pub fn to_mono_16k(samples: &[f32], channels: u16, sample_rate: u32) -> Vec<f32>
     out
 }
 
+/// Entrée métier validée avant allocation/inférence : pas de troncature de
+/// canal, de fréquence nulle, d'échantillon non-fini ou de durée démesurée.
+pub fn try_to_mono_16k(
+    samples: &[f32],
+    channels: u16,
+    sample_rate: u32,
+) -> hakille_core::Result<Vec<f32>> {
+    if !(1..=8).contains(&channels)
+        || !(8_000..=192_000).contains(&sample_rate)
+        || samples.is_empty()
+        || !samples.len().is_multiple_of(channels as usize)
+        || samples.len() / channels as usize > sample_rate as usize * 120
+        || samples.iter().any(|x| !x.is_finite() || x.abs() > 1.0)
+    {
+        return Err(hakille_core::HakilleError::InferenceError(
+            "audio invalide : PCM normalisé fini, 1–8 canaux complets, 8–192 kHz, durée ≤120 s requis".into(),
+        ));
+    }
+    Ok(to_mono_16k(samples, channels, sample_rate))
+}
+
 #[cfg(test)]
 mod tests {
     use super::to_mono_16k;
+
+    #[test]
+    fn strict_audio_rejects_malformed_input() {
+        for (samples, channels, rate) in [
+            (&[0.0][..], 0, 16000),
+            (&[0.0][..], 2, 16000),
+            (&[f32::NAN][..], 1, 16000),
+            (&[0.0][..], 1, 0),
+        ] {
+            assert!(super::try_to_mono_16k(samples, channels, rate).is_err());
+        }
+    }
+
+    #[test]
+    fn downsampling_rejects_above_nyquist_energy() {
+        let input: Vec<_> = (0..48000)
+            .map(|i| (i as f32 * 12000.0 / 48000.0 * std::f32::consts::TAU).sin() * 0.5)
+            .collect();
+        let output = to_mono_16k(&input, 1, 48000);
+        let rms = (output[128..output.len() - 128]
+            .iter()
+            .map(|v| v * v)
+            .sum::<f32>()
+            / (output.len() - 256) as f32)
+            .sqrt();
+        assert!(
+            rms < 0.005,
+            "12 kHz ne doit pas devenir une fausse voix à 4 kHz: RMS={rms}"
+        );
+    }
 
     #[test]
     fn resample_422_to_160_frames() {

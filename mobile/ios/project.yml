@@ -1,0 +1,62 @@
+name: Hakille
+options:
+  bundleIdPrefix: dev.hakille
+  deploymentTarget:
+    iOS: "16.0"
+  knownRegions: [en, fr]
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  Hakille:
+    type: application
+    platform: iOS
+    sources:
+      - path: Hakille
+      - path: Generated
+        excludes: ["*.h", "*.modulemap", ".gitkeep"]
+    dependencies:
+      - framework: Frameworks/HakilleMobile.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.hakille.mobile
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: build/Hakille-Info.plist
+      properties:
+        CFBundleDisplayName: Hakille
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIAppFonts: [InterVariable.ttf]
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        NSCameraUsageDescription: "Take a photo only when you choose Camera. Its preview stays in memory and is not uploaded or saved to Photos."
+        NSLocationWhenInUseUsageDescription: "Get one location fix when you request it, while the app is active. It is shown locally and is not sent to the hub."
+        NSMicrophoneUsageDescription: "Capture up to 30 seconds of speech after you tap Dictate. Recognition stays on this device. Dictation fills the draft; optional voice conversation sends the final text to your selected hub."
+        NSSpeechRecognitionUsageDescription: "Transcribe speech on this device after you tap Dictate. If local recognition is unavailable, dictation will not start."
+        NSLocalNetworkUsageDescription: "Connect to the Hakille hub you explicitly selected on your local network."
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+  HakilleTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: Hakille
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Hakille:
+    build:
+      targets:
+        Hakille: all
+        HakilleTests: [test]
+    test:
+      targets: [HakilleTests]

@@ -4,7 +4,7 @@
 //! renderer-independent baseline of the migration (ADR-009): it maps that
 //! state to [`ShellSnapshot`] and pure view-models, without any GPU or
 //! toolkit dependency. All inference labels are honest:
-//! `Inspected / Simulated / Real` — never "Operational" for stubs.
+//! `Absent / Available / Inspected / Simulated / Real` — aucun succès inventé.
 //!
 //! Le shell desktop actif vit dans `hakille-ui-desktop` ; cette baseline est
 //! conservée comme filet de sécurité tant que la parité reste testée

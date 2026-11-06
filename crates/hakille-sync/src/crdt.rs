@@ -1,8 +1,19 @@
-use hakille_core::{Timestamp, TripletId};
+//! Fusion locale remove-wins/LWW, sans transport ni garantie de causalité par élément.
+//! L'ordre LWW choisit une valeur et ne conserve pas les versions perdantes. Les
+//! horloges globales ne prouvent pas qu'un pair connaît chaque suppression : le
+//! ramasse-miettes temporel est donc désactivé, et un ID supprimé n'est pas réutilisé.
+
+use hakille_core::{HakilleError, Result, Timestamp, TripletId};
 use hakille_memory::KnowledgeGraph;
-use hakille_memory::triplet::Triplet;
+use hakille_memory::triplet::{NodeValue, Triplet};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+
+const MAX_CLOCK_NODES: usize = 1024;
+
+fn sync_error(message: &str) -> HakilleError {
+    HakilleError::Internal(message.into())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct VectorClock {
@@ -11,34 +22,82 @@ pub struct VectorClock {
 
 impl VectorClock {
     pub fn new() -> Self {
-        Self {
-            clock: HashMap::new(),
+        Self::default()
+    }
+    fn validate(&self) -> Result<()> {
+        if self.clock.len() > MAX_CLOCK_NODES
+            || self
+                .clock
+                .keys()
+                .any(|id| id.is_empty() || id.len() > 256 || id.chars().any(char::is_control))
+        {
+            return Err(sync_error(
+                "Horloge vectorielle invalide ou trop volumineuse",
+            ));
         }
+        Ok(())
     }
-
-    pub fn tick(&mut self, node_id: &str) {
-        let entry = self.clock.entry(node_id.to_string()).or_insert(0);
-        *entry += 1;
-    }
-
-    pub fn merge(&mut self, other: &VectorClock) {
-        for (node, &remote_counter) in &other.clock {
-            let local_counter = self.clock.entry(node.clone()).or_insert(0);
-            *local_counter = (*local_counter).max(remote_counter);
+    pub fn tick(&mut self, node_id: &str) -> Result<()> {
+        self.validate()?;
+        if node_id.is_empty()
+            || node_id.len() > 256
+            || node_id.chars().any(char::is_control)
+            || (!self.clock.contains_key(node_id) && self.clock.len() >= MAX_CLOCK_NODES)
+        {
+            return Err(sync_error("Identité ou capacité d'horloge invalide"));
         }
+        let next = self
+            .get(node_id)
+            .checked_add(1)
+            .ok_or_else(|| sync_error("Compteur d'horloge vectorielle épuisé"))?;
+        self.clock.insert(node_id.into(), next);
+        Ok(())
     }
-
+    pub fn merge(&mut self, other: &VectorClock) -> Result<()> {
+        self.validate()?;
+        other.validate()?;
+        if self
+            .clock
+            .keys()
+            .chain(other.clock.keys())
+            .collect::<HashSet<_>>()
+            .len()
+            > MAX_CLOCK_NODES
+        {
+            return Err(sync_error("Fusion d'horloges trop volumineuse"));
+        }
+        for (node, &counter) in &other.clock {
+            let local = self.clock.entry(node.clone()).or_insert(0);
+            *local = (*local).max(counter);
+        }
+        Ok(())
+    }
     pub fn get(&self, node_id: &str) -> u64 {
         self.clock.get(node_id).copied().unwrap_or(0)
     }
+}
+
+/// Clé canonique du schéma Triplet actuel : ordre des champs struct/enum fixe,
+/// aucun dictionnaire dans Triplet. Les nombres non finis sont refusés avant
+/// sérialisation (JSON les convertirait sinon en null et créerait des collisions).
+pub(crate) fn canonical_triplet(triplet: &Triplet) -> Result<Vec<u8>> {
+    triplet.validate()?;
+    match &triplet.object {
+        NodeValue::Number(value) if !value.is_finite() => {
+            return Err(sync_error("Nombre de triplet non fini"));
+        }
+        NodeValue::Embedding(values) if values.iter().any(|value| !value.is_finite()) => {
+            return Err(sync_error("Embedding de triplet non fini"));
+        }
+        _ => {}
+    }
+    serde_json::to_vec(triplet).map_err(|error| HakilleError::SerializationError(error.to_string()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrdtSync {
     pub elements: HashMap<TripletId, Triplet>,
     pub tombstones: HashSet<TripletId>,
-    /// Horodatage de chaque tombstone (défaut vide pour compatibilité avec
-    /// les états sérialisés avant cette version).
     #[serde(default)]
     pub tombstone_times: HashMap<TripletId, Timestamp>,
     pub vector_clock: VectorClock,
@@ -53,167 +112,139 @@ impl CrdtSync {
             vector_clock: VectorClock::new(),
         }
     }
-
-    pub fn insert_triplet(&mut self, triplet: Triplet, node_id: &str) {
-        self.vector_clock.tick(node_id);
-        // Une réinsertion explicite ressuscite : la tombstone est levée.
-        self.tombstones.remove(&triplet.id);
-        self.tombstone_times.remove(&triplet.id);
+    pub fn insert_triplet(&mut self, triplet: Triplet, node_id: &str) -> Result<()> {
+        canonical_triplet(&triplet)?;
+        if self.tombstones.contains(&triplet.id) {
+            return Err(sync_error(
+                "ID supprimé non réutilisable sans génération causale ; créer un nouvel ID",
+            ));
+        }
+        self.vector_clock.tick(node_id)?;
         self.elements.insert(triplet.id.clone(), triplet);
+        Ok(())
+    }
+    pub fn remove_triplet(&mut self, id: TripletId, node_id: &str) -> Result<()> {
+        self.vector_clock.tick(node_id)?;
+        if self.tombstones.insert(id.clone()) {
+            self.tombstone_times.insert(id.clone(), Timestamp::now());
+        }
+        self.elements.remove(&id);
+        Ok(())
     }
 
-    pub fn remove_triplet(&mut self, id: TripletId, node_id: &str) {
-        self.vector_clock.tick(node_id);
-        self.tombstones.insert(id.clone());
-        self.tombstone_times
-            .entry(id)
-            .or_insert_with(Timestamp::now);
+    fn canonical_elements(&self) -> Result<HashMap<TripletId, Vec<u8>>> {
+        self.vector_clock.validate()?;
+        if self
+            .tombstone_times
+            .keys()
+            .any(|id| !self.tombstones.contains(id))
+        {
+            return Err(sync_error("Date de suppression sans tombstone"));
+        }
+        self.elements
+            .iter()
+            .map(|(id, triplet)| {
+                if id != &triplet.id {
+                    return Err(sync_error("Clé de triplet incohérente"));
+                }
+                Ok((id.clone(), canonical_triplet(triplet)?))
+            })
+            .collect()
     }
 
-    /// Fusion LWW (Last-Writer-Wins) sur `last_activated` :
-    ///
-    /// - même ID des deux côtés ⇒ garde celui avec `last_activated` le plus
-    ///   récent (comparaison `DateTime<Utc>`, égalité ⇒ **first-wins
-    ///   documenté** : l'existant local est conservé pour la déterminisme et
-    ///   la commutativité) ;
-    /// - ID inconnu localement ⇒ insertion (sauf si tombstone locale, qui
-    ///   garde la précédence — la suppression gagne sur la création
-    ///   concurrente) ;
-    /// - union des tombstones (avec conservation du plus ancien horodatage
-    ///   pour un GC équitable) + fusion des horloges vectorielles.
-    pub fn merge(&mut self, remote: &CrdtSync) {
-        // 1. Union LWW des éléments.
-        for (id, remote_triplet) in &remote.elements {
-            // Tombstone locale ⇒ la suppression gagne (pas de résurrection
-            // par un état distant antérieur à la suppression).
+    /// Fusion atomique après validation : suppression prioritaire, puis maximum
+    /// de (last_activated, octets canoniques du triplet entier). Une égalité de date
+    /// ne dépend plus du côté local. Les dates de tombstone inconnues restent
+    /// inconnues ; jamais d'horodatage inventé pendant une fusion.
+    pub fn merge(&mut self, remote: &CrdtSync) -> Result<()> {
+        let local_canonical = self.canonical_elements()?;
+        let remote_canonical = remote.canonical_elements()?;
+        let mut merged_clock = self.vector_clock.clone();
+        merged_clock.merge(&remote.vector_clock)?;
+        for (id, triplet) in &remote.elements {
             if self.tombstones.contains(id) || remote.tombstones.contains(id) {
                 continue;
             }
-            match self.elements.get(id) {
-                None => {
-                    self.elements.insert(id.clone(), remote_triplet.clone());
-                }
-                Some(local) => {
-                    if remote_triplet.metadata.last_activated.0 > local.metadata.last_activated.0 {
-                        self.elements.insert(id.clone(), remote_triplet.clone());
-                    }
-                    // Sinon first-wins : on garde l'existant (y compris à
-                    // égalité stricte, pour rester commutatif).
-                }
+            let replace = self.elements.get(id).is_none_or(|local| {
+                (&triplet.metadata.last_activated, &remote_canonical[id])
+                    > (&local.metadata.last_activated, &local_canonical[id])
+            });
+            if replace {
+                self.elements.insert(id.clone(), triplet.clone());
             }
         }
-
-        // 2. Union des tombstones (+ horodatages : garde le plus ancien).
-        for tombstone in &remote.tombstones {
-            self.tombstones.insert(tombstone.clone());
-            // Le distant a peut-être un horodatage, sinon `now` conservateur.
-            let remote_time = remote
-                .tombstone_times
-                .get(tombstone)
-                .cloned()
-                .unwrap_or_else(Timestamp::now);
-            self.tombstone_times
-                .entry(tombstone.clone())
-                .and_modify(|local_time| {
-                    if remote_time.0 < local_time.0 {
-                        *local_time = remote_time.clone();
-                    }
-                })
-                .or_insert(remote_time);
-            // La tombstone fait disparaître l'élément des actifs.
-            self.elements.remove(tombstone);
+        for id in &remote.tombstones {
+            let existed = self.tombstones.contains(id);
+            match (
+                existed,
+                self.tombstone_times.get(id),
+                remote.tombstone_times.get(id),
+            ) {
+                (false, _, Some(time)) => {
+                    self.tombstone_times.insert(id.clone(), time.clone());
+                }
+                (true, Some(local), Some(other)) => {
+                    self.tombstone_times
+                        .insert(id.clone(), local.min(other).clone());
+                }
+                _ => {
+                    self.tombstone_times.remove(id);
+                }
+            }
+            self.tombstones.insert(id.clone());
         }
-        // Les tombstones locales s'appliquent aussi aux éléments distants
-        // qui viendraient d'être insérés ci-dessus par erreur d'ordre.
-        for tomb in self.tombstones.clone() {
-            self.elements.remove(&tomb);
-        }
-
-        // 3. Merge vector clocks
-        self.vector_clock.merge(&remote.vector_clock);
+        self.elements.retain(|id, _| !self.tombstones.contains(id));
+        self.vector_clock = merged_clock;
+        Ok(())
     }
 
     pub fn active_triplets(&self) -> Vec<&Triplet> {
         self.elements
             .iter()
             .filter(|(id, _)| !self.tombstones.contains(id))
-            .map(|(_, triplet)| triplet)
+            .map(|(_, value)| value)
             .collect()
     }
-
-    /// Horodatage d'une tombstone (`None` si pas de tombstone ou état ancien
-    /// sans horodatage).
     pub fn tombstone_time(&self, id: &TripletId) -> Option<&Timestamp> {
         self.tombstone_times.get(id)
     }
 
-    /// Ramasse-miettes : oublie les tombstones (et leurs éléments associés)
-    /// strictement plus anciennes que `cutoff`, rend le nombre d'entrées
-    /// purgées. Les tombstones sans horodatage (états pré-LWW) sont
-    /// conservées par prudence (jamais purgées aveuglément).
-    pub fn gc(&mut self, cutoff: Timestamp) -> usize {
-        let old: Vec<TripletId> = self
-            .tombstone_times
-            .iter()
-            .filter(|(_, t)| t.0 < cutoff.0)
-            .map(|(id, _)| id.clone())
-            .collect();
-        let n = old.len();
-        for id in old {
-            self.tombstones.remove(&id);
-            self.tombstone_times.remove(&id);
-            self.elements.remove(&id);
-        }
-        n
+    /// Purge désactivée : l'âge seul ne prouve pas la réception par les pairs
+    /// hors ligne. Rend toujours zéro et conserve les suppressions anti-résurrection.
+    /// Une compaction future exige un protocole de convergence, absent ici.
+    pub fn gc(&mut self, _cutoff: Timestamp) -> usize {
+        0
     }
-
-    /// Variante pratique : `max_age` (ex. `chrono::Duration::days(30)`).
-    pub fn gc_older_than(&mut self, max_age: chrono::Duration) -> usize {
-        let cutoff = Timestamp(chrono::Utc::now() - max_age);
-        self.gc(cutoff)
+    pub fn gc_older_than(&mut self, _max_age: chrono::Duration) -> usize {
+        0
     }
 }
-
 impl Default for CrdtSync {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Pont graphe ↔ CRDT **sans réseau** (conversion locale uniquement, mémoire
-/// bout-en-bout : `Triplet` <-> élément CRDT).
-///
-/// - [`knowledge_graph_to_crdt`] : photographie tous les triplets du graphe
-///   RAM dans un `CrdtSync` frais via `insert_triplet` (avec le `node_id`
-///   donné, horloge vectorielle avancée). Le graphe n'a pas de tombstones :
-///   seules les présences sont converties, rien n'est supprimé.
-/// - [`apply_crdt_to_graph`] : rejoue les triplets **actifs** du CRDT dans le
-///   graphe via `KnowledgeGraph::insert` (routage contradiction natif : un
-///   `NeedsUserResolution` est sauté sans écraser, l'existant est conservé).
-///   Rend le nombre de triplets appliqués (les doublons idempotents comptent
-///   comme appliqués car déjà présents ; les conflits `NeedsUserResolution`
-///   ne comptent pas).
-///
-/// Aucun I/O, aucun socket : la synchro réseau reste hors périmètre (voir
-/// `docs/MEMORY_END_TO_END.md`, limites honnêtes).
-pub fn knowledge_graph_to_crdt(graph: &KnowledgeGraph, node_id: &str) -> CrdtSync {
-    let mut crdt = CrdtSync::new();
-    for t in graph.all_triplets() {
-        crdt.insert_triplet(t.clone(), node_id);
+/// Photographie locale du graphe, sans réseau. Le graphe ne fournit pas de
+/// tombstones ; cette conversion ne représente donc que les présences.
+pub fn knowledge_graph_to_crdt(graph: &KnowledgeGraph, node_id: &str) -> Result<CrdtSync> {
+    let mut state = CrdtSync::new();
+    for triplet in graph.all_triplets() {
+        state.insert_triplet(triplet.clone(), node_id)?;
     }
-    crdt
+    Ok(state)
 }
 
+/// Rejoue seulement les triplets actifs. Les suppressions ne sont pas propagées
+/// au graphe par ce pont ; un conflit métier conserve l'existant sans l'écraser.
 pub fn apply_crdt_to_graph(graph: &mut KnowledgeGraph, crdt: &CrdtSync) -> usize {
     let mut applied = 0;
-    for t in crdt.active_triplets() {
-        match graph.insert(t.clone()) {
-            hakille_memory::InsertResult::NeedsUserResolution { .. } => {
-                // Jamais d'écrasement silencieux : conflit sauté, existant conservé.
-            }
-            _ => {
-                applied += 1;
-            }
+    for triplet in crdt.active_triplets() {
+        if !matches!(
+            graph.insert(triplet.clone()),
+            hakille_memory::InsertResult::NeedsUserResolution { .. }
+        ) {
+            applied += 1;
         }
     }
     applied
@@ -280,25 +311,25 @@ mod tests {
         let t2 = make_test_triplet("User works on Rust");
 
         // Node A inserts t1 and t2
-        node_a.insert_triplet(t1.clone(), "node-a");
-        node_a.insert_triplet(t2.clone(), "node-a");
+        node_a.insert_triplet(t1.clone(), "node-a").unwrap();
+        node_a.insert_triplet(t2.clone(), "node-a").unwrap();
 
         // Sync A -> B
-        node_b.merge(&node_a);
+        node_b.merge(&node_a).unwrap();
         assert_eq!(node_b.active_triplets().len(), 2);
 
         // Node B deletes t1 offline
-        node_b.remove_triplet(t1.id.clone(), "node-b");
+        node_b.remove_triplet(t1.id.clone(), "node-b").unwrap();
         assert_eq!(node_b.active_triplets().len(), 1);
 
         // Node A merges B: t1 must be deleted on A too (tombstone wins)
-        node_a.merge(&node_b);
+        node_a.merge(&node_b).unwrap();
         assert_eq!(node_a.active_triplets().len(), 1);
         assert_eq!(node_a.active_triplets()[0].id, t2.id);
 
         // Idempotence: merging multiple times changes nothing
         let before_merge = node_a.clone();
-        node_a.merge(&before_merge);
+        node_a.merge(&before_merge).unwrap();
         assert_eq!(node_a.active_triplets().len(), 1);
         assert_eq!(node_a.vector_clock, before_merge.vector_clock);
     }
@@ -311,14 +342,14 @@ mod tests {
         let t1 = make_test_triplet("Fact A");
         let t2 = make_test_triplet("Fact B");
 
-        a.insert_triplet(t1, "node-a");
-        b.insert_triplet(t2, "node-b");
+        a.insert_triplet(t1, "node-a").unwrap();
+        b.insert_triplet(t2, "node-b").unwrap();
 
         let mut a_then_b = a.clone();
-        a_then_b.merge(&b);
+        a_then_b.merge(&b).unwrap();
 
         let mut b_then_a = b.clone();
-        b_then_a.merge(&a);
+        b_then_a.merge(&a).unwrap();
 
         // Both nodes must have the exact same active triplets count and vector clock
         assert_eq!(
@@ -338,11 +369,11 @@ mod tests {
 
         let mut a = CrdtSync::new();
         let mut b = CrdtSync::new();
-        a.insert_triplet(old_t, "node-a");
-        b.insert_triplet(new_t, "node-b");
+        a.insert_triplet(old_t, "node-a").unwrap();
+        b.insert_triplet(new_t, "node-b").unwrap();
 
         // A merge B ⇒ le plus récent gagne.
-        a.merge(&b);
+        a.merge(&b).unwrap();
         let kept = a.elements.get(&id).unwrap();
         match &kept.object {
             NodeValue::Text(s) => assert_eq!(s, "récent"),
@@ -355,12 +386,14 @@ mod tests {
         c.insert_triplet(
             triplet_with_id_and_time(id.clone(), "ancien", old_time),
             "node-a",
-        );
+        )
+        .unwrap();
         d.insert_triplet(
             triplet_with_id_and_time(id.clone(), "récent", new_time),
             "node-b",
-        );
-        d.merge(&c);
+        )
+        .unwrap();
+        d.merge(&c).unwrap();
         let kept2 = d.elements.get(&id).unwrap();
         match &kept2.object {
             NodeValue::Text(s) => assert_eq!(s, "récent"),
@@ -369,34 +402,12 @@ mod tests {
     }
 
     #[test]
-    fn test_crdt_lww_tie_first_wins() {
-        let id = TripletId(Uuid::now_v7());
-        let when = chrono::Utc::now();
-        let mut a = CrdtSync::new();
-        let mut b = CrdtSync::new();
-        a.insert_triplet(
-            triplet_with_id_and_time(id.clone(), "local", when),
-            "node-a",
-        );
-        b.insert_triplet(
-            triplet_with_id_and_time(id.clone(), "distant", when),
-            "node-b",
-        );
-        // Égalité stricte ⇒ first-wins : le local est conservé.
-        a.merge(&b);
-        match &a.elements.get(&id).unwrap().object {
-            NodeValue::Text(s) => assert_eq!(s, "local"),
-            _ => panic!("attendu du texte"),
-        }
-    }
-
-    #[test]
-    fn test_crdt_gc_purges_old_tombstones() {
+    fn test_crdt_gc_retains_tombstones_without_convergence_proof() {
         let mut node = CrdtSync::new();
         let t = make_test_triplet("éphémère");
         let id = t.id.clone();
-        node.insert_triplet(t, "node-a");
-        node.remove_triplet(id.clone(), "node-a");
+        node.insert_triplet(t, "node-a").unwrap();
+        node.remove_triplet(id.clone(), "node-a").unwrap();
         assert!(node.tombstones.contains(&id));
 
         // Tombstone fraîche ⇒ GC futur ne purge rien.
@@ -406,8 +417,8 @@ mod tests {
 
         // Cutoff postérieur ⇒ purge.
         let past_cutoff = Timestamp(chrono::Utc::now() + chrono::Duration::seconds(1));
-        assert_eq!(node.gc(past_cutoff), 1);
-        assert!(!node.tombstones.contains(&id));
+        assert_eq!(node.gc(past_cutoff), 0);
+        assert!(node.tombstones.contains(&id));
     }
 
     #[test]
@@ -437,12 +448,108 @@ mod tests {
         )
         .expect("métadonnées de test valides");
         graph.insert(t);
-        let crdt = super::knowledge_graph_to_crdt(&graph, "node-test");
+        let crdt = super::knowledge_graph_to_crdt(&graph, "node-test").unwrap();
         assert_eq!(crdt.active_triplets().len(), 1);
 
         let mut graph2 = KnowledgeGraph::new();
         let applied = super::apply_crdt_to_graph(&mut graph2, &crdt);
         assert_eq!(applied, 1);
         assert_eq!(graph2.len(), 1);
+    }
+    #[test]
+    fn equal_timestamps_converge_for_all_permutations_and_groupings() {
+        let base = make_test_triplet("alpha");
+        let mut variants = [base.clone(), base.clone(), base];
+        variants[1].object = NodeValue::Text("middle".into());
+        variants[2].object = NodeValue::Text("zulu".into());
+        let mut states = Vec::new();
+        for (index, triplet) in variants.iter().enumerate() {
+            let mut state = CrdtSync::new();
+            state
+                .insert_triplet(triplet.clone(), &format!("node-{index}"))
+                .unwrap();
+            states.push(state);
+        }
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let mut left = states[order[0]].clone();
+            left.merge(&states[order[1]]).unwrap();
+            left.merge(&states[order[2]]).unwrap();
+            let mut grouped = states[order[1]].clone();
+            grouped.merge(&states[order[2]]).unwrap();
+            let mut right = states[order[0]].clone();
+            right.merge(&grouped).unwrap();
+            assert_eq!(left.elements, right.elements);
+            assert_eq!(left.vector_clock, right.vector_clock);
+            assert_eq!(left.elements[&variants[0].id], variants[2]);
+            let before = left.clone();
+            left.merge(&before).unwrap();
+            assert_eq!(left.elements, before.elements);
+        }
+    }
+
+    #[test]
+    fn overflow_and_nonfinite_remote_values_fail_atomically() {
+        let mut state = CrdtSync::new();
+        let triplet = make_test_triplet("kept");
+        state.insert_triplet(triplet.clone(), "node").unwrap();
+        state.vector_clock.clock.insert("node".into(), u64::MAX);
+        let before = state.clone();
+        assert!(state.vector_clock.tick("node").is_err());
+        assert!(state.remove_triplet(triplet.id.clone(), "node").is_err());
+        assert!(
+            state
+                .insert_triplet(make_test_triplet("new"), "node")
+                .is_err()
+        );
+        assert_eq!(state.elements, before.elements);
+        assert_eq!(state.vector_clock, before.vector_clock);
+        assert!(state.tombstones.is_empty());
+        for object in [
+            NodeValue::Number(f64::NAN),
+            NodeValue::Embedding(vec![f32::INFINITY]),
+        ] {
+            let mut invalid = triplet.clone();
+            invalid.object = object;
+            let mut remote = CrdtSync::new();
+            remote.elements.insert(invalid.id.clone(), invalid);
+            assert!(state.merge(&remote).is_err());
+            assert_eq!(state.elements, before.elements);
+            assert_eq!(state.vector_clock, before.vector_clock);
+        }
+    }
+
+    #[test]
+    fn unknown_tombstone_dates_and_offline_replays_do_not_resurrect() {
+        let triplet = make_test_triplet("offline copy");
+        let id = triplet.id.clone();
+        let mut stale = CrdtSync::new();
+        stale.insert_triplet(triplet.clone(), "offline").unwrap();
+        let mut removed = stale.clone();
+        removed.remove_triplet(id.clone(), "online").unwrap();
+        let before = removed.vector_clock.clone();
+        assert!(removed.insert_triplet(triplet, "online").is_err());
+        assert_eq!(removed.vector_clock, before);
+        assert_eq!(
+            removed.gc(Timestamp(chrono::Utc::now() + chrono::Duration::days(3650))),
+            0
+        );
+        removed.merge(&stale).unwrap();
+        assert!(removed.active_triplets().is_empty());
+        let mut legacy = CrdtSync::new();
+        legacy.tombstones.insert(id.clone()); // Ancien snapshot sans date.
+        let mut a = removed.clone();
+        a.merge(&legacy).unwrap();
+        let mut b = legacy;
+        b.merge(&removed).unwrap();
+        assert_eq!(a.tombstone_times, b.tombstone_times);
+        assert!(a.tombstone_time(&id).is_none());
+        assert!(a.active_triplets().is_empty() && b.active_triplets().is_empty());
     }
 }

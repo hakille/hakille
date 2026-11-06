@@ -1,0 +1,4 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+  <string name="voice_permission_resume">La demande de permission a interrompu le tour vocal. Après autorisation, réactivez le mode conversation puis appuyez sur Parler. Aucun envoi ni démarrage du micro ne reprend automatiquement.</string>
+</resources>

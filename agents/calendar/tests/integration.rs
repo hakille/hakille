@@ -10,13 +10,15 @@ fn evt(uid: &str, start: &str, end: &str) -> CalendarEvent {
         location: None,
         recurrence: None,
         status: "CONFIRMED".to_string(),
+        start_timezone: None,
+        end_timezone: None,
     }
 }
 
 /// Intégration calendar : seed + détection de conflit + ajout disjoint.
 #[test]
 fn test_calendar_integration_seed_and_conflict() {
-    let mut mgr = CalendarManager::new();
+    let mut mgr = CalendarManager::demo();
     assert_eq!(mgr.events().len(), 2, "seed de 2 événements attendu");
 
     // Chevauchement du 1er seed (10:00–11:30) → conflit + refus d'ajout.
@@ -25,7 +27,7 @@ fn test_calendar_integration_seed_and_conflict() {
         "2026-10-09T10:30:00Z",
         "2026-10-09T11:00:00Z",
     );
-    let conflicts = mgr.find_conflicts(&conflict);
+    let conflicts = mgr.find_conflicts(&conflict).unwrap();
     assert_eq!(conflicts.len(), 1);
     assert_eq!(conflicts[0].uid, "evt-20261009-01");
     assert!(mgr.add_event(conflict).is_err());
@@ -37,13 +39,13 @@ fn test_calendar_integration_seed_and_conflict() {
         "2026-10-09T15:00:00Z",
         "2026-10-09T16:00:00Z",
     );
-    assert!(mgr.find_conflicts(&free).is_empty());
+    assert!(mgr.find_conflicts(&free).unwrap().is_empty());
     assert!(mgr.add_event(free).is_ok());
     assert_eq!(mgr.events().len(), 3);
 
     // Filtrage par date + roundtrip ICS.
     assert_eq!(mgr.events_for_date("2026-10-09").len(), 3);
-    let ics = CalendarManager::export_ics(mgr.events());
+    let ics = CalendarManager::export_ics(mgr.events()).unwrap();
     let reparsed = CalendarManager::parse_ics(&ics).unwrap();
     assert_eq!(reparsed.len(), 3);
 }

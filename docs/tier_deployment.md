@@ -4,6 +4,13 @@ Ce document décrit l'organisation du déploiement d'Hakille selon les contraint
 
 ---
 
+> **Vision et état livré :** les profils de modèles et la réplication décrits
+> ci-dessous sont des cibles d'architecture. Le client mobile livré rejoint le
+> noyau sur un hub personnel ; il n'embarque pas openWakeWord, Moonshine,
+> CoreML/NPU ni un transport TiKV/APNs/FCM opérationnel. Voir
+> [ADR-011](../adr/011-mobile-native-client-and-hub.md) et
+> [l'audit mobile](ANALYSE_MOBILE_2026-11-04.md).
+
 ## 1. La Matrice des Trois Paliers Matériels
 
 Hakille refuse l'illusion d'un comportement strictement identique sur toutes les machines. Les systèmes d'exploitation commerciaux (notamment mobiles) imposent des restrictions de sandbox infranchissables. Hakille assume trois paliers honnêtes :

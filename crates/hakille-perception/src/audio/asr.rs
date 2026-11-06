@@ -9,15 +9,14 @@ use std::path::{Path, PathBuf};
 ///
 /// Contrat v1 honnête :
 /// - `transcript`/`language`/`confidence` : décodage CTC greedy réel.
-/// - `emotion` : toujours `""` en v1 (tête auxiliaire émotion non décodée).
-/// - `acoustic_events` : toujours `[]` en v1 (tête événements non décodée).
+/// - `emotion`/`acoustic_events` : tokens auxiliaires réellement émis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsrHypothesis {
     pub transcript: String,
     pub language: String,
-    /// v1 : toujours `""` — tête émotion SenseVoice non décodée (documenté, pas simulé).
+    /// Émotion émise par le modèle, vide si absente.
     pub emotion: String,
-    /// v1 : toujours `[]` — tête événements acoustiques non décodée (documenté).
+    /// Événements émis par le modèle, vide si absents.
     pub acoustic_events: Vec<String>,
     pub confidence: f32,
     pub duration_seconds: f32,
@@ -34,8 +33,7 @@ pub trait AsrEngine: Send + Sync {
 /// - Le moteur charge paresseusement (`OnceLock`) depuis `models_dir`
 ///   (`sensevoice_small.int8.onnx` + `tokens.txt`) ; modèle absent ->
 ///   erreur LOUD explicite, jamais de repli silencieux.
-/// - `language`/`confidence` viennent du décodage réel ; `emotion` reste
-///   `""` et `acoustic_events` `[]` en v1 (têtes auxiliaires non décodées).
+/// - Langue, confiance, émotion et événements viennent du décodage réel.
 pub struct SenseVoiceSmall {
     model_name: String,
     tokenizer: Option<SenseVoiceTokenizer>,
@@ -157,19 +155,24 @@ impl Default for SenseVoiceSmall {
 #[async_trait]
 impl AsrEngine for SenseVoiceSmall {
     async fn transcribe(&self, chunk: &AudioChunk) -> Result<AsrHypothesis> {
-        let duration = chunk.duration_seconds();
+        let pcm = hakille_inference::audio_resample::try_to_mono_16k(
+            &chunk.samples,
+            chunk.channels,
+            chunk.sample_rate,
+        )?;
+        let duration = pcm.len() as f32 / 16_000.0;
         let mut slot = self.lock_engine().map_err(|e| {
             HakilleError::InferenceError(format!("SenseVoiceSmall::transcribe: {e}"))
         })?;
         let engine = slot.as_mut().expect("moteur initialisé par lock_engine");
         // Forward RÉEL : mel + ort + CTC greedy + tokenizer réel.
-        let out = engine.transcribe(&chunk.samples)?;
+        let out = engine.transcribe(&pcm)?;
         Ok(AsrHypothesis {
             transcript: out.text,
             language: out.language,
             // v1 honnête : têtes auxiliaires émotion/événements non décodées.
-            emotion: String::new(),
-            acoustic_events: vec![],
+            emotion: out.emotion_event.emotion,
+            acoustic_events: out.emotion_event.events,
             confidence: out.confidence,
             duration_seconds: duration,
         })
@@ -192,27 +195,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_asr_v1_auxiliary_heads_vides_par_contrat() {
-        // Contrat v1 documenté sur le type : émotion/événements non décodés.
-        // `emotion == ""` et `acoustic_events == []` — jamais simulés.
-        let hyp = AsrHypothesis {
-            transcript: "bonjour".to_string(),
-            language: "fr".to_string(),
-            emotion: String::new(),
-            acoustic_events: vec![],
-            confidence: 0.9,
-            duration_seconds: 1.0,
-        };
-        assert_eq!(hyp.emotion, "", "v1 : emotion toujours vide");
-        assert!(
-            hyp.acoustic_events.is_empty(),
-            "v1 : acoustic_events toujours vide"
-        );
-        // Sérialisation stable du contrat.
-        let json = serde_json::to_string(&hyp).expect("sérialisation");
-        assert!(json.contains("\"emotion\":\"\""));
-        assert!(json.contains("\"acoustic_events\":[]"));
+    #[tokio::test]
+    async fn invalid_audio_fails_before_loading_model() {
+        let asr = SenseVoiceSmall::with_models_dir("/absent");
+        for chunk in [
+            AudioChunk::new(vec![f32::NAN; 1600], 16000, 1),
+            AudioChunk::new(vec![0.0; 1601], 16000, 2),
+            AudioChunk::new(vec![0.0; 1600], 0, 1),
+        ] {
+            let error = asr.transcribe(&chunk).await.unwrap_err().to_string();
+            assert!(error.contains("audio invalide"));
+        }
     }
 
     fn workspace_models_dir() -> Option<PathBuf> {
@@ -265,9 +258,8 @@ mod tests {
             hyp.confidence
         );
         assert!(!hyp.language.is_empty());
-        // v1 honnête : têtes auxiliaires non décodées.
-        assert!(hyp.emotion.is_empty());
-        assert!(hyp.acoustic_events.is_empty());
+        assert_eq!(hyp.emotion, "NEUTRAL");
+        assert_eq!(hyp.acoustic_events, ["Speech"]);
         assert!(
             dt.as_secs() < 60,
             "latence (incl. chargement) {dt:?} < 60 s"

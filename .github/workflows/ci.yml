@@ -8,6 +8,14 @@ on:
     - cron: "0 3 * * 0"
   workflow_dispatch:
 
+# Les artefacts debug et le cache incrémental saturent le disque des runners
+# lors des builds successifs check/clippy/test. Les assertions et contrôles
+# d'overflow des profils dev/test restent actifs ; seuls ces artefacts changent.
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
 jobs:
   check-test:
     strategy:
@@ -39,7 +47,8 @@ jobs:
         # Windows : 0 warning (vérifié localement). `-D warnings` reste désactivé
         # tant que la matrice Ubuntu n'a pas été repassée en revue.
       - name: tests
-        run: cargo test --workspace --locked
+        # Exécuter toutes les suites même si l’une échoue ; le job reste en échec.
+        run: cargo test --workspace --locked --no-fail-fast
       - name: conformance
         run: cargo run -p xtask -- conformance
 
@@ -120,38 +129,36 @@ jobs:
         run: cargo run -p xtask -- conformance-slow
 
   os-compat:
-    # Preuve de compilation cross-OS (Linux → macOS x86_64/arm64) : `cargo
-    # check` ne lie pas, donc aucune dépendance C/FFI (ring, etc.) n'est
-    # résolue ici et le produit n'est pas exécuté sur Mac. C'est une preuve
-    # de compilation (crates validées localement), pas une preuve labo —
-    # la preuve labo macOS reste le job macos-compat sur runner réel.
-    runs-on: ubuntu-latest
+    # `cargo check` exécute aussi les build.rs des dépendances natives (ring,
+    # notamment). Les deux architectures Apple exigent donc Clang et le SDK
+    # macOS ; le compilateur C Linux ne sait pas traiter leurs options.
+    # Le workspace Linux complet est déjà vérifié par check-test (Ubuntu).
+    # Ces compilations ne constituent pas un essai matériel du produit.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: "1.95"
-      - name: cibles cross (Linux natif + Apple x86_64/arm64)
-        run: rustup target add x86_64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin
-      - name: check cross x86_64-apple-darwin
+      - name: cibles Apple x86_64/arm64
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+      - name: check cross x86_64-apple-darwin (types, sans runtime ONNX Intel)
+        # ORT 1.31 ne distribue plus de binaire macOS Intel. Option officielle
+        # ort-sys pour cargo check : conserve les types et un symbole non résolu
+        # qui fera échouer une vraie liaison sans runtime. Aucun stub fourni.
+        env:
+          ORT_SKIP_DOWNLOAD: "1"
         run: >
-          cargo check --all-targets --target x86_64-apple-darwin
+          cargo check --all-targets --locked --target x86_64-apple-darwin
           -p hakille-design -p hakille-ui-protocol -p hakille-ui-model
           -p hakille-ui-platform -p hakille-ui-shell -p hakille-ui-desktop
           -p hakille-core -p hakille-memory -p hakille-spikes
       - name: check cross aarch64-apple-darwin
         run: >
-          cargo check --all-targets --target aarch64-apple-darwin
+          cargo check --all-targets --locked --target aarch64-apple-darwin
           -p hakille-design -p hakille-ui-protocol -p hakille-ui-model
           -p hakille-ui-platform -p hakille-ui-shell -p hakille-ui-desktop
           -p hakille-core -p hakille-memory -p hakille-spikes
-      - name: check natif Linux (même périmètre)
-        run: >
-          cargo check --all-targets
-          -p hakille-design -p hakille-ui-protocol -p hakille-ui-model
-          -p hakille-ui-platform -p hakille-ui-shell -p hakille-ui-desktop
-          -p hakille-core -p hakille-memory -p hakille-spikes
-
   macos-compat:
     # Non bloquant tant que la preuve labo macOS n'est pas faite : un runner
     # GitHub macOS partagé n'est pas un Mac de labo, et la compatibilité

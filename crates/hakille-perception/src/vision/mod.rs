@@ -3,6 +3,7 @@ pub mod capture;
 pub mod cv;
 pub mod grounding;
 pub mod scene;
+pub mod ui_tars_local;
 
 pub use camera_pipeline::*;
 pub use capture::*;

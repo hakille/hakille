@@ -1,0 +1,26 @@
+{
+  "images": [
+    {
+      "filename": "hakille-mark-light.png",
+      "idiom": "universal"
+    },
+    {
+      "filename": "hakille-mark-dark.png",
+      "idiom": "universal",
+      "appearances": [
+        {
+          "appearance": "luminosity",
+          "value": "dark"
+        }
+      ]
+    }
+  ],
+  "info": {
+    "author": "xcode",
+    "version": 1
+  },
+  "properties": {
+    "preserves-vector-representation": false,
+    "template-rendering-intent": "original"
+  }
+}

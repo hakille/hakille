@@ -3,6 +3,14 @@
 //! Trames JSON d'une ligne (plafond 1 Mio) sur named pipe Windows
 //! (`\\.\pipe\hakille-daemon-v1`) ou socket Unix. Pas de TCP en v1 : le fil
 //! reste strictement local au poste.
+//!
+//! Conserver le lecteur bufferisé retourné par `transport::connect` / `accept`
+//! pendant toute la connexion : les octets lus en avance appartiennent aux
+//! trames suivantes, y compris lorsqu'ils suivent le handshake.
+//!
+//! Sur Unix, un endpoint existant est refusé sans suppression automatique.
+//! Après un crash, vérifier que le démon est arrêté avant de nettoyer son
+//! socket ; un second lancement ne doit jamais remplacer un socket actif.
 
 pub mod frame;
 pub mod transport;

@@ -83,6 +83,12 @@ impl LinearStreamResampler {
         if input.is_empty() || self.step <= 0.0 || !self.step.is_finite() {
             return;
         }
+        // À 16 kHz natif, une trame de 160 échantillons doit être livrée dès le
+        // premier callback, sans attendre un voisin pour une interpolation inutile.
+        if self.step == 1.0 {
+            out.extend_from_slice(input);
+            return;
+        }
         self.buffer.extend_from_slice(input);
         while self.position + 1.0 < self.buffer.len() as f64 {
             let index = self.position.floor() as usize;
@@ -168,14 +174,14 @@ mod tests {
     }
 
     #[test]
-    fn streaming_resampler_identity_keeps_lag_of_one_sample() {
+    fn streaming_resampler_identity_has_no_startup_delay() {
         let mut resampler = LinearStreamResampler::new(16_000, 16_000);
         let mut out = Vec::new();
         resampler.push(&[1.0, 2.0, 3.0], &mut out);
-        assert_eq!(out, vec![1.0, 2.0]);
+        assert_eq!(out, vec![1.0, 2.0, 3.0]);
         out.clear();
         resampler.push(&[4.0, 5.0], &mut out);
-        assert_eq!(out, vec![3.0, 4.0]);
+        assert_eq!(out, vec![4.0, 5.0]);
     }
 
     #[test]
@@ -184,6 +190,29 @@ mod tests {
         let mut out = Vec::new();
         resampler.push(&[0.0, 1.0, 2.0, 3.0], &mut out);
         assert_eq!(out, vec![0.0, 2.0]);
+    }
+
+    #[test]
+    fn streaming_resampler_44100_is_continuous_across_irregular_callbacks() {
+        let input: Vec<f32> = (0..4410).map(|i| (i as f32 * 0.01).sin()).collect();
+        let mut whole = LinearStreamResampler::new(44_100, 16_000);
+        let mut expected = Vec::new();
+        whole.push(&input, &mut expected);
+        for chunk_size in [1, 7, 441, 1024] {
+            let mut streaming = LinearStreamResampler::new(44_100, 16_000);
+            let mut actual = Vec::new();
+            for chunk in input.chunks(chunk_size) {
+                streaming.push(chunk, &mut actual);
+            }
+            assert_eq!(actual.len(), expected.len());
+            assert_eq!(actual.len(), 1600);
+            assert!(
+                actual
+                    .iter()
+                    .zip(&expected)
+                    .all(|(a, b)| (a - b).abs() < 1e-5)
+            );
+        }
     }
 
     #[test]
