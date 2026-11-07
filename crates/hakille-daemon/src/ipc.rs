@@ -1876,10 +1876,27 @@ mod tests {
     async fn test_multi_client_concurrent_coexistence_and_card_resolution() {
         use std::time::Duration;
 
+        async fn connect_with_retry(endpoint: &str) -> std::io::Result<transport::ClientStream> {
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                match transport::connect(endpoint).await {
+                    Ok(stream) => return Ok(stream),
+                    Err(err) if std::time::Instant::now() < deadline => {
+                        let _ = err;
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+        }
+
         let id = uuid::Uuid::now_v7();
         let dir = std::env::temp_dir().join(format!("hakille_ipc_mc_{id}"));
         std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(unix)]
         let endpoint = format!("/tmp/hakille-ipc-mc-{id}.sock");
+        #[cfg(windows)]
+        let endpoint = format!(r"\\.\pipe\hakille-ipc-mc-{id}");
         let token = transport::fresh_token_hex();
 
         let listener = transport::IpcListener::bind(&endpoint).await.unwrap();
@@ -1934,7 +1951,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // 2. Client 1 (Desktop HUD) connecte et handshake
-        let mut desktop_stream = transport::connect(&endpoint)
+        let mut desktop_stream = connect_with_retry(&endpoint)
             .await
             .expect("connect desktop");
         transport::client_handshake(&mut desktop_stream, &token)
@@ -1944,7 +1961,7 @@ mod tests {
         let mut desktop_reader = BufReader::new(desktop_reader);
 
         // 3. Client 2 (Mobile Gateway) connecte simultanément et handshake sans blocage !
-        let mut mobile_stream = transport::connect(&endpoint).await.expect("connect mobile");
+        let mut mobile_stream = connect_with_retry(&endpoint).await.expect("connect mobile");
         transport::client_handshake(&mut mobile_stream, &token)
             .await
             .expect("handshake mobile");
@@ -2180,6 +2197,7 @@ mod tests {
         // Arrêt propre du serveur
         let _ = shutdown_tx.send(());
         let _ = server_task.await;
+        #[cfg(unix)]
         let _ = std::fs::remove_file(&endpoint);
         let _ = std::fs::remove_dir_all(&dir);
     }

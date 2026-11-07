@@ -31,12 +31,29 @@ impl Drop for DaemonHarness {
     }
 }
 
+async fn connect_with_retry(endpoint: &str) -> std::io::Result<transport::ClientStream> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match transport::connect(endpoint).await {
+            Ok(stream) => return Ok(stream),
+            Err(err) if std::time::Instant::now() < deadline => {
+                let _ = err;
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 async fn start_daemon_server() -> DaemonHarness {
     let id = uuid::Uuid::now_v7();
     let data_dir = std::env::temp_dir().join(format!("hakille-daemon-test-data-{id}"));
     std::fs::create_dir_all(&data_dir).unwrap();
 
+    #[cfg(unix)]
     let endpoint = format!("/tmp/hakille-ipc-test-{id}.sock");
+    #[cfg(windows)]
+    let endpoint = format!(r"\\.\pipe\hakille-ipc-test-{id}");
     let token_file = data_dir.join("ipc.token");
 
     let exe = env!("CARGO_BIN_EXE_hakille-daemon");
@@ -53,7 +70,11 @@ async fn start_daemon_server() -> DaemonHarness {
     let mut token = String::new();
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     while std::time::Instant::now() < deadline {
-        if std::path::Path::new(&endpoint).exists() && token_file.exists() {
+        #[cfg(unix)]
+        let endpoint_ready = std::path::Path::new(&endpoint).exists();
+        #[cfg(windows)]
+        let endpoint_ready = true;
+        if endpoint_ready && token_file.exists() {
             if let Ok(t) = std::fs::read_to_string(&token_file) {
                 let trimmed = t.trim().to_string();
                 if !trimmed.is_empty() {
@@ -88,7 +109,7 @@ async fn test_concurrent_clients_and_mutual_card_resolution() {
     let harness = start_daemon_server().await;
 
     // 1. Client 1 (Desktop HUD) se connecte et effectue le handshake
-    let mut desktop_stream = transport::connect(&harness.endpoint)
+    let mut desktop_stream = connect_with_retry(&harness.endpoint)
         .await
         .expect("connexion Desktop HUD");
     transport::client_handshake(&mut desktop_stream, &harness.token)
@@ -98,7 +119,7 @@ async fn test_concurrent_clients_and_mutual_card_resolution() {
     let mut desktop_reader = BufReader::new(desktop_reader);
 
     // 2. Client 2 (Mobile Gateway) se connecte simultanément et effectue le handshake sans blocage
-    let mut mobile_stream = transport::connect(&harness.endpoint)
+    let mut mobile_stream = connect_with_retry(&harness.endpoint)
         .await
         .expect("connexion Mobile Gateway");
     transport::client_handshake(&mut mobile_stream, &harness.token)

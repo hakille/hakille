@@ -4,7 +4,7 @@
  * Measured directly against `Cargo.toml` and `crates/` + `agents/` at HEAD:
  * - 42 workspace packages (35 core/substrate/UI crates + 5 domain agents + conformance + xtask)
  * - 395 `.rs` source files
- * - 146,190 lines of Rust Edition 2024 (MSRV 1.95, 0% Python)
+ * - 146,229 lines of Rust Edition 2024 (MSRV 1.95, 0% Python)
  * - 1,948 `#[test]` / `#[tokio::test]` unit & adversarial conformance annotations
  */
 
@@ -31,7 +31,7 @@ export const WORKSPACE_METRICS = {
   agentCrates: 5,
   toolingCrates: 2,
   totalRsFiles: 395,
-  totalRustLoc: 146_190,
+  totalRustLoc: 146_229,
   totalMobileNativeFiles: 43,
   totalMobileNativeLoc: 4_661,
   totalAutomatedTests: 1_948,
@@ -292,7 +292,7 @@ export const CRATES_CATALOG: readonly CrateEntry[] = [
     path: 'crates/hakille-daemon',
     layer: 3,
     rsFiles: 10,
-    loc: 7988,
+    loc: 8027,
     tests: 51,
     readiness: 'real-verified',
     keyTech: 'Background OS Service · REPL · Session orchestrator',
