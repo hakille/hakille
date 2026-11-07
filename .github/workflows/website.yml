@@ -31,11 +31,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: "npm"
           cache-dependency-path: website/package-lock.json
       - name: Install locked dependencies
         run: npm ci
+      - name: Dependency security audit (0 vulnerabilities)
+        run: npm audit
       - name: Token sync + strict TypeScript check
         run: npm run typecheck
       - name: Unit, acoustic, formant, Braise & 8-locale parity tests
