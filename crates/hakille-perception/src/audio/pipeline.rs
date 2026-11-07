@@ -18,8 +18,9 @@
 
 use crate::audio::asr::{AsrEngine, SenseVoiceSmall};
 use crate::audio::capture::AudioChunk;
+use crate::audio::prosody::VocalProsodyAnalyzer;
 use crate::audio::wake_word::WakeBackendKind;
-use hakille_inference::{OrtVadSession, resolve_vad_model_path};
+use hakille_inference::{resolve_vad_model_path, OrtVadSession};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -69,6 +70,10 @@ pub enum VoiceEvent {
         emotion: String,
         acoustic_events: Vec<String>,
         confidence: f32,
+    },
+    /// Événement de mise à jour prosodique issu de l'analyse YIN.
+    ProsodyUpdate {
+        features: hakille_audio::AcousticFeatures,
     },
     /// Erreur runtime (VAD/wake) — émise au plus une fois par sous-système.
     Error(String),
@@ -123,6 +128,8 @@ pub struct VoicePipelineConfig {
     /// Dossier modèles contenant `sensevoice_small.int8.onnx` + `tokens.txt`
     /// (`None` = résolution standard).
     pub asr_models_dir: Option<PathBuf>,
+    /// Active l'extraction et lissage prosodique continu YIN (défaut true).
+    pub enable_prosody: bool,
 }
 
 impl Default for VoicePipelineConfig {
@@ -137,6 +144,7 @@ impl Default for VoicePipelineConfig {
             max_utterance_seconds: 30.0,
             enable_asr: true,
             asr_models_dir: None,
+            enable_prosody: true,
         }
     }
 }
@@ -160,9 +168,12 @@ where
     }
 }
 
-/// Hook de notification pour les émotions vocales détectées par SenseVoice.
+/// Hook de notification pour les émotions vocales détectées par SenseVoice et la prosodie YIN.
 pub trait EmotionHook: Send + Sync {
+    /// Notification d'émotion et d'événements acoustiques (SenseVoice).
     fn on_emotion(&self, emotion: &str, acoustic_events: &[String], confidence: f32);
+    /// Notification des caractéristiques prosodiques (F0, Jitter, Shimmer, HNR) issues de YIN.
+    fn on_prosody(&self, _features: &hakille_audio::AcousticFeatures) {}
 }
 
 impl<F> EmotionHook for F
@@ -200,6 +211,8 @@ pub struct VoicePipeline {
     vad_error_reported: bool,
     embedding_hook: Option<Arc<dyn EmbeddingHook>>,
     emotion_hook: Option<Arc<dyn EmotionHook>>,
+    prosody_analyzer: Option<VocalProsodyAnalyzer>,
+    prosody_sample_count: usize,
 }
 
 impl VoicePipeline {
@@ -250,6 +263,12 @@ impl VoicePipeline {
             None
         };
 
+        let prosody_analyzer = if config.enable_prosody {
+            Some(VocalProsodyAnalyzer::default_16k())
+        } else {
+            None
+        };
+
         tracing::info!(
             vad = %vad_path.display(),
             threshold = config.vad_threshold,
@@ -257,6 +276,7 @@ impl VoicePipeline {
             wake = config.wake_word.as_deref().unwrap_or("<désactivé>"),
             wake_backend = "<aucun détecteur acoustique>",
             asr = asr.is_some(),
+            prosody = prosody_analyzer.is_some(),
             "VoicePipeline: prêt (VAD réel chargé)"
         );
 
@@ -285,6 +305,8 @@ impl VoicePipeline {
             vad_error_reported: false,
             embedding_hook: None,
             emotion_hook: None,
+            prosody_analyzer,
+            prosody_sample_count: 0,
         })
     }
 
@@ -399,9 +421,25 @@ impl VoicePipeline {
         self.embedding_hook = Some(hook);
     }
 
-    /// Installe le hook d'émotions vocales (SenseVoice), appelé après transcription.
+    /// Installe le hook d'émotions vocales (SenseVoice) et de prosodie YIN.
     pub fn set_emotion_hook(&mut self, hook: Arc<dyn EmotionHook>) {
         self.emotion_hook = Some(hook);
+    }
+
+    /// Active ou désactive l'analyse prosodique continue YIN.
+    pub fn set_prosody_enabled(&mut self, enabled: bool) {
+        if enabled {
+            if self.prosody_analyzer.is_none() {
+                self.prosody_analyzer = Some(VocalProsodyAnalyzer::default_16k());
+            }
+        } else {
+            self.prosody_analyzer = None;
+        }
+    }
+
+    /// Référence mutable sur l'analyseur de prosodie.
+    pub fn prosody_analyzer_mut(&mut self) -> Option<&mut VocalProsodyAnalyzer> {
+        self.prosody_analyzer.as_mut()
     }
 
     /// Alimente le pipeline en échantillons mono 16 kHz (déjà conformes —
@@ -556,6 +594,28 @@ impl VoicePipeline {
                 self.finalize_utterance(events);
             }
         }
+
+        // Analyse prosodique continue YIN : fenêtre glissante de 100 ms (1 600 échantillons @ 16 kHz)
+        if let Some(analyzer) = &mut self.prosody_analyzer {
+            self.prosody_sample_count += block.len();
+            if self.prosody_sample_count >= 1600 && self.rolling.len() >= 1600 {
+                self.prosody_sample_count = 0;
+                let mut window = [0.0f32; 1600];
+                let start_idx = self.rolling.len() - 1600;
+                for (i, &s) in self.rolling.range(start_idx..).enumerate() {
+                    window[i] = s;
+                }
+                let prosody = analyzer.process_window(&window);
+                if prosody.raw_features.is_voiced {
+                    if let Some(hook) = &self.emotion_hook {
+                        hook.on_prosody(&prosody.raw_features);
+                    }
+                    events.push(VoiceEvent::ProsodyUpdate {
+                        features: prosody.raw_features,
+                    });
+                }
+            }
+        }
     }
 
     fn advance_state(&mut self, probability: f32, events: &mut Vec<VoiceEvent>) {
@@ -675,6 +735,10 @@ impl VoicePipeline {
         self.state = PipelineState::Idle;
         self.hangover_left = 0;
         self.vad_error_reported = false;
+        if let Some(analyzer) = &mut self.prosody_analyzer {
+            analyzer.reset();
+        }
+        self.prosody_sample_count = 0;
     }
 
     /// `true` si un moteur ASR réel est chargé (modèle SenseVoice présent).
@@ -1196,5 +1260,39 @@ mod tests {
             confidence: 0.95,
         };
         assert!(matches!(event, VoiceEvent::Emotion { emotion, .. } if emotion == "HAPPY"));
+
+        // Test pour la prosodie et ProsodyUpdate
+        let prosody_features = hakille_audio::AcousticFeatures {
+            f0_hz: Some(220.0),
+            periodicity: 0.95,
+            hnr_db: 25.0,
+            rms_energy: 0.25,
+            jitter_local: Some(0.01),
+            shimmer_local: Some(0.02),
+            is_voiced: true,
+        };
+
+        struct TestProsodyHook {
+            prosody_calls: Arc<Mutex<Vec<hakille_audio::AcousticFeatures>>>,
+        }
+        impl EmotionHook for TestProsodyHook {
+            fn on_emotion(&self, _emotion: &str, _events: &[String], _conf: f32) {}
+            fn on_prosody(&self, features: &hakille_audio::AcousticFeatures) {
+                self.prosody_calls.lock().unwrap().push(features.clone());
+            }
+        }
+
+        let prosody_calls = Arc::new(Mutex::new(Vec::new()));
+        let p_hook = TestProsodyHook {
+            prosody_calls: Arc::clone(&prosody_calls),
+        };
+        p_hook.on_prosody(&prosody_features);
+        assert_eq!(prosody_calls.lock().unwrap().len(), 1);
+        assert_eq!(prosody_calls.lock().unwrap()[0].f0_hz, Some(220.0));
+
+        let prosody_event = VoiceEvent::ProsodyUpdate {
+            features: prosody_features,
+        };
+        assert!(matches!(prosody_event, VoiceEvent::ProsodyUpdate { features } if features.f0_hz == Some(220.0)));
     }
 }

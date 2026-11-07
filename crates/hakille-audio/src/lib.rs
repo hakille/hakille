@@ -23,6 +23,9 @@ pub use yin::{
     DEFAULT_YIN_THRESHOLD, YIN_WORKSPACE_SIZE,
 };
 
+/// Alias de compatibilité pour le résultat d'analyse de pitch et prosodie YIN.
+pub type YinPitchResult = AcousticFeatures;
+
 /// Fréquence d'échantillonnage cible du pipeline Hakille (16 kHz mono f32).
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 

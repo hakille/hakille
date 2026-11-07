@@ -438,6 +438,27 @@ impl ActionCard {
             "Valider".to_string()
         }
     }
+
+    /// Crée une carte d'action pour une alerte de fatigue ou baisse de vigilance (M6).
+    pub fn for_fatigue_alert(
+        level: &str,
+        recommended_action: &str,
+        perclos_score: f32,
+        rect: Rect,
+    ) -> Self {
+        Self {
+            verb: "Pause".to_string(),
+            object: "Vigilance & Repos".to_string(),
+            reason: format!("Fatigue détectée ({level}) — PERCLOS: {:.1}% ({recommended_action})", perclos_score * 100.0),
+            cost: "0.00 EUR".to_string(),
+            data: "Biométrie locale éphémère (Règle 8)".to_string(),
+            reversible: "Immédiat".to_string(),
+            needs_hold: false,
+            is_external: false,
+            provenance: "Cognition::FatigueDetector".to_string(),
+            rect,
+        }
+    }
     /// Rectangles des boutons (source unique avec le rendu).
     pub fn buttons(&self, height: f32) -> CardButtons {
         card_buttons(self.rect, height)

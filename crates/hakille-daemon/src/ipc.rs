@@ -27,7 +27,8 @@ use hakille_sync::{Outbox, OutboxEntry};
 use hakille_ui::{CostCounter, MemoryViewerPanel, PresenceIndicator, PresenceState as DaemonPresenceState};
 use hakille_ui_protocol::{
     ActionCard, AgentDto, DataExit, JournalEntryDto, KernelToUi, MemoryRowDto, Money,
-    PresenceState as ProtoPresenceState, Provenance, StatusDto, UiToKernel,
+    PresenceState as ProtoPresenceState, PrivacyGuardEvent, PrivacyGuardTrigger, Provenance,
+    StatusDto, UiToKernel,
 };
 use tokio::io::{BufReader, BufWriter};
 use tokio::sync::{broadcast, mpsc};
@@ -1062,6 +1063,64 @@ async fn handle_client_request(
                         text: "runtime d'agents indisponible — aucun agent exécuté".into(),
                     }
                 }
+            };
+            let _ = reply_tx.send(Frame::reply(id, reply)).await;
+        }
+        FrameBody::Request {
+            message: UiToKernel::PerceptionControl {
+                hardware_camera_enabled,
+                hardware_mic_enabled,
+                cognitive_inference_enabled,
+                active_channels_mask,
+            },
+        } => {
+            let audit_res = audit_action_with_id(
+                audit_journal,
+                "PerceptionControlUpdated",
+                format!(
+                    "Contrôle perception : caméra={}, micro={}, inférence={}, masque={:#010b}",
+                    hardware_camera_enabled,
+                    hardware_mic_enabled,
+                    cognitive_inference_enabled,
+                    active_channels_mask
+                ),
+                serde_json::json!({
+                    "hardware_camera_enabled": hardware_camera_enabled,
+                    "hardware_mic_enabled": hardware_mic_enabled,
+                    "cognitive_inference_enabled": cognitive_inference_enabled,
+                    "active_channels_mask": active_channels_mask,
+                }),
+                false,
+            );
+
+            // Si coupure matérielle (kill-switch), diffusion de l'événement PrivacyGuardAlert
+            if !hardware_camera_enabled || !hardware_mic_enabled {
+                let device = match (!hardware_camera_enabled, !hardware_mic_enabled) {
+                    (true, true) => "camera_and_microphone".to_string(),
+                    (true, false) => "camera".to_string(),
+                    (false, true) => "microphone".to_string(),
+                    _ => "none".to_string(),
+                };
+                let guard_event = PrivacyGuardEvent {
+                    trigger: PrivacyGuardTrigger::HardwareKillSwitchActivated { device: device.clone() },
+                    description: format!("Coupure matérielle activée pour : {device}"),
+                    recommended_action: "Capteurs désactivés physiquement (Règle 8 souveraineté)".to_string(),
+                    timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
+                };
+                let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::PrivacyGuardAlert(guard_event)));
+            }
+
+            let audit_id = audit_res.unwrap_or_else(|_| "audit_offline".to_string());
+            println!(
+                "IPC [session {session_id}]: PerceptionControl (id={id}, cam={hardware_camera_enabled}, mic={hardware_mic_enabled}) — audit [{audit_id}]"
+            );
+            let reply = KernelToUi::Toast {
+                text: format!(
+                    "Perception matérielle mise à jour (caméra: {}, micro: {}, inférence: {})",
+                    if hardware_camera_enabled { "on" } else { "off" },
+                    if hardware_mic_enabled { "on" } else { "off" },
+                    if cognitive_inference_enabled { "on" } else { "off" }
+                ),
             };
             let _ = reply_tx.send(Frame::reply(id, reply)).await;
         }

@@ -21,22 +21,185 @@ pub const LANGUAGE_AUTO_FALLBACK: i32 = 0;
 /// Repli requête style si métadonnées absentes (`textnorm_dict["withitn"]`).
 pub const TEXTNORM_WITH_ITN_FALLBACK: i32 = 14;
 
+/// Émotion vocale discrète émise par le discriminateur multi-tâche SenseVoice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum VocalEmotionKind {
+    Neutral,
+    Happy,
+    Sad,
+    Angry,
+    Fearful,
+    Disgusted,
+    Surprised,
+}
+
+impl Default for VocalEmotionKind {
+    fn default() -> Self {
+        Self::Neutral
+    }
+}
+
+impl VocalEmotionKind {
+    /// Parse un tag brut SenseVoice (ex: `<|HAPPY|>`, `HAPPY`, `happy`).
+    pub fn from_tag(tag: &str) -> Self {
+        let clean = tag
+            .trim()
+            .trim_start_matches("<|")
+            .trim_end_matches("|>")
+            .to_uppercase();
+        match clean.as_str() {
+            "HAPPY" => Self::Happy,
+            "SAD" => Self::Sad,
+            "ANGRY" => Self::Angry,
+            "FEARFUL" => Self::Fearful,
+            "DISGUSTED" => Self::Disgusted,
+            "SURPRISED" => Self::Surprised,
+            _ => Self::Neutral,
+        }
+    }
+
+    /// Nom canonique statique de l'émotion.
+    pub const fn to_str(&self) -> &'static str {
+        match self {
+            Self::Neutral => "Neutral",
+            Self::Happy => "Happy",
+            Self::Sad => "Sad",
+            Self::Angry => "Angry",
+            Self::Fearful => "Fearful",
+            Self::Disgusted => "Disgusted",
+            Self::Surprised => "Surprised",
+        }
+    }
+
+    /// Projection dans l'espace affectif circumplex de Russell : (Valence, Arousal) $\in [-1.0, 1.0]^2$.
+    pub const fn to_circumplex(&self) -> (f32, f32) {
+        match self {
+            Self::Neutral => (0.0, 0.0),
+            Self::Happy => (0.8, 0.6),
+            Self::Sad => (-0.7, -0.5),
+            Self::Angry => (-0.6, 0.8),
+            Self::Fearful => (-0.6, 0.7),
+            Self::Disgusted => (-0.7, 0.2),
+            Self::Surprised => (0.3, 0.8),
+        }
+    }
+}
+
+/// Événement paralinguistique ou acoustique détecté dans le flux audio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum AcousticEventKind {
+    Speech,
+    Laughter,
+    Cry,
+    Applause,
+    Sneeze,
+    Cough,
+    Snort,
+    Breath,
+    Music,
+    Noise,
+    Other,
+}
+
+impl AcousticEventKind {
+    /// Parse un tag brut SenseVoice (ex: `<|LAUGHTER|>`, `Laughter`, `laughter`).
+    pub fn from_tag(tag: &str) -> Self {
+        let clean = tag
+            .trim()
+            .trim_start_matches("<|")
+            .trim_end_matches("|>")
+            .to_uppercase();
+        match clean.as_str() {
+            "SPEECH" => Self::Speech,
+            "LAUGHTER" => Self::Laughter,
+            "CRY" => Self::Cry,
+            "APPLAUSE" => Self::Applause,
+            "SNEEZE" => Self::Sneeze,
+            "COUGH" => Self::Cough,
+            "SNORT" => Self::Snort,
+            "BREATH" => Self::Breath,
+            "MUSIC" | "BGM" => Self::Music,
+            "NOISE" => Self::Noise,
+            _ => Self::Other,
+        }
+    }
+
+    /// Nom canonique statique de l'événement.
+    pub const fn to_str(&self) -> &'static str {
+        match self {
+            Self::Speech => "Speech",
+            Self::Laughter => "Laughter",
+            Self::Cry => "Cry",
+            Self::Applause => "Applause",
+            Self::Sneeze => "Sneeze",
+            Self::Cough => "Cough",
+            Self::Snort => "Snort",
+            Self::Breath => "Breath",
+            Self::Music => "Music",
+            Self::Noise => "Noise",
+            Self::Other => "Other",
+        }
+    }
+}
+
 /// Transcription réelle : texte décodé + langue détectée + confiance mesurée.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SenseVoiceTranscript {
     pub text: String,
     pub language: String,
     pub confidence: f32,
-    /// Émotion et événements réellement émis par le modèle.
+    /// Émotion et événements réellement émis par le modèle (bruts).
     pub emotion_event: EmotionEvent,
+    /// Émotion vocale catégorisée typée.
+    pub vocal_emotion: VocalEmotionKind,
+    /// Liste des événements acoustiques paralinguistiques détectés.
+    pub acoustic_events: Vec<AcousticEventKind>,
+    /// Vecteur des confiances mesurées pour chaque trame temporelle CTC.
+    pub frame_confidences: Vec<f32>,
+}
+
+impl SenseVoiceTranscript {
+    /// Confiance moyenne calculée sur toutes les trames de décodage.
+    pub fn mean_frame_confidence(&self) -> f32 {
+        if self.frame_confidences.is_empty() {
+            self.confidence
+        } else {
+            let sum: f32 = self.frame_confidences.iter().sum();
+            sum / self.frame_confidences.len() as f32
+        }
+    }
+
+    /// Coordonnées (Valence, Arousal) dans le modèle circumplex.
+    pub fn to_circumplex(&self) -> (f32, f32) {
+        self.vocal_emotion.to_circumplex()
+    }
 }
 
 /// Têtes auxiliaires SenseVoice (émotion + événements acoustiques).
-///
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct EmotionEvent {
     pub emotion: String,
     pub events: Vec<String>,
+}
+
+impl EmotionEvent {
+    /// Retourne l'émotion vocale typée.
+    pub fn vocal_emotion(&self) -> VocalEmotionKind {
+        VocalEmotionKind::from_tag(&self.emotion)
+    }
+
+    /// Retourne la liste des événements acoustiques typés.
+    pub fn acoustic_events(&self) -> Vec<AcousticEventKind> {
+        self.events
+            .iter()
+            .map(|e| AcousticEventKind::from_tag(e))
+            .collect()
+    }
+
+    /// Projection dans l'espace circumplex (Valence, Arousal).
+    pub fn to_circumplex(&self) -> (f32, f32) {
+        self.vocal_emotion().to_circumplex()
+    }
 }
 
 /// Options de décodage CTC (beam optionnel).
@@ -617,11 +780,16 @@ impl SenseVoiceOnnx {
             .join(" ")
             .trim()
             .to_string();
+        let vocal_emotion = emotion_event.vocal_emotion();
+        let acoustic_events = emotion_event.acoustic_events();
         Ok(SenseVoiceTranscript {
             text,
             language,
             confidence: confidence.clamp(0.0, 1.0),
             emotion_event,
+            vocal_emotion,
+            acoustic_events,
+            frame_confidences: frame_conf,
         })
     }
 }
@@ -816,5 +984,48 @@ mod tests {
         );
         assert!(!r.language.is_empty(), "silence : langue détectée non vide");
         assert!(dt.as_secs() < 30, "latence silence {dt:?} < 30 s");
+    }
+
+    #[test]
+    fn test_vocal_emotion_circumplex_projection() {
+        assert_eq!(VocalEmotionKind::Neutral.to_circumplex(), (0.0, 0.0));
+        let (h_val, h_ar) = VocalEmotionKind::Happy.to_circumplex();
+        assert!(h_val > 0.5 && h_ar > 0.0);
+
+        let (s_val, s_ar) = VocalEmotionKind::Sad.to_circumplex();
+        assert!(s_val < 0.0 && s_ar < 0.0);
+
+        let (a_val, a_ar) = VocalEmotionKind::Angry.to_circumplex();
+        assert!(a_val < 0.0 && a_ar > 0.5);
+
+        assert_eq!(VocalEmotionKind::from_tag("<|HAPPY|>"), VocalEmotionKind::Happy);
+        assert_eq!(VocalEmotionKind::from_tag("<|ANGRY|>"), VocalEmotionKind::Angry);
+        assert_eq!(VocalEmotionKind::from_tag("other"), VocalEmotionKind::Neutral);
+    }
+
+    #[test]
+    fn test_acoustic_event_kinds() {
+        assert_eq!(AcousticEventKind::from_tag("<|LAUGHTER|>"), AcousticEventKind::Laughter);
+        assert_eq!(AcousticEventKind::from_tag("Cry"), AcousticEventKind::Cry);
+        assert_eq!(AcousticEventKind::from_tag("BGM"), AcousticEventKind::Music);
+        assert_eq!(AcousticEventKind::from_tag("Unknown"), AcousticEventKind::Other);
+    }
+
+    #[test]
+    fn test_transcript_mean_confidence() {
+        let transcript = SenseVoiceTranscript {
+            text: "test".to_string(),
+            language: "fr".to_string(),
+            confidence: 0.9,
+            emotion_event: EmotionEvent {
+                emotion: "HAPPY".to_string(),
+                events: vec!["Laughter".to_string()],
+            },
+            vocal_emotion: VocalEmotionKind::Happy,
+            acoustic_events: vec![AcousticEventKind::Laughter],
+            frame_confidences: vec![0.8, 0.9, 1.0],
+        };
+        assert!((transcript.mean_frame_confidence() - 0.9).abs() < 1e-4);
+        assert_eq!(transcript.to_circumplex(), VocalEmotionKind::Happy.to_circumplex());
     }
 }

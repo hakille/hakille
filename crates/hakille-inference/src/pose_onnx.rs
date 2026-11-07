@@ -291,31 +291,31 @@ pub fn generate_canonical_seated_skeleton(w: f32, h: f32) -> BodySkeleton3D {
     let cx = w * 0.5;
 
     // Tête
-    joints[CocoJointId::Nose as usize] = SkeletonJoint3D::new(0, Point3D::new(cx, h * 0.22, 0.8), 0.95);
-    joints[CocoJointId::LeftEye as usize] = SkeletonJoint3D::new(1, Point3D::new(cx - w * 0.04, h * 0.20, 0.8), 0.95);
-    joints[CocoJointId::RightEye as usize] = SkeletonJoint3D::new(2, Point3D::new(cx + w * 0.04, h * 0.20, 0.8), 0.95);
-    joints[CocoJointId::LeftEar as usize] = SkeletonJoint3D::new(3, Point3D::new(cx - w * 0.09, h * 0.21, 0.82), 0.90);
-    joints[CocoJointId::RightEar as usize] = SkeletonJoint3D::new(4, Point3D::new(cx + w * 0.09, h * 0.21, 0.82), 0.90);
+    joints[CocoJointId::Nose as usize] = SkeletonJoint3D::new(0, Point3D::new(cx, h * 0.16, 0.6), 0.95);
+    joints[CocoJointId::LeftEye as usize] = SkeletonJoint3D::new(1, Point3D::new(cx - w * 0.04, h * 0.14, 0.6), 0.95);
+    joints[CocoJointId::RightEye as usize] = SkeletonJoint3D::new(2, Point3D::new(cx + w * 0.04, h * 0.14, 0.6), 0.95);
+    joints[CocoJointId::LeftEar as usize] = SkeletonJoint3D::new(3, Point3D::new(cx - w * 0.09, h * 0.15, 0.6), 0.90);
+    joints[CocoJointId::RightEar as usize] = SkeletonJoint3D::new(4, Point3D::new(cx + w * 0.09, h * 0.15, 0.6), 0.90);
 
     // Torse et épaules
-    joints[CocoJointId::LeftShoulder as usize] = SkeletonJoint3D::new(5, Point3D::new(cx - w * 0.18, h * 0.35, 0.85), 0.92);
-    joints[CocoJointId::RightShoulder as usize] = SkeletonJoint3D::new(6, Point3D::new(cx + w * 0.18, h * 0.35, 0.85), 0.92);
+    joints[CocoJointId::LeftShoulder as usize] = SkeletonJoint3D::new(5, Point3D::new(cx - w * 0.18, h * 0.30, 0.6), 0.92);
+    joints[CocoJointId::RightShoulder as usize] = SkeletonJoint3D::new(6, Point3D::new(cx + w * 0.18, h * 0.30, 0.6), 0.92);
 
     // Bras
-    joints[CocoJointId::LeftElbow as usize] = SkeletonJoint3D::new(7, Point3D::new(cx - w * 0.24, h * 0.52, 0.80), 0.85);
-    joints[CocoJointId::RightElbow as usize] = SkeletonJoint3D::new(8, Point3D::new(cx + w * 0.24, h * 0.52, 0.80), 0.85);
-    joints[CocoJointId::LeftWrist as usize] = SkeletonJoint3D::new(9, Point3D::new(cx - w * 0.20, h * 0.68, 0.75), 0.80);
-    joints[CocoJointId::RightWrist as usize] = SkeletonJoint3D::new(10, Point3D::new(cx + w * 0.20, h * 0.68, 0.75), 0.80);
+    joints[CocoJointId::LeftElbow as usize] = SkeletonJoint3D::new(7, Point3D::new(cx - w * 0.24, h * 0.50, 0.6), 0.85);
+    joints[CocoJointId::RightElbow as usize] = SkeletonJoint3D::new(8, Point3D::new(cx + w * 0.24, h * 0.50, 0.6), 0.85);
+    joints[CocoJointId::LeftWrist as usize] = SkeletonJoint3D::new(9, Point3D::new(cx - w * 0.20, h * 0.70, 0.6), 0.80);
+    joints[CocoJointId::RightWrist as usize] = SkeletonJoint3D::new(10, Point3D::new(cx + w * 0.20, h * 0.70, 0.6), 0.80);
 
     // Hanches
-    joints[CocoJointId::LeftHip as usize] = SkeletonJoint3D::new(11, Point3D::new(cx - w * 0.14, h * 0.72, 0.90), 0.88);
-    joints[CocoJointId::RightHip as usize] = SkeletonJoint3D::new(12, Point3D::new(cx + w * 0.14, h * 0.72, 0.90), 0.88);
+    joints[CocoJointId::LeftHip as usize] = SkeletonJoint3D::new(11, Point3D::new(cx - w * 0.14, h * 0.82, 0.6), 0.90);
+    joints[CocoJointId::RightHip as usize] = SkeletonJoint3D::new(12, Point3D::new(cx + w * 0.14, h * 0.82, 0.6), 0.90);
 
     // Membres inférieurs (position assise)
-    joints[CocoJointId::LeftKnee as usize] = SkeletonJoint3D::new(13, Point3D::new(cx - w * 0.15, h * 0.88, 0.70), 0.75);
-    joints[CocoJointId::RightKnee as usize] = SkeletonJoint3D::new(14, Point3D::new(cx + w * 0.15, h * 0.88, 0.70), 0.75);
-    joints[CocoJointId::LeftAnkle as usize] = SkeletonJoint3D::new(15, Point3D::new(cx - w * 0.15, h * 0.98, 0.70), 0.60);
-    joints[CocoJointId::RightAnkle as usize] = SkeletonJoint3D::new(16, Point3D::new(cx + w * 0.15, h * 0.98, 0.70), 0.60);
+    joints[CocoJointId::LeftKnee as usize] = SkeletonJoint3D::new(13, Point3D::new(cx - w * 0.15, h * 0.95, 0.6), 0.70);
+    joints[CocoJointId::RightKnee as usize] = SkeletonJoint3D::new(14, Point3D::new(cx + w * 0.15, h * 0.95, 0.6), 0.70);
+    joints[CocoJointId::LeftAnkle as usize] = SkeletonJoint3D::new(15, Point3D::new(cx - w * 0.15, h * 1.05, 0.6), 0.20);
+    joints[CocoJointId::RightAnkle as usize] = SkeletonJoint3D::new(16, Point3D::new(cx + w * 0.15, h * 1.05, 0.6), 0.20);
 
     BodySkeleton3D::new(joints, PostureKind::Seated)
 }

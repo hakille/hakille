@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod cognition;
 pub mod vision;
 pub mod world_model;
 
@@ -6,6 +7,7 @@ pub use audio::{
     asr::*, capture::AudioChunk, capture::ContinuousAudioRingBuffer, diarization::*, pipeline::*,
     speaker_id::*, vad::*, wake_word::*,
 };
+pub use cognition::*;
 pub use vision::*;
 pub use world_model::*;
 

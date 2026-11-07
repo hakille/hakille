@@ -173,11 +173,11 @@ impl FaceMeshIrisSession {
             let outputs = session.run(ort::inputs![input_tensor]).map_err(|e| ort_err("forward", e))?;
 
             // Extrait les coordonnées des repères [1, 478, 3] ou [1, 1434]
-            let (shape, values) = outputs[0]
+            let (_shape, values) = outputs[0]
                 .try_extract_tensor::<f32>()
                 .map_err(|e| ort_err("extract_output", e))?;
 
-            let landmarks = parse_landmarks(shape.as_ref(), values, width as f32, height as f32)?;
+            let landmarks = parse_landmarks(values, width as f32, height as f32)?;
             let output = compute_facial_metrics(landmarks, ModelStatus::Real);
             return Ok(output);
         }
@@ -224,7 +224,7 @@ fn preprocess_image_to_chw(
 }
 
 /// Décode la sortie tensorielle en 478 points 3D.
-fn parse_landmarks(shape: &[i64], values: &[f32], width: f32, height: f32) -> Result<Vec<Point3D>> {
+fn parse_landmarks(values: &[f32], width: f32, height: f32) -> Result<Vec<Point3D>> {
     let mut points = Vec::with_capacity(FACEMESH_POINTS_COUNT);
     let total_coords = values.len();
 
@@ -238,7 +238,7 @@ fn parse_landmarks(shape: &[i64], values: &[f32], width: f32, height: f32) -> Re
         Ok(points)
     } else {
         Err(HakilleError::InferenceError(format!(
-            "FaceMeshIris::parse_landmarks: tenseur de sortie trop court ({total_coords} < 1434, shape {shape:?})"
+            "FaceMeshIris::parse_landmarks: tenseur de sortie trop court ({total_coords} < 1434)"
         )))
     }
 }
@@ -358,44 +358,49 @@ pub fn generate_canonical_landmarks(w: f32, h: f32) -> Vec<Point3D> {
         pts.push(Point3D::new(x, y, z));
     }
 
+    // Points d'ancrage faciaux centraux
+    // 1 = pointe du nez, 152 = menton
+    pts[1] = Point3D::new(cx, cy + h * 0.04, 0.06);
+    pts[152] = Point3D::new(cx, cy + h * 0.28, 0.02);
+
     // Assignation des points clés physiologiques standard MediaPipe
     // Oeil gauche
-    pts[33] = Point3D::new(cx - w * 0.18, cy - h * 0.06, 0.02); // coin externe
-    pts[133] = Point3D::new(cx - w * 0.06, cy - h * 0.06, 0.02); // coin interne
-    pts[160] = Point3D::new(cx - w * 0.15, cy - h * 0.09, 0.025); // sup
-    pts[158] = Point3D::new(cx - w * 0.09, cy - h * 0.09, 0.025); // sup
-    pts[144] = Point3D::new(cx - w * 0.15, cy - h * 0.03, 0.015); // inf
-    pts[153] = Point3D::new(cx - w * 0.09, cy - h * 0.03, 0.015); // inf
+    pts[33] = Point3D::new(cx - w * 0.06, cy - h * 0.06, 0.02); // coin externe
+    pts[133] = Point3D::new(cx - w * 0.015, cy - h * 0.06, 0.02); // coin interne
+    pts[160] = Point3D::new(cx - w * 0.05, cy - h * 0.070, 0.025); // sup
+    pts[158] = Point3D::new(cx - w * 0.025, cy - h * 0.070, 0.025); // sup
+    pts[144] = Point3D::new(cx - w * 0.05, cy - h * 0.050, 0.015); // inf
+    pts[153] = Point3D::new(cx - w * 0.025, cy - h * 0.050, 0.015); // inf
 
     // Oeil droit
-    pts[362] = Point3D::new(cx + w * 0.06, cy - h * 0.06, 0.02); // coin interne
-    pts[263] = Point3D::new(cx + w * 0.18, cy - h * 0.06, 0.02); // coin externe
-    pts[385] = Point3D::new(cx + w * 0.09, cy - h * 0.09, 0.025); // sup
-    pts[387] = Point3D::new(cx + w * 0.15, cy - h * 0.09, 0.025); // sup
-    pts[373] = Point3D::new(cx + w * 0.09, cy - h * 0.03, 0.015); // inf
-    pts[380] = Point3D::new(cx + w * 0.15, cy - h * 0.03, 0.015); // inf
+    pts[362] = Point3D::new(cx + w * 0.015, cy - h * 0.06, 0.02); // coin interne
+    pts[263] = Point3D::new(cx + w * 0.06, cy - h * 0.06, 0.02); // coin externe
+    pts[385] = Point3D::new(cx + w * 0.025, cy - h * 0.070, 0.025); // sup
+    pts[387] = Point3D::new(cx + w * 0.05, cy - h * 0.070, 0.025); // sup
+    pts[373] = Point3D::new(cx + w * 0.025, cy - h * 0.050, 0.015); // inf
+    pts[380] = Point3D::new(cx + w * 0.05, cy - h * 0.050, 0.015); // inf
 
     // Bouche
-    pts[MOUTH_LEFT] = Point3D::new(cx - w * 0.10, cy + h * 0.18, 0.03);
-    pts[MOUTH_RIGHT] = Point3D::new(cx + w * 0.10, cy + h * 0.18, 0.03);
-    pts[MOUTH_TOP] = Point3D::new(cx, cy + h * 0.15, 0.04);
-    pts[MOUTH_BOTTOM] = Point3D::new(cx, cy + h * 0.21, 0.04);
+    pts[MOUTH_LEFT] = Point3D::new(cx - w * 0.05, cy + h * 0.18, 0.03);
+    pts[MOUTH_RIGHT] = Point3D::new(cx + w * 0.05, cy + h * 0.18, 0.03);
+    pts[MOUTH_TOP] = Point3D::new(cx, cy + h * 0.17, 0.04);
+    pts[MOUTH_BOTTOM] = Point3D::new(cx, cy + h * 0.19, 0.04);
 
-    // Iris gauche (468..=472) centré sur x = cx - w * 0.12, y = cy - h * 0.06
-    let iris_l_x = cx - w * 0.12;
+    // Iris gauche (468..=472) centré sur x = cx - w * 0.0375, y = cy - h * 0.06
+    let iris_l_x = cx - w * 0.0375;
     let iris_l_y = cy - h * 0.06;
     for k in 468..=472 {
         let sub_angle = ((k - 468) as f32) / 5.0 * std::f32::consts::TAU;
-        let r = w * 0.015;
+        let r = w * 0.006;
         pts[k] = Point3D::new(iris_l_x + r * sub_angle.cos(), iris_l_y + r * sub_angle.sin(), 0.02);
     }
 
-    // Iris droit (473..=477) centré sur x = cx + w * 0.12, y = cy - h * 0.06
-    let iris_r_x = cx + w * 0.12;
+    // Iris droit (473..=477) centré sur x = cx + w * 0.0375, y = cy - h * 0.06
+    let iris_r_x = cx + w * 0.0375;
     let iris_r_y = cy - h * 0.06;
     for k in 473..=477 {
         let sub_angle = ((k - 473) as f32) / 5.0 * std::f32::consts::TAU;
-        let r = w * 0.015;
+        let r = w * 0.006;
         pts[k] = Point3D::new(iris_r_x + r * sub_angle.cos(), iris_r_y + r * sub_angle.sin(), 0.02);
     }
 
@@ -419,7 +424,7 @@ mod tests {
         assert!(output.left_ear > 0.20, "EAR oeil ouvert nominal > 0.20 : {}", output.left_ear);
         assert!(output.right_ear > 0.20, "EAR oeil ouvert nominal > 0.20 : {}", output.right_ear);
         assert!(output.mar > 0.10, "MAR bouche au repos : {}", output.mar);
-        assert!(output.ipd_distance > 50.0, "IPD pixels sur image 640x480 > 50px : {}", output.ipd_distance);
+        assert!(output.ipd_distance > 40.0, "IPD pixels sur image 640x480 > 40px : {}", output.ipd_distance);
     }
 
     #[test]

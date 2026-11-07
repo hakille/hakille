@@ -68,6 +68,11 @@ struct RingBufferInner {
 }
 
 impl ContinuousAudioRingBuffer {
+    /// Construit un buffer circulaire continu par défaut (60 secondes @ 16 kHz).
+    pub fn new_default() -> Self {
+        Self::new(60, 16_000)
+    }
+
     /// Construit un buffer circulaire continu pré-alloué pour `capacity_seconds` à `sample_rate`.
     pub fn new(capacity_seconds: usize, sample_rate: u32) -> Self {
         let capacity_samples = capacity_seconds * sample_rate as usize;
