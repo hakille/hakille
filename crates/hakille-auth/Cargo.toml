@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 hakille-core = { path = "../hakille-core" }
+hakille-identity = { path = "../hakille-identity" }
+hakille-ui-protocol = { path = "../hakille-ui-protocol" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"

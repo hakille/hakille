@@ -9,8 +9,10 @@ hakille-core = { path = "../hakille-core" }
 hakille-audit = { path = "../hakille-audit" }
 hakille-memory = { path = "../hakille-memory" }
 hakille-substrate = { path = "../hakille-substrate" }
+hakille-ui-protocol = { path = "../hakille-ui-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+bincode = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }

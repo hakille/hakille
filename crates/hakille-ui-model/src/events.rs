@@ -138,6 +138,10 @@ impl From<KernelToUi> for KernelEvent {
             KernelToUi::NotificationDismissed { id } => Self::Toast {
                 text: format!("notification {id} révoquée"),
             },
+            KernelToUi::AuraRingUpdate(a) => Self::Toast {
+                text: format!("aura: {} (tau={:.2})", a.state_name, a.tau),
+            },
+
         }
     }
 }

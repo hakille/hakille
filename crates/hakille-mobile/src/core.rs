@@ -657,7 +657,9 @@ impl Core {
             | KernelToUi::UserContext(_)
             | KernelToUi::EmotionUpdate(_)
             | KernelToUi::FatigueAlert(_)
-            | KernelToUi::PrivacyGuardAlert(_) => {}
+            | KernelToUi::PrivacyGuardAlert(_)
+            | KernelToUi::AuraRingUpdate(_) => {}
+
         }
         Ok(())
     }

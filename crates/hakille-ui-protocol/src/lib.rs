@@ -6,6 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod aura;
+pub use aura::*;
+
 /// Version du protocole. Toute rupture incrémente et garde un test de compat.
 pub const PROTOCOL_VERSION: u16 = 1;
 
@@ -519,6 +522,8 @@ pub enum KernelToUi {
     NotificationDismissed {
         id: String,
     },
+    /// Diffusion en continu de l'Aura Ring pour le HUD réactif ambiant (Pilier 5).
+    AuraRingUpdate(AuraRingUpdateDto),
 }
 
 /// Message UI → noyau versionné : champ `version` transporté sur le fil
@@ -1026,5 +1031,82 @@ mod tests {
         let d_json = serde_json::to_string(&u_dismiss).unwrap();
         let d_back: UiMessage = serde_json::from_str(&d_json).unwrap();
         assert_eq!(d_back, u_dismiss);
+    }
+
+    #[test]
+    fn test_aura_ring_protocol_streaming_json_and_bincode_roundtrip() {
+        let updates = [
+            AuraRingUpdateDto::new(
+                0.95,
+                "EmeraldHighTrust",
+                "#10B981",
+                "#10B98173",
+                6000,
+                1.042,
+                1794078900000,
+            ),
+            AuraRingUpdateDto::new(
+                0.65,
+                "AmberAmbient",
+                "#F59E0B",
+                "#F59E0B4D",
+                3500,
+                0.985,
+                1794078901000,
+            ),
+            AuraRingUpdateDto::new(
+                0.72,
+                "VioletStepUp",
+                "#8B5CF6",
+                "#8B5CF699",
+                1000,
+                1.015,
+                1794078902000,
+            ),
+            AuraRingUpdateDto::new(
+                0.25,
+                "RedLocked",
+                "#EF4444",
+                "#EF4444B3",
+                800,
+                0.960,
+                1794078903000,
+            ),
+        ];
+
+        assert!(updates[0].is_high_trust());
+        assert!(updates[1].is_ambient());
+        assert!(updates[2].is_step_up());
+        assert!(updates[3].is_locked());
+
+        for dto in updates {
+            // 1. Serde JSON roundtrip DTO direct
+            let json = serde_json::to_string(&dto).expect("JSON serialization should succeed");
+            let back_dto: AuraRingUpdateDto =
+                serde_json::from_str(&json).expect("JSON deserialization should succeed");
+            assert_eq!(dto, back_dto);
+
+            // 2. Bincode roundtrip DTO direct
+            let bin = bincode::serialize(&dto).expect("Bincode serialization should succeed");
+            let back_bin: AuraRingUpdateDto =
+                bincode::deserialize(&bin).expect("Bincode deserialization should succeed");
+            assert_eq!(dto, back_bin);
+
+            // 3. KernelToUi variant wrapped in KernelMessage
+            let k_msg = KernelMessage::new(KernelToUi::AuraRingUpdate(dto.clone()));
+            assert!(k_msg.check().is_ok());
+
+            // 3a. KernelMessage JSON roundtrip
+            let k_json = serde_json::to_string(&k_msg).unwrap();
+            assert!(k_json.contains("\"AuraRingUpdate\""));
+            assert!(k_json.contains(&dto.state_name));
+            let k_back_json: KernelMessage = serde_json::from_str(&k_json).unwrap();
+            assert_eq!(k_msg, k_back_json);
+
+            // 3b. KernelMessage Bincode roundtrip
+            let k_bin = bincode::serialize(&k_msg).unwrap();
+            let k_back_bin: KernelMessage = bincode::deserialize(&k_bin).unwrap();
+            assert_eq!(k_msg, k_back_bin);
+        }
     }
 }

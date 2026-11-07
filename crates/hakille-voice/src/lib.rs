@@ -1,3 +1,4 @@
+pub mod adaptive;
 pub mod barge_in;
 pub mod codec;
 pub mod input;
@@ -5,6 +6,7 @@ pub mod moshi;
 pub mod tts;
 pub mod viseme;
 
+pub use adaptive::*;
 pub use barge_in::*;
 pub use codec::*;
 pub use moshi::*;
