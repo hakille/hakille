@@ -2733,7 +2733,6 @@ dependencies = [
  "ed25519-dalek",
  "hakille-design",
  "hakille-mesh",
- "hakille-sdk",
  "hakille-spatial",
  "hakille-ui",
  "hakille-ui-desktop",
@@ -2948,23 +2947,6 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "hakille-sdk"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "ed25519-dalek",
- "hakille-core",
- "semver",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.21",
- "toml",
  "tracing",
  "uuid",
 ]

@@ -4,10 +4,8 @@
 //! T1_F21_02 : Détection de micro-gestes Index-Thumb Pinch et Swipe sans allocation (§32).
 //! T1_F21_03 : Projection perspective 3D et détection de contradiction du Palais de la Mémoire (§33).
 //! T1_F21_04 : Transport maillé P2P Air-Gap et isolation Link-Local fail-closed (§35).
-//! T1_F21_05 : Cycle de vie d'un paquet .hap signé et validation du SDK (§36).
 
 use hakille_mesh::{LinkLocalGuard, MeshFrame, MeshTransport, VirtualAirGapBus};
-use hakille_sdk::{HakilleAgentPackage, SdkManifest};
 use hakille_spatial::{
     HandJointId, HandKeypoint3D, HandLandmarks3D, Handedness, MicroGestureDetector, Point3D,
 };
@@ -171,28 +169,4 @@ async fn t1_f21_04_mesh_air_gap_link_local_fail_closed() {
 
     let decrypted = received.verify_and_decrypt(&sym_key).unwrap();
     assert_eq!(decrypted, payload);
-}
-
-#[test]
-fn t1_f21_05_hap_package_developer_signing_and_validation() {
-    let manifest_toml = r#"
-id = "sovereign-wallet"
-name = "Portefeuille Hors-Ligne"
-version = "1.0.0"
-description = "Signatures locales sans fuite réseau"
-author = "Sovereign Core Team"
-license = "Apache-2.0"
-entrypoint = "wallet.wasm"
-capabilities = ["filesystem:read"]
-"#;
-
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&[91u8; 32]);
-    let wasm_binary = b"\x00asm\x01\x00\x00\x00\x01\x04\x01\x60\x00\x00";
-
-    let package = HakilleAgentPackage::pack(manifest_toml, wasm_binary, &signing_key).unwrap();
-    let validated_manifest = package.unpack_and_verify().unwrap();
-
-    assert_eq!(validated_manifest.id, "sovereign-wallet");
-    assert_eq!(validated_manifest.version, "1.0.0");
-    assert_eq!(package.wasm_bytes, wasm_binary);
 }

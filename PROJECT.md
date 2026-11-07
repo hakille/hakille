@@ -15,7 +15,7 @@ Hakille follows a strict sovereign, layered, headless-first architecture across 
 11. `crates/hakille-audio` & `crates/hakille-voice`: Zero-allocation YIN pitch detector, multi-channel Binaural Delay-and-Sum beamforming with directional ITD steering and harmonic comb filter, diagnostic health status, and Adaptive Bayesian Prosody Engine ($0.6 \cdot \text{model} + 0.4 \cdot \text{graph}$ and urgency rate/pitch/breathiness transfer functions).
 12. `crates/hakille-mesh`: Dedicated pure-Rust offline P2P mesh fabric (BLE GATT, Wi-Fi Direct SoftAP/P2P-GO, `VirtualAirGapBus`, frame chunking, and fail-closed zero-Internet link-local guard).
 13. `crates/hakille-sync` & `crates/hakille-audit`: CRDT vector clock replication with persistent redb tombstones, Revocation-Wins distributed consent, ACID redb audit ledger with SHA-256 hash chaining, Ed25519 signatures, and Decentralized Zero-Knowledge Verifiable Compliance proofs (`ZkComplianceProof`).
-14. `crates/hakille-sdk`: Declarative WASM agent SDK for authoring, packaging, and distributing sandboxed sovereign applications with `agent.toml` manifest, fuel limits, Biscuit capability attenuation, and `.hap` App Store packaging.
+14. `hakille-sdk` (standalone repository `hakille/hakille-sdk`): Declarative WASM agent SDK for authoring, packaging, and distributing sandboxed sovereign applications with `agent.toml` manifest, fuel limits, Biscuit capability attenuation, and `.hap` App Store packaging.
 15. `crates/hakille-daemon`: System service (`hakilled`), multi-turn cognition, ActionCard proposal/approval, durable crash-safe outbox queuing (`outbox.json`), and WASM reference agent execution.
 
 ## Feature Inventory

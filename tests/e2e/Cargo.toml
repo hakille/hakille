@@ -14,7 +14,6 @@ hakille-ui-platform = { path = "../../crates/hakille-ui-platform" }
 hakille-ui-desktop = { path = "../../crates/hakille-ui-desktop" }
 hakille-spatial = { path = "../../crates/hakille-spatial" }
 hakille-mesh = { path = "../../crates/hakille-mesh" }
-hakille-sdk = { path = "../../crates/hakille-sdk" }
 accesskit = "0.24"
 ab_glyph = "0.2"
 serde = { workspace = true }
