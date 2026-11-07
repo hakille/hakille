@@ -1,8 +1,18 @@
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import { pickBi } from '@/i18n/types';
 import { useI18n } from '@/i18n/context';
-import { KlattVoiceStudio } from '@/components/simulators/KlattVoiceStudio';
-import { MobileCompanionSimulator } from '@/components/simulators/MobileCompanionSimulator';
+import { SimulatorSkeleton } from '@/components/common';
+
+const KlattVoiceStudio = lazy(() =>
+  import('@/components/simulators/KlattVoiceStudio').then((m) => ({
+    default: m.KlattVoiceStudio,
+  }))
+);
+const MobileCompanionSimulator = lazy(() =>
+  import('@/components/simulators/MobileCompanionSimulator').then((m) => ({
+    default: m.MobileCompanionSimulator,
+  }))
+);
 
 interface OsTarget {
   readonly id: 'linux' | 'macos' | 'windows' | 'android' | 'ios' | 'redox';
@@ -396,7 +406,7 @@ export function InstallPage() {
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {selectedOs.commands.map((cmd) => (
-                  <div key={cmd} className="code-command-box">
+                  <div key={cmd} className="code-command-box ltr-isolate">
                     <code className="mono" style={{ color: 'var(--hakille-texte-1)' }}>
                       {cmd}
                     </code>
@@ -415,8 +425,37 @@ export function InstallPage() {
         </div>
 
         {/* 3. Live Voice & Mobile Simulators */}
-        <KlattVoiceStudio />
-        <MobileCompanionSimulator />
+        <Suspense
+          fallback={
+            <SimulatorSkeleton
+              title={pickBi(locale, 'Studio Vocal Klatt 5 Formants (24 kHz)', 'Klatt 5-Formant Speech Studio (24 kHz)')}
+              description={pickBi(
+                locale,
+                'Synthèse vocale temps réel sans dépendance externe, 11 visèmes synchronisés et coupure Barge-In.',
+                'Zero-weight real-time formant speech synthesis, 11 synchronized mouth visemes, and Barge-In cutoff.'
+              )}
+              minHeight={480}
+            />
+          }
+        >
+          <KlattVoiceStudio />
+        </Suspense>
+
+        <Suspense
+          fallback={
+            <SimulatorSkeleton
+              title={pickBi(locale, 'Simulateur Compagnon Mobile & Checkpoint v2', 'Mobile Companion Simulator & Checkpoint v2')}
+              description={pickBi(
+                locale,
+                'Écran tactile smartphone iOS/Android, tabs Voix/Mémoire/Activité/Hub et transport crash-safe.',
+                'iOS/Android smartphone touch frame, Voice/Memory/Activity/Hub tabs, and durable Checkpoint v2 recovery.'
+              )}
+              minHeight={540}
+            />
+          }
+        >
+          <MobileCompanionSimulator />
+        </Suspense>
       </div>
     </div>
   );

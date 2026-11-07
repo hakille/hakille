@@ -160,11 +160,15 @@
     font-size: var(--hakille-type-body-size);
     font-weight: 600;
     text-decoration: none;
-    transition: opacity var(--hakille-dur-120) var(--hakille-ease-in);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+    transition: opacity var(--hakille-dur-120) var(--hakille-ease-in),
+      box-shadow var(--hakille-dur-150) var(--hakille-ease-out),
+      transform var(--hakille-dur-120) var(--hakille-ease-out);
   }
 
   .primary-lueur-btn:hover {
-    opacity: 0.9;
+    opacity: 0.94;
+    box-shadow: 0 0 16px -2px color-mix(in srgb, var(--hakille-lueur) 35%, transparent);
   }
 
   .secondary-outline-btn {
@@ -354,5 +358,141 @@
     gap: var(--hakille-space-16);
     font-size: var(--hakille-type-caption-size);
     color: var(--hakille-texte-3);
+  }
+
+  /* =========================================================================
+     Cybernetic Simulator Skeletons (Milestone 2)
+     ========================================================================= */
+  .sim-skeleton-frame {
+    position: relative;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: var(--hakille-space-24);
+    background: color-mix(in srgb, var(--hakille-surface-1) 85%, transparent);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-card);
+    box-shadow: 0 4px 24px -4px rgba(0, 0, 0, 0.22);
+    overflow: hidden;
+  }
+
+  .sim-skeleton-frame::before {
+    content: '';
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline: 0;
+    height: 2px;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      color-mix(in srgb, var(--hakille-lueur) 40%, transparent) 50%,
+      transparent 100%
+    );
+    animation: simSkeletonSweep 2.8s var(--hakille-ease-out) infinite;
+  }
+
+  @keyframes simSkeletonSweep {
+    0% { transform: translateX(-100%); opacity: 0; }
+    50% { opacity: 1; }
+    100% { transform: translateX(100%); opacity: 0; }
+  }
+
+  [data-motion="reduced"] .sim-skeleton-frame::before {
+    animation: none;
+    opacity: 0.5;
+  }
+
+  .sim-skeleton-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--hakille-space-16);
+    margin-block-end: var(--hakille-space-24);
+  }
+
+  .sim-skeleton-meta {
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-8);
+  }
+
+  .sim-skeleton-title {
+    font-size: var(--hakille-type-heading-size);
+    font-weight: 600;
+    color: var(--hakille-texte-1);
+    letter-spacing: -0.012em;
+  }
+
+  .sim-skeleton-desc {
+    font-size: var(--hakille-type-caption-size);
+    color: var(--hakille-texte-2);
+    max-width: 60ch;
+  }
+
+  .sim-skeleton-pulse-ring {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 1px solid color-mix(in srgb, var(--hakille-lueur) 35%, transparent);
+    background: color-mix(in srgb, var(--hakille-lueur) 8%, transparent);
+    animation: simSkeletonPulse 2s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes simSkeletonPulse {
+    0%, 100% { transform: scale(0.95); opacity: 0.6; }
+    50% { transform: scale(1.08); opacity: 1; }
+  }
+
+  [data-motion="reduced"] .sim-skeleton-pulse-ring {
+    animation: none;
+  }
+
+  .sim-skeleton-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-16);
+    flex: 1;
+  }
+
+  .sim-skeleton-shimmer-bar {
+    height: 8px;
+    border-radius: 4px;
+    background: var(--hakille-surface-2);
+  }
+
+  .sim-skeleton-stage {
+    flex: 1;
+    min-height: 140px;
+    border: 1px dashed var(--hakille-ligne);
+    border-radius: var(--hakille-radius-control);
+    background: color-mix(in srgb, var(--hakille-surface-0) 60%, transparent);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-around;
+    padding: var(--hakille-space-16);
+  }
+
+  .sim-skeleton-grid-line {
+    height: 1px;
+    background: var(--hakille-ligne);
+    opacity: 0.5;
+  }
+
+  .sim-skeleton-controls {
+    display: flex;
+    gap: var(--hakille-space-12);
+    margin-block-start: var(--hakille-space-8);
+  }
+
+  .sim-skeleton-shimmer-chip {
+    width: 90px;
+    height: 32px;
+    border-radius: var(--hakille-radius-control);
+    border: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-2);
   }
 }

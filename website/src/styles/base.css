@@ -118,10 +118,34 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .tabular {
-    font-variant-numeric: tabular-nums;
-    direction: ltr;
+  .tabular,
+  .hash-isolate,
+  .waveform-isolate,
+  .ltr-isolate,
+  [data-isolate="ltr"] {
+    direction: ltr !important;
     unicode-bidi: isolate;
+  }
+
+  .hakille-directional-arrow {
+    display: inline-block;
+    vertical-align: baseline;
+    font-family: var(--hakille-font-sans);
+    line-height: 1;
+    margin-inline-start: 4px;
+    transition: transform var(--hakille-dur-150) var(--hakille-ease-out);
+  }
+
+  .ghost-btn:hover .hakille-directional-arrow.is-ltr,
+  .primary-lueur-btn:hover .hakille-directional-arrow.is-ltr,
+  .secondary-outline-btn:hover .hakille-directional-arrow.is-ltr {
+    transform: translateX(3px);
+  }
+
+  .ghost-btn:hover .hakille-directional-arrow.is-rtl,
+  .primary-lueur-btn:hover .hakille-directional-arrow.is-rtl,
+  .secondary-outline-btn:hover .hakille-directional-arrow.is-rtl {
+    transform: translateX(-3px);
   }
 
   /* Wordmark rule (`brand.rs`): always lowercase `hakille`, weight 600, tracking -1% */

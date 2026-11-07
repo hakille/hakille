@@ -41,8 +41,8 @@ export function LicensesPage() {
             <p style={{ fontSize: 'var(--hakille-type-caption-size)', color: 'var(--hakille-texte-2)' }}>
               {pickBi(
                 locale,
-                'Les 41 crates Rust, les applications compagnons iOS/Android et l’intégralité de ce site web (website/) sont publiés sous licence Apache-2.0 : usage personnel, académique et commercial libre, modification et redistribution autorisées, avec concession explicite de brevets (§3) et résiliation défensive automatique contre tout attaquant en contrefaçon de brevet.',
-                'All 41 Rust crates, native iOS/Android companion code, and this entire website (website/) are licensed under Apache-2.0 — granting perpetual copyright and patent licenses (§3) with automatic defensive termination against offensive patent litigation.'
+                'Les 42 crates Rust, les applications compagnons iOS/Android et l’intégralité de ce site web (website/) sont publiés sous licence Apache-2.0 : usage personnel, académique et commercial libre, modification et redistribution autorisées, avec concession explicite de brevets (§3) et résiliation défensive automatique contre tout attaquant en contrefaçon de brevet.',
+                'All 42 Rust crates, native iOS/Android companion code, and this entire website (website/) are licensed under Apache-2.0 — granting perpetual copyright and patent licenses (§3) with automatic defensive termination against offensive patent litigation.'
               )}
             </p>
           </div>
@@ -91,7 +91,7 @@ export function LicensesPage() {
                   </td>
                   <td><a href="/fonts/OFL.txt">{FONT_PROVENANCE.license}</a></td>
                   <td className="mono">{FONT_PROVENANCE.version} · {(FONT_PROVENANCE.sizeBytes / 1024).toFixed(0)} KB</td>
-                  <td className="mono">{FONT_PROVENANCE.interVariableSha256}</td>
+                  <td className="mono hash-isolate ltr-isolate">{FONT_PROVENANCE.interVariableSha256}</td>
                 </tr>
                 <tr>
                   <td>
@@ -100,7 +100,7 @@ export function LicensesPage() {
                   </td>
                   <td>SIL OFL 1.1</td>
                   <td className="mono">4.3 KB</td>
-                  <td className="mono">{FONT_PROVENANCE.oflLicenseSha256}</td>
+                  <td className="mono hash-isolate ltr-isolate">{FONT_PROVENANCE.oflLicenseSha256}</td>
                 </tr>
                 {Object.entries(LOGO_PROVENANCE).map(([filename, hash]) => (
                   <tr key={filename}>
@@ -110,7 +110,7 @@ export function LicensesPage() {
                     </td>
                     <td>Hakille Brand Assets (Trademark §6 reserved)</td>
                     <td className="mono">PNG</td>
-                    <td className="mono">{hash}</td>
+                    <td className="mono hash-isolate ltr-isolate">{hash}</td>
                   </tr>
                 ))}
               </tbody>

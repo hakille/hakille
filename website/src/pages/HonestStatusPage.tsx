@@ -44,18 +44,20 @@ export function HonestStatusPage() {
             <ul className="clean-list" style={{ fontSize: 'var(--hakille-type-caption-size)' }}>
               <li>
                 ◆{' '}
-                <strong>
+                <strong className="ltr-isolate">
                   {pickBi(
                     locale,
                     `${WORKSPACE_METRICS.totalAutomatedTests.toLocaleString('fr-FR')} tests automatisés`,
                     `${WORKSPACE_METRICS.totalAutomatedTests.toLocaleString('en-US')} automated tests`
                   )}
                 </strong>{' '}
-                {pickBi(
-                  locale,
-                  `(${WORKSPACE_METRICS.conformanceFastTests} rapides + ${WORKSPACE_METRICS.conformanceSlowTests} conformité longue) validés sur ${WORKSPACE_METRICS.totalPackages} crates Cargo.`,
-                  `(${WORKSPACE_METRICS.conformanceFastTests} fast + ${WORKSPACE_METRICS.conformanceSlowTests} slow conformance suites) passing across ${WORKSPACE_METRICS.totalPackages} packages.`
-                )}
+                <span className="ltr-isolate">
+                  {pickBi(
+                    locale,
+                    `(${WORKSPACE_METRICS.conformanceFastTests} rapides + ${WORKSPACE_METRICS.conformanceSlowTests} conformité longue) validés sur ${WORKSPACE_METRICS.totalPackages} crates Cargo.`,
+                    `(${WORKSPACE_METRICS.conformanceFastTests} fast + ${WORKSPACE_METRICS.conformanceSlowTests} slow conformance suites) passing across ${WORKSPACE_METRICS.totalPackages} packages.`
+                  )}
+                </span>
               </li>
               <li>
                 ◆{' '}
@@ -234,10 +236,10 @@ export function HonestStatusPage() {
                       </code>
                     </td>
                     <td>{pickBi(locale, m.roleFr, m.roleEn)}</td>
-                    <td className="mono">
+                    <td className="mono ltr-isolate">
                       {m.runtime} · {m.format}
                     </td>
-                    <td className="mono tabular">
+                    <td className="mono tabular ltr-isolate">
                       {m.diskSizeLabel} · {m.ramMb} MB
                     </td>
                     <td>

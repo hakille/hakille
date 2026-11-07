@@ -59,9 +59,9 @@ export const LEGAL_CONFIG = {
     constitutionVersion: '1.0.0',
     constitutionDate: '2026-04-12',
     lastLegalUpdate: '2026-11-06',
-    cargoPackagesCount: 41,
-    rustLinesOfCode: 122_639,
-    automatedTestsCount: 1_468,
+    cargoPackagesCount: 42,
+    rustLinesOfCode: 146_229,
+    automatedTestsCount: 1_948,
     pythonPercentage: 0,
   },
   crisisHotlines: [

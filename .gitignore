@@ -27,3 +27,6 @@ website/dist/
 website/.vite/
 website/public/brand/
 website/public/fonts/
+
+# Agent work directories
+.agents/

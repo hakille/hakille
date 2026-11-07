@@ -48,7 +48,7 @@ describe('8-Language Key Parity, 11-Route Registry, Anti-Hype Doctrine & Soverei
     }
   });
 
-  it('matches exact repository crate count (41) and LoC total (122,639)', () => {
+  it('matches exact repository crate count (42) and LoC total (146,229)', () => {
     expect(CRATES_CATALOG).toHaveLength(WORKSPACE_METRICS.totalPackages);
     const sumLoc = CRATES_CATALOG.reduce((acc, c) => acc + c.loc, 0);
     expect(sumLoc).toBe(WORKSPACE_METRICS.totalRustLoc);

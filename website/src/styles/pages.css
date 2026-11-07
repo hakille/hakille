@@ -128,17 +128,24 @@
   }
 
   .arch-card {
-    background: var(--hakille-surface-1);
+    background: color-mix(in srgb, var(--hakille-surface-1) 88%, transparent);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border: 1px solid var(--hakille-ligne);
     border-radius: var(--hakille-radius-card);
     padding: var(--hakille-space-24);
     display: flex;
     flex-direction: column;
     gap: var(--hakille-space-16);
+    box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.22);
+    transition: border-color var(--hakille-dur-150) var(--hakille-ease-out),
+      box-shadow var(--hakille-dur-150) var(--hakille-ease-out);
   }
 
   .arch-card[data-emphasis="lueur"] {
-    border-color: var(--hakille-texte-2);
+    border-color: color-mix(in srgb, var(--hakille-lueur) 45%, var(--hakille-ligne));
+    box-shadow: 0 0 24px -4px color-mix(in srgb, var(--hakille-lueur) 14%, transparent),
+      0 4px 20px -2px rgba(0, 0, 0, 0.28);
   }
 
   .clean-list {
@@ -316,13 +323,24 @@
   }
 
   .script-card {
-    background: var(--hakille-surface-1);
+    background: color-mix(in srgb, var(--hakille-surface-1) 88%, transparent);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border: 1px solid var(--hakille-ligne);
     border-radius: var(--hakille-radius-card);
     padding: var(--hakille-space-24);
     display: flex;
     flex-direction: column;
     gap: var(--hakille-space-8);
+    box-shadow: 0 4px 18px -3px rgba(0, 0, 0, 0.2);
+    transition: border-color var(--hakille-dur-150) var(--hakille-ease-out),
+      box-shadow var(--hakille-dur-150) var(--hakille-ease-out);
+  }
+
+  .script-card:hover {
+    border-color: color-mix(in srgb, var(--hakille-lueur) 35%, var(--hakille-ligne));
+    box-shadow: 0 0 16px -2px color-mix(in srgb, var(--hakille-lueur) 10%, transparent),
+      0 4px 20px -2px rgba(0, 0, 0, 0.25);
   }
 
   .script-sample-large {
@@ -330,6 +348,201 @@
     line-height: 1.4;
     color: var(--hakille-lueur);
     font-weight: 600;
+  }
+
+  /* Architecture Deep-Dive Sections */
+  .arch-deep-dive-section {
+    padding-block: var(--hakille-space-48);
+    border-block-end: 1px solid var(--hakille-ligne);
+  }
+
+  .arch-substrate-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: var(--hakille-space-16);
+    margin-top: var(--hakille-space-24);
+  }
+
+  .arch-substrate-card {
+    background: var(--hakille-surface-1);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-card);
+    padding: var(--hakille-space-20);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-10);
+    transition: border-color var(--hakille-dur-150) var(--hakille-ease-out);
+  }
+
+  .arch-substrate-card:hover {
+    border-color: color-mix(in srgb, var(--hakille-lueur) 30%, var(--hakille-ligne));
+  }
+
+  .card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .platform-tag {
+    font-size: 0.72rem;
+    font-family: var(--hakille-font-mono);
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: var(--hakille-radius-control);
+    background: var(--hakille-surface-2);
+    border: 1px solid var(--hakille-ligne);
+    color: var(--hakille-lueur);
+  }
+
+  .crate-ref {
+    font-size: 0.68rem;
+    color: var(--hakille-texte-3);
+  }
+
+  .card-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--hakille-texte-1);
+    margin: 0;
+  }
+
+  .card-desc {
+    font-size: 0.8rem;
+    color: var(--hakille-texte-2);
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  .tech-spec-snippet {
+    background: var(--hakille-surface-0);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-control);
+    padding: 8px 10px;
+    font-size: 0.74rem;
+    color: var(--hakille-lueur);
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  .biscuit-breakdown-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: var(--hakille-space-20);
+    margin-top: var(--hakille-space-24);
+  }
+
+  .biscuit-logic-card {
+    background: var(--hakille-surface-1);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-card);
+    padding: var(--hakille-space-20);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-12);
+  }
+
+  .datalog-box {
+    background: var(--hakille-surface-0);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-control);
+    padding: 12px 14px;
+    font-size: 0.78rem;
+    color: var(--hakille-texte-1);
+    line-height: 1.5;
+  }
+
+  .datalog-comment {
+    color: var(--hakille-texte-3);
+    font-style: italic;
+  }
+
+  .proof-metrics-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .proof-metric-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--hakille-surface-0);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-control);
+  }
+
+  .metric-label {
+    font-size: 0.78rem;
+    color: var(--hakille-texte-2);
+  }
+
+  .metric-val {
+    font-size: 0.8rem;
+    color: var(--hakille-lueur);
+  }
+
+  .ipc-specs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: var(--hakille-space-16);
+    margin-top: var(--hakille-space-20);
+  }
+
+  .ipc-card {
+    background: var(--hakille-surface-1);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-card);
+    padding: var(--hakille-space-20);
+  }
+
+  .kalman-equations-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: var(--hakille-space-16);
+    margin-top: var(--hakille-space-20);
+  }
+
+  .equation-card {
+    background: var(--hakille-surface-1);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-card);
+    padding: var(--hakille-space-18);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .math-display {
+    background: var(--hakille-surface-0);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-control);
+    padding: 10px 12px;
+    font-size: 0.82rem;
+    color: var(--hakille-lueur);
+    overflow-x: auto;
+    white-space: pre-wrap;
+    line-height: 1.4;
+  }
+
+  .sensor-modalities-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: var(--hakille-space-12);
+    margin-top: var(--hakille-space-16);
+  }
+
+  .sensor-cell {
+    background: var(--hakille-surface-1);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-control);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   }
 
   @media print {

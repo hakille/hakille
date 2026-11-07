@@ -1,8 +1,20 @@
-import { useState } from 'react';
+import { lazy, Suspense } from 'react';
 import { LEGAL_CONFIG } from '@/config/legal';
 import { pickBi } from '@/i18n/types';
 import { useI18n } from '@/i18n/context';
 import { PrintDossierButton } from '@/components/primitives/PrintDossierButton';
+import { SimulatorSkeleton } from '@/components/common';
+
+const BiscuitTokenLab = lazy(() =>
+  import('@/components/simulators/BiscuitTokenLab').then((m) => ({
+    default: m.BiscuitTokenLab,
+  }))
+);
+const NotificationSecurityPolicyPlayground = lazy(() =>
+  import('@/components/simulators/NotificationSecurityPolicyPlayground').then((m) => ({
+    default: m.NotificationSecurityPolicyPlayground,
+  }))
+);
 
 const THREAT_VECTORS = [
   {
@@ -72,10 +84,6 @@ const THREAT_VECTORS = [
 
 export function SecurityPage() {
   const { locale, t } = useI18n();
-  const [attenuatedReadOnly, setAttenuatedReadOnly] = useState(true);
-  const [attemptedEscalation, setAttemptedEscalation] = useState(false);
-
-  const biscuitValid = !attemptedEscalation;
 
   return (
     <div>
@@ -89,93 +97,50 @@ export function SecurityPage() {
       </section>
 
       <div className="container page-content">
-        {/* Interactive Biscuit Attenuation Verifier */}
-        <section className="sim-shell">
-          <div className="sim-header">
-            <strong>
-              {pickBi(
-                locale,
-                'Vérificateur Interactif d’Atténuation Monotone Biscuit (RULE-04)',
-                'Interactive Biscuit Monotonic Attenuation Verifier (RULE-04)'
-              )}
-            </strong>
-            <span className="status-tag">
-              {biscuitValid
-                ? pickBi(locale, 'DATALOG VALIDE · AUTORISÉ', 'DATALOG VERIFICATION: PASS')
-                : pickBi(locale, 'BLOCAGE DUR · ESCALADE REJETÉE', 'HARD BLOCK · ESCALATION REJECTED')}
-            </span>
-          </div>
-          <div className="sim-body comparison-grid" style={{ marginBottom: 0 }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              <div className="eyebrow-mono">
-                Block 0 (Authority Root) + Block 1 (Sub-Agent Attenuation)
-              </div>
-              <pre
-                style={{
-                  padding: '14px',
-                  borderRadius: '8px',
-                  background: 'var(--hakille-surface-0)',
-                  border: '1px solid var(--hakille-ligne)',
-                  overflowX: 'auto',
-                  fontSize: '0.78rem',
-                }}
-              >{`// Block 0: Root User Seed (Ed25519)
-right("mail:inbox", "read");
-right("mail:drafts", "write");
-check if time($t), $t <= "2026-11-06T09:35:00Z"; // 300s TTL
+        {/* Interactive Biscuit v5 Capability Token Inspector & Attenuator */}
+        <section>
+          <Suspense
+            fallback={
+              <SimulatorSkeleton
+                title={pickBi(
+                  locale,
+                  'Inspecteur & Atténuateur de Tokens Biscuit v5',
+                  'Biscuit v5 Capability Token Inspector & Attenuator'
+                )}
+                description={pickBi(
+                  locale,
+                  'Atténuation cryptographique Datalog, sandbox de sous-agents et preuve d’impossibilité d’escalade.',
+                  'Cryptographic Datalog attenuation, sub-agent capability sandboxing, and monotonic restriction proof.'
+                )}
+                minHeight={580}
+              />
+            }
+          >
+            <BiscuitTokenLab />
+          </Suspense>
+        </section>
 
-// Block 1: Delegated to Summarizer Sub-Agent
-${attenuatedReadOnly ? 'check if operation("read"); // Narrowed to read-only' : '// No read-only restriction'}
-${attemptedEscalation ? 'right("wallet:transfer", "execute"); // ILLEGAL ESCALATION ATTEMPT!' : '// Zero privilege escalation'}`}</pre>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', justifyContent: 'center' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <input
-                  type="checkbox"
-                  checked={attenuatedReadOnly}
-                  onChange={(e) => setAttenuatedReadOnly(e.target.checked)}
-                />
-                <span>
-                  {pickBi(
-                    locale,
-                    'Restreindre le sous-agent strictement à operation("read")',
-                    'Attenuate sub-agent strictly to operation("read")'
-                  )}
-                </span>
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <input
-                  type="checkbox"
-                  checked={attemptedEscalation}
-                  onChange={(e) => setAttemptedEscalation(e.target.checked)}
-                />
-                <span>
-                  {pickBi(
-                    locale,
-                    'Simuler un sous-agent tentant d’ajouter right("wallet:transfer")',
-                    'Simulate sub-agent appending right("wallet:transfer")'
-                  )}
-                </span>
-              </label>
-
-              <div className="arch-card" style={{ padding: '16px' }}>
-                <p style={{ fontSize: 'var(--hakille-type-caption-size)', color: 'var(--hakille-texte-2)' }}>
-                  {biscuitValid
-                    ? pickBi(
-                        locale,
-                        'Jeton Biscuit valide : le Bloc 1 ajoute uniquement des prédicats restrictifs check if signés le long de la chaîne.',
-                        'Valid Biscuit token: Block 1 only adds restrictive check if predicates signed along the chain.'
-                      )
-                    : pickBi(
-                        locale,
-                        'Rejeté par hakille-auth : en Datalog Biscuit, tout fait d’autorité right(...) hors du Bloc 0 est ignoré/rejeté. Un sous-agent ne peut mathématiquement JAMAIS élargir ses propres droits.',
-                        'Rejected by hakille-auth: In Biscuit Datalog, authority facts right(...) outside Block 0 are rejected. A sub-agent can mathematically NEVER widen its own permissions.'
-                      )}
-                </p>
-              </div>
-            </div>
-          </div>
+        {/* Constitutional Notification Security Policy Playground */}
+        <section style={{ marginTop: '24px' }}>
+          <Suspense
+            fallback={
+              <SimulatorSkeleton
+                title={pickBi(
+                  locale,
+                  'Banc de Test des Politiques Constitutionnelles de Notification',
+                  'Constitutional Notification Security Policy Playground'
+                )}
+                description={pickBi(
+                  locale,
+                  'Évaluation des règles constitutionnelles (Mineurs NoWallet, Sessions Invités, Confiance Biométrique).',
+                  'Evaluation of constitutional rules (Rule 7 minors NoWallet, guest session isolation, biometric confidence).'
+                )}
+                minHeight={540}
+              />
+            }
+          >
+            <NotificationSecurityPolicyPlayground />
+          </Suspense>
         </section>
 
         {/* 7-Vector Threat Matrix */}
@@ -233,7 +198,7 @@ ${attemptedEscalation ? 'right("wallet:transfer", "execute"); // ILLEGAL ESCALAT
                 `Never disclose a critical vulnerability in a public GitHub issue. Contact the security maintainers privately: acknowledgment within ${LEGAL_CONFIG.contacts.disclosureAckHours} hours.`
               )}
             </p>
-            <div className="mono" style={{ fontSize: '0.8rem', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div className="mono ltr-isolate" style={{ fontSize: '0.8rem', display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <div>
                 Email :{' '}
                 <a href={`mailto:${LEGAL_CONFIG.contacts.securityEmail}`}>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { LEGAL_CONFIG } from '@/config/legal';
 import { CONSTITUTION_RULES } from '@/data/constitutionData';
 import { WORKSPACE_METRICS } from '@/data/cratesCatalog';
@@ -7,13 +7,48 @@ import { CULTURAL_SCRIPT_SPECIMENS } from '@/i18n/culturalScripts';
 import { pickBi } from '@/i18n/types';
 import { useI18n } from '@/i18n/context';
 import { AppLink } from '@/context/RouterContext';
-import { KoraPresenceInstrument } from '@/components/simulators/KoraPresenceInstrument';
-import { KlattVoiceStudio } from '@/components/simulators/KlattVoiceStudio';
-import { ActionCardAndAuditLab } from '@/components/simulators/ActionCardAndAuditLab';
-import { MemoryGraphExplorer } from '@/components/simulators/MemoryGraphExplorer';
-import { ArchitectureAndFabricExplorer } from '@/components/simulators/ArchitectureAndFabricExplorer';
-import { AmbientAndAutonomyLab } from '@/components/simulators/AmbientAndAutonomyLab';
-import { MobileCompanionSimulator } from '@/components/simulators/MobileCompanionSimulator';
+import { DirectionalArrow, SimulatorSkeleton } from '@/components/common';
+
+const KoraPresenceInstrument = lazy(() =>
+  import('@/components/simulators/KoraPresenceInstrument').then((m) => ({
+    default: m.KoraPresenceInstrument,
+  }))
+);
+const KlattVoiceStudio = lazy(() =>
+  import('@/components/simulators/KlattVoiceStudio').then((m) => ({
+    default: m.KlattVoiceStudio,
+  }))
+);
+const ActionCardAndAuditLab = lazy(() =>
+  import('@/components/simulators/ActionCardAndAuditLab').then((m) => ({
+    default: m.ActionCardAndAuditLab,
+  }))
+);
+const MemoryGraphExplorer = lazy(() =>
+  import('@/components/simulators/MemoryGraphExplorer').then((m) => ({
+    default: m.MemoryGraphExplorer,
+  }))
+);
+const ArchitectureAndFabricExplorer = lazy(() =>
+  import('@/components/simulators/ArchitectureAndFabricExplorer').then((m) => ({
+    default: m.ArchitectureAndFabricExplorer,
+  }))
+);
+const AmbientAndAutonomyLab = lazy(() =>
+  import('@/components/simulators/AmbientAndAutonomyLab').then((m) => ({
+    default: m.AmbientAndAutonomyLab,
+  }))
+);
+const DesktopHudToastSandbox = lazy(() =>
+  import('@/components/simulators/DesktopHudToastSandbox').then((m) => ({
+    default: m.DesktopHudToastSandbox,
+  }))
+);
+const MobileCompanionSimulator = lazy(() =>
+  import('@/components/simulators/MobileCompanionSimulator').then((m) => ({
+    default: m.MobileCompanionSimulator,
+  }))
+);
 
 const QUICKSTART_COMMANDS = [
   'git clone https://github.com/hakille/hakille.git && cd hakille',
@@ -56,7 +91,7 @@ export function HomePage({ onOpenSpotlight }: { onOpenSpotlight: () => void }) {
 
               <button
                 type="button"
-                className="code-command-box"
+                className="code-command-box ltr-isolate"
                 onClick={onOpenSpotlight}
                 style={{ width: '100%', maxWidth: '580px', textAlign: 'start' }}
               >
@@ -67,7 +102,21 @@ export function HomePage({ onOpenSpotlight }: { onOpenSpotlight: () => void }) {
               </button>
             </div>
 
-            <KoraPresenceInstrument />
+            <Suspense
+              fallback={
+                <SimulatorSkeleton
+                  title={pickBi(locale, 'Instrument Kora 21 Cordes (48 kHz)', '21-String Kora Instrument (48 kHz)')}
+                  description={pickBi(
+                    locale,
+                    'Synthèse physique Karplus-Strong temps réel, corde pincée et animation orbitale.',
+                    'Real-time Karplus-Strong physical modeling, plucked string audio synthesis, and orbital animation.'
+                  )}
+                  minHeight={420}
+                />
+              }
+            >
+              <KoraPresenceInstrument />
+            </Suspense>
           </div>
 
           <div className="metrics-strip">
@@ -147,7 +196,21 @@ export function HomePage({ onOpenSpotlight }: { onOpenSpotlight: () => void }) {
           </div>
 
           <div style={{ marginTop: '32px' }}>
-            <KlattVoiceStudio />
+            <Suspense
+              fallback={
+                <SimulatorSkeleton
+                  title={pickBi(locale, 'Studio Vocal Klatt 5 Formants (24 kHz)', 'Klatt 5-Formant Speech Studio (24 kHz)')}
+                  description={pickBi(
+                    locale,
+                    'Synthèse vocale temps réel sans dépendance externe, 11 visèmes synchronisés et coupure Barge-In.',
+                    'Zero-weight real-time formant speech synthesis, 11 synchronized mouth visemes, and Barge-In cutoff.'
+                  )}
+                  minHeight={480}
+                />
+              }
+            >
+              <KlattVoiceStudio />
+            </Suspense>
           </div>
         </div>
       </section>
@@ -161,7 +224,21 @@ export function HomePage({ onOpenSpotlight }: { onOpenSpotlight: () => void }) {
             <p className="section-lead">{t.home.act3Body}</p>
           </div>
 
-          <ActionCardAndAuditLab />
+          <Suspense
+            fallback={
+              <SimulatorSkeleton
+                title={pickBi(locale, 'Action Card & Registre d’Audit Chaîné', 'Action Card & Cryptographic Audit Chain')}
+                description={pickBi(
+                  locale,
+                  'Maintien physique Braise 600 ms, signature Ed25519 locale et détection d’altération au bit près.',
+                  '600 ms physical Braise hold, local Ed25519 signatures, and bit-level cryptographic tamper detection.'
+                )}
+                minHeight={520}
+              />
+            }
+          >
+            <ActionCardAndAuditLab />
+          </Suspense>
         </div>
       </section>
 
@@ -174,11 +251,25 @@ export function HomePage({ onOpenSpotlight }: { onOpenSpotlight: () => void }) {
             <p className="section-lead">{t.home.act4Body}</p>
           </div>
 
-          <MemoryGraphExplorer />
+          <Suspense
+            fallback={
+              <SimulatorSkeleton
+                title={pickBi(locale, 'Graphe Mémoire SPO & Purge EU AI Act', 'SPO Memory Graph & EU AI Act Purge')}
+                description={pickBi(
+                  locale,
+                  'Triplestore ACID redb, décroissance exponentielle W(t) et purge sans pierre tombale à 5 minutes.',
+                  'ACID triplestore model, exponential memory decay W(t), and EU AI Act 5-minute tombstone-free purge.'
+                )}
+                minHeight={440}
+              />
+            }
+          >
+            <MemoryGraphExplorer />
+          </Suspense>
         </div>
       </section>
 
-      {/* ACT V — 6-Layer Architecture, 41 Crates & 300s Biscuit Lease */}
+      {/* ACT V — 6-Layer Architecture, 42 Crates & 300s Biscuit Lease */}
       <section className="act-section">
         <div className="container">
           <div className="section-header">
@@ -187,11 +278,25 @@ export function HomePage({ onOpenSpotlight }: { onOpenSpotlight: () => void }) {
             <p className="section-lead">{t.home.act5Body}</p>
           </div>
 
-          <ArchitectureAndFabricExplorer />
+          <Suspense
+            fallback={
+              <SimulatorSkeleton
+                title={pickBi(locale, 'Explorateur d’Architecture & 42 Crates', 'Architecture Explorer & 42 Crates')}
+                description={pickBi(
+                  locale,
+                  'Cartographie interactive des 6 couches architecturales et bail Biscuit 300s avec compteur de dépenses.',
+                  'Interactive mapping of 6 architectural layers and 300s Biscuit lease with live network byte meter.'
+                )}
+                minHeight={560}
+              />
+            }
+          >
+            <ArchitectureAndFabricExplorer />
+          </Suspense>
 
           <div style={{ marginTop: '20px' }}>
             <AppLink to="/architecture" className="ghost-btn">
-              {t.common.readFullDoc} → /architecture
+              {t.common.readFullDoc} <DirectionalArrow /> /architecture
             </AppLink>
           </div>
         </div>
@@ -206,7 +311,39 @@ export function HomePage({ onOpenSpotlight }: { onOpenSpotlight: () => void }) {
             <p className="section-lead">{t.home.act6Body}</p>
           </div>
 
-          <AmbientAndAutonomyLab />
+          <Suspense
+            fallback={
+              <SimulatorSkeleton
+                title={pickBi(locale, 'Laboratoire d’Autonomie & Budget de Silence', 'Autonomy Lab & Daily Silence Budget')}
+                description={pickBi(
+                  locale,
+                  'Sélecteur de canal multimodal, budget de 3 suggestions/jour et échelle de manivelle d’autonomie 0..4.',
+                  'Multimodal channel selector, 3 proactive suggestions/day budget, and 0..4 autonomy crank ladder.'
+                )}
+                minHeight={460}
+              />
+            }
+          >
+            <AmbientAndAutonomyLab />
+          </Suspense>
+
+          <div style={{ marginTop: '32px' }}>
+            <Suspense
+              fallback={
+                <SimulatorSkeleton
+                  title={pickBi(locale, 'Bac à Sable HUD Desktop & Toasts Acrylique', 'Desktop HUD Toast Sandbox & Acrylic UI')}
+                  description={pickBi(
+                    locale,
+                    'Toasts GPU winit+wgpu avec flou acrylique 30px, barre d’évaporation et bouton Braise 600 ms.',
+                    'Native GPU toasts with 30px acrylic blur, fluid auto-evaporation bar, and 600 ms Braise confirmation.'
+                  )}
+                  minHeight={400}
+                />
+              }
+            >
+              <DesktopHudToastSandbox />
+            </Suspense>
+          </div>
         </div>
       </section>
 
@@ -255,16 +392,31 @@ export function HomePage({ onOpenSpotlight }: { onOpenSpotlight: () => void }) {
           </div>
 
           <div style={{ marginTop: '32px' }}>
-            <MobileCompanionSimulator />
+            <Suspense
+              fallback={
+                <SimulatorSkeleton
+                  title={pickBi(locale, 'Simulateur Compagnon Mobile & Checkpoint v2', 'Mobile Companion Simulator & Checkpoint v2')}
+                  description={pickBi(
+                    locale,
+                    'Écran tactile smartphone iOS/Android, tabs Voix/Mémoire/Activité/Hub et transport crash-safe.',
+                    'iOS/Android smartphone touch frame, Voice/Memory/Activity/Hub tabs, and durable Checkpoint v2 recovery.'
+                  )}
+                  minHeight={540}
+                />
+              }
+            >
+              <MobileCompanionSimulator />
+            </Suspense>
           </div>
 
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '24px' }}>
             <AppLink to="/installer" className="primary-lueur-btn">
               {pickBi(
                 locale,
-                'Dimensionner ma RAM & Configurer mon Substrat OS → /installer',
-                'Size My RAM & Configure My OS Substrate → /installer'
-              )}
+                'Dimensionner ma RAM & Configurer mon Substrat OS',
+                'Size My RAM & Configure My OS Substrate'
+              )}{' '}
+              <DirectionalArrow /> /installer
             </AppLink>
           </div>
         </div>
@@ -317,10 +469,10 @@ export function HomePage({ onOpenSpotlight }: { onOpenSpotlight: () => void }) {
 
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '24px' }}>
             <AppLink to="/constitution" className="ghost-btn">
-              {t.routes.constitution.navLabel} (10 rules) →
+              {t.routes.constitution.navLabel} (10 rules) <DirectionalArrow />
             </AppLink>
             <AppLink to="/accessibilite" className="ghost-btn">
-              {t.routes.accessibility.navLabel} (Adlam · N&apos;Ko · RTL) →
+              {t.routes.accessibility.navLabel} (Adlam · N&apos;Ko · RTL) <DirectionalArrow />
             </AppLink>
           </div>
         </div>
@@ -350,7 +502,7 @@ export function HomePage({ onOpenSpotlight }: { onOpenSpotlight: () => void }) {
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {QUICKSTART_COMMANDS.map((cmd, idx) => (
-                <div key={cmd} className="code-command-box">
+                <div key={cmd} className="code-command-box ltr-isolate">
                   <code style={{ color: 'var(--hakille-lueur)' }}>$ {cmd}</code>
                   <button
                     type="button"

@@ -248,6 +248,229 @@ export interface TranslationSchema {
     readonly lastUpdated: string;
     readonly filterAll: string;
   };
+  readonly smnfLab: {
+    readonly title: string;
+    readonly subtitle: string;
+    readonly requestSection: {
+      readonly title: string;
+      readonly fieldTitle: string;
+      readonly fieldBody: string;
+      readonly fieldUrgency: string;
+      readonly fieldCategory: string;
+      readonly sampleTitle: string;
+      readonly sampleBody: string;
+      readonly urgencyLow: string;
+      readonly urgencyNormal: string;
+      readonly urgencyHigh: string;
+      readonly urgencyCritical: string;
+      readonly categoryAgent: string;
+      readonly categoryCognitive: string;
+      readonly categorySystem: string;
+      readonly categorySecurity: string;
+      readonly categoryWallet: string;
+      readonly destructiveLabel: string;
+      readonly destructiveHint: string;
+    };
+    readonly cognitiveSensors: {
+      readonly title: string;
+      readonly gazeScreen: string;
+      readonly perclosLabel: string;
+      readonly perclosAlert: string;
+      readonly perclosModerate: string;
+      readonly perclosNominal: string;
+      readonly noiseLabel: string;
+      readonly noiseHigh: string;
+      readonly noiseQuiet: string;
+      readonly noiseOffice: string;
+      readonly inMeeting: string;
+      readonly thirdParties: string;
+      readonly headphones: string;
+      readonly nightMode: string;
+    };
+    readonly silenceBudget: {
+      readonly label: string;
+      readonly spendCredit: string;
+      readonly resetDaily: string;
+      readonly remainingUnit: string;
+    };
+    readonly channels: {
+      readonly label: string;
+    };
+    readonly visualStyles: {
+      readonly label: string;
+      readonly deferredBadge: string;
+      readonly immediateBadge: string;
+    };
+    readonly decisionCard: {
+      readonly title: string;
+      readonly hapticLabel: string;
+      readonly hapticNone: string;
+      readonly costLabel: string;
+      readonly rationaleLabel: string;
+    };
+    readonly auditionBtn: {
+      readonly label: string;
+    };
+    readonly ipcPreview: {
+      readonly title: string;
+    };
+    readonly substrates: {
+      readonly linux: string;
+      readonly macos: string;
+      readonly windows: string;
+      readonly mobile: string;
+      readonly redox: string;
+      readonly web: string;
+    };
+  };
+  readonly biscuitLab: {
+    readonly title: string;
+    readonly subtitle: string;
+    readonly blockChain: {
+      readonly title: string;
+      readonly rootBadge: string;
+      readonly rootKeyLabel: string;
+      readonly attenuationConnector: string;
+      readonly childBadge: string;
+      readonly childDetail: string;
+      readonly depthLabel: string;
+    };
+    readonly authorityLabels: {
+      readonly rootAuthority: string;
+      readonly subAgentAttenuation: string;
+    };
+    readonly scopes: {
+      readonly title: string;
+      readonly rootPill: string;
+      readonly subPill: string;
+    };
+    readonly actions: {
+      readonly rootLabel: string;
+      readonly subLabel: string;
+    };
+    readonly leaseSlider: {
+      readonly label: string;
+      readonly unit: string;
+    };
+    readonly attacks: {
+      readonly title: string;
+      readonly description: string;
+      readonly widenScopeBtn: string;
+      readonly addActionBtn: string;
+      readonly removeCaveatBtn: string;
+      readonly forgeRootBtn: string;
+      readonly resetBtn: string;
+    };
+    readonly verifyConsole: {
+      readonly title: string;
+      readonly rfcBadge: string;
+      readonly monotonicPassBadge: string;
+      readonly escalationBlockedBadge: string;
+      readonly validBanner: string;
+      readonly rejectedBanner: string;
+      readonly datalogSourceEyebrow: string;
+      readonly theoremTitle: string;
+      readonly theoremBody: string;
+    };
+  };
+  readonly hudToastSandbox: {
+    readonly title: string;
+    readonly subtitle: string;
+    readonly previewStage: {
+      readonly statusSticky: string;
+      readonly statusEvaporating: string;
+      readonly statusEvaporated: string;
+      readonly osBrand: string;
+      readonly sovereignBadge: string;
+      readonly idleZeroFps: string;
+      readonly sealedBadge: string;
+    };
+    readonly configurator: {
+      readonly title: string;
+      readonly fieldTitle: string;
+      readonly fieldBody: string;
+      readonly fieldUrgency: string;
+      readonly fieldCategory: string;
+      readonly fieldDuration: string;
+      readonly sampleTitle: string;
+      readonly sampleBody: string;
+      readonly duration1500: string;
+      readonly duration3000: string;
+      readonly duration6000: string;
+      readonly durationPersistent: string;
+      readonly destructiveLabel: string;
+      readonly destructiveHint: string;
+      readonly specsTitle: string;
+      readonly specWidth: string;
+      readonly specBlur: string;
+      readonly specRadius: string;
+      readonly specHold: string;
+      readonly specIdle: string;
+    };
+    readonly actions: {
+      readonly dismissBtn: string;
+      readonly triggerToastBtn: string;
+      readonly braiseIdle: string;
+      readonly braiseHolding: string;
+      readonly braiseArmed: string;
+      readonly braiseConfirmed: string;
+      readonly braiseCancelled: string;
+    };
+    readonly accessKitInspector: {
+      readonly title: string;
+    };
+  };
+  readonly policyPlayground: {
+    readonly title: string;
+    readonly subtitle: string;
+    readonly subjectProfiles: {
+      readonly title: string;
+      readonly roleLabel: string;
+      readonly roleOwner: string;
+      readonly roleMinor: string;
+      readonly roleGuest: string;
+      readonly roleUntrustedAgent: string;
+      readonly ageLabel: string;
+      readonly trustLabel: string;
+      readonly trustHuman: string;
+      readonly trustDaemon: string;
+      readonly trustExternal: string;
+      readonly biometricLabel: string;
+      readonly bioAbsent: string;
+      readonly bioPresence: string;
+      readonly bioFaceVoice: string;
+      readonly bioCertified: string;
+    };
+    readonly emissionRequest: {
+      readonly title: string;
+      readonly targetScopeLabel: string;
+      readonly thresholdLabel: string;
+      readonly actionLabel: string;
+      readonly actionRead: string;
+      readonly actionWrite: string;
+      readonly actionExecute: string;
+      readonly actionDelete: string;
+      readonly actionAdmin: string;
+      readonly destructiveLabel: string;
+      readonly destructiveHint: string;
+    };
+    readonly verdictBanner: {
+      readonly title: string;
+      readonly outcomeAllow: string;
+      readonly outcomeHardBlock: string;
+      readonly outcomeStepUp: string;
+    };
+    readonly rulesCited: {
+      readonly rule01Title: string;
+      readonly rule01Desc: string;
+      readonly rule07Title: string;
+      readonly rule07Desc: string;
+      readonly adr013Title: string;
+      readonly adr013Desc: string;
+      readonly isoStepUpTitle: string;
+      readonly isoStepUpDesc: string;
+    };
+  };
 }
 
 export function pickBi(locale: LocaleCode, frText: string, enText: string): string {

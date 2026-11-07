@@ -3,6 +3,8 @@ import { pickBi } from '@/i18n/types';
 import { useI18n } from '@/i18n/context';
 import { PrintDossierButton } from '@/components/primitives/PrintDossierButton';
 import { ZeroExfiltrationInspector } from '@/components/simulators/ZeroExfiltrationInspector';
+import { ComplianceMatrixLab } from '@/components/simulators/ComplianceMatrixLab';
+import { GdprRightsWizard } from '@/components/simulators/GdprRightsWizard';
 
 export function PrivacyPage() {
   const { locale, t } = useI18n();
@@ -22,6 +24,11 @@ export function PrivacyPage() {
 
       <div className="container page-content">
         <ZeroExfiltrationInspector />
+
+        {/* Interactive Compliance Center Lab */}
+        <section style={{ marginBlock: 'var(--hakille-space-32)' }}>
+          <ComplianceMatrixLab />
+        </section>
 
         <div className="summary-callout">
           <div className="eyebrow-mono">{t.common.plainSummaryTitle}</div>
@@ -52,6 +59,9 @@ export function PrivacyPage() {
             </a>
             <a href="#priv-6" className="nav-link">
               6. {pickBi(locale, 'Droits RGPD (Art. 15–22)', 'GDPR Rights (Art. 15–22)')}
+            </a>
+            <a href="#priv-wizard" className="nav-link">
+              7. {pickBi(locale, 'Assistant CLI RGPD', 'GDPR CLI Wizard')}
             </a>
           </aside>
 
@@ -119,7 +129,7 @@ export function PrivacyPage() {
               </p>
             </article>
 
-            <article id="priv-6" className="legal-article" style={{ borderBlockEnd: 'none' }}>
+            <article id="priv-6" className="legal-article">
               <h2>6. {pickBi(locale, 'Exercice Direct de Vos Droits RGPD (Articles 15 à 22)', 'Direct Exercise of GDPR Rights (Articles 15–22)')}</h2>
               <ul className="clean-list">
                 <li>
@@ -143,6 +153,18 @@ export function PrivacyPage() {
                   {pickBi(locale, 'Vous disposez du droit d’introduire une réclamation auprès de la CNIL (cnil.fr) ou de votre autorité nationale européenne de protection des données.', 'You may lodge a complaint with the French CNIL (cnil.fr) or your national EU Data Protection Authority.')}
                 </li>
               </ul>
+            </article>
+
+            <article id="priv-wizard" className="legal-article" style={{ borderBlockEnd: 'none' }}>
+              <h2>7. {pickBi(locale, 'Générateur de Commandes d’Exercice des Droits (hakille-cli)', 'GDPR Exercise Command Generator (hakille-cli)')}</h2>
+              <p style={{ marginBottom: '16px' }}>
+                {pickBi(
+                  locale,
+                  'Utilisez l’assistant interactif ci-dessous pour formuler une commande authentique pour votre terminal local hakille-cli afin d’exercer vos droits d’accès, de rectification, d’effacement ou de portabilité en totale autonomie.',
+                  'Use the interactive wizard below to craft an authentic command for your local hakille-cli terminal to exercise your rights of access, rectification, erasure, or portability in complete sovereignty.'
+                )}
+              </p>
+              <GdprRightsWizard />
             </article>
           </div>
         </div>

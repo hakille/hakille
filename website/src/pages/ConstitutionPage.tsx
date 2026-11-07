@@ -208,6 +208,61 @@ export function ConstitutionPage() {
           </div>
         </section>
 
+        {/* Concordance Constitutionnelle & EU AI Act */}
+        <section className="summary-callout" style={{ borderLeft: '3px solid var(--hakille-lueur)' }}>
+          <div className="eyebrow-mono">
+            {pickBi(
+              locale,
+              'ALIGNEMENT RÉGLEMENTAIRE EU AI ACT (2024/1689) & RGPD',
+              'REGULATORY ALIGNMENT: EU AI ACT (2024/1689) & GDPR'
+            )}
+          </div>
+          <h2 style={{ fontSize: 'var(--hakille-type-heading-size)', fontWeight: 600, margin: '8px 0 12px 0' }}>
+            {pickBi(
+              locale,
+              'Chaque Règle Constitutionnelle est une Garantie Vérifiable',
+              'Every Constitutional Rule is a Verifiable Safeguard'
+            )}
+          </h2>
+          <p style={{ fontSize: 'var(--hakille-type-caption-size)', color: 'var(--hakille-texte-2)', lineHeight: 1.5, marginBottom: '16px' }}>
+            {pickBi(
+              locale,
+              'La Constitution Hakille n’est pas un ensemble de vœux pieux : ses 10 règles sont compilées directement en assertions Rust dans crates/hakille-constitution. Elles matérialisent les exigences du Règlement Européen sur l’IA avant même leur entrée en vigueur.',
+              'The Hakille Constitution is not a collection of aspirational guidelines: its 10 rules are compiled into machine-verifiable Rust assertions in crates/hakille-constitution, embodying EU AI Act safeguards prior to their mandatory enforcement.'
+            )}
+          </p>
+          <div className="crate-grid">
+            <div className="crate-item">
+              <span className="eyebrow-mono">RULE-07 · MINEURS</span>
+              <strong style={{ color: 'var(--hakille-texte-1)' }}>EU AI Act Art. 9 &amp; 14</strong>
+              <p style={{ fontSize: 'var(--hakille-type-caption-size)', color: 'var(--hakille-texte-2)' }}>
+                {pickBi(locale, 'Interdiction absolue du Wallet et élévation système pour les mineurs de moins de 18 ans.', 'Absolute prohibition of Wallet capabilities and system elevation for minors under 18.')}
+              </p>
+            </div>
+            <div className="crate-item">
+              <span className="eyebrow-mono">RULE-08 · VOLATILITÉ RAM</span>
+              <strong style={{ color: 'var(--hakille-texte-1)' }}>EU AI Act Art. 10 &amp; RGPD Art. 17</strong>
+              <p style={{ fontSize: 'var(--hakille-type-caption-size)', color: 'var(--hakille-texte-2)' }}>
+                {pickBi(locale, 'Purge physique sans tombstone des indices affectifs (cognition:*) sous 5 minutes.', 'Tombstone-free physical purge of affective cues (cognition:*) within 5 minutes.')}
+              </p>
+            </div>
+            <div className="crate-item">
+              <span className="eyebrow-mono">RULE-01 · SANITISATION</span>
+              <strong style={{ color: 'var(--hakille-texte-1)' }}>EU AI Act Art. 15</strong>
+              <p style={{ fontSize: 'var(--hakille-type-caption-size)', color: 'var(--hakille-texte-2)' }}>
+                {pickBi(locale, 'Protection contre les injections de prompt indirectes et fuites exfiltratoires.', 'Guaranteed defense against indirect prompt injections and telemetry exfiltration.')}
+              </p>
+            </div>
+            <div className="crate-item">
+              <span className="eyebrow-mono">RULE-02 · AUDIT SCELLÉ</span>
+              <strong style={{ color: 'var(--hakille-texte-1)' }}>EU AI Act Art. 12</strong>
+              <p style={{ fontSize: 'var(--hakille-type-caption-size)', color: 'var(--hakille-texte-2)' }}>
+                {pickBi(locale, 'Journal d’audit infalsifiable append-only en SHA-256 + signatures Ed25519.', 'Tamper-evident append-only ledger chained with SHA-256 and signed with Ed25519.')}
+              </p>
+            </div>
+          </div>
+        </section>
+
         {/* Human Crisis Helplines (RULE-05) */}
         <section className="summary-callout">
           <div className="eyebrow-mono">
