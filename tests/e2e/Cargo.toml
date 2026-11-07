@@ -1,0 +1,21 @@
+[package]
+name = "hakille-e2e"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Comprehensive opaque-box requirement-driven E2E test suite for Hakille"
+
+[dependencies]
+hakille-design = { path = "../../crates/hakille-design" }
+hakille-ui = { path = "../../crates/hakille-ui" }
+hakille-ui-protocol = { path = "../../crates/hakille-ui-protocol" }
+hakille-ui-model = { path = "../../crates/hakille-ui-model" }
+hakille-ui-platform = { path = "../../crates/hakille-ui-platform" }
+hakille-ui-desktop = { path = "../../crates/hakille-ui-desktop" }
+accesskit = "0.24"
+ab_glyph = "0.2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+toml = { workspace = true }

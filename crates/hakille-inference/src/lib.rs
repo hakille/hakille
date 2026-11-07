@@ -1,4 +1,5 @@
 pub mod audio_resample;
+pub mod c23_compat;
 pub mod candle_runtime;
 pub mod catalog;
 pub mod downloader;

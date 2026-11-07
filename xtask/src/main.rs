@@ -1,11 +1,15 @@
+#[cfg(feature = "inference")]
 use hakille_inference::{ModelCatalog, ModelProvisioner, ModelTier};
 use std::env;
+#[cfg(feature = "inference")]
 use std::io::{self, Write};
 use std::path::PathBuf;
+#[cfg(feature = "inference")]
 use std::sync::Arc;
 
 mod tokens;
 
+#[cfg(feature = "inference")]
 fn make_progress_callback() -> hakille_inference::ProgressCallback {
     Arc::new(|p: &hakille_inference::DownloadProgress| {
         let pct_str = match p.percentage {
@@ -31,6 +35,7 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
     let command = args.get(1).map(|s| s.as_str()).unwrap_or("help");
 
+    #[cfg(feature = "inference")]
     let models_dir = env::var("HAKILLE_MODELS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("./models"));
@@ -84,76 +89,148 @@ async fn main() {
             println!("Tier Guest (Mobile/Web) -> manifests/guest.toml");
         }
         "list-models" => {
-            println!("== Hakille Model Catalog ==");
-            let provisioner = ModelProvisioner::new(models_dir);
-            for s in provisioner.list_all_status() {
-                let badge = if s.is_installed {
-                    format!(
-                        "[INSTALLED - {:.1} MB]",
-                        s.total_disk_bytes as f64 / 1_048_576.0
-                    )
-                } else {
-                    "[MISSING]".to_string()
-                };
-                println!(
-                    "• {:<26} {:<10?} {:<18} {}",
-                    s.entry.id, s.entry.tier, badge, s.entry.name
+            #[cfg(feature = "inference")]
+            {
+                println!("== Hakille Model Catalog ==");
+                let provisioner = ModelProvisioner::new(models_dir);
+                for s in provisioner.list_all_status() {
+                    let badge = if s.is_installed {
+                        format!(
+                            "[INSTALLED - {:.1} MB]",
+                            s.total_disk_bytes as f64 / 1_048_576.0
+                        )
+                    } else {
+                        "[MISSING]".to_string()
+                    };
+                    println!(
+                        "• {:<26} {:<10?} {:<18} {}",
+                        s.entry.id, s.entry.tier, badge, s.entry.name
+                    );
+                }
+            }
+            #[cfg(not(feature = "inference"))]
+            {
+                eprintln!(
+                    "✗ xtask was built without the `inference` feature. Re-run with `--features inference`."
                 );
+                std::process::exit(1);
             }
         }
         "download-models" => {
-            println!("== Downloading Foundation Models (Zero-Touch Provisioning) ==");
-            let provisioner = ModelProvisioner::new(models_dir);
-            let progress = Some(make_progress_callback());
+            #[cfg(feature = "inference")]
+            {
+                println!("== Downloading Foundation Models (Zero-Touch Provisioning) ==");
+                let provisioner = ModelProvisioner::new(models_dir);
+                let progress = Some(make_progress_callback());
 
-            let target_tier = args.get(2).and_then(|t| match t.to_lowercase().as_str() {
-                "guest" => Some(ModelTier::Guest),
-                "native" => Some(ModelTier::Native),
-                "sovereign" => Some(ModelTier::Sovereign),
-                _ => None,
-            });
+                let target_tier = args.get(2).and_then(|t| match t.to_lowercase().as_str() {
+                    "guest" => Some(ModelTier::Guest),
+                    "native" => Some(ModelTier::Native),
+                    "sovereign" => Some(ModelTier::Sovereign),
+                    _ => None,
+                });
 
-            if let Some(tier) = target_tier {
-                println!("Target Tier: {:?}", tier);
-                let models = ModelCatalog::models_for_tier(tier);
-                for m in models {
-                    println!("\nProvisioning: {} ({})", m.name, m.id);
-                    let _ = provisioner.provision_model(&m, progress.clone()).await;
-                    println!();
+                if let Some(tier) = target_tier {
+                    println!("Target Tier: {:?}", tier);
+                    let models = ModelCatalog::models_for_tier(tier);
+                    for m in models {
+                        println!("\nProvisioning: {} ({})", m.name, m.id);
+                        let _ = provisioner.provision_model(&m, progress.clone()).await;
+                        println!();
+                    }
+                } else {
+                    println!("Target: All models");
+                    for m in provisioner.catalog() {
+                        println!("\nProvisioning: {} ({})", m.name, m.id);
+                        let _ = provisioner.provision_model(m, progress.clone()).await;
+                        println!();
+                    }
                 }
-            } else {
-                println!("Target: All models");
-                for m in provisioner.catalog() {
-                    println!("\nProvisioning: {} ({})", m.name, m.id);
-                    let _ = provisioner.provision_model(m, progress.clone()).await;
-                    println!();
-                }
+            }
+            #[cfg(not(feature = "inference"))]
+            {
+                eprintln!(
+                    "✗ xtask was built without the `inference` feature. Re-run with `--features inference`."
+                );
+                std::process::exit(1);
             }
         }
         "verify-models" => {
-            println!("== Verifying Cryptographic Integrity of Local Models ==");
-            let provisioner = ModelProvisioner::new(models_dir);
-            for s in provisioner.list_all_status() {
-                if !s.is_installed {
-                    println!("• {:<26} [NOT DOWNLOADED]", s.entry.id);
-                    continue;
+            #[cfg(feature = "inference")]
+            {
+                println!("== Verifying Cryptographic Integrity of Local Models ==");
+                let provisioner = ModelProvisioner::new(models_dir);
+                for s in provisioner.list_all_status() {
+                    if !s.is_installed {
+                        println!("• {:<26} [NOT DOWNLOADED]", s.entry.id);
+                        continue;
+                    }
+                    match provisioner.verify_integrity(&s.entry) {
+                        Ok(true) => println!("• {:<26} [OK - Valid SHA-256]", s.entry.id),
+                        Ok(false) => println!("• {:<26} [CORRUPTED]", s.entry.id),
+                        Err(e) => println!("• {:<26} [ERROR: {}]", s.entry.id, e),
+                    }
                 }
-                match provisioner.verify_integrity(&s.entry) {
-                    Ok(true) => println!("• {:<26} [OK - Valid SHA-256]", s.entry.id),
-                    Ok(false) => println!("• {:<26} [CORRUPTED]", s.entry.id),
-                    Err(e) => println!("• {:<26} [ERROR: {}]", s.entry.id, e),
-                }
+            }
+            #[cfg(not(feature = "inference"))]
+            {
+                eprintln!(
+                    "✗ xtask was built without the `inference` feature. Re-run with `--features inference`."
+                );
+                std::process::exit(1);
             }
         }
         "tokens" => {
             println!("== Hakille design tokens: TOML source unique → Rust/Swift/Kotlin/CSS ==");
             let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+            let export_all = args.iter().any(|a| a == "export-all");
             let export_kind = args.iter().find_map(|a| match a.as_str() {
                 "export-swift" => Some("swift"),
                 "export-kotlin" => Some("kotlin"),
                 "export-css" => Some("css"),
                 _ => None,
             });
+            if export_all {
+                let color =
+                    tokens::parse_toml(&root.join("tokens/color.toml")).unwrap_or_else(|e| {
+                        eprintln!("✗ {e}");
+                        std::process::exit(1);
+                    });
+                let motion =
+                    tokens::parse_toml(&root.join("tokens/motion.toml")).unwrap_or_else(|e| {
+                        eprintln!("✗ {e}");
+                        std::process::exit(1);
+                    });
+                let ty = tokens::parse_toml(&root.join("tokens/type.toml")).unwrap_or_else(|e| {
+                    eprintln!("✗ {e}");
+                    std::process::exit(1);
+                });
+                let out_dir = root.join("target/tokens");
+                std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| {
+                    eprintln!("✗ mkdir {} : {e}", out_dir.display());
+                    std::process::exit(1);
+                });
+                let targets = [
+                    (
+                        "HakilleTokens.swift",
+                        tokens::emit_swift(&color, &motion, &ty),
+                    ),
+                    (
+                        "HakilleTokens.kt",
+                        tokens::emit_kotlin(&color, &motion, &ty),
+                    ),
+                    ("hakille-tokens.css", tokens::emit_css(&color, &motion, &ty)),
+                ];
+                for (name, content) in targets {
+                    let target = out_dir.join(name);
+                    std::fs::write(&target, content).unwrap_or_else(|e| {
+                        eprintln!("✗ écriture {target:?} : {e}");
+                        std::process::exit(1);
+                    });
+                    println!("✓ {} généré depuis tokens/*.toml.", target.display());
+                }
+                return;
+            }
             if let Some(kind) = export_kind {
                 let color =
                     tokens::parse_toml(&root.join("tokens/color.toml")).unwrap_or_else(|e| {
@@ -263,13 +340,16 @@ async fn main() {
                 "  tokens [--check]            Régénérer/vérifier les tokens design (TOML → Rust)"
             );
             println!(
-                "  tokens export-swift       Générer target/tokens/HakilleTokens.swift (Swift struct)"
+                "  tokens export-all           Générer Swift, Kotlin et CSS dans target/tokens/"
             );
             println!(
-                "  tokens export-kotlin      Générer target/tokens/HakilleTokens.kt (Kotlin object)"
+                "  tokens export-swift         Générer target/tokens/HakilleTokens.swift (Swift struct)"
             );
             println!(
-                "  tokens export-css         Générer target/tokens/hakille-tokens.css (CSS :root)"
+                "  tokens export-kotlin        Générer target/tokens/HakilleTokens.kt (Kotlin object)"
+            );
+            println!(
+                "  tokens export-css           Générer target/tokens/hakille-tokens.css (CSS :root)"
             );
         }
     }

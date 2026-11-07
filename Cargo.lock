@@ -2459,6 +2459,7 @@ dependencies = [
  "hakille-substrate-windows",
  "hakille-sync",
  "hakille-ui",
+ "hakille-ui-platform",
  "hakille-ui-protocol",
  "hakille-ui-shell",
  "hakille-voice",
@@ -2481,6 +2482,25 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
+name = "hakille-e2e"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "accesskit 0.24.1",
+ "chrono",
+ "hakille-design",
+ "hakille-ui",
+ "hakille-ui-desktop",
+ "hakille-ui-model",
+ "hakille-ui-platform",
+ "hakille-ui-protocol",
+ "serde",
+ "serde_json",
+ "toml",
  "uuid",
 ]
 

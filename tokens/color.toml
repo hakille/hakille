@@ -44,3 +44,43 @@ allowed_in = ["validation", "hold-progress", "decision-ring"]
 [color.sur-braise]
 dark = "#0B0C0F"
 light = "#FFFFFF"
+
+[color.erreur]
+dark = "#FF5A5A"
+light = "#DC2626"
+
+[color.succes]
+dark = "#34D399"
+light = "#059669"
+
+[color.avertissement]
+dark = "#FBBF24"
+light = "#D97706"
+
+[color.verre.fond]
+dark = "#121419D1"
+light = "#FFFFFFE0"
+
+[color.verre.reflet]
+dark = "#ECEEF21F"
+light = "#FFFFFF99"
+
+[color.braise.halo]
+dark = "#FF7A2F47"
+light = "#C2410C33"
+
+[color.surface.1.hover]
+dark = "#181B22"
+light = "#F0ECE4"
+
+[color.surface.1.active]
+dark = "#0E1014"
+light = "#E4DFD6"
+
+[color.surface.disabled]
+dark = "#14161A"
+light = "#ECE8E0"
+
+[color.texte.disabled]
+dark = "#4E5463"
+light = "#A0A5B2"

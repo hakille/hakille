@@ -15,7 +15,8 @@ hakille-substrate-mobile = { path = "../hakille-substrate-mobile" }
 hakille-substrate-web = { path = "../hakille-substrate-web" }
 hakille-kernel = { path = "../hakille-kernel" }
 hakille-memory = { path = "../hakille-memory" }
-hakille-audio = { path = "../hakille-audio" }
+hakille-audio = { path = "../hakille-audio", default-features = false }
+hakille-ui-platform = { path = "../hakille-ui-platform" }
 hakille-perception = { path = "../hakille-perception" }
 hakille-inference = { path = "../hakille-inference" }
 hakille-ipc = { path = "../hakille-ipc" }
@@ -45,7 +46,14 @@ async-trait = { workspace = true }
 tempfile = "3"
 sha2 = { workspace = true }
 
+[features]
+default = []
+cpal = ["hakille-audio/cpal"]
+dummy-audio = ["hakille-audio/dummy-audio"]
+mock-audio = ["hakille-audio/mock-audio"]
+
 [dev-dependencies]
 # Clé de signature de test pour le journal d'audit (aucune clé réelle n'est
 # versionnée : la clé de test est un motif fixe, sans valeur de production).
 ed25519-dalek = { workspace = true }
+

@@ -39,6 +39,7 @@ members = [
     "agents/wallet-readonly",
     "conformance",
     "xtask",
+    "tests/e2e",
 ]
 
 # Socle commun : MSRV 1.95 (édition 2024, aligné CI + rust-toolchain).

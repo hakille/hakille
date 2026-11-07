@@ -371,6 +371,41 @@ impl Presence {
             ThemeMode::Dark => tokens::COLOR_LUEUR_DARK,
             ThemeMode::Light => tokens::COLOR_LUEUR_LIGHT,
         };
+
+        // State 3: Speaking -> render 21 animated kora string waveforms (spec §2 & §7)
+        if self.state == 3 {
+            let count = hakille_design::WIRES_FULL; // 21
+            let wire_w = 2.0;
+            let wire_gap = 3.0;
+            let total_span = (count as f32 * wire_w) + ((count - 1) as f32 * wire_gap);
+            let start_x = self.cx - total_span / 2.0;
+
+            for i in 0..count {
+                let x = start_x + (i as f32) * (wire_w + wire_gap);
+                let norm = (i as f32) / ((count - 1) as f32);
+                let harmonic = (norm * std::f32::consts::PI).sin();
+                let wire_h = if ctx.theme.reduced_motion {
+                    6.0 + 10.0 * harmonic
+                } else {
+                    4.0 + (6.0 + 18.0 * pulse) * harmonic
+                };
+                let y = self.cy - wire_h / 2.0;
+                scene.fill(
+                    Rect::new(x, y, wire_w, wire_h).rounded(1.0),
+                    Color::from_hex(lueur),
+                );
+            }
+            // Central core
+            scene.ring(
+                self.cx,
+                self.cy,
+                0.0,
+                5.0,
+                Color::from_hex(lueur).with_alpha(180),
+            );
+            return;
+        }
+
         let (ring, dot) = match self.state {
             2 => (ctx.theme.text1, lueur),
             4 => (ctx.theme.braise, lueur),
@@ -650,5 +685,21 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 600.0, 200.0),
         };
         assert!(card.validate_label().contains("600"));
+    }
+
+    #[test]
+    fn test_presence_speaking_renders_21_kora_wires() {
+        let theme = Theme::dark();
+        let ctx = PrimitiveCtx::new(theme);
+        let mut s = Scene::new(720, 64, true);
+        let presence = Presence {
+            state: 3, // Speaking
+            pulse: 0.8,
+            cx: 100.0,
+            cy: 50.0,
+        };
+        presence.draw(&mut s, &ctx);
+        // 21 wires (Rect fills) + 1 central core (Ring) = 22 drawing commands
+        assert_eq!(s.cmds.len(), 22);
     }
 }

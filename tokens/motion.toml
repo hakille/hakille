@@ -25,3 +25,11 @@ tick = 10
 eveil = [[69, 90], [76, 90]]
 fait = [[72, 220]]
 attention = [[67, 160], [67, 160]]
+
+[presence.wire]
+count_full = 21
+count_compact = 7
+width_px = 2.0
+gap_px = 3.0
+max_height_px = 24.0
+decay_ms = 80

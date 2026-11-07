@@ -18,14 +18,46 @@ pub fn braise_allowed(context: &str) -> bool {
     BRAISE_ALLOWED_IN.contains(&context)
 }
 
-/// Décode `#RRGGBB` en (r, g, b) 0..255.
+/// Décode `#RRGGBB` ou `#RRGGBBAA` en (r, g, b) 0..255.
 pub fn hex_to_rgb(hex: &str) -> Option<(u8, u8, u8)> {
     let h = hex.strip_prefix('#')?;
-    if h.len() != 6 {
-        return None;
+    if h.len() == 6 {
+        let v = u32::from_str_radix(h, 16).ok()?;
+        Some(((v >> 16) as u8, ((v >> 8) & 0xFF) as u8, (v & 0xFF) as u8))
+    } else if h.len() == 8 {
+        let v = u32::from_str_radix(h, 16).ok()?;
+        Some((
+            (v >> 24) as u8,
+            ((v >> 16) & 0xFF) as u8,
+            ((v >> 8) & 0xFF) as u8,
+        ))
+    } else {
+        None
     }
-    let v = u32::from_str_radix(h, 16).ok()?;
-    Some(((v >> 16) as u8, ((v >> 8) & 0xFF) as u8, (v & 0xFF) as u8))
+}
+
+/// Décode `#RRGGBB` ou `#RRGGBBAA` en (r, g, b, a) 0..255.
+pub fn hex_to_rgba(hex: &str) -> Option<(u8, u8, u8, u8)> {
+    let h = hex.strip_prefix('#')?;
+    if h.len() == 6 {
+        let v = u32::from_str_radix(h, 16).ok()?;
+        Some((
+            (v >> 16) as u8,
+            ((v >> 8) & 0xFF) as u8,
+            (v & 0xFF) as u8,
+            255,
+        ))
+    } else if h.len() == 8 {
+        let v = u32::from_str_radix(h, 16).ok()?;
+        Some((
+            (v >> 24) as u8,
+            ((v >> 16) & 0xFF) as u8,
+            ((v >> 8) & 0xFF) as u8,
+            (v & 0xFF) as u8,
+        ))
+    } else {
+        None
+    }
 }
 
 fn channel_luminance(c: f64) -> f64 {
@@ -54,6 +86,11 @@ pub fn contrast_ratio(a: &str, b: &str) -> Option<f64> {
 /// [`hex_to_rgb`]).
 pub fn u32_to_hex(color: u32) -> String {
     format!("#{:06X}", color & 0x00FF_FFFF)
+}
+
+/// Convertit une couleur UI `0xRRGGBBAA` en `#RRGGBBAA`.
+pub fn u32_to_hex8(color: u32) -> String {
+    format!("#{:08X}", color)
 }
 
 #[cfg(test)]
@@ -88,11 +125,16 @@ mod tests {
         assert_eq!(u32_to_hex(0x0B0C0F), "#0B0C0F");
         assert_eq!(u32_to_hex(0xFF7A2F), "#FF7A2F");
         assert_eq!(u32_to_hex(0xFFFF_FFFF), "#FFFFFF");
+        assert_eq!(u32_to_hex8(0x121419D1), "#121419D1");
         for hex in ["#0B0C0F", "#F6F4F0", "#FF7A2F", "#C2410C", "#EDEAE4"] {
             let (r, g, b) = hex_to_rgb(hex).unwrap();
             let packed = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
             assert_eq!(u32_to_hex(packed), hex.to_uppercase());
         }
+        let (r, g, b) = hex_to_rgb("#121419D1").unwrap();
+        assert_eq!((r, g, b), (0x12, 0x14, 0x19));
+        let (r, g, b, a) = hex_to_rgba("#121419D1").unwrap();
+        assert_eq!((r, g, b, a), (0x12, 0x14, 0x19, 0xD1));
     }
 
     #[test]

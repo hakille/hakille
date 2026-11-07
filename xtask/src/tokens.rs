@@ -31,10 +31,11 @@ pub fn fmt_list(items: &[String]) -> String {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Val {
     Str(String),
     Int(i64),
+    Float(f64),
     StrList(Vec<String>),
     IntList(Vec<i64>),
     IntPairList(Vec<(i64, i64)>),
@@ -49,6 +50,9 @@ fn parse_scalar(s: &str) -> Val {
     }
     if let Ok(n) = s.parse::<i64>() {
         return Val::Int(n);
+    }
+    if let Ok(f) = s.parse::<f64>() {
+        return Val::Float(f);
     }
     Val::Str(s.to_string())
 }
@@ -152,6 +156,18 @@ pub fn emit_motion(doc: &Doc) -> String {
                         rust_ident(k)
                     ));
                 }
+                Val::Float(f) => {
+                    let s = if f.fract() == 0.0 {
+                        format!("{f:.1}")
+                    } else {
+                        format!("{f}")
+                    };
+                    out.push_str(&format!(
+                        "    pub const {}_{}: f64 = {s};\n",
+                        base,
+                        rust_ident(k)
+                    ));
+                }
                 Val::Str(s) => {
                     out.push_str(&format!(
                         "    pub const {}_{}: &str = \"{s}\";\n",
@@ -206,6 +222,18 @@ pub fn emit_type(doc: &Doc) -> String {
                 Val::Int(n) => {
                     out.push_str(&format!(
                         "    pub const {}_{}: i64 = {n};\n",
+                        base,
+                        rust_ident(k)
+                    ));
+                }
+                Val::Float(f) => {
+                    let s = if f.fract() == 0.0 {
+                        format!("{f:.1}")
+                    } else {
+                        format!("{f}")
+                    };
+                    out.push_str(&format!(
+                        "    pub const {}_{}: f64 = {s};\n",
                         base,
                         rust_ident(k)
                     ));
@@ -269,15 +297,85 @@ fn swift_ident(section: &str, key: &str) -> String {
 fn css_var(section: &str, key: &str) -> String {
     format!(
         "--hakille-{}-{}",
-        section.replace(['.', '/'], "-"),
-        key.replace(['.', '/'], "-")
+        section.replace(['.', '_', '/'], "-"),
+        key.replace(['.', '_', '/'], "-")
     )
+}
+
+fn parse_cubic_bezier(s: &str) -> Option<(f64, f64, f64, f64)> {
+    let inner = s.trim().strip_prefix("cubic-bezier(")?.strip_suffix(')')?;
+    let parts: Vec<f64> = inner
+        .split(',')
+        .filter_map(|p| p.trim().parse().ok())
+        .collect();
+    if parts.len() == 4 {
+        Some((parts[0], parts[1], parts[2], parts[3]))
+    } else {
+        None
+    }
 }
 
 /// Export Swift depuis les MÊMES TOML (braise/surface inclus).
 pub fn emit_swift(color: &Doc, motion: &Doc, ty: &Doc) -> String {
     let mut out = String::from(
-        "// Généré par `cargo xtask tokens export-swift` depuis tokens/*.toml. NE PAS ÉDITER.\n// braise + surface : source unique tokens/color.toml.\nimport SwiftUI\n\npublic enum HakilleTokens {\n",
+        "// Généré par `cargo xtask tokens export-swift` depuis tokens/*.toml. NE PAS ÉDITER.\n\
+         // braise + surface : source unique tokens/color.toml.\n\
+         import SwiftUI\n\n\
+         #if canImport(SwiftUI)\n\
+         extension Color {\n\
+             public init(hex: String) {\n\
+                 let clean = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)\n\
+                 var int: UInt64 = 0\n\
+                 Scanner(string: clean).scanHexInt64(&int)\n\
+                 let a, r, g, b: UInt64\n\
+                 switch clean.count {\n\
+                 case 6: // RGB (24-bit)\n\
+                     (a, r, g, b) = (255, (int >> 16) & 0xFF, (int >> 8) & 0xFF, int & 0xFF)\n\
+                 case 8: // RGBA (32-bit)\n\
+                     (r, g, b, a) = ((int >> 24) & 0xFF, (int >> 16) & 0xFF, (int >> 8) & 0xFF, int & 0xFF)\n\
+                 default:\n\
+                     (a, r, g, b) = (255, 0, 0, 0)\n\
+                 }\n\
+                 self.init(\n\
+                     .sRGB,\n\
+                     red: Double(r) / 255.0,\n\
+                     green: Double(g) / 255.0,\n\
+                     blue: Double(b) / 255.0,\n\
+                     opacity: Double(a) / 255.0\n\
+                 )\n\
+             }\n\n\
+             public init(rgb: UInt32) {\n\
+                 self.init(\n\
+                     .sRGB,\n\
+                     red: Double((rgb >> 16) & 0xFF) / 255.0,\n\
+                     green: Double((rgb >> 8) & 0xFF) / 255.0,\n\
+                     blue: Double(rgb & 0xFF) / 255.0,\n\
+                     opacity: 1.0\n\
+                 )\n\
+             }\n\
+         }\n\n\
+         public struct CubicBezier: Sendable, Equatable {\n\
+             public let x1: Double\n\
+             public let y1: Double\n\
+             public let x2: Double\n\
+             public let y2: Double\n\
+             public let spec: String\n\n\
+             public init(_ x1: Double, _ y1: Double, _ x2: Double, _ y2: Double, spec: String) {\n\
+                 self.x1 = x1\n\
+                 self.y1 = y1\n\
+                 self.x2 = x2\n\
+                 self.y2 = y2\n\
+                 self.spec = spec\n\
+             }\n\n\
+             public func animation(duration: Double) -> Animation {\n\
+                 Animation.timingCurve(x1, y1, x2, y2, duration: duration)\n\
+             }\n\n\
+             public var animation: Animation {\n\
+                 Animation.timingCurve(x1, y1, x2, y2)\n\
+             }\n\
+         }\n\
+         #endif\n\n\
+         public enum HakilleTokens {\n",
     );
     for (section, keys) in color {
         for (k, v) in keys {
@@ -286,7 +384,16 @@ pub fn emit_swift(color: &Doc, motion: &Doc, ty: &Doc) -> String {
             }
             if let Val::Str(hex) = v {
                 let name = swift_ident(section, k);
-                out.push_str(&format!("    public static let {name} = \"{hex}\"\n"));
+                let num = hex.trim_start_matches('#');
+                out.push_str(&format!(
+                    "    public static let {name} = Color(hex: \"{hex}\")\n"
+                ));
+                out.push_str(&format!(
+                    "    public static let {name}Hex: String = \"{hex}\"\n"
+                ));
+                out.push_str(&format!(
+                    "    public static let {name}Rgb: UInt32 = 0x{num}\n"
+                ));
             }
         }
     }
@@ -296,6 +403,38 @@ pub fn emit_swift(color: &Doc, motion: &Doc, ty: &Doc) -> String {
             match v {
                 Val::Int(n) => {
                     out.push_str(&format!("    public static let {name}: Int = {n}\n"));
+                }
+                Val::Float(f) => {
+                    let s = if f.fract() == 0.0 {
+                        format!("{f:.1}")
+                    } else {
+                        format!("{f}")
+                    };
+                    out.push_str(&format!("    public static let {name}: Double = {s}\n"));
+                }
+                Val::Str(s) => {
+                    if let Some((x1, y1, x2, y2)) = parse_cubic_bezier(s) {
+                        let fmt_f = |n: f64| {
+                            if n.fract() == 0.0 {
+                                format!("{n:.1}")
+                            } else {
+                                format!("{n}")
+                            }
+                        };
+                        out.push_str(&format!(
+                            "    public static let {name} = CubicBezier({}, {}, {}, {}, spec: \"{s}\")\n",
+                            fmt_f(x1), fmt_f(y1), fmt_f(x2), fmt_f(y2)
+                        ));
+                        out.push_str(&format!(
+                            "    public static let {name}Spec: String = \"{s}\"\n"
+                        ));
+                        out.push_str(&format!(
+                            "    public static let {name}Animation: Animation = Animation.timingCurve({}, {}, {}, {})\n",
+                            fmt_f(x1), fmt_f(y1), fmt_f(x2), fmt_f(y2)
+                        ));
+                    } else {
+                        out.push_str(&format!("    public static let {name}: String = \"{s}\"\n"));
+                    }
                 }
                 // Sons Karplus-Strong : paires (note MIDI, durée ms).
                 Val::IntPairList(pairs) => {
@@ -308,15 +447,73 @@ pub fn emit_swift(color: &Doc, motion: &Doc, ty: &Doc) -> String {
                         "    public static let {name}: [(Int, Int)] = [{list}]\n"
                     ));
                 }
-                _ => {}
+                Val::IntList(items) => {
+                    let list = items
+                        .iter()
+                        .map(|n| n.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("    public static let {name}: [Int] = [{list}]\n"));
+                }
+                Val::StrList(items) => {
+                    let list = items
+                        .iter()
+                        .map(|s| format!("\"{s}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!(
+                        "    public static let {name}: [String] = [{list}]\n"
+                    ));
+                }
             }
         }
     }
     for (section, keys) in ty {
         for (k, v) in keys {
-            if let Val::Int(n) = v {
-                let name = swift_ident(section, k);
-                out.push_str(&format!("    public static let {name}: Int = {n}\n"));
+            let name = swift_ident(section, k);
+            match v {
+                Val::Int(n) => {
+                    out.push_str(&format!("    public static let {name}: Int = {n}\n"));
+                }
+                Val::Float(f) => {
+                    let s = if f.fract() == 0.0 {
+                        format!("{f:.1}")
+                    } else {
+                        format!("{f}")
+                    };
+                    out.push_str(&format!("    public static let {name}: Double = {s}\n"));
+                }
+                Val::Str(s) => {
+                    out.push_str(&format!("    public static let {name}: String = \"{s}\"\n"));
+                }
+                Val::StrList(items) => {
+                    let list = items
+                        .iter()
+                        .map(|s| format!("\"{s}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!(
+                        "    public static let {name}: [String] = [{list}]\n"
+                    ));
+                }
+                Val::IntList(items) => {
+                    let list = items
+                        .iter()
+                        .map(|n| n.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("    public static let {name}: [Int] = [{list}]\n"));
+                }
+                Val::IntPairList(pairs) => {
+                    let list = pairs
+                        .iter()
+                        .map(|(a, b)| format!("({a}, {b})"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!(
+                        "    public static let {name}: [(Int, Int)] = [{list}]\n"
+                    ));
+                }
             }
         }
     }
@@ -327,7 +524,12 @@ pub fn emit_swift(color: &Doc, motion: &Doc, ty: &Doc) -> String {
 /// Export Kotlin depuis les MÊMES TOML (braise/surface inclus).
 pub fn emit_kotlin(color: &Doc, motion: &Doc, ty: &Doc) -> String {
     let mut out = String::from(
-        "// Généré par `cargo xtask tokens export-kotlin` depuis tokens/*.toml. NE PAS ÉDITER.\n// braise + surface : source unique tokens/color.toml.\npackage hakille.tokens\n\nobject HakilleTokens {\n",
+        "// Généré par `cargo xtask tokens export-kotlin` depuis tokens/*.toml. NE PAS ÉDITER.\n\
+         // braise + surface : source unique tokens/color.toml.\n\
+         package hakille.tokens\n\n\
+         import androidx.compose.animation.core.CubicBezierEasing\n\
+         import androidx.compose.ui.graphics.Color\n\n\
+         object HakilleTokens {\n",
     );
     for (section, keys) in color {
         for (k, v) in keys {
@@ -336,7 +538,18 @@ pub fn emit_kotlin(color: &Doc, motion: &Doc, ty: &Doc) -> String {
             }
             if let Val::Str(hex) = v {
                 let name = swift_ident(section, k);
-                out.push_str(&format!("    const val {name} = \"{hex}\"\n"));
+                let raw = hex.trim_start_matches('#');
+                let color_arg = if raw.len() == 6 {
+                    format!("0xFF{raw}U")
+                } else if raw.len() == 8 {
+                    let alpha = &raw[6..8];
+                    let rgb = &raw[0..6];
+                    format!("0x{alpha}{rgb}U")
+                } else {
+                    format!("0xFF{raw}U")
+                };
+                out.push_str(&format!("    val {name}: Color = Color({color_arg})\n"));
+                out.push_str(&format!("    const val {name}Hex: String = \"{hex}\"\n"));
             }
         }
     }
@@ -346,6 +559,32 @@ pub fn emit_kotlin(color: &Doc, motion: &Doc, ty: &Doc) -> String {
             match v {
                 Val::Int(n) => {
                     out.push_str(&format!("    const val {name}: Long = {n}L\n"));
+                }
+                Val::Float(f) => {
+                    let s = if f.fract() == 0.0 {
+                        format!("{f:.1}")
+                    } else {
+                        format!("{f}")
+                    };
+                    out.push_str(&format!("    const val {name}: Double = {s}\n"));
+                }
+                Val::Str(s) => {
+                    if let Some((x1, y1, x2, y2)) = parse_cubic_bezier(s) {
+                        let fmt_f = |n: f64| {
+                            if n.fract() == 0.0 {
+                                format!("{n:.1}f")
+                            } else {
+                                format!("{n}f")
+                            }
+                        };
+                        out.push_str(&format!(
+                            "    val {name}: CubicBezierEasing = CubicBezierEasing({}, {}, {}, {})\n",
+                            fmt_f(x1), fmt_f(y1), fmt_f(x2), fmt_f(y2)
+                        ));
+                        out.push_str(&format!("    const val {name}Spec: String = \"{s}\"\n"));
+                    } else {
+                        out.push_str(&format!("    const val {name}: String = \"{s}\"\n"));
+                    }
                 }
                 // Sons : List<Pair> (pas const : listOf n'est pas const).
                 Val::IntPairList(pairs) => {
@@ -358,15 +597,69 @@ pub fn emit_kotlin(color: &Doc, motion: &Doc, ty: &Doc) -> String {
                         "    val {name}: List<Pair<Long, Long>> = listOf({list})\n"
                     ));
                 }
-                _ => {}
+                Val::IntList(items) => {
+                    let list = items
+                        .iter()
+                        .map(|n| format!("{n}L"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("    val {name}: List<Long> = listOf({list})\n"));
+                }
+                Val::StrList(items) => {
+                    let list = items
+                        .iter()
+                        .map(|s| format!("\"{s}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("    val {name}: List<String> = listOf({list})\n"));
+                }
             }
         }
     }
     for (section, keys) in ty {
         for (k, v) in keys {
-            if let Val::Int(n) = v {
-                let name = swift_ident(section, k);
-                out.push_str(&format!("    const val {name}: Long = {n}L\n"));
+            let name = swift_ident(section, k);
+            match v {
+                Val::Int(n) => {
+                    out.push_str(&format!("    const val {name}: Long = {n}L\n"));
+                }
+                Val::Float(f) => {
+                    let s = if f.fract() == 0.0 {
+                        format!("{f:.1}")
+                    } else {
+                        format!("{f}")
+                    };
+                    out.push_str(&format!("    const val {name}: Double = {s}\n"));
+                }
+                Val::Str(s) => {
+                    out.push_str(&format!("    const val {name}: String = \"{s}\"\n"));
+                }
+                Val::StrList(items) => {
+                    let list = items
+                        .iter()
+                        .map(|s| format!("\"{s}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("    val {name}: List<String> = listOf({list})\n"));
+                }
+                Val::IntList(items) => {
+                    let list = items
+                        .iter()
+                        .map(|n| format!("{n}L"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("    val {name}: List<Long> = listOf({list})\n"));
+                }
+                Val::IntPairList(pairs) => {
+                    let list = pairs
+                        .iter()
+                        .map(|(a, b)| format!("{a}L to {b}L"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!(
+                        "    val {name}: List<Pair<Long, Long>> = listOf({list})\n"
+                    ));
+                }
             }
         }
     }
@@ -377,7 +670,9 @@ pub fn emit_kotlin(color: &Doc, motion: &Doc, ty: &Doc) -> String {
 /// Export CSS depuis les MÊMES TOML (braise/surface inclus).
 pub fn emit_css(color: &Doc, motion: &Doc, ty: &Doc) -> String {
     let mut out = String::from(
-        "/* Généré par `cargo xtask tokens export-css` depuis tokens/*.toml. NE PAS ÉDITER. */\n/* braise + surface : source unique tokens/color.toml. */\n:root {\n",
+        "/* Généré par `cargo xtask tokens export-css` depuis tokens/*.toml. NE PAS ÉDITER. */\n\
+         /* braise + surface : source unique tokens/color.toml. */\n\
+         :root {\n",
     );
     for (section, keys) in color {
         for (k, v) in keys {
@@ -391,9 +686,46 @@ pub fn emit_css(color: &Doc, motion: &Doc, ty: &Doc) -> String {
     }
     for (section, keys) in motion {
         for (k, v) in keys {
+            let var = css_var(section, k);
             match v {
                 Val::Int(n) => {
-                    out.push_str(&format!("  {}: {}ms;\n", css_var(section, k), n));
+                    let unit = if k == "stiffness"
+                        || k == "damping"
+                        || k == "mass"
+                        || k == "count_full"
+                        || k == "count_compact"
+                    {
+                        ""
+                    } else if k.ends_with("_ms")
+                        || section.contains("ms")
+                        || section.contains("duration")
+                        || section.contains("haptic")
+                    {
+                        "ms"
+                    } else if k.ends_with("_px") {
+                        "px"
+                    } else {
+                        ""
+                    };
+                    out.push_str(&format!("  {var}: {n}{unit};\n"));
+                }
+                Val::Float(f) => {
+                    let s = if f.fract() == 0.0 {
+                        format!("{f:.0}")
+                    } else {
+                        format!("{f}")
+                    };
+                    let unit = if k.ends_with("_px") {
+                        "px"
+                    } else if k.ends_with("_ms") {
+                        "ms"
+                    } else {
+                        ""
+                    };
+                    out.push_str(&format!("  {var}: {s}{unit};\n"));
+                }
+                Val::Str(s) => {
+                    out.push_str(&format!("  {var}: {s};\n"));
                 }
                 // Sons : `--hakille-motion-sound-eveil: 69 90ms, 76 90ms;`
                 Val::IntPairList(pairs) => {
@@ -402,18 +734,91 @@ pub fn emit_css(color: &Doc, motion: &Doc, ty: &Doc) -> String {
                         .map(|(a, b)| format!("{a} {b}ms"))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    out.push_str(&format!("  {}: {};\n", css_var(section, k), list));
+                    out.push_str(&format!("  {var}: {list};\n"));
                 }
-                _ => {}
+                Val::IntList(items) => {
+                    let list = items
+                        .iter()
+                        .map(|n| n.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    out.push_str(&format!("  {var}: {list};\n"));
+                }
+                Val::StrList(items) => {
+                    let list = items
+                        .iter()
+                        .map(|s| format!("\"{s}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("  {var}: {list};\n"));
+                }
             }
         }
     }
     for (section, keys) in ty {
         for (k, v) in keys {
-            if let Val::Int(n) = v {
-                out.push_str(&format!("  {}: {};\n", css_var(section, k), n));
+            let var = css_var(section, k);
+            match v {
+                Val::Int(n) => {
+                    let unit = if k == "weight" { "" } else { "px" };
+                    out.push_str(&format!("  {var}: {n}{unit};\n"));
+                }
+                Val::Float(f) => {
+                    let s = if f.fract() == 0.0 {
+                        format!("{f:.0}")
+                    } else {
+                        format!("{f}")
+                    };
+                    out.push_str(&format!("  {var}: {s}px;\n"));
+                }
+                Val::Str(s) => {
+                    let val_str = if section.starts_with("font") {
+                        format!("\"{s}\"")
+                    } else {
+                        s.clone()
+                    };
+                    out.push_str(&format!("  {var}: {val_str};\n"));
+                }
+                Val::StrList(items) => {
+                    let list = items
+                        .iter()
+                        .map(|s| format!("\"{s}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("  {var}: {list};\n"));
+                }
+                Val::IntList(items) => {
+                    let list = items
+                        .iter()
+                        .map(|n| format!("{n}px"))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    out.push_str(&format!("  {var}: {list};\n"));
+                }
+                Val::IntPairList(pairs) => {
+                    let list = pairs
+                        .iter()
+                        .map(|(a, b)| format!("{a} {b}ms"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("  {var}: {list};\n"));
+                }
             }
         }
+    }
+    if let (Some(Val::Str(fam)), Some(Val::StrList(chain))) = (
+        ty.get("font.interface").and_then(|k| k.get("family")),
+        ty.get("font.fallback").and_then(|k| k.get("chain")),
+    ) {
+        let mut stack = vec![format!("\"{fam}\"")];
+        for c in chain {
+            stack.push(format!("\"{c}\""));
+        }
+        stack.push("sans-serif".to_string());
+        out.push_str(&format!(
+            "  --hakille-font-interface-stack: {};\n",
+            stack.join(", ")
+        ));
     }
     out.push_str("}\n");
     out
@@ -433,8 +838,29 @@ mod tests {
             .entry("color.surface.0".to_string())
             .or_default()
             .insert("dark".to_string(), Val::Str("#0B0C0F".to_string()));
-        let motion: Doc = BTreeMap::new();
-        let ty: Doc = BTreeMap::new();
+        let mut motion: Doc = BTreeMap::new();
+        motion.entry("motion.ease".to_string()).or_default().insert(
+            "ease_in".to_string(),
+            Val::Str("cubic-bezier(0.2, 0, 0, 1)".to_string()),
+        );
+        motion
+            .entry("motion.spring_card".to_string())
+            .or_default()
+            .insert("stiffness".to_string(), Val::Int(380));
+        let mut ty: Doc = BTreeMap::new();
+        ty.entry("font.interface".to_string())
+            .or_default()
+            .insert("family".to_string(), Val::Str("Inter Variable".to_string()));
+        ty.entry("font.fallback".to_string()).or_default().insert(
+            "chain".to_string(),
+            Val::StrList(vec!["Noto Sans".to_string()]),
+        );
+        ty.entry("type.display".to_string())
+            .or_default()
+            .insert("size".to_string(), Val::Int(40));
+        ty.entry("type.display".to_string())
+            .or_default()
+            .insert("weight".to_string(), Val::Int(600));
         (color, motion, ty)
     }
 
@@ -465,8 +891,6 @@ mod tests {
 
     #[test]
     fn test_parse_value_sound_pairs() {
-        // Bug sons : `inner` après trim ne commençait plus par `[`
-        // (`trim_start_matches('[')` supprimait les deux crochets).
         for (src, expected) in [
             ("[[69, 90], [76, 90]]", vec![(69, 90), (76, 90)]),
             ("[[72, 220]]", vec![(72, 220)]),
@@ -477,7 +901,6 @@ mod tests {
                 other => panic!("src={src} doit être IntPairList, got {other:?}"),
             }
         }
-        // Listes simples intactes.
         match parse_value("[4, 8, 12]") {
             Val::IntList(v) => assert_eq!(v, vec![4, 8, 12]),
             other => panic!("IntList attendue, got {other:?}"),
@@ -509,5 +932,43 @@ mod tests {
         );
         assert!(kotlin.contains("69L to 90L"), "{kotlin}");
         assert!(css.contains("69 90ms"), "{css}");
+    }
+
+    #[test]
+    fn test_parse_scalar_floats_and_ints() {
+        assert_eq!(parse_scalar("42"), Val::Int(42));
+        assert_eq!(parse_scalar("2.0"), Val::Float(2.0));
+        assert_eq!(parse_scalar("\"hello\""), Val::Str("hello".to_string()));
+    }
+
+    #[test]
+    fn test_multi_target_exporters_curves_fonts_and_units() {
+        let (color, motion, ty) = sample_docs();
+        let swift = emit_swift(&color, &motion, &ty);
+        let kotlin = emit_kotlin(&color, &motion, &ty);
+        let css = emit_css(&color, &motion, &ty);
+
+        // Swift assertions
+        assert!(
+            swift.contains("CubicBezier(0.2, 0.0, 0.0, 1.0, spec: \"cubic-bezier(0.2, 0, 0, 1)\")")
+        );
+        assert!(
+            swift.contains("public static let fontInterfaceFamily: String = \"Inter Variable\"")
+        );
+        assert!(swift.contains("public static let colorBraiseDark = Color(hex: \"#FF7A2F\")"));
+        assert!(swift.contains("public static let colorBraiseDarkRgb: UInt32 = 0xFF7A2F"));
+
+        // Kotlin assertions
+        assert!(kotlin.contains("CubicBezierEasing(0.2f, 0.0f, 0.0f, 1.0f)"));
+        assert!(kotlin.contains("val colorBraiseDark: Color = Color(0xFFFF7A2FU)"));
+        assert!(kotlin.contains("const val fontInterfaceFamily: String = \"Inter Variable\""));
+
+        // CSS assertions
+        assert!(css.contains("--hakille-motion-ease-ease-in: cubic-bezier(0.2, 0, 0, 1);"));
+        assert!(css.contains("--hakille-motion-spring-card-stiffness: 380;"));
+        assert!(css.contains("--hakille-type-display-size: 40px;"));
+        assert!(css.contains("--hakille-type-display-weight: 600;"));
+        assert!(css.contains("--hakille-font-interface-family: \"Inter Variable\";"));
+        assert!(css.contains("--hakille-font-interface-stack:"));
     }
 }

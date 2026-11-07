@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 hakille-core = { path = "../crates/hakille-core" }
 hakille-substrate = { path = "../crates/hakille-substrate" }
-hakille-inference = { path = "../crates/hakille-inference" }
+hakille-inference = { path = "../crates/hakille-inference", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -15,3 +15,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+
+[features]
+default = []
+inference = ["dep:hakille-inference"]

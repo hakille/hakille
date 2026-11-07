@@ -15,3 +15,4 @@ Thumbs.db
 models/*
 !models/.gitkeep
 hakille-memory.json
+/.agents/

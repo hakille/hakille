@@ -7,6 +7,12 @@ description = "I/O audio réel (capture micro + lecture haut-parleur) pour Hakil
 
 [dependencies]
 hakille-core = { path = "../hakille-core" }
-cpal = "0.18"
+cpal = { version = "0.18", optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[features]
+default = []
+cpal = ["dep:cpal"]
+dummy-audio = []
+mock-audio = ["dummy-audio"]

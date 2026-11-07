@@ -779,17 +779,18 @@ fn collect_with_prefix(
     table: &redb::ReadOnlyTable<&[u8], &[u8]>,
     prefix: &[u8],
 ) -> hakille_core::Result<Vec<Vec<u8>>> {
-    use redb::ReadableTable;
     let mut ids = Vec::new();
-    for item in table
-        .iter()
-        .map_err(|e| HakilleError::StorageError(format!("EdgeStore: scan index: iter: {e}")))?
-    {
+    let range = table
+        .range(prefix..)
+        .map_err(|e| HakilleError::StorageError(format!("EdgeStore: scan index range: {e}")))?;
+    for item in range {
         let (k, v) = item.map_err(|e| {
             HakilleError::StorageError(format!("EdgeStore: scan index: lecture entrée: {e}"))
         })?;
         if k.value().starts_with(prefix) {
             ids.push(v.value().to_vec());
+        } else {
+            break;
         }
     }
     Ok(ids)
@@ -1114,6 +1115,36 @@ mod tests {
             assert!(hits.is_empty());
         }
         assert_eq!(block_on(store.count()).expect("count"), 0);
+        drop(store);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_prefix_range_scan_pushdown() {
+        let (db, dir) = open_test_db("prefix-pushdown");
+        let store = EdgeStore::try_new(db).expect("try_new");
+
+        let t1 = sample_triplet_with(1, 0x10, "val1");
+        let t2 = sample_triplet_with(2, 0x10, "val2");
+        let t3 = sample_triplet_with(3, 0x20, "val3");
+
+        block_on(store.store(&t1)).expect("store t1");
+        block_on(store.store(&t2)).expect("store t2");
+        block_on(store.store(&t3)).expect("store t3");
+
+        let pattern = TriplePattern {
+            subject: Some(hakille_core::NodeId(uuid::Uuid::from_u128(0x10))),
+            predicate: Some(hakille_core::PredicateId(uuid::Uuid::from_u128(0xB0B))),
+            object: None,
+        };
+
+        let hits = block_on(store.query(&pattern)).expect("query");
+        assert_eq!(hits.len(), 2);
+        assert!(
+            hits.iter()
+                .all(|t| t.subject == hakille_core::NodeId(uuid::Uuid::from_u128(0x10)))
+        );
+
         drop(store);
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -1,13 +1,15 @@
-//! I/O audio réel pour Hakille : capture micro et lecture haut-parleur via `cpal`.
+//! I/O audio réel pour Hakille : capture micro et lecture haut-parleur.
 //!
-//! Ce crate ne simule jamais l'audio : si aucun périphérique n'est disponible ou si
-//! un format n'est pas convertible, une erreur explicite est renvoyée. La capture
-//! livre des blocs mono `f32` à 16 kHz (format attendu par le pipeline voix/STT).
+//! En mode natif avec `feature = "cpal"`, ce crate accède aux périphériques audio réels.
+//! En mode headless (`default = []`), ce crate garantit l'intégrité sans émuler de succès fictif :
+//! `Capture::new()` renvoie [`AudioError::NoInputDevice`] et `play_pcm()` renvoie [`AudioError::NoOutputDevice`].
+//! En mode test synthétique (`feature = "mock-audio"`), un pilote 16 kHz synthétique émet du silence.
 
 pub mod capture;
 pub mod playback;
 pub mod resample;
 
+#[cfg(feature = "cpal")]
 use cpal::traits::HostTrait;
 
 pub use capture::Capture;
@@ -51,46 +53,108 @@ pub struct AudioDevice {
 
 /// Liste les périphériques d'entrée disponibles, périphérique par défaut marqué.
 pub fn input_devices() -> Result<Vec<AudioDevice>, AudioError> {
-    let host = cpal::default_host();
-    let default = host.default_input_device();
-    let devices = host.input_devices().map_err(|e| {
-        AudioError::StreamError(format!("énumération des entrées impossible : {e}"))
-    })?;
-    Ok(devices
-        .map(|device| AudioDevice {
-            name: device.to_string(),
-            is_default: default.as_ref().is_some_and(|d| d == &device),
-        })
-        .collect())
+    #[cfg(feature = "cpal")]
+    {
+        let host = cpal::default_host();
+        let default = host.default_input_device();
+        let devices = host.input_devices().map_err(|e| {
+            AudioError::StreamError(format!("énumération des entrées impossible : {e}"))
+        })?;
+        Ok(devices
+            .map(|device| AudioDevice {
+                name: device.to_string(),
+                is_default: default.as_ref().is_some_and(|d| d == &device),
+            })
+            .collect())
+    }
+    #[cfg(not(feature = "cpal"))]
+    {
+        #[cfg(feature = "mock-audio")]
+        {
+            Ok(vec![AudioDevice {
+                name: "Hakille Mock Input".to_string(),
+                is_default: true,
+            }])
+        }
+        #[cfg(not(feature = "mock-audio"))]
+        {
+            Ok(Vec::new())
+        }
+    }
 }
 
 /// Liste les périphériques de sortie disponibles, périphérique par défaut marqué.
 pub fn output_devices() -> Result<Vec<AudioDevice>, AudioError> {
-    let host = cpal::default_host();
-    let default = host.default_output_device();
-    let devices = host.output_devices().map_err(|e| {
-        AudioError::StreamError(format!("énumération des sorties impossible : {e}"))
-    })?;
-    Ok(devices
-        .map(|device| AudioDevice {
-            name: device.to_string(),
-            is_default: default.as_ref().is_some_and(|d| d == &device),
-        })
-        .collect())
+    #[cfg(feature = "cpal")]
+    {
+        let host = cpal::default_host();
+        let default = host.default_output_device();
+        let devices = host.output_devices().map_err(|e| {
+            AudioError::StreamError(format!("énumération des sorties impossible : {e}"))
+        })?;
+        Ok(devices
+            .map(|device| AudioDevice {
+                name: device.to_string(),
+                is_default: default.as_ref().is_some_and(|d| d == &device),
+            })
+            .collect())
+    }
+    #[cfg(not(feature = "cpal"))]
+    {
+        #[cfg(feature = "mock-audio")]
+        {
+            Ok(vec![AudioDevice {
+                name: "Hakille Mock Output".to_string(),
+                is_default: true,
+            }])
+        }
+        #[cfg(not(feature = "mock-audio"))]
+        {
+            Ok(Vec::new())
+        }
+    }
 }
 
 /// Nom du périphérique d'entrée par défaut, s'il existe.
 pub fn default_input_device_name() -> Option<String> {
-    cpal::default_host()
-        .default_input_device()
-        .map(|d| d.to_string())
+    #[cfg(feature = "cpal")]
+    {
+        cpal::default_host()
+            .default_input_device()
+            .map(|d| d.to_string())
+    }
+    #[cfg(not(feature = "cpal"))]
+    {
+        #[cfg(feature = "mock-audio")]
+        {
+            Some("Hakille Mock Input".to_string())
+        }
+        #[cfg(not(feature = "mock-audio"))]
+        {
+            None
+        }
+    }
 }
 
 /// Nom du périphérique de sortie par défaut, s'il existe.
 pub fn default_output_device_name() -> Option<String> {
-    cpal::default_host()
-        .default_output_device()
-        .map(|d| d.to_string())
+    #[cfg(feature = "cpal")]
+    {
+        cpal::default_host()
+            .default_output_device()
+            .map(|d| d.to_string())
+    }
+    #[cfg(not(feature = "cpal"))]
+    {
+        #[cfg(feature = "mock-audio")]
+        {
+            Some("Hakille Mock Output".to_string())
+        }
+        #[cfg(not(feature = "mock-audio"))]
+        {
+            None
+        }
+    }
 }
 
 impl From<AudioError> for hakille_core::HakilleError {

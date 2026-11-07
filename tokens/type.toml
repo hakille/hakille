@@ -58,3 +58,19 @@ card = 16
 ios = 44
 android = 48
 pointer_min_px = 32
+
+[blur]
+hud_acrylic = 30
+panel = 24
+glow = 16
+
+[layout.hud]
+width = 720
+height = 64
+radius = 12
+top_offset = 120
+
+[layout.card]
+width = 720
+height = 360
+

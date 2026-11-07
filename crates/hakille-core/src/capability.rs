@@ -495,6 +495,42 @@ pub fn enforce_with_resource(
     )
 }
 
+/// Vérification épinglée avec clé publique racine + vérification de révocation par nonce/jti.
+pub fn verify_capability_with_root_key_and_revocation(
+    token: &CapabilityToken,
+    root_public_key: &biscuit_auth::PublicKey,
+    required_scope: CapabilityScope,
+    required_action: CapabilityAction,
+    is_revoked: &dyn Fn(&str) -> bool,
+) -> Result<()> {
+    let (_, nonce, _) = token_binding_facts(token);
+    if let Some(n) = nonce
+        && is_revoked(&n)
+    {
+        return Err(HakilleError::CapabilityDenied(format!(
+            "token révoqué (nonce/jti {n})"
+        )));
+    }
+    verify_capability_with_root_key(token, root_public_key, required_scope, required_action)
+}
+
+/// Alias d'enforcement avec révocation.
+pub fn enforce_with_revocation(
+    token: &CapabilityToken,
+    root_public_key: &biscuit_auth::PublicKey,
+    required_scope: CapabilityScope,
+    required_action: CapabilityAction,
+    is_revoked: &dyn Fn(&str) -> bool,
+) -> Result<()> {
+    verify_capability_with_root_key_and_revocation(
+        token,
+        root_public_key,
+        required_scope,
+        required_action,
+        is_revoked,
+    )
+}
+
 /// Faits de liaison `(resource, nonce/jti, aud)` décodés depuis tous les blocs.
 /// `None` = fait absent (token legacy sans liaison).
 pub fn token_binding_facts(
@@ -871,6 +907,29 @@ mod tests {
                     &|jti| jti == "jti-revoked-1"
                 )
                 .is_err()
+        );
+
+        // Test with pinned root public key directly
+        let root_pub = authority.root_public_key();
+        assert!(
+            enforce_with_revocation(
+                &tok,
+                &root_pub,
+                CapabilityScope::Network,
+                CapabilityAction::Read,
+                &|_| false
+            )
+            .is_ok()
+        );
+        assert!(
+            enforce_with_revocation(
+                &tok,
+                &root_pub,
+                CapabilityScope::Network,
+                CapabilityAction::Read,
+                &|jti| jti == "jti-revoked-1"
+            )
+            .is_err()
         );
     }
 }

@@ -17,7 +17,6 @@ use hakille_perception::{
     AsrEngine, AudioChunk, CameraPipeline, VoiceActivityDetector, WakeWordDetector, WorldModel,
 };
 use hakille_substrate::{CameraConfig, CameraFacing, CameraStreamHandle, Compute, Substrate};
-use hakille_substrate_windows::{WindowsComputeBackend, WindowsScreenCapturer, WindowsSubstrate};
 use hakille_sync::{CrdtSync, HandoffCoordinator, Outbox, OutboxEntry};
 use hakille_ui::{
     AccessibilityManager, AcrylicOverlayWindowSpec, ChannelSelector, CostCounter, DeviceType,
@@ -35,8 +34,10 @@ use uuid::Uuid;
 
 mod agent_runtime;
 mod ipc;
+mod substrate;
 
 use ipc::run_serve;
+use substrate::{HostComputeBackend, HostSubstrate, detect_compute, detect_substrate};
 
 fn make_cli_progress_callback() -> hakille_inference::ProgressCallback {
     Arc::new(|p: &hakille_inference::DownloadProgress| {
@@ -73,6 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut serve_mode = false;
     let mut speak_enabled = false;
     let mut listen_mode = false;
+    let mut substrate_override: Option<String> = None;
 
     // Check for CLI subcommands first: `models list`, `models download`, `models verify`
     if args.len() > 1 && args[1] == "models" {
@@ -297,6 +299,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "  --listen                    Écoute micro réelle (VAD + ASR) au démarrage du REPL"
                 );
+                println!(
+                    "  --substrate <NAME>          Substrate override: auto|linux|windows|macos|redox|mobile|web (default: auto)"
+                );
                 println!("  --version, -v               Print version information");
                 println!("  --help, -h                  Print this help message");
                 return Ok(());
@@ -334,6 +339,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--listen" => {
                 listen_mode = true;
+            }
+            "--substrate" if arg_idx + 1 < args.len() => {
+                substrate_override = Some(args[arg_idx + 1].clone());
+                arg_idx += 1;
             }
             _ => {}
         }
@@ -419,8 +428,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  Keys: persistent identity loaded (keys dir: {})",
         keys_dir.display()
     );
-    let substrate = WindowsSubstrate::new().with_trusted_root(authority.root_public_key());
-    let compute = WindowsComputeBackend::new();
+    let substrate = match substrate_override.as_deref() {
+        Some(name) => HostSubstrate::from_name(name, authority.root_public_key())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?,
+        None => detect_substrate(authority.root_public_key()),
+    };
+    let compute = match substrate_override.as_deref() {
+        Some(name) => HostComputeBackend::from_name(name)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?,
+        None => detect_compute(),
+    };
     let manifest = substrate.manifest();
     println!("  Host OS: {} {}", manifest.os_name, manifest.os_version);
     println!("  Tier: {:?}", manifest.tier);
@@ -591,6 +608,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             hakille_core::CapabilityAction::Execute,
             hakille_core::CapabilityAction::Write,
         ],
+        Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
+    )?;
+    let screen_cap = authority.create_root_token(
+        vec![CapabilityScope::Sensor],
+        vec![hakille_core::CapabilityAction::Read],
         Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
     )?;
     let (camera_handle, camera_unavailable_reason): (Option<CameraStreamHandle>, Option<String>) =
@@ -1755,7 +1777,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // intention n'est produite et rien n'est exécuté — le REPL,
                 // lui, reste vivant.
                 'gui_action: {
-                    let capture = match WindowsScreenCapturer::capture_primary_display() {
+                    let capture = match substrate.capture_screen(&screen_cap).await {
                         Ok(c) => c,
                         Err(e) => {
                             eprintln!(
@@ -2690,8 +2712,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
 
-            ":win-ram" => {
-                println!("Windows Substrate Physical Memory Telemetry (GlobalMemoryStatusEx):");
+            ":ram" | ":win-ram" => {
+                println!("Host Substrate Physical Memory Telemetry:");
                 let total_ram_mb = compute.total_physical_ram() as f64 / 1_048_576.0;
                 let avail_ram_mb = compute.available_physical_ram() as f64 / 1_048_576.0;
                 let used_ram_mb = total_ram_mb - avail_ram_mb;
@@ -2726,8 +2748,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
 
-            ":win-power" => {
-                println!("Windows Substrate Power & Thermal Telemetry (GetSystemPowerStatus):");
+            ":power" | ":win-power" => {
+                println!("Host Substrate Power & Thermal Telemetry:");
                 let power = substrate.power_state();
                 let thermal = substrate.thermal_state();
                 println!("  • On Battery Power:         {}", power.on_battery);
@@ -2747,8 +2769,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
 
-            ":win-screen" => {
-                println!("Capturing primary display via Win32 GDI BitBlt (zero raw pixel leak)...");
+            ":screen" | ":win-screen" => {
+                println!("Capturing primary display via host substrate (zero raw pixel leak)...");
                 let screen_cap_token = authority.create_root_token(
                     vec![CapabilityScope::Sensor],
                     vec![hakille_core::CapabilityAction::Read],
@@ -2781,33 +2803,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            ":win-tray" => {
-                println!("Windows System Tray & Shell Integration Test:");
-                let mut win_tray = hakille_substrate_windows::WindowsPresenceTray::new();
-                println!("  • Initial State:            {:?}", win_tray.state());
-                win_tray.set_state(hakille_substrate_windows::WindowsPresenceState::Listening);
+            ":tray" | ":win-tray" => {
+                println!("Host System Tray & Shell Integration Specification:");
+                let tray_spec = hakille_ui_platform::TraySpec::hakille("Veille");
+                println!("  • Tray Tooltip:             {}", tray_spec.tooltip);
                 println!(
-                    "  • Updated to Listening:     {:?} (Tooltip: '{}')",
-                    win_tray.state(),
-                    win_tray.tooltip()
+                    "  • Menu Items:               {} items",
+                    tray_spec.menu.len()
                 );
-                win_tray.set_state(hakille_substrate_windows::WindowsPresenceState::Acting);
+                for (i, item) in tray_spec.menu.iter().enumerate() {
+                    println!("    {}. {}", i + 1, item);
+                }
                 println!(
-                    "  • Updated to Acting:        {:?} (Tooltip: '{}')",
-                    win_tray.state(),
-                    win_tray.tooltip()
+                    "  • Icon Braise Hex:          {}",
+                    tray_spec.icon_braise_hex
                 );
-                win_tray.set_state(hakille_substrate_windows::WindowsPresenceState::Idle);
+                let hotkey_spec = hakille_ui_platform::HotkeySpec::default_for("windows");
                 println!(
-                    "  • Returned to Idle:         {:?} (Tooltip: '{}')",
-                    win_tray.state(),
-                    win_tray.tooltip()
-                );
-                let mut hotkey = hakille_substrate_windows::WindowsGlobalHotkey::new();
-                let registered = hotkey.register();
-                println!(
-                    "  • Global Hotkey:            {:?} (Ctrl+Alt+Space, alias Alt+Space summoned: {})",
-                    hotkey.key_combination, registered
+                    "  • Global Hotkey:            {:?} (id: {})",
+                    hotkey_spec.accelerators, hotkey_spec.id
                 );
             }
 
@@ -3462,6 +3476,10 @@ const KNOWN_COMMANDS: &[&str] = &[
     ":settings",
     ":budget",
     ":ambient",
+    ":ram",
+    ":power",
+    ":screen",
+    ":tray",
     ":win-ram",
     ":win-power",
     ":win-screen",
