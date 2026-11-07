@@ -21,7 +21,6 @@ use hakille_ui::{
 };
 use hakille_voice::input::{VoiceInputEvent, VoiceInputHandle};
 use hakille_voice::{BargeInDetector, FormantTts};
-#[cfg(target_os = "windows")]
 use sha2::Digest;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
@@ -41,7 +40,7 @@ mod voice_file_cli;
 
 use ipc::run_serve;
 use persistence::{load_outbox, outbox_file_path, update_outbox};
-use substrate::{detect_compute, detect_substrate, HostComputeBackend, HostSubstrate};
+use substrate::{HostComputeBackend, HostSubstrate, detect_compute, detect_substrate};
 
 fn make_cli_progress_callback() -> hakille_inference::ProgressCallback {
     Arc::new(|p: &hakille_inference::DownloadProgress| {

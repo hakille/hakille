@@ -817,5 +817,4 @@ mod tests {
         toast.draw(&mut scene, &ctx);
         assert!(!scene.cmds.is_empty());
     }
-    }
 }

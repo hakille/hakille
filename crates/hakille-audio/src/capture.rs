@@ -30,6 +30,7 @@ pub struct Capture {
     running: std::sync::Arc<std::sync::atomic::AtomicBool>,
     #[cfg(all(not(feature = "cpal"), feature = "mock-audio"))]
     stop_tx: Option<std::sync::mpsc::Sender<()>>,
+    health: std::sync::Arc<crate::diagnostics::CaptureHealth>,
 }
 
 impl std::fmt::Debug for Capture {
@@ -92,6 +93,7 @@ impl Capture {
                         channels: 1,
                         running: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                         stop_tx: None,
+                        health: std::sync::Arc::new(crate::diagnostics::CaptureHealth::new()),
                     })
                 } else {
                     Err(AudioError::DeviceNotFound(name.to_string()))
@@ -115,6 +117,7 @@ impl Capture {
             format,
             config,
             stream: None,
+            health: std::sync::Arc::new(crate::diagnostics::CaptureHealth::new()),
         })
     }
 
@@ -194,6 +197,7 @@ impl Capture {
             #[cfg(feature = "mock-audio")]
             {
                 let running = std::sync::Arc::clone(&self.running);
+                let health = std::sync::Arc::clone(&self.health);
                 running.store(true, std::sync::atomic::Ordering::SeqCst);
                 let (tx, rx) = std::sync::mpsc::channel();
                 self.stop_tx = Some(tx);
@@ -204,6 +208,8 @@ impl Capture {
                         if rx.try_recv().is_ok() {
                             break;
                         }
+                        health.callback_received();
+                        health.block_delivered();
                         cb(&silence);
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
@@ -216,6 +222,16 @@ impl Capture {
                 Err(AudioError::NoInputDevice)
             }
         }
+    }
+
+    /// Récupère et efface l'erreur survenue lors de la capture, le cas échéant.
+    pub fn take_error(&self) -> Option<AudioError> {
+        self.health.take_error()
+    }
+
+    /// État de santé de la capture depuis son démarrage.
+    pub fn status(&self) -> crate::diagnostics::CaptureStatus {
+        self.health.status()
     }
 
     /// Arrête la capture. Idempotent : renvoie `Ok(())` si rien n'est actif.
@@ -261,11 +277,14 @@ impl Capture {
         let mut resampled: Vec<f32> = Vec::new();
         let mut pending: Vec<f32> = Vec::new();
         let error_device_name = self.device_name.clone();
+        let health = std::sync::Arc::clone(&self.health);
+        let error_health = std::sync::Arc::clone(&self.health);
         let stream = self
             .device
             .build_input_stream(
                 &self.config,
                 move |data: &[T], _info: &cpal::InputCallbackInfo| {
+                    health.callback_received();
                     mono.clear();
                     for frame in data.chunks_exact(channels) {
                         let sum: f32 = frame.iter().map(|s| f32::from_sample(*s)).sum();
@@ -276,10 +295,12 @@ impl Capture {
                     pending.extend_from_slice(&resampled);
                     while pending.len() >= CAPTURE_BLOCK_SAMPLES {
                         let block: Vec<f32> = pending.drain(..CAPTURE_BLOCK_SAMPLES).collect();
+                        health.block_delivered();
                         callback(&block);
                     }
                 },
                 move |err: cpal::Error| {
+                    error_health.record_error(AudioError::StreamError(err.to_string()));
                     tracing::error!(
                         error = %err,
                         device = %error_device_name,

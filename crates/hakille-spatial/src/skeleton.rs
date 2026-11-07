@@ -190,8 +190,8 @@ impl BodySkeleton3D {
     /// Crée un squelette vide par défaut (articulations à l'origine avec confiance nulle).
     pub fn empty() -> Self {
         let mut joints = [SkeletonJoint3D::default(); 17];
-        for i in 0..17 {
-            joints[i].id = i as u8;
+        for (i, joint) in joints.iter_mut().enumerate() {
+            joint.id = i as u8;
         }
         Self {
             joints,

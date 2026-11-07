@@ -96,7 +96,9 @@ impl HostComputeBackend {
             "redox" => Ok(Self::Redox(
                 hakille_substrate_redox::RedoxComputeBackend::new(),
             )),
-            "mobile" => Ok(Self::Mobile(hakille_substrate_mobile::MobileComputeBackend)),
+            "mobile" => Ok(Self::Mobile(
+                hakille_substrate_mobile::MobileComputeBackend::new(),
+            )),
             "web" => Ok(Self::Web(hakille_substrate_web::WebComputeBackend::new())),
             "auto" => Ok(detect_compute()),
             other => Err(format!(

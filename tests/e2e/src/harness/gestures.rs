@@ -142,7 +142,7 @@ impl GestureSimulator {
                     actions.push(HudAction::RejectCard { card_id: card.id });
                 }
             }
-            PointerTarget::Drag | PointerTarget::None => {}
+            PointerTarget::Drag | PointerTarget::None | PointerTarget::VoiceToggle => {}
         }
         (target, actions)
     }

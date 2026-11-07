@@ -7,9 +7,9 @@ use std::time::Instant;
 #[cfg(feature = "cpal")]
 use cpal::traits::HostTrait;
 
+use crate::AudioError;
 #[cfg(feature = "cpal")]
 use crate::capture::select_input_config;
-use crate::AudioError;
 
 /// Configuration native retenue, avant downmix et conversion vers 16 kHz.
 #[derive(Debug, Clone, PartialEq, Eq)]

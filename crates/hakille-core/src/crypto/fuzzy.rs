@@ -72,7 +72,7 @@ impl FuzzyExtractor {
         for bit_idx in 0..CODEWORD_BITS {
             // Compute projection onto hyperplane bit_idx
             let mut dot_product = 0.0f32;
-            let num_chunks = (dim + 31) / 32;
+            let num_chunks = dim.div_ceil(32);
 
             for chunk in 0..num_chunks {
                 let mut h_hasher = Sha256::new();

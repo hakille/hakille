@@ -87,7 +87,10 @@ impl MockKernel {
                 | UiToKernel::MemoryRemember { .. }
                 | UiToKernel::StatusRequest
                 | UiToKernel::AgentListRequest
-                | UiToKernel::AgentRunRequest { .. } => {
+                | UiToKernel::AgentRunRequest { .. }
+                | UiToKernel::PerceptionControl { .. }
+                | UiToKernel::NotificationAction { .. }
+                | UiToKernel::NotificationDismiss { .. } => {
                     return Err(
                         "daemon requis: opération refusée en mode détaché (fail-closed)".into(),
                     );
@@ -234,6 +237,15 @@ impl MockKernel {
             }
             UiToKernel::OutboxFlush => Ok(Some(KernelToUi::Toast {
                 text: "Boîte d'envoi vidée".into(),
+            })),
+            UiToKernel::PerceptionControl { .. } => Ok(Some(KernelToUi::Toast {
+                text: "Contrôle de perception mis à jour".into(),
+            })),
+            UiToKernel::NotificationAction { id, action_id } => Ok(Some(KernelToUi::Toast {
+                text: format!("Notification {id} action {action_id} exécutée"),
+            })),
+            UiToKernel::NotificationDismiss { id } => Ok(Some(KernelToUi::Toast {
+                text: format!("Notification {id} masquée"),
             })),
         }
     }
