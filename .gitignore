@@ -17,3 +17,5 @@ Thumbs.db
 models/*
 !models/.gitkeep
 hakille-memory.json
+/target_audit
+target_audit/
