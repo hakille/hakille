@@ -1,0 +1,39 @@
+{
+  "name": "@hakille/website",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Official sovereign showcase, interactive cryptographic/acoustic laboratories, and legal/privacy center for Hakille (hakille.ai)",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hakille/hakille.git",
+    "directory": "website"
+  },
+  "scripts": {
+    "sync": "node scripts/sync-from-repo.mjs",
+    "dev": "npm run sync && vite",
+    "typecheck": "npm run sync && tsc --noEmit",
+    "build:client": "vite build --outDir dist/client",
+    "build:ssr": "vite build --ssr src/entry-server.tsx --outDir dist/server",
+    "prerender": "node scripts/prerender.mjs",
+    "audit:sovereignty": "node scripts/audit-sovereignty.mjs",
+    "build": "npm run sync && npm run build:client && npm run build:ssr && npm run prerender && npm run audit:sovereignty",
+    "preview": "vite preview --outDir dist/static --port 4173 --host 127.0.0.1",
+    "test": "npm run sync && vitest run"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "@vitejs/plugin-react": "^6.0.0",
+    "jsdom": "^26.0.0",
+    "typescript": "^5.7.3",
+    "vite": "^8.0.0",
+    "vitest": "^5.1.0"
+  }
+}

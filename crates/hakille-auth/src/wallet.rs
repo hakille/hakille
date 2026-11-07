@@ -557,14 +557,7 @@ mod tests {
 
         // Valid authorization succeeds and signs
         let proof = manager
-            .authorize_and_sign_transaction(
-                &mut wallet,
-                tx.clone(),
-                0.95,
-                false,
-                &[],
-                &signing_key,
-            )
+            .authorize_and_sign_transaction(&mut wallet, tx.clone(), 0.95, false, &[], &signing_key)
             .expect("Signing transaction must succeed");
 
         assert_eq!(proof.transaction.amount_cents, 2500);
@@ -573,4 +566,3 @@ mod tests {
         assert_eq!(manager.history().len(), 1);
     }
 }
-

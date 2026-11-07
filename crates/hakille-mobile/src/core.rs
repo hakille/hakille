@@ -643,6 +643,15 @@ impl Core {
                 }
             }
             KernelToUi::JournalAppended { id } => self.snapshot.last_journal_entry_id = Some(*id),
+            KernelToUi::Notification(dto) => {
+                let text = format!("{}: {}", dto.title, dto.body);
+                self.snapshot.notifications.push(text);
+                if self.snapshot.notifications.len() > 16 {
+                    self.snapshot.notifications.remove(0);
+                    self.snapshot.history_trimmed = true;
+                }
+            }
+            KernelToUi::NotificationDismissed { .. } => {}
             KernelToUi::MemoryRememberAck { .. }
             | KernelToUi::AgentRunReply { .. }
             | KernelToUi::UserContext(_)

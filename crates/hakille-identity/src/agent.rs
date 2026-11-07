@@ -4,9 +4,9 @@
 use crate::hierarchy::TenantId;
 use crate::ssi::{Did, DidKey};
 use ed25519_dalek::SigningKey;
+use hakille_core::HakilleError;
 use hakille_core::auth::MAX_DELEGATION_DEPTH;
 use hakille_core::capability::CapabilityScope;
-use hakille_core::HakilleError;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -213,7 +213,13 @@ mod tests {
 
     #[test]
     fn test_agent_rule7_blocks_fullsystem() {
-        assert!(AgentFactory::enforce_minor_protection_invariant(true, &CapabilityScope::FullSystem).is_err());
-        assert!(AgentFactory::enforce_minor_protection_invariant(false, &CapabilityScope::FullSystem).is_ok());
+        assert!(
+            AgentFactory::enforce_minor_protection_invariant(true, &CapabilityScope::FullSystem)
+                .is_err()
+        );
+        assert!(
+            AgentFactory::enforce_minor_protection_invariant(false, &CapabilityScope::FullSystem)
+                .is_ok()
+        );
     }
 }

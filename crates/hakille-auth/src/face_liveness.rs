@@ -54,7 +54,12 @@ impl MiniFasNetClassifier {
     }
 
     /// Compute dual-scale texture & Fourier spectral metrics
-    pub fn compute_metrics(&self, rgb_crop: &[u8], width: u32, height: u32) -> TextureFrequencyMetrics {
+    pub fn compute_metrics(
+        &self,
+        rgb_crop: &[u8],
+        width: u32,
+        height: u32,
+    ) -> TextureFrequencyMetrics {
         let total_pixels = (width as usize) * (height as usize);
         let limit = rgb_crop.len().min(total_pixels * 3);
         if limit < 6 || width == 0 || height == 0 {
@@ -94,8 +99,10 @@ impl MiniFasNetClassifier {
                 let prev = (y * w + (x - 1)) * 3;
                 if idx + 2 < rgb_crop.len() && prev + 2 < rgb_crop.len() {
                     let d = (rgb_crop[idx] as i32 - rgb_crop[prev] as i32).unsigned_abs() as u64
-                        + (rgb_crop[idx + 1] as i32 - rgb_crop[prev + 1] as i32).unsigned_abs() as u64
-                        + (rgb_crop[idx + 2] as i32 - rgb_crop[prev + 2] as i32).unsigned_abs() as u64;
+                        + (rgb_crop[idx + 1] as i32 - rgb_crop[prev + 1] as i32).unsigned_abs()
+                            as u64
+                        + (rgb_crop[idx + 2] as i32 - rgb_crop[prev + 2] as i32).unsigned_abs()
+                            as u64;
 
                     if x >= x_start && x < x_end && y >= y_start && y < y_end {
                         inner_diff += d;
@@ -146,7 +153,12 @@ impl MiniFasNetClassifier {
     }
 
     /// Dual-scale texture & Fourier spectral frequency analysis (ISO/IEC 30107-3)
-    pub fn evaluate_crop(&self, rgb_crop: &[u8], width: u32, height: u32) -> PassiveLivenessVerdict {
+    pub fn evaluate_crop(
+        &self,
+        rgb_crop: &[u8],
+        width: u32,
+        height: u32,
+    ) -> PassiveLivenessVerdict {
         if width == 0 || height == 0 || rgb_crop.is_empty() {
             return PassiveLivenessVerdict {
                 is_live: false,
@@ -165,8 +177,9 @@ impl MiniFasNetClassifier {
                 is_live: false,
                 liveness_confidence: 0.15,
                 detected_attack: PassiveSpoofingType::PrintAttack2D,
-                explanation: "Rejection: 2D printed photo detected (loss of biological skin texture)"
-                    .to_string(),
+                explanation:
+                    "Rejection: 2D printed photo detected (loss of biological skin texture)"
+                        .to_string(),
             }
         } else if metrics.periodic_moire_score >= 2.0 {
             // Screen pixel grid Moiré pattern
@@ -174,7 +187,8 @@ impl MiniFasNetClassifier {
                 is_live: false,
                 liveness_confidence: 0.25,
                 detected_attack: PassiveSpoofingType::ScreenReplayAttack,
-                explanation: "Rejection: Screen replay detected (Moiré LCD grid artifact)".to_string(),
+                explanation: "Rejection: Screen replay detected (Moiré LCD grid artifact)"
+                    .to_string(),
             }
         } else {
             // Real biological 3D human face
@@ -241,7 +255,11 @@ pub fn compute_eye_aspect_ratio(
 }
 
 /// Pure Rust Perspective-n-Point (solvePnP) head pose estimation from 5 landmarks
-pub fn solve_pnp_head_pose(landmarks: &FaceLandmarks, img_width: f32, img_height: f32) -> HeadPoseAngles {
+pub fn solve_pnp_head_pose(
+    landmarks: &FaceLandmarks,
+    img_width: f32,
+    img_height: f32,
+) -> HeadPoseAngles {
     let (lx, ly) = landmarks.left_eye();
     let (rx, ry) = landmarks.right_eye();
     let (nx, ny) = landmarks.nose_tip();
@@ -471,8 +489,16 @@ mod tests {
             ],
         };
         let pose = solve_pnp_head_pose(&lm, 120.0, 120.0);
-        assert!(pose.yaw.abs() < 5.0, "Centered nose should yield ~0 yaw: {}", pose.yaw);
-        assert!(pose.roll.abs() < 1.0, "Horizontal eyes should yield ~0 roll: {}", pose.roll);
+        assert!(
+            pose.yaw.abs() < 5.0,
+            "Centered nose should yield ~0 yaw: {}",
+            pose.yaw
+        );
+        assert!(
+            pose.roll.abs() < 1.0,
+            "Horizontal eyes should yield ~0 roll: {}",
+            pose.roll
+        );
     }
 
     #[test]
@@ -487,7 +513,11 @@ mod tests {
             ],
         };
         let pose = solve_pnp_head_pose(&lm_turned, 120.0, 120.0);
-        assert!(pose.yaw > 10.0, "Shifted nose must yield positive yaw > 10: {}", pose.yaw);
+        assert!(
+            pose.yaw > 10.0,
+            "Shifted nose must yield positive yaw > 10: {}",
+            pose.yaw
+        );
     }
 
     #[test]
@@ -506,4 +536,3 @@ mod tests {
         assert!(metrics.high_freq_energy > 0.0);
     }
 }
-

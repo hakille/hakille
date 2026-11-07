@@ -16,29 +16,28 @@ pub mod rtmpose;
 pub mod ssrnet;
 
 pub use facemesh::{
-    CanonicalPnPPoints, FaceMeshEngine, FaceMeshOutput, CHIN_INDEX, FACEMESH_INPUT_HEIGHT,
-    FACEMESH_INPUT_WIDTH, FACEMESH_MODEL_FILENAME, FACEMESH_POINTS_COUNT, LEFT_EYE_INDICES,
-    LEFT_IRIS_CENTER_INDEX, MOUTH_BOTTOM, MOUTH_LEFT, MOUTH_RIGHT, MOUTH_TOP, NOSE_TIP_INDEX,
-    RIGHT_EYE_INDICES, RIGHT_IRIS_CENTER_INDEX,
+    CHIN_INDEX, CanonicalPnPPoints, FACEMESH_INPUT_HEIGHT, FACEMESH_INPUT_WIDTH,
+    FACEMESH_MODEL_FILENAME, FACEMESH_POINTS_COUNT, FaceMeshEngine, FaceMeshOutput,
+    LEFT_EYE_INDICES, LEFT_IRIS_CENTER_INDEX, MOUTH_BOTTOM, MOUTH_LEFT, MOUTH_RIGHT, MOUTH_TOP,
+    NOSE_TIP_INDEX, RIGHT_EYE_INDICES, RIGHT_IRIS_CENTER_INDEX,
 };
 pub use hsemotion::{
-    EmotionInferenceResult, HsEmotionEngine, EMOTION_CLASSES, HSEMOTION_INPUT_SIZE,
-    HSEMOTION_MODEL_FILENAME,
+    EMOTION_CLASSES, EmotionInferenceResult, HSEMOTION_INPUT_SIZE, HSEMOTION_MODEL_FILENAME,
+    HsEmotionEngine,
 };
 pub use mock::{
-    synthetic_blank_rgb, synthetic_checkerboard_rgb, synthetic_face_crop,
-    synthetic_gradient_rgb,
+    synthetic_blank_rgb, synthetic_checkerboard_rgb, synthetic_face_crop, synthetic_gradient_rgb,
 };
 pub use preprocess::{
-    letterbox_rgb_nchw, resize_bilinear_rgb_nchw, LetterboxTransform, NormalizationMode,
+    LetterboxTransform, NormalizationMode, letterbox_rgb_nchw, resize_bilinear_rgb_nchw,
 };
 pub use rtmpose::{
-    decode_simcc_joints, PoseInferenceResult, RtmPoseEngine, DEFAULT_SIMCC_SPLIT_RATIO,
-    POSE_INPUT_SIZE, POSE_MODEL_FILENAME,
+    DEFAULT_SIMCC_SPLIT_RATIO, POSE_INPUT_SIZE, POSE_MODEL_FILENAME, PoseInferenceResult,
+    RtmPoseEngine, decode_simcc_joints,
 };
 pub use ssrnet::{
-    AgeEstimationResult, AgeGroup, GenderKind, SsrNetEngine, MINOR_AGE_THRESHOLD,
-    MINOR_CONFIDENCE_THRESHOLD, SSRNET_INPUT_SIZE, SSRNET_MODEL_FILENAME,
+    AgeEstimationResult, AgeGroup, GenderKind, MINOR_AGE_THRESHOLD, MINOR_CONFIDENCE_THRESHOLD,
+    SSRNET_INPUT_SIZE, SSRNET_MODEL_FILENAME, SsrNetEngine,
 };
 
 /// Trait commun pour les moteurs d'inférence de vision de Hakille.

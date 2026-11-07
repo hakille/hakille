@@ -1,0 +1,597 @@
+@layer simulators {
+  /* Shared Simulator Shell */
+  .sim-frame,
+  .sim-shell {
+    background: var(--hakille-surface-1);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-card);
+    overflow: hidden;
+  }
+
+  [data-contrast="high"] .sim-frame,
+  [data-contrast="high"] .sim-shell {
+    border-width: 2px;
+  }
+
+  .sim-topbar,
+  .sim-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--hakille-space-12);
+    padding: var(--hakille-space-16) var(--hakille-space-24);
+    border-block-end: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-2);
+  }
+
+  .sim-body {
+    padding: var(--hakille-space-24);
+  }
+
+  @media (max-width: 640px) {
+    .sim-body {
+      padding: var(--hakille-space-16);
+    }
+  }
+
+  /* 1. Kora 21-Wire Presence Instrument (`brand.rs`) */
+  .kora-instrument {
+    background: var(--hakille-surface-1);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-card);
+    padding: var(--hakille-space-24);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-16);
+  }
+
+  /* Acoustic waveform NEVER mirrors in RTL (`crates/hakille-design/src/typo.rs`) */
+  .kora-stage {
+    direction: ltr;
+    position: relative;
+    height: 256px;
+    border-radius: var(--hakille-radius-control);
+    border: 1px solid var(--hakille-ligne);
+    background: radial-gradient(
+      circle at 50% 82%,
+      color-mix(in srgb, var(--hakille-lueur) 14%, var(--hakille-surface-0)),
+      var(--hakille-surface-0) 68%
+    );
+    overflow: hidden;
+    user-select: none;
+    touch-action: pan-y;
+  }
+
+  .kora-svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .kora-wire-hit {
+    cursor: pointer;
+  }
+
+  .kora-state-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--hakille-space-8);
+  }
+
+  .state-pill {
+    min-height: 32px;
+    padding-inline: var(--hakille-space-12);
+    border-radius: var(--hakille-radius-control);
+    border: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-0);
+    color: var(--hakille-texte-2);
+    font-size: var(--hakille-type-caption-size);
+    transition: background-color var(--hakille-dur-120) var(--hakille-ease-in),
+      color var(--hakille-dur-120) var(--hakille-ease-in),
+      border-color var(--hakille-dur-120) var(--hakille-ease-in);
+  }
+
+  .state-pill[aria-pressed="true"] {
+    background: var(--hakille-surface-2);
+    color: var(--hakille-texte-1);
+    border-color: var(--hakille-texte-1);
+    font-weight: 600;
+  }
+
+  /* 2. Global Spotlight HUD Modal (720 px ephemeral bar) */
+  .spotlight-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 150;
+    background: rgba(5, 6, 8, 0.72);
+    backdrop-filter: blur(8px);
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-block-start: min(14vh, 110px);
+    padding-inline: var(--hakille-space-16);
+  }
+
+  .spotlight-dialog {
+    width: min(720px, 100%);
+    background: var(--hakille-surface-1);
+    border: 1px solid var(--hakille-texte-3);
+    border-radius: var(--hakille-radius-card);
+    box-shadow: var(--hakille-shadow-elev);
+    overflow: hidden;
+  }
+
+  .spotlight-input-row {
+    display: flex;
+    align-items: center;
+    gap: var(--hakille-space-12);
+    min-height: 64px;
+    padding-inline: var(--hakille-space-24);
+    border-block-end: 1px solid var(--hakille-ligne);
+  }
+
+  .spotlight-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--hakille-texte-1);
+    font-size: var(--hakille-type-body-size);
+    outline: none;
+  }
+
+  .spotlight-output {
+    padding: var(--hakille-space-16) var(--hakille-space-24);
+    max-height: 360px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-12);
+  }
+
+  .spotlight-cmd-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--hakille-space-12);
+    width: 100%;
+    text-align: start;
+    padding: var(--hakille-space-8) var(--hakille-space-12);
+    border-radius: var(--hakille-radius-control);
+    border: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-0);
+  }
+
+  .spotlight-cmd-item:hover,
+  .spotlight-cmd-item[data-active="true"] {
+    background: var(--hakille-surface-2);
+    border-color: var(--hakille-texte-2);
+  }
+
+  /* 3. Action Card (720×360 spec) & Live Cryptographic Audit Journal */
+  .lab-split {
+    display: grid;
+    grid-template-columns: 1.05fr 0.95fr;
+    gap: var(--hakille-space-24);
+    align-items: start;
+  }
+
+  @media (max-width: 980px) {
+    .lab-split {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .action-card-surface {
+    background: var(--hakille-surface-0);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-card);
+    padding: var(--hakille-space-24);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-16);
+  }
+
+  /* Structural Untrusted indicator: neutral 2px inline-start rule per `components.rs`, not decorative neon */
+  .untrusted-payload-box {
+    background: var(--hakille-surface-1);
+    border: 1px solid var(--hakille-ligne);
+    border-inline-start: 2px solid var(--hakille-texte-2);
+    border-radius: var(--hakille-radius-control);
+    padding: var(--hakille-space-12) var(--hakille-space-16);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-8);
+  }
+
+  .pastille-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--hakille-space-8);
+  }
+
+  .pastille {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-1);
+    color: var(--hakille-texte-2);
+    font-size: var(--hakille-type-caption-size);
+    font-family: var(--hakille-font-mono);
+  }
+
+  .braise-hold-btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--hakille-space-12);
+    width: 100%;
+    min-height: 52px;
+    padding-inline: var(--hakille-space-24);
+    border-radius: var(--hakille-radius-control);
+    font-weight: 600;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    transition: transform var(--hakille-dur-120) var(--hakille-ease-in),
+      opacity var(--hakille-dur-120) var(--hakille-ease-in);
+  }
+
+  .braise-hold-btn:active {
+    transform: scale(0.992);
+  }
+
+  .braise-hold-btn[disabled] {
+    opacity: 0.42;
+    cursor: not-allowed;
+  }
+
+  .audit-ledger-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-12);
+    max-height: 540px;
+    overflow-y: auto;
+  }
+
+  .audit-entry-card {
+    background: var(--hakille-surface-0);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-control);
+    padding: var(--hakille-space-16);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-8);
+  }
+
+  .audit-entry-card[data-broken="true"] {
+    border-style: dashed;
+    border-width: 2px;
+    border-color: var(--hakille-texte-1);
+  }
+
+  .hash-ribbon {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--hakille-space-8);
+    font-family: var(--hakille-font-mono);
+    font-size: 0.74rem;
+    color: var(--hakille-texte-3);
+    word-break: break-all;
+  }
+
+  .why-sheet {
+    margin-block-start: var(--hakille-space-8);
+    padding: var(--hakille-space-12);
+    border-radius: var(--hakille-radius-control);
+    background: var(--hakille-surface-1);
+    border: 1px solid var(--hakille-ligne);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-12);
+  }
+
+  /* 4. SPO Memory Graph Explorer */
+  .spo-layout {
+    display: grid;
+    grid-template-columns: 1.15fr 0.85fr;
+    gap: var(--hakille-space-24);
+    align-items: start;
+  }
+
+  @media (max-width: 920px) {
+    .spo-layout {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .spo-graph-canvas {
+    background: var(--hakille-surface-0);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-control);
+    padding: var(--hakille-space-16);
+    min-height: 320px;
+  }
+
+  .spo-fact-row {
+    padding: var(--hakille-space-12);
+    border-radius: var(--hakille-radius-control);
+    border: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-0);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-4);
+    transition: opacity var(--hakille-dur-200) var(--hakille-ease-in);
+  }
+
+  .spo-fact-row[data-purged="true"] {
+    opacity: 0.38;
+    text-decoration: line-through;
+  }
+
+  /* 5. Architecture & Crate Grid */
+  .layer-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-8);
+  }
+
+  .layer-band {
+    width: 100%;
+    text-align: start;
+    padding: var(--hakille-space-16) var(--hakille-space-24);
+    border-radius: var(--hakille-radius-control);
+    border: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-0);
+    display: grid;
+    grid-template-columns: 160px 1fr auto;
+    gap: var(--hakille-space-16);
+    align-items: center;
+    transition: background-color var(--hakille-dur-120) var(--hakille-ease-in),
+      border-color var(--hakille-dur-120) var(--hakille-ease-in);
+  }
+
+  .layer-band:hover,
+  .layer-band[aria-pressed="true"] {
+    background: var(--hakille-surface-2);
+    border-color: var(--hakille-texte-1);
+  }
+
+  @media (max-width: 720px) {
+    .layer-band {
+      grid-template-columns: 1fr;
+      gap: var(--hakille-space-4);
+    }
+  }
+
+  .crates-grid,
+  .crate-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+    gap: var(--hakille-space-12);
+  }
+
+  .crate-card,
+  .crate-item {
+    background: var(--hakille-surface-0);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-control);
+    padding: var(--hakille-space-16);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-8);
+    transition: border-color var(--hakille-dur-120) var(--hakille-ease-in);
+  }
+
+  .crate-card:hover,
+  .crate-item:hover {
+    border-color: var(--hakille-texte-3);
+  }
+
+  .pill-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--hakille-space-8);
+  }
+
+  .pill-tab {
+    min-height: 34px;
+    padding-inline: var(--hakille-space-12);
+    border-radius: var(--hakille-radius-control);
+    border: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-0);
+    color: var(--hakille-texte-2);
+    font-size: var(--hakille-type-caption-size);
+    cursor: pointer;
+    transition: background-color var(--hakille-dur-120) var(--hakille-ease-in),
+      border-color var(--hakille-dur-120) var(--hakille-ease-in),
+      color var(--hakille-dur-120) var(--hakille-ease-in);
+  }
+
+  .pill-tab[aria-selected="true"] {
+    background: var(--hakille-surface-2);
+    color: var(--hakille-texte-1);
+    border-color: var(--hakille-texte-1);
+    font-weight: 600;
+  }
+
+  /* 6. Ambient, Silence & Crank Controls */
+  .range-input {
+    width: 100%;
+    accent-color: var(--hakille-texte-1);
+    cursor: pointer;
+  }
+
+  .crank-track {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: var(--hakille-space-8);
+  }
+
+  .crank-step {
+    padding: var(--hakille-space-12) var(--hakille-space-8);
+    text-align: center;
+    border-radius: var(--hakille-radius-control);
+    border: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-0);
+    font-family: var(--hakille-font-mono);
+    font-size: var(--hakille-type-caption-size);
+  }
+
+  .crank-step[data-active="true"] {
+    background: var(--hakille-texte-1);
+    color: var(--hakille-surface-0);
+    font-weight: 600;
+  }
+
+  /* 7. Klatt 5-Formant Voice Studio */
+  .klatt-grid {
+    display: grid;
+    grid-template-columns: 1.05fr 0.95fr;
+    gap: var(--hakille-space-24);
+    align-items: start;
+  }
+
+  @media (max-width: 920px) {
+    .klatt-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .klatt-input {
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: var(--hakille-radius-control);
+    border: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-0);
+    color: var(--hakille-texte-1);
+    font-size: var(--hakille-type-body-size);
+    font-family: var(--hakille-font-sans);
+  }
+
+  .klatt-sliders {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--hakille-space-16);
+  }
+
+  @media (max-width: 600px) {
+    .klatt-sliders {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .klatt-telemetry-card {
+    background: var(--hakille-surface-0);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-card);
+    padding: var(--hakille-space-16);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-12);
+  }
+
+  .klatt-viseme-row {
+    display: flex;
+    align-items: center;
+    gap: var(--hakille-space-16);
+  }
+
+  .phoneme-ribbon {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding-block-start: var(--hakille-space-8);
+    border-block-start: 1px solid var(--hakille-ligne);
+  }
+
+  /* 8. Native Mobile Companion & Checkpoint v2 Frame */
+  .mobile-sim-layout {
+    display: grid;
+    grid-template-columns: 350px 1fr;
+    gap: var(--hakille-space-32);
+    align-items: center;
+  }
+
+  @media (max-width: 920px) {
+    .mobile-sim-layout {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .phone-device-frame {
+    width: 100%;
+    max-width: 360px;
+    margin-inline: auto;
+    background: var(--hakille-surface-1);
+    border: 2px solid var(--hakille-ligne);
+    border-radius: 24px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: var(--hakille-shadow-elev);
+  }
+
+  .phone-top-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-block-end: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-2);
+  }
+
+  .phone-screen-body {
+    padding: 16px;
+    min-height: 290px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .phone-unknown-banner {
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px dashed var(--hakille-texte-1);
+    background: var(--hakille-surface-0);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .data-card-compact {
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-0);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .phone-bottom-nav {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    border-block-start: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-2);
+  }
+
+  .phone-tab-btn {
+    min-height: 44px;
+    border: none;
+    background: transparent;
+    color: var(--hakille-texte-3);
+    font-size: 0.76rem;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  .phone-tab-btn[aria-selected="true"] {
+    color: var(--hakille-texte-1);
+    font-weight: 600;
+    background: var(--hakille-surface-1);
+  }
+}

@@ -14,7 +14,9 @@ use hakille_auth::face_liveness::{
 };
 use hakille_auth::guest::{GuestSessionManager, MAX_GUEST_DURATION_MINUTES};
 use hakille_auth::household::{HouseholdMember, HouseholdRole, Restriction};
-use hakille_auth::minor::{AgeCategory, GuardianApproval, MinorProfile, default_minor_restrictions};
+use hakille_auth::minor::{
+    AgeCategory, GuardianApproval, MinorProfile, default_minor_restrictions,
+};
 use hakille_auth::multimodal::{
     ConfidenceDecayEngine, ContinuousMultimodalFusion, MultimodalSignal, SignalModality,
     StepUpRequirement,
@@ -255,7 +257,10 @@ fn test_tier5_adversarial_guest_session_duration_boundaries() {
         "Attempted 0 min",
         0,
     );
-    assert!(zero_min.is_err(), "Zero-minute guest session must be rejected");
+    assert!(
+        zero_min.is_err(),
+        "Zero-minute guest session must be rejected"
+    );
 
     // 4. Large duration: 10,000 minutes MUST BE REJECTED
     let large_min = guest_mgr.create_guest_session(
@@ -265,7 +270,10 @@ fn test_tier5_adversarial_guest_session_duration_boundaries() {
         "Attempted large min",
         10_000,
     );
-    assert!(large_min.is_err(), "10,000-minute guest session must be rejected");
+    assert!(
+        large_min.is_err(),
+        "10,000-minute guest session must be rejected"
+    );
 }
 
 #[test]
@@ -304,7 +312,8 @@ fn test_tier5_adversarial_guest_forbidden_scopes_and_revocation() {
         GuestSessionManager::validate_guest_constraints(&[CapabilityScope::Wallet], 60).is_err()
     );
     assert!(
-        GuestSessionManager::validate_guest_constraints(&[CapabilityScope::FullSystem], 60).is_err()
+        GuestSessionManager::validate_guest_constraints(&[CapabilityScope::FullSystem], 60)
+            .is_err()
     );
 
     // 4. Guest session scope access checks: even if someone managed to instantiate
@@ -376,12 +385,16 @@ fn test_tier5_adversarial_stepup_gating_fine_grained_tau_grid() {
             tau
         );
         assert!(
-            decay_engine.gate_action(tau, &CapabilityScope::Wallet).is_err(),
+            decay_engine
+                .gate_action(tau, &CapabilityScope::Wallet)
+                .is_err(),
             "tau = {:.5} MUST FAIL gate_action for Wallet",
             tau
         );
         assert!(
-            decay_engine.gate_action(tau, &CapabilityScope::FullSystem).is_err(),
+            decay_engine
+                .gate_action(tau, &CapabilityScope::FullSystem)
+                .is_err(),
             "tau = {:.5} MUST FAIL gate_action for FullSystem",
             tau
         );
@@ -410,12 +423,16 @@ fn test_tier5_adversarial_stepup_gating_fine_grained_tau_grid() {
             tau
         );
         assert!(
-            decay_engine.gate_action(tau, &CapabilityScope::Wallet).is_ok(),
+            decay_engine
+                .gate_action(tau, &CapabilityScope::Wallet)
+                .is_ok(),
             "tau = {:.5} MUST SUCCEED gate_action for Wallet",
             tau
         );
         assert!(
-            decay_engine.gate_action(tau, &CapabilityScope::FullSystem).is_ok(),
+            decay_engine
+                .gate_action(tau, &CapabilityScope::FullSystem)
+                .is_ok(),
             "tau = {:.5} MUST SUCCEED gate_action for FullSystem",
             tau
         );
@@ -539,9 +556,21 @@ fn test_tier5_adversarial_mini_fasnet_spectral_cutoff_and_screen_moire() {
         for col in 0..100 {
             let idx = (row * 100 + col) * 3;
             match col % 3 {
-                0 => { moire_frame[idx] = 255; moire_frame[idx + 1] = 0; moire_frame[idx + 2] = 0; }
-                1 => { moire_frame[idx] = 0; moire_frame[idx + 1] = 255; moire_frame[idx + 2] = 0; }
-                _ => { moire_frame[idx] = 0; moire_frame[idx + 1] = 0; moire_frame[idx + 2] = 255; }
+                0 => {
+                    moire_frame[idx] = 255;
+                    moire_frame[idx + 1] = 0;
+                    moire_frame[idx + 2] = 0;
+                }
+                1 => {
+                    moire_frame[idx] = 0;
+                    moire_frame[idx + 1] = 255;
+                    moire_frame[idx + 2] = 0;
+                }
+                _ => {
+                    moire_frame[idx] = 0;
+                    moire_frame[idx + 1] = 0;
+                    moire_frame[idx + 2] = 255;
+                }
             }
         }
     }
@@ -606,7 +635,12 @@ fn test_tier5_adversarial_active_liveness_flat_gaze_and_blink_anomalies() {
         (50.1, 20.2),
     ];
     let genuine_gaze_res = engine
-        .verify_gaze_response(&gaze_token, &correlated_pupil_gaze, &target_trajectory, now + 1)
+        .verify_gaze_response(
+            &gaze_token,
+            &correlated_pupil_gaze,
+            &target_trajectory,
+            now + 1,
+        )
         .expect("Verification must succeed");
     assert!(
         genuine_gaze_res,
@@ -658,8 +692,12 @@ fn test_tier5_adversarial_biohash_template_protection_and_zeroize() {
     let engine = BiohashingEngine::default();
     let salt = [0x42u8; 32];
 
-    let emb1 = FaceEmbedding { vector: [0.1f32; 512] };
-    let emb2 = FaceEmbedding { vector: [-0.1f32; 512] };
+    let emb1 = FaceEmbedding {
+        vector: [0.1f32; 512],
+    };
+    let emb2 = FaceEmbedding {
+        vector: [-0.1f32; 512],
+    };
 
     let biohash1 = engine.project_embedding(&emb1, &salt);
     let biohash2 = engine.project_embedding(&emb2, &salt);
@@ -673,7 +711,9 @@ fn test_tier5_adversarial_biohash_template_protection_and_zeroize() {
     );
 
     // Ephemeral RAM zeroization verification on drop
-    let zeroizable_digest = BiohashDigest { bits: vec![0xFF; 128] };
+    let zeroizable_digest = BiohashDigest {
+        bits: vec![0xFF; 128],
+    };
     assert_eq!(zeroizable_digest.bits[0], 0xFF);
     drop(zeroizable_digest); // Triggers ZeroizeOnDrop
 }
@@ -684,34 +724,23 @@ fn test_tier5_adversarial_active_liveness_orthogonal_and_anticorrelated_gaze_pro
     let now = 3000;
     let token = engine.issue_challenge(ActiveChallengeType::GazePursuit, now);
 
-    let target = vec![
-        (10.0, 0.0),
-        (20.0, 0.0),
-        (30.0, 0.0),
-        (40.0, 0.0),
-    ];
+    let target = vec![(10.0, 0.0), (20.0, 0.0), (30.0, 0.0), (40.0, 0.0)];
 
     // Probe 1: Orthogonal gaze (Target moves horizontally on X, eyes move vertically on Y)
-    let orthogonal_pupil = vec![
-        (0.0, 10.0),
-        (0.0, 20.0),
-        (0.0, 30.0),
-        (0.0, 40.0),
-    ];
-    let res_ortho = engine.verify_gaze_response(&token, &orthogonal_pupil, &target, now + 1).unwrap();
+    let orthogonal_pupil = vec![(0.0, 10.0), (0.0, 20.0), (0.0, 30.0), (0.0, 40.0)];
+    let res_ortho = engine
+        .verify_gaze_response(&token, &orthogonal_pupil, &target, now + 1)
+        .unwrap();
     assert!(
         !res_ortho,
         "Orthogonal pupil motion (R = 0.0) MUST FAIL gaze pursuit challenge"
     );
 
     // Probe 2: Flat pupil (staring straight at one point without tracking)
-    let flat_pupil = vec![
-        (25.0, 0.0),
-        (25.0, 0.0),
-        (25.0, 0.0),
-        (25.0, 0.0),
-    ];
-    let res_flat = engine.verify_gaze_response(&token, &flat_pupil, &target, now + 1).unwrap();
+    let flat_pupil = vec![(25.0, 0.0), (25.0, 0.0), (25.0, 0.0), (25.0, 0.0)];
+    let res_flat = engine
+        .verify_gaze_response(&token, &flat_pupil, &target, now + 1)
+        .unwrap();
     assert!(
         !res_flat,
         "Zero-variance flat pupil trajectory MUST FAIL gaze pursuit challenge"
@@ -719,11 +748,15 @@ fn test_tier5_adversarial_active_liveness_orthogonal_and_anticorrelated_gaze_pro
 
     // Probe 3: Mismatched trajectory lengths
     let truncated_pupil = vec![(10.0, 0.0), (20.0, 0.0)];
-    let res_trunc = engine.verify_gaze_response(&token, &truncated_pupil, &target, now + 1).unwrap();
+    let res_trunc = engine
+        .verify_gaze_response(&token, &truncated_pupil, &target, now + 1)
+        .unwrap();
     assert!(!res_trunc, "Mismatched trajectory length must return false");
 
     // Probe 4: Empty trajectories
-    let res_empty = engine.verify_gaze_response(&token, &[], &target, now + 1).unwrap();
+    let res_empty = engine
+        .verify_gaze_response(&token, &[], &target, now + 1)
+        .unwrap();
     assert!(!res_empty, "Empty pupil trajectory must return false");
 
     // Empirical Observation on Inverted Blink / Anti-Correlated Gaze:
@@ -742,13 +775,15 @@ fn test_tier5_adversarial_guest_session_temporal_expiration_and_id_collision() {
     let host_id = UserId(Uuid::new_v4());
 
     // 1. Create valid guest session
-    let session = guest_mgr.create_guest_session(
-        "guest-unique-alpha",
-        host_id.clone(),
-        vec![CapabilityScope::Audio],
-        "Music streaming guest",
-        1440, // 24 hours
-    ).expect("Creation must succeed");
+    let session = guest_mgr
+        .create_guest_session(
+            "guest-unique-alpha",
+            host_id.clone(),
+            vec![CapabilityScope::Audio],
+            "Music streaming guest",
+            1440, // 24 hours
+        )
+        .expect("Creation must succeed");
 
     assert_eq!(session.guest_id, "guest-unique-alpha");
     assert!(session.remaining_minutes() > 1400);
@@ -768,13 +803,15 @@ fn test_tier5_adversarial_guest_session_temporal_expiration_and_id_collision() {
     );
 
     // 3. Empty guest_id automatically provisions unique token
-    let auto_session = guest_mgr.create_guest_session(
-        "",
-        host_id.clone(),
-        vec![CapabilityScope::Audio],
-        "Auto-id guest",
-        120,
-    ).expect("Empty ID should auto-generate UUID");
+    let auto_session = guest_mgr
+        .create_guest_session(
+            "",
+            host_id.clone(),
+            vec![CapabilityScope::Audio],
+            "Auto-id guest",
+            120,
+        )
+        .expect("Empty ID should auto-generate UUID");
     assert!(auto_session.guest_id.starts_with("guest-"));
     assert_ne!(auto_session.guest_id, "guest-unique-alpha");
     assert_eq!(guest_mgr.active_session_count(), 2);
@@ -807,16 +844,18 @@ fn test_tier5_adversarial_stepup_financial_lifecycle_and_budget_guards() {
     let decay_engine = ConfidenceDecayEngine::new(180.0);
 
     // Step 1: Provision guarded wallet cap with initial confidence tau = 0.95
-    let mut wallet = wallet_mgr.create_guarded_wallet_cap(
-        adult_id,
-        10_000, // 100.00 EUR limit
-        "EUR".to_string(),
-        SpendingCategory::Food,
-        exp,
-        0.95,
-        false,
-        &[],
-    ).expect("Guarded wallet creation with tau 0.95 must succeed");
+    let mut wallet = wallet_mgr
+        .create_guarded_wallet_cap(
+            adult_id,
+            10_000, // 100.00 EUR limit
+            "EUR".to_string(),
+            SpendingCategory::Food,
+            exp,
+            0.95,
+            false,
+            &[],
+        )
+        .expect("Guarded wallet creation with tau 0.95 must succeed");
 
     assert_eq!(wallet_mgr.remaining_budget(&wallet), 10_000);
 
@@ -831,14 +870,9 @@ fn test_tier5_adversarial_stepup_financial_lifecycle_and_budget_guards() {
         nonce: 101,
         timestamp: Timestamp::now(),
     };
-    let proof1 = wallet_mgr.authorize_and_sign_transaction(
-        &mut wallet,
-        tx1,
-        0.95,
-        false,
-        &[],
-        &signing_key,
-    ).expect("Transaction 1 must succeed");
+    let proof1 = wallet_mgr
+        .authorize_and_sign_transaction(&mut wallet, tx1, 0.95, false, &[], &signing_key)
+        .expect("Transaction 1 must succeed");
     assert_eq!(proof1.transaction.amount_cents, 4000);
     assert_eq!(wallet_mgr.remaining_budget(&wallet), 6000);
 
@@ -854,14 +888,16 @@ fn test_tier5_adversarial_stepup_financial_lifecycle_and_budget_guards() {
         timestamp: Timestamp::now(),
     };
     assert!(
-        wallet_mgr.authorize_and_sign_transaction(
-            &mut wallet,
-            tx_bad_curr,
-            0.95,
-            false,
-            &[],
-            &signing_key,
-        ).is_err(),
+        wallet_mgr
+            .authorize_and_sign_transaction(
+                &mut wallet,
+                tx_bad_curr,
+                0.95,
+                false,
+                &[],
+                &signing_key,
+            )
+            .is_err(),
         "Currency mismatch MUST be rejected"
     );
 
@@ -900,21 +936,27 @@ fn test_tier5_adversarial_stepup_financial_lifecycle_and_budget_guards() {
         timestamp: Timestamp::now(),
     };
     assert!(
-        wallet_mgr.authorize_and_sign_transaction(
-            &mut wallet,
-            tx_overflow,
-            0.95,
-            false,
-            &[],
-            &signing_key,
-        ).is_err(),
+        wallet_mgr
+            .authorize_and_sign_transaction(
+                &mut wallet,
+                tx_overflow,
+                0.95,
+                false,
+                &[],
+                &signing_key,
+            )
+            .is_err(),
         "Transaction exceeding remaining wallet budget MUST be rejected"
     );
 
     // Step 6: Temporal decay occurs: 300 seconds elapse without biometric presence
     // Confidence decays below 0.90
     let decayed_tau = decay_engine.apply_decay(0.95, 300);
-    assert!(decayed_tau < 0.90, "Decayed tau ({:.3}) must be below 0.90", decayed_tau);
+    assert!(
+        decayed_tau < 0.90,
+        "Decayed tau ({:.3}) must be below 0.90",
+        decayed_tau
+    );
 
     let tx2 = WalletTransaction {
         tx_id: Uuid::new_v4(),
@@ -941,15 +983,9 @@ fn test_tier5_adversarial_stepup_financial_lifecycle_and_budget_guards() {
 
     // Step 7: Step-up re-authentication restores confidence to 0.96
     let stepup_tau = 0.96;
-    let stepup_tx = wallet_mgr.authorize_and_sign_transaction(
-        &mut wallet,
-        tx2,
-        stepup_tau,
-        false,
-        &[],
-        &signing_key,
-    ).expect("Transaction following successful step-up authentication must succeed");
+    let stepup_tx = wallet_mgr
+        .authorize_and_sign_transaction(&mut wallet, tx2, stepup_tau, false, &[], &signing_key)
+        .expect("Transaction following successful step-up authentication must succeed");
     assert_eq!(stepup_tx.authorized_at_confidence, 0.96);
     assert_eq!(wallet_mgr.remaining_budget(&wallet), 5000);
 }
-

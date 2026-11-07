@@ -3,9 +3,9 @@
 //! Requirements: At least 5 boundary/adversarial test cases per feature (14 features x 5 = 70 test cases).
 
 use ed25519_dalek::SigningKey;
+use hakille_core::UserId;
 use hakille_core::capability::{CapabilityAction, CapabilityScope};
 use hakille_core::types::Timestamp;
-use hakille_core::UserId;
 use hakille_identity::*;
 use rand::rngs::OsRng;
 use uuid::Uuid;
@@ -16,19 +16,31 @@ use uuid::Uuid;
 
 #[test]
 fn test_f01_boundary_zero_memory_rejected() {
-    let p = Argon2Params { memory_kib: 0, passes: 3, parallelism: 4 };
+    let p = Argon2Params {
+        memory_kib: 0,
+        passes: 3,
+        parallelism: 4,
+    };
     assert!(MasterKeyKdf::derive_master_key_with_params(b"pass", &[0u8; 32], &p).is_err());
 }
 
 #[test]
 fn test_f01_boundary_zero_passes_rejected() {
-    let p = Argon2Params { memory_kib: 64, passes: 0, parallelism: 4 };
+    let p = Argon2Params {
+        memory_kib: 64,
+        passes: 0,
+        parallelism: 4,
+    };
     assert!(MasterKeyKdf::derive_master_key_with_params(b"pass", &[0u8; 32], &p).is_err());
 }
 
 #[test]
 fn test_f01_boundary_zero_parallelism_rejected() {
-    let p = Argon2Params { memory_kib: 64, passes: 3, parallelism: 0 };
+    let p = Argon2Params {
+        memory_kib: 64,
+        passes: 3,
+        parallelism: 0,
+    };
     assert!(MasterKeyKdf::derive_master_key_with_params(b"pass", &[0u8; 32], &p).is_err());
 }
 
@@ -68,8 +80,10 @@ fn test_f02_boundary_large_1024char_tenant_id() {
 #[test]
 fn test_f02_boundary_special_characters_in_tenant_id() {
     let master = MasterKey::new([5u8; 32]);
-    let k1 = HkdfSubkeyTree::derive_subkey(&master, &SubkeyDomain::Credentials, "tenant:sub/1?x=1#y");
-    let k2 = HkdfSubkeyTree::derive_subkey(&master, &SubkeyDomain::Credentials, "tenant:sub/2?x=1#y");
+    let k1 =
+        HkdfSubkeyTree::derive_subkey(&master, &SubkeyDomain::Credentials, "tenant:sub/1?x=1#y");
+    let k2 =
+        HkdfSubkeyTree::derive_subkey(&master, &SubkeyDomain::Credentials, "tenant:sub/2?x=1#y");
     assert_ne!(k1, k2);
 }
 
@@ -392,7 +406,10 @@ fn test_f08_boundary_membership_expiry_check() {
         2,
     );
     let past = chrono::Utc::now() - chrono::Duration::hours(1);
-    assert!(!mem.is_valid_at(past), "Membership cannot be valid in the past before valid_from");
+    assert!(
+        !mem.is_valid_at(past),
+        "Membership cannot be valid in the past before valid_from"
+    );
 }
 
 // =============================================================================
@@ -432,7 +449,13 @@ fn test_f09_boundary_deep_chain_10_nodes_traversal() {
             format!("node_{}", i + 1),
         ));
     }
-    rebac.add_tuple(RelationTuple::new("org", "node_10", "member", "user", "leaf_user"));
+    rebac.add_tuple(RelationTuple::new(
+        "org",
+        "node_10",
+        "member",
+        "user",
+        "leaf_user",
+    ));
 
     assert!(rebac.check_relation_transitive("org", "node_1", "member", "user", "leaf_user"));
 }
@@ -444,7 +467,9 @@ fn test_f09_boundary_deep_chain_10_nodes_traversal() {
 #[test]
 fn test_f10_boundary_confidence_exact_threshold_0_90() {
     let mut engine = AccessEngine::new();
-    engine.rebac.add_tuple(RelationTuple::new("wallet", "w1", "owner", "user", "u"));
+    engine
+        .rebac
+        .add_tuple(RelationTuple::new("wallet", "w1", "owner", "user", "u"));
 
     let ctx_below = AuthContext {
         subject: "user:u".into(),
@@ -469,7 +494,9 @@ fn test_f10_boundary_confidence_exact_threshold_0_90() {
 #[test]
 fn test_f10_boundary_guest_attempting_fullsystem_denied() {
     let mut engine = AccessEngine::new();
-    engine.rebac.add_tuple(RelationTuple::new("sys", "root", "admin", "user", "guest"));
+    engine
+        .rebac
+        .add_tuple(RelationTuple::new("sys", "root", "admin", "user", "guest"));
 
     let ctx = AuthContext {
         subject: "user:guest".into(),
@@ -488,7 +515,9 @@ fn test_f10_boundary_guest_attempting_fullsystem_denied() {
 #[test]
 fn test_f10_boundary_tier3_device_wallet_denied() {
     let mut engine = AccessEngine::new();
-    engine.rebac.add_tuple(RelationTuple::new("wallet", "w1", "owner", "user", "u"));
+    engine
+        .rebac
+        .add_tuple(RelationTuple::new("wallet", "w1", "owner", "user", "u"));
 
     let ctx = AuthContext {
         subject: "user:u".into(),
@@ -507,7 +536,9 @@ fn test_f10_boundary_tier3_device_wallet_denied() {
 #[test]
 fn test_f10_boundary_write_filesystem_requires_0_70() {
     let mut engine = AccessEngine::new();
-    engine.rebac.add_tuple(RelationTuple::new("fs", "file", "write", "user", "u"));
+    engine
+        .rebac
+        .add_tuple(RelationTuple::new("fs", "file", "write", "user", "u"));
 
     let ctx = AuthContext {
         subject: "user:u".into(),
@@ -526,7 +557,9 @@ fn test_f10_boundary_write_filesystem_requires_0_70() {
 #[test]
 fn test_f10_boundary_read_filesystem_allows_0_40() {
     let mut engine = AccessEngine::new();
-    engine.rebac.add_tuple(RelationTuple::new("fs", "file", "read", "user", "u"));
+    engine
+        .rebac
+        .add_tuple(RelationTuple::new("fs", "file", "read", "user", "u"));
 
     let ctx = AuthContext {
         subject: "user:u".into(),
@@ -633,7 +666,10 @@ fn test_f11_boundary_expired_token_rejected_on_verify() {
         )
         .unwrap();
 
-    assert!(mgr.verify_token(&token, CapabilityScope::Filesystem, CapabilityAction::Read).is_err());
+    assert!(
+        mgr.verify_token(&token, CapabilityScope::Filesystem, CapabilityAction::Read)
+            .is_err()
+    );
 }
 
 #[test]
@@ -803,7 +839,11 @@ fn test_f13_boundary_directional_grant_not_automatically_symmetric() {
 #[test]
 fn test_f22_boundary_query_nonexistent_blind_token_returns_none() {
     let store = RedbZkStore::new();
-    assert!(store.lookup_user_by_blind_username("ghost", &[1u8; 32]).is_none());
+    assert!(
+        store
+            .lookup_user_by_blind_username("ghost", &[1u8; 32])
+            .is_none()
+    );
 }
 
 #[test]

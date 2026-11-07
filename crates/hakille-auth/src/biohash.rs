@@ -62,13 +62,14 @@ impl BiohashDigest {
 
     pub fn from_hex(hex: &str) -> Result<Self, HakilleError> {
         if !hex.len().is_multiple_of(2) {
-            return Err(HakilleError::InferenceError("Odd length hex string".to_string()));
+            return Err(HakilleError::InferenceError(
+                "Odd length hex string".to_string(),
+            ));
         }
         let mut bits = Vec::with_capacity(hex.len() / 2);
         for i in (0..hex.len()).step_by(2) {
-            let byte = u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| {
-                HakilleError::InferenceError("Invalid hex digit".to_string())
-            })?;
+            let byte = u8::from_str_radix(&hex[i..i + 2], 16)
+                .map_err(|_| HakilleError::InferenceError("Invalid hex digit".to_string()))?;
             bits.push(byte);
         }
         Ok(Self { bits })
@@ -174,7 +175,8 @@ impl BiohashingEngine {
         }
 
         let commitment_hash = Sha256::digest(secret_codeword).into();
-        let derived_key = Sha256::digest([&secret_codeword[..], b"hakille-fuzzy-release"].concat()).into();
+        let derived_key =
+            Sha256::digest([&secret_codeword[..], b"hakille-fuzzy-release"].concat()).into();
 
         (
             FuzzyExtractorCommitment {
@@ -192,14 +194,17 @@ impl BiohashingEngine {
         commitment: &FuzzyExtractorCommitment,
     ) -> Result<[u8; 32], HakilleError> {
         let mut recovered_codeword = [0u8; 32];
-        let max_len = 32.min(probe_biohash.bits.len()).min(commitment.helper_data.len());
+        let max_len = 32
+            .min(probe_biohash.bits.len())
+            .min(commitment.helper_data.len());
         for (i, byte) in recovered_codeword.iter_mut().enumerate().take(max_len) {
             *byte = probe_biohash.bits[i] ^ commitment.helper_data[i];
         }
 
         let check_hash = Sha256::digest(recovered_codeword);
         if check_hash.as_slice() == commitment.commitment_hash {
-            let key = Sha256::digest([&recovered_codeword[..], b"hakille-fuzzy-release"].concat()).into();
+            let key =
+                Sha256::digest([&recovered_codeword[..], b"hakille-fuzzy-release"].concat()).into();
             Ok(key)
         } else {
             Err(HakilleError::AuthenticationFailed)
@@ -232,6 +237,10 @@ mod tests {
 
         // Perturbed probe with wrong bits fails reproduction
         let wrong_probe = BiohashDigest::new(vec![0xbb; 32]);
-        assert!(engine.reproduce_fuzzy_key(&wrong_probe, &commitment).is_err());
+        assert!(
+            engine
+                .reproduce_fuzzy_key(&wrong_probe, &commitment)
+                .is_err()
+        );
     }
 }

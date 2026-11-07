@@ -1,5 +1,5 @@
 use hakille_perception::audio::capture::{
-    ContinuousAudioRingBuffer, SAMPLES_PER_100MS, SAMPLES_PER_10MS, SAMPLES_PER_2S,
+    ContinuousAudioRingBuffer, SAMPLES_PER_2S, SAMPLES_PER_10MS, SAMPLES_PER_100MS,
 };
 use hakille_perception::audio::pipeline::{EmotionHook, VoiceEvent};
 use hakille_perception::vision::capture::FrameBufferPool;
@@ -104,22 +104,36 @@ fn test_ring_buffer_concurrency_fast_producer_readers_wrap_around() {
     assert_eq!(rb.evicted_total(), 320_000 - 32_000);
     assert_eq!(rb.current_len(), 32_000);
 
-    assert!(yin_reads > 0, "YIN doit avoir effectué des lectures concurrentes");
-    assert_eq!(yin_discont, 0, "Aucune discontinuité ou déchirure dans les fenêtres YIN (zero torn reads)");
+    assert!(
+        yin_reads > 0,
+        "YIN doit avoir effectué des lectures concurrentes"
+    );
+    assert_eq!(
+        yin_discont, 0,
+        "Aucune discontinuité ou déchirure dans les fenêtres YIN (zero torn reads)"
+    );
 
-    assert!(sv_reads > 0, "SenseVoice doit avoir effectué des lectures concurrentes");
-    assert_eq!(sv_discont, 0, "Aucune discontinuité ou déchirure dans les fenêtres SenseVoice (zero torn reads)");
+    assert!(
+        sv_reads > 0,
+        "SenseVoice doit avoir effectué des lectures concurrentes"
+    );
+    assert_eq!(
+        sv_discont, 0,
+        "Aucune discontinuité ou déchirure dans les fenêtres SenseVoice (zero torn reads)"
+    );
 
     // Vérification finale après arrêt du producteur : la dernière fenêtre 100ms doit être exactement les 1600 derniers
     let mut final_yin = [0.0f32; SAMPLES_PER_100MS];
-    rb.read_prosody_100ms(&mut final_yin).expect("lecture finale YIN");
+    rb.read_prosody_100ms(&mut final_yin)
+        .expect("lecture finale YIN");
     let expected_first_yin = (320_000 - 1_600) as f32;
     assert_eq!(final_yin[0], expected_first_yin);
     assert_eq!(final_yin[1_599], 319_999.0);
 
     // Et la fenêtre SenseVoice doit contenir les 32 000 derniers échantillons [288 000 .. 320 000]
     let mut final_sv = [0.0f32; SAMPLES_PER_2S];
-    rb.read_sensevoice_2s(&mut final_sv).expect("lecture finale SenseVoice");
+    rb.read_sensevoice_2s(&mut final_sv)
+        .expect("lecture finale SenseVoice");
     assert_eq!(final_sv[0], (320_000 - 32_000) as f32);
     assert_eq!(final_sv[31_999], 319_999.0);
 }
@@ -144,13 +158,15 @@ fn test_ring_buffer_evicted_total_false_positive_on_pop_or_clear() {
 
     // Après remédiation : ZÉRO échantillon évincé !
     let observed_evicted = rb.evicted_total();
-    println!("evicted_total() après pop de 500 et push de 200 : {}", observed_evicted);
+    println!(
+        "evicted_total() après pop de 500 et push de 200 : {}",
+        observed_evicted
+    );
     assert_eq!(
         observed_evicted, 0,
         "Validation de la correction : evicted_total rapporte 0 échantillon évincé (buffer à 700/1000)"
     );
 }
-
 
 // ============================================================================
 // 2. ADVERSARIAL TEST: FrameBufferPool Recycling & Capacity Bounds
@@ -269,9 +285,13 @@ fn test_voice_pipeline_emotion_event_and_hook_integration() {
     let recorded_emotions = Arc::new(Mutex::new(Vec::<(String, Vec<String>, f32)>::new()));
     let rec_clone = Arc::clone(&recorded_emotions);
 
-    let hook: Arc<dyn EmotionHook> = Arc::new(move |emotion: &str, events: &[String], conf: f32| {
-        rec_clone.lock().unwrap().push((emotion.to_string(), events.to_vec(), conf));
-    });
+    let hook: Arc<dyn EmotionHook> =
+        Arc::new(move |emotion: &str, events: &[String], conf: f32| {
+            rec_clone
+                .lock()
+                .unwrap()
+                .push((emotion.to_string(), events.to_vec(), conf));
+        });
 
     // Simuler l'appel hook
     hook.on_emotion("HAPPY", &["laughter".to_string(), "sigh".to_string()], 0.92);

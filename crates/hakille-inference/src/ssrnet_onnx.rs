@@ -7,8 +7,8 @@
 //!   statistique ($P(\text{âge} < 18) \ge 0.85$), le drapeau `is_minor` est activé pour verrouiller
 //!   immédiatement les privilèges sensibles conformément à la Constitution de Hakille.
 
-use crate::ort_env::shared_ort_env;
 use crate::ModelStatus;
+use crate::ort_env::shared_ort_env;
 use hakille_core::{HakilleError, Result};
 use ort::{session::Session, value::Tensor};
 use serde::{Deserialize, Serialize};
@@ -129,7 +129,12 @@ impl SSRNetSession {
     }
 
     /// Estime l'âge à partir d'un recadrage de visage RGB.
-    pub fn infer(&self, rgb_crop: &[u8], width: usize, height: usize) -> Result<AgeEstimationResult> {
+    pub fn infer(
+        &self,
+        rgb_crop: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<AgeEstimationResult> {
         if rgb_crop.is_empty() || width == 0 || height == 0 {
             return Err(HakilleError::InferenceError(
                 "SSRNet::infer: crop facial vide ou dimensions nulles".into(),
@@ -137,12 +142,25 @@ impl SSRNetSession {
         }
 
         if let Some(session_mutex) = &self.session {
-            let tensor_data = preprocess_image_normalized(rgb_crop, width, height, SSRNET_INPUT_SIZE, SSRNET_INPUT_SIZE);
-            let input_tensor = Tensor::<f32>::from_array(([1usize, 3usize, SSRNET_INPUT_SIZE, SSRNET_INPUT_SIZE], tensor_data))
-                .map_err(|e| ort_err("input_tensor", e))?;
+            let tensor_data = preprocess_image_normalized(
+                rgb_crop,
+                width,
+                height,
+                SSRNET_INPUT_SIZE,
+                SSRNET_INPUT_SIZE,
+            );
+            let input_tensor = Tensor::<f32>::from_array((
+                [1usize, 3usize, SSRNET_INPUT_SIZE, SSRNET_INPUT_SIZE],
+                tensor_data,
+            ))
+            .map_err(|e| ort_err("input_tensor", e))?;
 
-            let mut session = session_mutex.lock().map_err(|_| ort_err("lock", "mutex empoisonné"))?;
-            let outputs = session.run(ort::inputs![input_tensor]).map_err(|e| ort_err("forward", e))?;
+            let mut session = session_mutex
+                .lock()
+                .map_err(|_| ort_err("lock", "mutex empoisonné"))?;
+            let outputs = session
+                .run(ort::inputs![input_tensor])
+                .map_err(|e| ort_err("forward", e))?;
 
             let (_shape, values) = outputs[0]
                 .try_extract_tensor::<f32>()
@@ -160,7 +178,11 @@ impl SSRNetSession {
         // Mode simulation canonique déterministe
         // Calibré sur un profil adulte type (28.5 ans) pour les tests nominaux
         let simulated_age = 28.5f32;
-        Ok(build_age_result(simulated_age, 0.92, ModelStatus::Simulated))
+        Ok(build_age_result(
+            simulated_age,
+            0.92,
+            ModelStatus::Simulated,
+        ))
     }
 }
 
@@ -200,7 +222,11 @@ fn preprocess_image_normalized(
 }
 
 /// Construit le résultat avec application de la Règle Constitutionnelle 7.
-pub fn build_age_result(estimated_age: f32, confidence: f32, status: ModelStatus) -> AgeEstimationResult {
+pub fn build_age_result(
+    estimated_age: f32,
+    confidence: f32,
+    status: ModelStatus,
+) -> AgeEstimationResult {
     // Ecart-type d'incertitude typique SSR-Net : ~3.0 ans
     let sigma = 3.16f32;
     let min_age = (estimated_age - sigma).max(0.0);
@@ -212,7 +238,8 @@ pub fn build_age_result(estimated_age: f32, confidence: f32, status: ModelStatus
     let minor_probability = approximate_normal_cdf(z);
 
     // Règle 7 : Si P(âge < 18) > 0.85 ou l'âge moyen < 18, protection obligatoire
-    let is_minor = minor_probability >= MINOR_CONFIDENCE_THRESHOLD || estimated_age < MINOR_AGE_THRESHOLD;
+    let is_minor =
+        minor_probability >= MINOR_CONFIDENCE_THRESHOLD || estimated_age < MINOR_AGE_THRESHOLD;
 
     AgeEstimationResult {
         estimated_age,
@@ -241,7 +268,9 @@ mod tests {
         assert_eq!(session.status(), ModelStatus::Simulated);
 
         let dummy_crop = vec![128u8; 64 * 64 * 3];
-        let res = session.infer(&dummy_crop, 64, 64).expect("inférence réussie");
+        let res = session
+            .infer(&dummy_crop, 64, 64)
+            .expect("inférence réussie");
 
         assert_eq!(res.status, ModelStatus::Simulated);
         assert!((res.estimated_age - 28.5).abs() < 1e-3);
@@ -255,12 +284,18 @@ mod tests {
     fn test_minor_protection_enforcement_rule_7() {
         // Test d'un enfant de 12 ans -> doit activer is_minor
         let child_res = build_age_result(12.0, 0.95, ModelStatus::Simulated);
-        assert!(child_res.is_minor, "Enfant de 12 ans doit être protégé (Règle 7)");
+        assert!(
+            child_res.is_minor,
+            "Enfant de 12 ans doit être protégé (Règle 7)"
+        );
         assert!(child_res.minor_probability > 0.95);
 
         // Test d'un jeune de 17.5 ans -> incertitude penche vers mineur
         let borderline_res = build_age_result(17.5, 0.90, ModelStatus::Simulated);
-        assert!(borderline_res.is_minor, "17.5 ans < 18 ans active la protection");
+        assert!(
+            borderline_res.is_minor,
+            "17.5 ans < 18 ans active la protection"
+        );
 
         // Test d'un adulte de 35 ans -> adulte confirmé
         let adult_res = build_age_result(35.0, 0.95, ModelStatus::Simulated);

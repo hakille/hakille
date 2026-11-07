@@ -2,8 +2,8 @@
 //! Real-time Bayesian/Kalman combination of face, voice, and proximity weak signals into
 //! unified session confidence tau, with exponential temporal decay and step-up privilege escalation gating.
 
-use hakille_core::capability::CapabilityScope;
 use hakille_core::HakilleError;
+use hakille_core::capability::CapabilityScope;
 use serde::{Deserialize, Serialize};
 
 // =============================================================================
@@ -53,10 +53,10 @@ pub struct MultimodalSignal {
 /// Models confidence state x_t and uncertainty/covariance P_t over continuous time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KalmanConfidenceTracker {
-    pub estimate: f32,         // Current state estimate tau in [0.0, 1.0]
-    pub error_covariance: f32, // Estimation error variance P
-    pub process_noise_q: f32,  // Uncertainty growth rate per second
-    pub half_life_seconds: f32,// Half-life for temporal exponential decay
+    pub estimate: f32,          // Current state estimate tau in [0.0, 1.0]
+    pub error_covariance: f32,  // Estimation error variance P
+    pub process_noise_q: f32,   // Uncertainty growth rate per second
+    pub half_life_seconds: f32, // Half-life for temporal exponential decay
 }
 
 impl Default for KalmanConfidenceTracker {
@@ -71,7 +71,12 @@ impl Default for KalmanConfidenceTracker {
 }
 
 impl KalmanConfidenceTracker {
-    pub fn new(initial_estimate: f32, initial_p: f32, process_noise_q: f32, half_life_seconds: f32) -> Self {
+    pub fn new(
+        initial_estimate: f32,
+        initial_p: f32,
+        process_noise_q: f32,
+        half_life_seconds: f32,
+    ) -> Self {
         Self {
             estimate: initial_estimate.clamp(0.0, 1.0),
             error_covariance: initial_p.max(1e-6),
@@ -82,7 +87,7 @@ impl KalmanConfidenceTracker {
 
     /// Decay rate lambda = ln(2) / half_life
     pub fn lambda(&self) -> f32 {
-        0.69314718 / self.half_life_seconds
+        std::f32::consts::LN_2 / self.half_life_seconds
     }
 
     /// Predict step (time update): models exponential confidence decay and uncertainty diffusion.
@@ -203,7 +208,8 @@ impl ContinuousMultimodalFusion {
         if total_weight > 0.0 {
             let fused_observation = weighted_sum / total_weight;
             // Adaptive smoothing: 60% new observation + 40% history
-            self.current_confidence = (0.6 * fused_observation + 0.4 * self.current_confidence).clamp(0.0, 1.0);
+            self.current_confidence =
+                (0.6 * fused_observation + 0.4 * self.current_confidence).clamp(0.0, 1.0);
         }
 
         // Synchronize Kalman tracker with fused confidence
@@ -213,7 +219,8 @@ impl ContinuousMultimodalFusion {
 
     /// Alternative Bayesian log-odds update method for rigorous probabilistic fusion
     pub fn fuse_bayesian(&mut self, signals: &[MultimodalSignal]) -> f32 {
-        self.current_confidence = BayesianMultimodalCombiner::combine_log_odds(self.current_confidence, signals);
+        self.current_confidence =
+            BayesianMultimodalCombiner::combine_log_odds(self.current_confidence, signals);
         self.kalman_tracker.estimate = self.current_confidence;
         self.current_confidence
     }
@@ -251,12 +258,14 @@ impl Default for ConfidenceDecayEngine {
 
 impl ConfidenceDecayEngine {
     pub fn new(half_life_seconds: f32) -> Self {
-        Self { half_life_seconds: half_life_seconds.max(1.0) }
+        Self {
+            half_life_seconds: half_life_seconds.max(1.0),
+        }
     }
 
     /// Decay constant lambda = ln(2) / half_life
     pub fn decay_rate(&self) -> f32 {
-        0.69314718 / self.half_life_seconds
+        std::f32::consts::LN_2 / self.half_life_seconds
     }
 
     /// Calculate temporal confidence decay: tau(t) = tau_0 * exp(-lambda * t) = tau_0 * (0.5)^(elapsed / half_life)
@@ -289,6 +298,7 @@ impl ConfidenceDecayEngine {
             CapabilityScope::Biometrics => 0.70,
             CapabilityScope::Spatial => 0.40,
             CapabilityScope::CognitiveInference => 0.70,
+            CapabilityScope::Notification => 0.50,
         }
     }
 
@@ -379,7 +389,10 @@ mod tests {
         ];
 
         let post = BayesianMultimodalCombiner::combine_log_odds(0.50, &signals);
-        assert!(post > 0.95, "Concordant strong face and voice yield very high posterior");
+        assert!(
+            post > 0.95,
+            "Concordant strong face and voice yield very high posterior"
+        );
     }
 
     #[test]
@@ -404,4 +417,3 @@ mod tests {
         );
     }
 }
-

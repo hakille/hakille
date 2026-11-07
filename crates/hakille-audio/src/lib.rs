@@ -21,8 +21,8 @@ pub use diagnostics::{
 pub use playback::{PlaybackHandle, play_pcm, play_pcm_async};
 pub use resample::{downmix_to_mono, resample_linear};
 pub use yin::{
-    AcousticFeatures, YinPitchDetector, YinWorkspace, DEFAULT_MAX_F0_HZ, DEFAULT_MIN_F0_HZ,
-    DEFAULT_YIN_THRESHOLD, YIN_WORKSPACE_SIZE,
+    AcousticFeatures, DEFAULT_MAX_F0_HZ, DEFAULT_MIN_F0_HZ, DEFAULT_YIN_THRESHOLD,
+    YIN_WORKSPACE_SIZE, YinPitchDetector, YinWorkspace,
 };
 
 /// Alias de compatibilité pour le résultat d'analyse de pitch et prosodie YIN.

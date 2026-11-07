@@ -101,4 +101,23 @@ pub trait Substrate: Send + Sync + 'static {
     // Power & Thermal
     fn power_state(&self) -> PowerState;
     fn thermal_state(&self) -> ThermalState;
+
+    // Notifications — SMNF (Sovereign Multimodal Notification Fabric)
+    async fn send_notification(
+        &self,
+        _request: crate::notification::NotificationRequest,
+        _cap: &CapabilityToken,
+    ) -> hakille_core::Result<crate::notification::NotificationHandle> {
+        Err(hakille_core::HakilleError::SubstrateError(
+            "notifications not implemented for this substrate".into(),
+        ))
+    }
+
+    async fn dismiss_notification(
+        &self,
+        _handle: &crate::notification::NotificationHandle,
+        _cap: &CapabilityToken,
+    ) -> hakille_core::Result<()> {
+        Ok(())
+    }
 }

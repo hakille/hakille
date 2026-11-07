@@ -278,7 +278,9 @@ mod tests {
             "agent-home",
             "agent-wallet-readonly",
         ] {
-            let res = runtime.run(name, r#"{"probe":true}"#).expect("exécution métier");
+            let res = runtime
+                .run(name, r#"{"probe":true}"#)
+                .expect("exécution métier");
             assert_eq!(res.agent, name);
             let val: serde_json::Value = serde_json::from_str(&res.output).unwrap();
             assert_eq!(val["status"], "ready");

@@ -14,24 +14,30 @@ use hakille_ui_protocol::*;
 #[test]
 fn test_malformed_json_syntax_rejection() {
     let malformed_syntaxes = [
-        "",                                                  // vide
-        "   ",                                               // espaces
-        "{",                                                 // JSON tronqué
-        "{\"version\": 1, \"inner\": {",                     // objet tronqué
-        "{\"version\": 1, \"inner\": null}",                 // inner null
-        "{\"version\": 1, \"inner\": 42}",                   // type inattendu
-        "{\"version\": \"1\", \"inner\": \"OutboxFlush\"}",  // version sous forme de string
-        "{\"version\": 1, \"inner\": {\"Approve\": {}}}",    // card_id manquant
+        "",                                                 // vide
+        "   ",                                              // espaces
+        "{",                                                // JSON tronqué
+        "{\"version\": 1, \"inner\": {",                    // objet tronqué
+        "{\"version\": 1, \"inner\": null}",                // inner null
+        "{\"version\": 1, \"inner\": 42}",                  // type inattendu
+        "{\"version\": \"1\", \"inner\": \"OutboxFlush\"}", // version sous forme de string
+        "{\"version\": 1, \"inner\": {\"Approve\": {}}}",   // card_id manquant
         "[1, 2, 3]",                                        // tableau au lieu d'objet
-        "\0\0\0\0",                                          // octets nuls
+        "\0\0\0\0",                                         // octets nuls
     ];
 
     for bad in &malformed_syntaxes {
         let res_ui: Result<UiMessage, _> = serde_json::from_str(bad);
-        assert!(res_ui.is_err(), "UiMessage doit rejeter le payload malformé : {bad:?}");
+        assert!(
+            res_ui.is_err(),
+            "UiMessage doit rejeter le payload malformé : {bad:?}"
+        );
 
         let res_kernel: Result<KernelMessage, _> = serde_json::from_str(bad);
-        assert!(res_kernel.is_err(), "KernelMessage doit rejeter le payload malformé : {bad:?}");
+        assert!(
+            res_kernel.is_err(),
+            "KernelMessage doit rejeter le payload malformé : {bad:?}"
+        );
     }
 }
 
@@ -124,7 +130,10 @@ fn test_version_negotiation_clean_rejection() {
             inner: UiToKernel::OutboxFlush,
         };
         let check_res = msg_ui.check();
-        assert!(check_res.is_err(), "UiMessage v{v} doit être rejeté par .check()");
+        assert!(
+            check_res.is_err(),
+            "UiMessage v{v} doit être rejeté par .check()"
+        );
         let err_msg = check_res.unwrap_err();
         assert!(err_msg.contains("version protocole incompatible"));
         assert!(err_msg.contains(&v.to_string()));
@@ -133,7 +142,10 @@ fn test_version_negotiation_clean_rejection() {
             version: v,
             inner: KernelToUi::Presence(PresenceState::Idle),
         };
-        assert!(msg_kernel.check().is_err(), "KernelMessage v{v} doit être rejeté par .check()");
+        assert!(
+            msg_kernel.check().is_err(),
+            "KernelMessage v{v} doit être rejeté par .check()"
+        );
     }
 
     // Version courante v1
@@ -175,7 +187,12 @@ fn test_enum_unknown_variants_and_casing_rejection() {
 
     // 5. PrivacyGuardTrigger
     assert!(serde_json::from_str::<PrivacyGuardTrigger>(r#""UnknownAlarm""#).is_err());
-    assert!(serde_json::from_str::<PrivacyGuardTrigger>(r#"{"ShoulderSurfingDetected": {"people_count": "two"}}"#).is_err());
+    assert!(
+        serde_json::from_str::<PrivacyGuardTrigger>(
+            r#"{"ShoulderSurfingDetected": {"people_count": "two"}}"#
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -269,9 +286,16 @@ fn test_bitmask_consistency_and_independence() {
 
     // 1. Vérification des valeurs individuelles
     for (name, const_val, shifted, expected_num) in channels {
-        assert_eq!(const_val, shifted, "{name} constante non alignée avec 1 << bit");
+        assert_eq!(
+            const_val, shifted,
+            "{name} constante non alignée avec 1 << bit"
+        );
         assert_eq!(const_val, expected_num, "{name} doit valoir {expected_num}");
-        assert_eq!(const_val.count_ones(), 1, "{name} doit posséder exactement un bit à 1");
+        assert_eq!(
+            const_val.count_ones(),
+            1,
+            "{name} doit posséder exactement un bit à 1"
+        );
     }
 
     // 2. Vérification de l'indépendance binaire par paires (orthogonalité stricte)
@@ -280,7 +304,8 @@ fn test_bitmask_consistency_and_independence() {
             let (name_a, mask_a, _, _) = channels[i];
             let (name_b, mask_b, _, _) = channels[j];
             assert_eq!(
-                mask_a & mask_b, 0,
+                mask_a & mask_b,
+                0,
                 "Les masques {name_a} (0x{mask_a:02x}) et {name_b} (0x{mask_b:02x}) se chevauchent !"
             );
         }

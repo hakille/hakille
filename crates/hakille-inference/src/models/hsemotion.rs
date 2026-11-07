@@ -9,9 +9,9 @@
 //! En l'absence de GPU ou des poids sur disque, [`HsEmotionEngine::mock_synthetic()`] fournit
 //! une prédiction déterministe crédible avec statut honnête [`ModelStatus::Simulated`].
 
-use crate::ort_env::shared_ort_env;
-use crate::models::preprocess::{resize_bilinear_rgb_nchw, NormalizationMode};
 use crate::ModelStatus;
+use crate::models::preprocess::{NormalizationMode, resize_bilinear_rgb_nchw};
+use crate::ort_env::shared_ort_env;
 use hakille_core::{HakilleError, Result};
 use ort::{session::Session, value::Tensor};
 use serde::{Deserialize, Serialize};
@@ -120,9 +120,16 @@ impl HsEmotionEngine {
     }
 
     /// Analyse une trame faciale RGB découpée pour extraire l'émotion et les coordonnées affectives.
-    pub fn infer_emotion(&self, rgb_crop: &[u8], width: usize, height: usize) -> Result<EmotionInferenceResult> {
+    pub fn infer_emotion(
+        &self,
+        rgb_crop: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<EmotionInferenceResult> {
         if rgb_crop.is_empty() || width == 0 || height == 0 {
-            return Err(HakilleError::InferenceError("HSEmotion: entrée vide".into()));
+            return Err(HakilleError::InferenceError(
+                "HSEmotion: entrée vide".into(),
+            ));
         }
 
         if let Some(session_mutex) = &self.session {
@@ -318,7 +325,9 @@ mod tests {
         assert!(engine.is_mock());
 
         let crop = synthetic_face_crop(224, 224);
-        let result = engine.infer_emotion(&crop, 224, 224).expect("inférence réussie");
+        let result = engine
+            .infer_emotion(&crop, 224, 224)
+            .expect("inférence réussie");
 
         assert_eq!(result.status, ModelStatus::Simulated);
         assert!(!result.primary_emotion.is_empty());

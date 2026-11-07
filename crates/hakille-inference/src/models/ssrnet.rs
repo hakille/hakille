@@ -8,9 +8,9 @@
 //! - Application stricte de la **Règle Constitutionnelle 7** : Si $P(\text{âge} < 18) \ge 0.85$,
 //!   le drapeau `is_minor` est levé pour activer les restrictions de protection de l'enfance.
 
-use crate::ort_env::shared_ort_env;
-use crate::models::preprocess::{resize_bilinear_rgb_nchw, NormalizationMode};
 use crate::ModelStatus;
+use crate::models::preprocess::{NormalizationMode, resize_bilinear_rgb_nchw};
+use crate::ort_env::shared_ort_env;
 use hakille_core::{HakilleError, Result};
 use ort::{session::Session, value::Tensor};
 use serde::{Deserialize, Serialize};
@@ -172,7 +172,12 @@ impl SsrNetEngine {
     }
 
     /// Estime l'âge et le genre à partir du crop du visage RGB.
-    pub fn estimate_age(&self, rgb_crop: &[u8], width: usize, height: usize) -> Result<AgeEstimationResult> {
+    pub fn estimate_age(
+        &self,
+        rgb_crop: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<AgeEstimationResult> {
         if rgb_crop.is_empty() || width == 0 || height == 0 {
             return Err(HakilleError::InferenceError("SSRNet: entrée vide".into()));
         }
@@ -207,11 +212,7 @@ impl SsrNetEngine {
                 .try_extract_tensor::<f32>()
                 .map_err(|e| ort_err("extract", e))?;
 
-            let raw_age = if !values.is_empty() {
-                values[0]
-            } else {
-                30.0
-            };
+            let raw_age = if !values.is_empty() { values[0] } else { 30.0 };
             let estimated_age = raw_age.clamp(1.0, 95.0);
 
             // Estimation de genre si une 2e tête ou valeur est présente
@@ -317,7 +318,9 @@ mod tests {
         assert!(engine.is_mock());
 
         let crop = synthetic_face_crop(64, 64);
-        let result = engine.estimate_age(&crop, 64, 64).expect("estimation réussie");
+        let result = engine
+            .estimate_age(&crop, 64, 64)
+            .expect("estimation réussie");
 
         assert_eq!(result.status, ModelStatus::Simulated);
         assert!(result.estimated_age >= 18.0 && result.estimated_age <= 50.0);
@@ -335,7 +338,10 @@ mod tests {
 
         // Adulte de 30 ans : minor_prob doit être quasi-nulle
         let (is_minor_adult, prob_adult) = calculate_minor_flag(30.0);
-        assert!(!is_minor_adult, "Adulte de 30 ans ne doit pas être classé mineur");
+        assert!(
+            !is_minor_adult,
+            "Adulte de 30 ans ne doit pas être classé mineur"
+        );
         assert!(prob_adult < 0.05);
     }
 }

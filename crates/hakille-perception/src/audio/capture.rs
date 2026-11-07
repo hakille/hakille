@@ -1,16 +1,15 @@
 use hakille_core::Timestamp;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Erreurs spécifiques au tampon circulaire audio.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RingBufferError {
-    #[error("Échantillons insuffisants dans le buffer (disponibles: {available}, demandés: {requested})")]
-    InsufficientSamples {
-        available: usize,
-        requested: usize,
-    },
+    #[error(
+        "Échantillons insuffisants dans le buffer (disponibles: {available}, demandés: {requested})"
+    )]
+    InsufficientSamples { available: usize, requested: usize },
     #[error("Capacité du buffer dépassée ou paramètres invalides")]
     InvalidParameters,
 }
@@ -43,9 +42,9 @@ impl AudioChunk {
 }
 
 /// Constantes standardisées pour les fenêtres temporelles d'inférence (@16 kHz mono).
-pub const SAMPLES_PER_10MS: usize = 160;     // CPAL capture block (10 ms)
-pub const SAMPLES_PER_100MS: usize = 1_600;  // Fenêtre prosodie YIN/pYIN (100 ms)
-pub const SAMPLES_PER_2S: usize = 32_000;    // Fenêtre acoustique SenseVoice (2,0 s)
+pub const SAMPLES_PER_10MS: usize = 160; // CPAL capture block (10 ms)
+pub const SAMPLES_PER_100MS: usize = 1_600; // Fenêtre prosodie YIN/pYIN (100 ms)
+pub const SAMPLES_PER_2S: usize = 32_000; // Fenêtre acoustique SenseVoice (2,0 s)
 
 /// Tampon circulaire continu thread-safe garantissant :
 /// 1. Zéro allocation dynamique sur le chemin chaud temps réel (mémoire pré-allouée fixe).
@@ -143,7 +142,8 @@ impl ContinuousAudioRingBuffer {
 
         let evicted_this_push = (inner.current_len + n).saturating_sub(cap);
         if evicted_this_push > 0 {
-            self.evicted_total.fetch_add(evicted_this_push as u64, Ordering::Relaxed);
+            self.evicted_total
+                .fetch_add(evicted_this_push as u64, Ordering::Relaxed);
         }
 
         if n >= cap {
@@ -208,13 +208,19 @@ impl ContinuousAudioRingBuffer {
 
     /// Récupère la dernière fenêtre de 100 ms (1 600 échantillons @ 16 kHz) pour YIN/pYIN.
     /// ZÉRO allocation.
-    pub fn read_prosody_100ms(&self, dest: &mut [f32; SAMPLES_PER_100MS]) -> Result<(), RingBufferError> {
+    pub fn read_prosody_100ms(
+        &self,
+        dest: &mut [f32; SAMPLES_PER_100MS],
+    ) -> Result<(), RingBufferError> {
         self.read_latest_into(dest).map(|_| ())
     }
 
     /// Récupère la dernière fenêtre de 2,0 secondes (32 000 échantillons @ 16 kHz) pour SenseVoice.
     /// ZÉRO allocation.
-    pub fn read_sensevoice_2s(&self, dest: &mut [f32; SAMPLES_PER_2S]) -> Result<(), RingBufferError> {
+    pub fn read_sensevoice_2s(
+        &self,
+        dest: &mut [f32; SAMPLES_PER_2S],
+    ) -> Result<(), RingBufferError> {
         self.read_latest_into(dest).map(|_| ())
     }
 
@@ -254,7 +260,11 @@ impl ContinuousAudioRingBuffer {
         }
 
         inner.current_len -= chunk_size;
-        Some(AudioChunk::new(chunk_samples, self.sample_rate, self.channels))
+        Some(AudioChunk::new(
+            chunk_samples,
+            self.sample_rate,
+            self.channels,
+        ))
     }
 }
 
@@ -282,12 +292,16 @@ mod tests {
 
         // 1. Extraction non-destructive d'une fenêtre de 100 ms (1 600 échantillons) pour YIN
         let mut yin_window = [0.0f32; SAMPLES_PER_100MS];
-        rb.read_prosody_100ms(&mut yin_window).expect("extraction YIN 100ms réussie");
+        rb.read_prosody_100ms(&mut yin_window)
+            .expect("extraction YIN 100ms réussie");
 
         // Vérification des valeurs : les 1 600 derniers échantillons sont 46 400..48 000
         for (i, &val) in yin_window.iter().enumerate() {
             let expected = (46_400 + i) as f32 * 0.1;
-            assert!((val - expected).abs() < 1e-5, "YIN mismatch at {i}: {val} vs {expected}");
+            assert!(
+                (val - expected).abs() < 1e-5,
+                "YIN mismatch at {i}: {val} vs {expected}"
+            );
         }
 
         // Le buffer n'a PAS été consommé (lecture non-destructive)
@@ -295,16 +309,22 @@ mod tests {
 
         // 2. Extraction non-destructive d'une fenêtre de 2,0 s (32 000 échantillons) pour SenseVoice
         let mut sensevoice_window = [0.0f32; SAMPLES_PER_2S];
-        rb.read_sensevoice_2s(&mut sensevoice_window).expect("extraction SenseVoice 2s réussie");
+        rb.read_sensevoice_2s(&mut sensevoice_window)
+            .expect("extraction SenseVoice 2s réussie");
 
         // Vérification des valeurs : les 32 000 derniers échantillons sont 16 000..48 000
         for (i, &val) in sensevoice_window.iter().enumerate() {
             let expected = (16_000 + i) as f32 * 0.1;
-            assert!((val - expected).abs() < 1e-4, "SenseVoice mismatch at {i}: {val} vs {expected}");
+            assert!(
+                (val - expected).abs() < 1e-4,
+                "SenseVoice mismatch at {i}: {val} vs {expected}"
+            );
         }
 
         // 3. get_latest_window retourne bien un AudioChunk avec la bonne durée
-        let chunk = rb.get_latest_window(SAMPLES_PER_100MS).expect("chunk 100ms");
+        let chunk = rb
+            .get_latest_window(SAMPLES_PER_100MS)
+            .expect("chunk 100ms");
         assert_eq!(chunk.samples.len(), 1_600);
         assert!((chunk.duration_seconds() - 0.1).abs() < 1e-6);
     }
@@ -329,12 +349,16 @@ mod tests {
 
         // Lecture des 400 plus récents (chevauche la frontière circulaire : 300 au début, 100 à la fin)
         let mut dest = [0.0f32; 400];
-        rb.read_latest_into(&mut dest).expect("lecture circulaire réussie");
+        rb.read_latest_into(&mut dest)
+            .expect("lecture circulaire réussie");
 
         // Les 400 plus récents sont les 400 derniers de `second` (indices 100..500, soit valeurs 1100.0 .. 1499.0)
         for (i, &val) in dest.iter().enumerate() {
             let expected = 1100.0 + i as f32;
-            assert!((val - expected).abs() < 1e-6, "Wrap mismatch at {i}: {val} vs {expected}");
+            assert!(
+                (val - expected).abs() < 1e-6,
+                "Wrap mismatch at {i}: {val} vs {expected}"
+            );
         }
     }
 
@@ -401,8 +425,14 @@ mod tests {
         let yin_reads = reader_yin.join().expect("yin reader finished");
         let sv_reads = reader_sv.join().expect("sv reader finished");
 
-        assert!(yin_reads > 0, "YIN reader must have performed concurrent reads");
-        assert!(sv_reads > 0, "SenseVoice reader must have performed concurrent reads");
+        assert!(
+            yin_reads > 0,
+            "YIN reader must have performed concurrent reads"
+        );
+        assert!(
+            sv_reads > 0,
+            "SenseVoice reader must have performed concurrent reads"
+        );
         assert_eq!(rb.total_written(), 200 * 160);
     }
 
@@ -530,4 +560,3 @@ mod tests {
         assert_eq!(rb.evicted_total(), 100);
     }
 }
-

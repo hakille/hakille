@@ -111,7 +111,10 @@ impl CrossTenantFirewall {
         }
 
         let req_tier = self.tenants.get(requesting_tenant).ok_or_else(|| {
-            HakilleError::CapabilityDenied(format!("Requesting tenant {} not found", requesting_tenant))
+            HakilleError::CapabilityDenied(format!(
+                "Requesting tenant {} not found",
+                requesting_tenant
+            ))
         })?;
         let tgt_tier = self.tenants.get(target_tenant).ok_or_else(|| {
             HakilleError::CapabilityDenied(format!("Target tenant {} not found", target_tenant))

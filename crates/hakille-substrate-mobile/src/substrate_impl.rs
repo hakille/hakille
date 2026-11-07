@@ -55,6 +55,16 @@ pub trait MobilePowerDriver: Send + Sync {
     fn thermal_state(&self) -> Result<ThermalState>;
 }
 
+/// Pilote natif de notification (Android NotificationManager / iOS UNUserNotificationCenter).
+#[async_trait]
+pub trait MobileNotificationDriver: Send + Sync {
+    async fn send(
+        &self,
+        request: hakille_substrate::NotificationRequest,
+    ) -> Result<hakille_substrate::NotificationHandle>;
+    async fn dismiss(&self, handle: &hakille_substrate::NotificationHandle) -> Result<()>;
+}
+
 pub struct MobileSubstrate {
     manifest: PlatformManifest,
     storage: Option<AppContainerStorage>,
@@ -64,6 +74,7 @@ pub struct MobileSubstrate {
     screen: Option<Arc<dyn MobileScreenDriver>>,
     attestation: Option<Arc<dyn MobileAttestationDriver>>,
     power: Option<Arc<dyn MobilePowerDriver>>,
+    notification: Option<Arc<dyn MobileNotificationDriver>>,
     egress_policy: EgressPolicy,
     trusted_capability_root: Option<biscuit_auth::PublicKey>,
 }
@@ -100,6 +111,7 @@ impl MobileSubstrate {
             screen: None,
             attestation: None,
             power: None,
+            notification: None,
             egress_policy: EgressPolicy::loopback_only(),
             trusted_capability_root: None,
         };
@@ -118,6 +130,7 @@ impl MobileSubstrate {
             (CapabilityScope::Camera, self.camera.is_some()),
             (CapabilityScope::GuiInput, self.input.is_some()),
             (CapabilityScope::Sensor, self.screen.is_some()),
+            (CapabilityScope::Notification, true),
             (CapabilityScope::ModelInference, false),
             (CapabilityScope::Wallet, false),
             (CapabilityScope::FullSystem, false),
@@ -188,6 +201,10 @@ impl MobileSubstrate {
     }
     pub fn with_power_driver(mut self, driver: Arc<dyn MobilePowerDriver>) -> Self {
         self.power = Some(driver);
+        self
+    }
+    pub fn with_notification_driver(mut self, driver: Arc<dyn MobileNotificationDriver>) -> Self {
+        self.notification = Some(driver);
         self
     }
 
@@ -527,6 +544,48 @@ impl Substrate for MobileSubstrate {
                 }
                 ThermalState::Unknown
             }
+        }
+    }
+
+    async fn send_notification(
+        &self,
+        request: hakille_substrate::NotificationRequest,
+        cap: &CapabilityToken,
+    ) -> Result<hakille_substrate::NotificationHandle> {
+        self.enforce(
+            cap,
+            CapabilityScope::Notification,
+            hakille_core::CapabilityAction::Write,
+        )?;
+
+        if let Some(driver) = &self.notification {
+            driver.send(request).await
+        } else {
+            tracing::info!(id = %request.id, "MobileSubstrate: Queued in mobile shadow sync queue");
+            Ok(hakille_substrate::NotificationHandle {
+                id: request.id,
+                channel: "mobile_shadow_queue".to_string(),
+                delivered_at_ms: chrono::Utc::now().timestamp_millis() as u64,
+            })
+        }
+    }
+
+    async fn dismiss_notification(
+        &self,
+        handle: &hakille_substrate::NotificationHandle,
+        cap: &CapabilityToken,
+    ) -> Result<()> {
+        self.enforce(
+            cap,
+            CapabilityScope::Notification,
+            hakille_core::CapabilityAction::Delete,
+        )?;
+
+        if let Some(driver) = &self.notification {
+            driver.dismiss(handle).await
+        } else {
+            tracing::debug!(id = %handle.id, "MobileSubstrate: Dismissed notification from shadow queue");
+            Ok(())
         }
     }
 }

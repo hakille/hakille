@@ -13,9 +13,9 @@
 //! En l'absence de GPU / poids ONNX, le constructeur [`FaceMeshEngine::mock_synthetic()`]
 //! fournit une géométrie canonique déterministe avec statut honnête [`ModelStatus::Simulated`].
 
-use crate::ort_env::shared_ort_env;
-use crate::models::preprocess::{resize_bilinear_rgb_nchw, NormalizationMode};
 use crate::ModelStatus;
+use crate::models::preprocess::{NormalizationMode, resize_bilinear_rgb_nchw};
+use crate::ort_env::shared_ort_env;
 use hakille_core::{HakilleError, Result};
 use hakille_spatial::Point3D;
 use ort::{session::Session, value::Tensor};
@@ -149,9 +149,16 @@ impl FaceMeshEngine {
     }
 
     /// Extrait les 478 landmarks à partir d'une image RGB brute `[width * height * 3]`.
-    pub fn detect_landmarks(&self, rgb_bytes: &[u8], width: usize, height: usize) -> Result<FaceMeshOutput> {
+    pub fn detect_landmarks(
+        &self,
+        rgb_bytes: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<FaceMeshOutput> {
         if rgb_bytes.is_empty() || width == 0 || height == 0 {
-            return Err(HakilleError::InferenceError("FaceMesh: trame d'entrée vide".into()));
+            return Err(HakilleError::InferenceError(
+                "FaceMesh: trame d'entrée vide".into(),
+            ));
         }
 
         if let Some(session_mutex) = &self.session {
@@ -239,7 +246,10 @@ fn parse_landmarks_dynamic(values: &[f32]) -> Result<Vec<Point3D>> {
 }
 
 /// Calcule les métriques biométriques (EAR, MAR, IPD, PnP) à partir des repères 3D.
-pub fn compute_facemesh_metrics(landmarks: Vec<Point3D>, status: ModelStatus) -> Result<FaceMeshOutput> {
+pub fn compute_facemesh_metrics(
+    landmarks: Vec<Point3D>,
+    status: ModelStatus,
+) -> Result<FaceMeshOutput> {
     if landmarks.len() < FACEMESH_POINTS_COUNT {
         return Err(HakilleError::InferenceError(format!(
             "landmarks count insuffisant : {}",
@@ -297,11 +307,7 @@ fn calculate_ear(pts: &[Point3D], idx: &[usize; 6]) -> f32 {
     let v2 = p3.distance_to(&p5);
     let h = p1.distance_to(&p4);
 
-    if h > 1e-5 {
-        (v1 + v2) / (2.0 * h)
-    } else {
-        0.0
-    }
+    if h > 1e-5 { (v1 + v2) / (2.0 * h) } else { 0.0 }
 }
 
 /// Mouth Aspect Ratio : MAR = ||top - bottom|| / ||left - right||
@@ -314,11 +320,7 @@ fn calculate_mar(pts: &[Point3D], left: usize, right: usize, top: usize, bottom:
     let v = p_top.distance_to(&p_bottom);
     let h = p_left.distance_to(&p_right);
 
-    if h > 1e-5 {
-        v / h
-    } else {
-        0.0
-    }
+    if h > 1e-5 { v / h } else { 0.0 }
 }
 
 /// Génère 478 repères canoniques d'un visage humain neutre typique.
@@ -378,13 +380,31 @@ mod tests {
         assert!(engine.is_mock());
 
         let crop = synthetic_face_crop(192, 192);
-        let output = engine.detect_landmarks(&crop, 192, 192).expect("extraction réussie");
+        let output = engine
+            .detect_landmarks(&crop, 192, 192)
+            .expect("extraction réussie");
 
         assert_eq!(output.landmarks.len(), 478);
         assert_eq!(output.status, ModelStatus::Simulated);
-        assert!(output.left_ear > 0.15 && output.left_ear < 0.45, "EAR gauche: {}", output.left_ear);
-        assert!(output.right_ear > 0.15 && output.right_ear < 0.45, "EAR droit: {}", output.right_ear);
-        assert!(output.mar > 0.10 && output.mar < 0.40, "MAR: {}", output.mar);
-        assert!(output.ipd_distance > 0.20 && output.ipd_distance < 0.35, "IPD: {}", output.ipd_distance);
+        assert!(
+            output.left_ear > 0.15 && output.left_ear < 0.45,
+            "EAR gauche: {}",
+            output.left_ear
+        );
+        assert!(
+            output.right_ear > 0.15 && output.right_ear < 0.45,
+            "EAR droit: {}",
+            output.right_ear
+        );
+        assert!(
+            output.mar > 0.10 && output.mar < 0.40,
+            "MAR: {}",
+            output.mar
+        );
+        assert!(
+            output.ipd_distance > 0.20 && output.ipd_distance < 0.35,
+            "IPD: {}",
+            output.ipd_distance
+        );
     }
 }

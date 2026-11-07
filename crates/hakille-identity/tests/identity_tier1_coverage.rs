@@ -3,9 +3,9 @@
 //! Requirements: At least 5 distinct test cases per feature (14 features x 5 = 70 test cases).
 
 use ed25519_dalek::SigningKey;
+use hakille_core::UserId;
 use hakille_core::capability::{CapabilityAction, CapabilityScope};
 use hakille_core::types::Timestamp;
-use hakille_core::UserId;
 use hakille_identity::*;
 use rand::rngs::OsRng;
 use uuid::Uuid;
@@ -65,8 +65,8 @@ fn test_f01_argon2id_memory_block_permutation_scaling() {
     };
     let k_light =
         MasterKeyKdf::derive_master_key_with_params(b"scale_test", &salt, &params_light).unwrap();
-    let k_std =
-        MasterKeyKdf::derive_master_key_with_params(b"scale_test", &salt, &params_standard).unwrap();
+    let k_std = MasterKeyKdf::derive_master_key_with_params(b"scale_test", &salt, &params_standard)
+        .unwrap();
     assert_ne!(k_light.as_bytes(), k_std.as_bytes());
 }
 
@@ -463,7 +463,10 @@ fn test_f07_w3c_vc_expired_credential_rejected() {
     );
 
     let res = vc.verify(now);
-    assert!(matches!(res, Err(hakille_core::HakilleError::CapabilityExpired)));
+    assert!(matches!(
+        res,
+        Err(hakille_core::HakilleError::CapabilityExpired)
+    ));
 }
 
 // =============================================================================
@@ -548,14 +551,8 @@ fn test_f08_tier_family_domestic_safeguards_and_inheritance() {
         guest_auto_expiry_minutes: 1440,
     });
 
-    let fam = TenantEntityRecord::new(
-        EntityTier::Family,
-        "Dupont Household",
-        did,
-        config,
-        None,
-    )
-    .expect("family created");
+    let fam = TenantEntityRecord::new(EntityTier::Family, "Dupont Household", did, config, None)
+        .expect("family created");
 
     assert_eq!(fam.tier, EntityTier::Family);
 }
@@ -589,11 +586,7 @@ fn test_f08_tier_group_ephemeral_and_quorum() {
 fn test_f09_rebac_direct_relation_tuple() {
     let mut rebac = RebacEngine::new();
     rebac.add_tuple(RelationTuple::new(
-        "team",
-        "alpha",
-        "member",
-        "user",
-        "alice",
+        "team", "alpha", "member", "user", "alice",
     ));
     assert!(rebac.has_direct_relation("team", "alpha", "member", "user", "alice"));
     assert!(!rebac.has_direct_relation("team", "alpha", "member", "user", "bob"));
@@ -602,9 +595,27 @@ fn test_f09_rebac_direct_relation_tuple() {
 #[test]
 fn test_f09_rebac_transitive_parent_of_traversal() {
     let mut rebac = RebacEngine::new();
-    rebac.add_tuple(RelationTuple::new("enterprise", "acme", "parent_of", "org", "rnd"));
-    rebac.add_tuple(RelationTuple::new("org", "rnd", "parent_of", "team", "telemetry"));
-    rebac.add_tuple(RelationTuple::new("team", "telemetry", "member", "user", "carol"));
+    rebac.add_tuple(RelationTuple::new(
+        "enterprise",
+        "acme",
+        "parent_of",
+        "org",
+        "rnd",
+    ));
+    rebac.add_tuple(RelationTuple::new(
+        "org",
+        "rnd",
+        "parent_of",
+        "team",
+        "telemetry",
+    ));
+    rebac.add_tuple(RelationTuple::new(
+        "team",
+        "telemetry",
+        "member",
+        "user",
+        "carol",
+    ));
 
     assert!(rebac.check_relation_transitive("enterprise", "acme", "member", "user", "carol"));
 }
@@ -613,8 +624,16 @@ fn test_f09_rebac_transitive_parent_of_traversal() {
 fn test_f09_rebac_userset_group_membership_indirection() {
     let mut rebac = RebacEngine::new();
     // workspace:notes#viewer@group:security#member
-    rebac.add_tuple(RelationTuple::new("workspace", "notes", "viewer", "group", "security"));
-    rebac.add_tuple(RelationTuple::new("group", "security", "member", "user", "david"));
+    rebac.add_tuple(RelationTuple::new(
+        "workspace",
+        "notes",
+        "viewer",
+        "group",
+        "security",
+    ));
+    rebac.add_tuple(RelationTuple::new(
+        "group", "security", "member", "user", "david",
+    ));
 
     assert!(rebac.check_relation_transitive("workspace", "notes", "viewer", "user", "david"));
 }
@@ -635,12 +654,36 @@ fn test_f09_rebac_cycle_detection_terminates() {
 #[test]
 fn test_f09_rebac_downward_containment_no_upward_leak() {
     let mut rebac = RebacEngine::new();
-    rebac.add_tuple(RelationTuple::new("enterprise", "holding", "parent_of", "org", "sub1"));
-    rebac.add_tuple(RelationTuple::new("enterprise", "holding", "admin", "user", "ciso"));
+    rebac.add_tuple(RelationTuple::new(
+        "enterprise",
+        "holding",
+        "parent_of",
+        "org",
+        "sub1",
+    ));
+    rebac.add_tuple(RelationTuple::new(
+        "enterprise",
+        "holding",
+        "admin",
+        "user",
+        "ciso",
+    ));
 
     // CISO is admin of enterprise; but sub1 member relation does not leak upwards to enterprise
-    rebac.add_tuple(RelationTuple::new("org", "sub1", "member", "user", "junior_dev"));
-    assert!(!rebac.check_relation_transitive("enterprise", "holding", "admin", "user", "junior_dev"));
+    rebac.add_tuple(RelationTuple::new(
+        "org",
+        "sub1",
+        "member",
+        "user",
+        "junior_dev",
+    ));
+    assert!(!rebac.check_relation_transitive(
+        "enterprise",
+        "holding",
+        "admin",
+        "user",
+        "junior_dev"
+    ));
 }
 
 // =============================================================================
@@ -650,7 +693,13 @@ fn test_f09_rebac_downward_containment_no_upward_leak() {
 #[test]
 fn test_f10_hybrid_engine_happy_path_all_agree() {
     let mut engine = AccessEngine::new();
-    engine.rebac.add_tuple(RelationTuple::new("workspace", "doc1", "editor", "user", "alice"));
+    engine.rebac.add_tuple(RelationTuple::new(
+        "workspace",
+        "doc1",
+        "editor",
+        "user",
+        "alice",
+    ));
 
     let ctx = AuthContext {
         subject: "user:alice".into(),
@@ -688,7 +737,9 @@ fn test_f10_hybrid_rebac_missing_fails_closed() {
 #[test]
 fn test_f10_hybrid_rbac_guest_wallet_denied() {
     let mut engine = AccessEngine::new();
-    engine.rebac.add_tuple(RelationTuple::new("wallet", "main", "spender", "user", "guest1"));
+    engine.rebac.add_tuple(RelationTuple::new(
+        "wallet", "main", "spender", "user", "guest1",
+    ));
 
     let ctx = AuthContext {
         subject: "user:guest1".into(),
@@ -709,7 +760,9 @@ fn test_f10_hybrid_rbac_guest_wallet_denied() {
 #[test]
 fn test_f10_hybrid_abac_insufficient_confidence_denied() {
     let mut engine = AccessEngine::new();
-    engine.rebac.add_tuple(RelationTuple::new("wallet", "main", "spender", "user", "alice"));
+    engine.rebac.add_tuple(RelationTuple::new(
+        "wallet", "main", "spender", "user", "alice",
+    ));
 
     let ctx = AuthContext {
         subject: "user:alice".into(),
@@ -729,7 +782,9 @@ fn test_f10_hybrid_abac_insufficient_confidence_denied() {
 #[test]
 fn test_f10_hybrid_abac_untrusted_device_tier_denied() {
     let mut engine = AccessEngine::new();
-    engine.rebac.add_tuple(RelationTuple::new("wallet", "main", "spender", "user", "alice"));
+    engine.rebac.add_tuple(RelationTuple::new(
+        "wallet", "main", "spender", "user", "alice",
+    ));
 
     let ctx = AuthContext {
         subject: "user:alice".into(),
@@ -764,7 +819,10 @@ fn test_f11_biscuit_mint_root_and_verify() {
         )
         .expect("mint succeeds");
 
-    assert!(mgr.verify_token(&token, CapabilityScope::Filesystem, CapabilityAction::Read).is_ok());
+    assert!(
+        mgr.verify_token(&token, CapabilityScope::Filesystem, CapabilityAction::Read)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -793,7 +851,10 @@ fn test_f11_biscuit_offline_attenuation_scope_narrowing() {
         )
         .expect("attenuation succeeds");
 
-    assert!(mgr.verify_token(&child, CapabilityScope::Filesystem, CapabilityAction::Read).is_ok());
+    assert!(
+        mgr.verify_token(&child, CapabilityScope::Filesystem, CapabilityAction::Read)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -836,11 +897,17 @@ fn test_f11_biscuit_revocation_list_blocks_token() {
         )
         .unwrap();
 
-    assert!(mgr.verify_token(&token, CapabilityScope::Audio, CapabilityAction::Read).is_ok());
+    assert!(
+        mgr.verify_token(&token, CapabilityScope::Audio, CapabilityAction::Read)
+            .is_ok()
+    );
 
     mgr.revoke_token(&token).unwrap();
     assert!(mgr.is_revoked(&token));
-    assert!(mgr.verify_token(&token, CapabilityScope::Audio, CapabilityAction::Read).is_err());
+    assert!(
+        mgr.verify_token(&token, CapabilityScope::Audio, CapabilityAction::Read)
+            .is_err()
+    );
 }
 
 #[test]
@@ -857,7 +924,10 @@ fn test_f11_biscuit_wrong_scope_fails_verification() {
         .unwrap();
 
     // Verify against ungranted Network scope fails
-    assert!(mgr.verify_token(&token, CapabilityScope::Network, CapabilityAction::Read).is_err());
+    assert!(
+        mgr.verify_token(&token, CapabilityScope::Network, CapabilityAction::Read)
+            .is_err()
+    );
 }
 
 // =============================================================================
@@ -937,9 +1007,7 @@ fn test_f12_agent_fuel_and_budget_monotonicity() {
         AgentFactory::delegate_sub_agent(&passport, child.clone(), vec![], 60000, 100).is_err()
     );
     // Demanding more budget than parent is rejected
-    assert!(
-        AgentFactory::delegate_sub_agent(&passport, child, vec![], 40000, 300).is_err()
-    );
+    assert!(AgentFactory::delegate_sub_agent(&passport, child, vec![], 40000, 300).is_err());
 }
 
 #[test]
@@ -1008,7 +1076,8 @@ fn test_f13_firewall_bilateral_grant_permits_inter_org() {
     fw.register_tenant(org1, EntityTier::Organization);
     fw.register_tenant(org2, EntityTier::Organization);
 
-    fw.grant_bilateral_delegation(org1, org2).expect("grant succeeds");
+    fw.grant_bilateral_delegation(org1, org2)
+        .expect("grant succeeds");
     assert!(fw.check_cross_tenant_access(&org1, &org2).is_ok());
     // Directional: org2 to org1 is still blocked without grant
     assert!(fw.check_cross_tenant_access(&org2, &org1).is_err());
@@ -1024,7 +1093,10 @@ fn test_f13_firewall_personal_family_airgap_strictly_enforced() {
 
     // Attempting to bridge family to enterprise fails
     let grant_res = fw.grant_bilateral_delegation(family, enterprise);
-    assert!(grant_res.is_err(), "Family sphere airgap must reject corporate delegation");
+    assert!(
+        grant_res.is_err(),
+        "Family sphere airgap must reject corporate delegation"
+    );
 
     assert!(fw.check_cross_tenant_access(&family, &enterprise).is_err());
 }
@@ -1165,6 +1237,8 @@ fn test_f22_zk_store_digital_twilight_crypto_shred_trigger() {
     store.trigger_digital_twilight(&uid).unwrap();
 
     assert!(store.is_salt_shredded(&uid));
-    let u = store.lookup_user_by_blind_username("twilight_user", &blind_key).unwrap();
+    let u = store
+        .lookup_user_by_blind_username("twilight_user", &blind_key)
+        .unwrap();
     assert_eq!(u.state, AccountStatus::DigitalTwilightGrace);
 }

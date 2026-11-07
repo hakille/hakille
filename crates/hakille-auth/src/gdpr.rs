@@ -62,7 +62,12 @@ impl GdprConsentEngine {
         }
     }
 
-    fn record_audit(&mut self, user_id: UserId, event_type: AuditEventType, details: impl Into<String>) {
+    fn record_audit(
+        &mut self,
+        user_id: UserId,
+        event_type: AuditEventType,
+        details: impl Into<String>,
+    ) {
         self.audit_trail.push(AuditTrailEvent {
             event_id: Uuid::new_v4(),
             timestamp: Timestamp::now(),
@@ -228,19 +233,32 @@ mod tests {
         let mut gdpr = GdprConsentEngine::new();
         let user = UserId(Uuid::new_v4());
 
-        gdpr.record_consent(user.clone(), ConsentPurpose::BiometricVerification1to1, true)
-            .unwrap();
+        gdpr.record_consent(
+            user.clone(),
+            ConsentPurpose::BiometricVerification1to1,
+            true,
+        )
+        .unwrap();
         assert_eq!(gdpr.audit_trail().len(), 1);
-        assert_eq!(gdpr.audit_trail()[0].event_type, AuditEventType::ConsentGranted);
+        assert_eq!(
+            gdpr.audit_trail()[0].event_type,
+            AuditEventType::ConsentGranted
+        );
 
         gdpr.withdraw_consent(&user, &ConsentPurpose::BiometricVerification1to1)
             .unwrap();
         assert_eq!(gdpr.audit_trail().len(), 2);
-        assert_eq!(gdpr.audit_trail()[1].event_type, AuditEventType::ConsentWithdrawn);
+        assert_eq!(
+            gdpr.audit_trail()[1].event_type,
+            AuditEventType::ConsentWithdrawn
+        );
 
         gdpr.crypto_shred_user(&user);
         assert_eq!(gdpr.audit_trail().len(), 3);
-        assert_eq!(gdpr.audit_trail()[2].event_type, AuditEventType::CryptoShredded);
+        assert_eq!(
+            gdpr.audit_trail()[2].event_type,
+            AuditEventType::CryptoShredded
+        );
 
         let user_events = gdpr.audit_events_for_user(&user);
         assert_eq!(user_events.len(), 3);

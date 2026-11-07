@@ -500,4 +500,57 @@ impl Substrate for MacosSubstrate {
     fn thermal_state(&self) -> ThermalState {
         read_host_thermal_state()
     }
+
+    async fn send_notification(
+        &self,
+        request: hakille_substrate::NotificationRequest,
+        cap: &CapabilityToken,
+    ) -> Result<hakille_substrate::NotificationHandle> {
+        self.enforce(
+            cap,
+            CapabilityScope::Notification,
+            hakille_core::CapabilityAction::Write,
+        )?;
+
+        tracing::info!(
+            id = %request.id,
+            title = %request.title,
+            urgency = ?request.urgency,
+            category = ?request.category,
+            "MacosSubstrate: Dispatching notification"
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            let script = format!(
+                "display notification \"{}\" with title \"{}\" subtitle \"Hakille\"",
+                request.body.replace('\"', "\\\""),
+                request.title.replace('\"', "\\\"")
+            );
+            let _ = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(script)
+                .spawn();
+        }
+
+        Ok(hakille_substrate::NotificationHandle {
+            id: request.id,
+            channel: "macos_user_notifications".to_string(),
+            delivered_at_ms: chrono::Utc::now().timestamp_millis() as u64,
+        })
+    }
+
+    async fn dismiss_notification(
+        &self,
+        handle: &hakille_substrate::NotificationHandle,
+        cap: &CapabilityToken,
+    ) -> Result<()> {
+        self.enforce(
+            cap,
+            CapabilityScope::Notification,
+            hakille_core::CapabilityAction::Delete,
+        )?;
+        tracing::debug!(id = %handle.id, "MacosSubstrate: Dismissed notification");
+        Ok(())
+    }
 }

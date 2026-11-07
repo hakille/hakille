@@ -7,11 +7,11 @@
 //! 4. La cohérence des métriques biométriques (EAR, MAR, IPD, angle du cou, posture).
 
 use hakille_inference::{
-    facemesh_onnx::{FaceMeshIrisSession, FACEMESH_POINTS_COUNT},
+    ModelStatus,
+    facemesh_onnx::{FACEMESH_POINTS_COUNT, FaceMeshIrisSession},
     hsemotion_onnx::HSEmotionSession,
     pose_onnx::PoseSession,
-    ssrnet_onnx::{build_age_result, SSRNetSession},
-    ModelStatus,
+    ssrnet_onnx::{SSRNetSession, build_age_result},
 };
 use hakille_spatial::PostureKind;
 use std::sync::Arc;
@@ -40,7 +40,9 @@ fn test_m3_concurrent_inference_deadlock_free() {
             assert_eq!(fm_res.landmarks.len(), FACEMESH_POINTS_COUNT);
 
             // 2. HSEmotion
-            let em_res = em.infer(&dummy_frame, 320, 240).expect("hsemotion infer ok");
+            let em_res = em
+                .infer(&dummy_frame, 320, 240)
+                .expect("hsemotion infer ok");
             assert!(em_res.confidence > 0.0);
 
             // 3. SSR-Net
@@ -56,7 +58,8 @@ fn test_m3_concurrent_inference_deadlock_free() {
     }
 
     for h in handles {
-        h.join().expect("thread completed without panic or deadlock");
+        h.join()
+            .expect("thread completed without panic or deadlock");
     }
 }
 
@@ -111,8 +114,8 @@ fn test_m3_rule_7_constitutional_minor_protection_spectrum() {
         (14.0, true),
         (16.5, true),
         (17.9, true),
-        (18.0, false),  // 18.0 ans = majorité légale
-        (18.5, false),  // Au-delà de la marge
+        (18.0, false), // 18.0 ans = majorité légale
+        (18.5, false), // Au-delà de la marge
         (25.0, false),
         (40.0, false),
         (75.0, false),
@@ -140,7 +143,9 @@ fn test_m3_biometric_facial_and_posture_consistency() {
     let pose = PoseSession::open_or_simulated(None);
 
     let dummy_img = vec![128u8; 640 * 480 * 3];
-    let fm_out = facemesh.infer(&dummy_img, 640, 480).expect("facemesh infer");
+    let fm_out = facemesh
+        .infer(&dummy_img, 640, 480)
+        .expect("facemesh infer");
     let pose_out = pose.infer(&dummy_img, 640, 480).expect("pose infer");
 
     // 1. EAR dans les bornes physiologiques humaines [0.05, 0.50]

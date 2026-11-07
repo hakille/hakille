@@ -2,9 +2,9 @@
 //! Testing interactions across orthogonal architectural layers (5 core pairwise scenarios).
 
 use ed25519_dalek::SigningKey;
+use hakille_core::UserId;
 use hakille_core::capability::{CapabilityAction, CapabilityScope};
 use hakille_core::types::Timestamp;
-use hakille_core::UserId;
 use hakille_identity::*;
 use rand::rngs::OsRng;
 use uuid::Uuid;
@@ -42,11 +42,18 @@ fn test_tier3_pairwise_01_multitenancy_biometrics_biscuit_firewall() {
         )
         .unwrap();
 
-    assert!(biscuit_mgr.verify_token(&token, CapabilityScope::Filesystem, CapabilityAction::Read).is_ok());
+    assert!(
+        biscuit_mgr
+            .verify_token(&token, CapabilityScope::Filesystem, CapabilityAction::Read)
+            .is_ok()
+    );
 
     // 3. Verify cross-tenant firewall denies access to sibling subsidiary
     let access_res = firewall.check_cross_tenant_access(&sub_avionics, &sub_commercial);
-    assert!(access_res.is_err(), "Firewall must prevent cross-subsidiary breach");
+    assert!(
+        access_res.is_err(),
+        "Firewall must prevent cross-subsidiary breach"
+    );
 }
 
 /// 2. Shamir Secret Recovery (F05) + Digital Twilight (F22) + Blind Indexing (F04):
@@ -78,20 +85,22 @@ fn test_tier3_pairwise_02_shamir_twilight_blind_index() {
     }
 
     // Trigger Digital Twilight
-    store.insert_user(UserRecord {
-        user_id: user_id.clone(),
-        primary_did: Did::new("did:key:zDeceased"),
-        blind_username_hash: [0x11u8; 32],
-        encrypted_profile_blob: XChaChaBlob {
-            nonce: [0u8; 24],
-            ciphertext: vec![],
-            tag: [0u8; 16],
-            aad_fingerprint: [0u8; 16],
-        },
-        state: AccountStatus::Active,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-    }).unwrap();
+    store
+        .insert_user(UserRecord {
+            user_id: user_id.clone(),
+            primary_did: Did::new("did:key:zDeceased"),
+            blind_username_hash: [0x11u8; 32],
+            encrypted_profile_blob: XChaChaBlob {
+                nonce: [0u8; 24],
+                ciphertext: vec![],
+                tag: [0u8; 16],
+                aad_fingerprint: [0u8; 16],
+            },
+            state: AccountStatus::Active,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+        .unwrap();
 
     store.trigger_digital_twilight(&user_id).unwrap();
     assert!(store.is_salt_shredded(&user_id));
@@ -118,7 +127,13 @@ fn test_tier3_pairwise_03_continuous_fusion_minor_agent_delegation() {
     let agent_id = "agent:study_buddy";
 
     // Setup relationship: agent is assistant to child
-    engine.rebac.add_tuple(RelationTuple::new("agent", agent_id, "delegate_of", "user", minor_user));
+    engine.rebac.add_tuple(RelationTuple::new(
+        "agent",
+        agent_id,
+        "delegate_of",
+        "user",
+        minor_user,
+    ));
 
     // Agent attempts wallet operation
     let ctx = AuthContext {
@@ -134,10 +149,14 @@ fn test_tier3_pairwise_03_continuous_fusion_minor_agent_delegation() {
 
     // Constitutional Rule 7 check directly rejects wallet for minor-interacting agent
     let rule7_check = AgentFactory::enforce_minor_protection_invariant(true, &ctx.scope);
-    assert!(rule7_check.is_err(), "Rule 7 must block wallet access for minors");
+    assert!(
+        rule7_check.is_err(),
+        "Rule 7 must block wallet access for minors"
+    );
 
     // But educational model inference scope is allowed
-    let ed_check = AgentFactory::enforce_minor_protection_invariant(true, &CapabilityScope::ModelInference);
+    let ed_check =
+        AgentFactory::enforce_minor_protection_invariant(true, &CapabilityScope::ModelInference);
     assert!(ed_check.is_ok());
 }
 
@@ -170,30 +189,44 @@ fn test_tier3_pairwise_04_vc_rebac_crypto_shredding() {
     assert!(vc.verify(now).is_ok());
 
     // Register relation tuple based on verified VC
-    rebac.add_tuple(RelationTuple::new("team", "core-ai", "lead", "user", &user_id.0.to_string()));
+    rebac.add_tuple(RelationTuple::new(
+        "team",
+        "core-ai",
+        "lead",
+        "user",
+        &user_id.0.to_string(),
+    ));
     assert!(rebac.has_direct_relation("team", "core-ai", "lead", "user", &user_id.0.to_string()));
 
     // User exercises right to be forgotten (GDPR Art. 17 crypto-shred)
-    store.insert_user(UserRecord {
-        user_id: user_id.clone(),
-        primary_did: Did::new("did:key:zUser"),
-        blind_username_hash: [0x33u8; 32],
-        encrypted_profile_blob: XChaChaBlob {
-            nonce: [0u8; 24],
-            ciphertext: vec![],
-            tag: [0u8; 16],
-            aad_fingerprint: [0u8; 16],
-        },
-        state: AccountStatus::Active,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-    }).unwrap();
+    store
+        .insert_user(UserRecord {
+            user_id: user_id.clone(),
+            primary_did: Did::new("did:key:zUser"),
+            blind_username_hash: [0x33u8; 32],
+            encrypted_profile_blob: XChaChaBlob {
+                nonce: [0u8; 24],
+                ciphertext: vec![],
+                tag: [0u8; 16],
+                aad_fingerprint: [0u8; 16],
+            },
+            state: AccountStatus::Active,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+        .unwrap();
 
     store.trigger_digital_twilight(&user_id).unwrap();
     assert!(store.is_salt_shredded(&user_id));
 
     // Remove tuple upon crypto-shred
-    rebac.remove_tuple(&RelationTuple::new("team", "core-ai", "lead", "user", &user_id.0.to_string()));
+    rebac.remove_tuple(&RelationTuple::new(
+        "team",
+        "core-ai",
+        "lead",
+        "user",
+        &user_id.0.to_string(),
+    ));
     assert!(!rebac.has_direct_relation("team", "core-ai", "lead", "user", &user_id.0.to_string()));
 }
 
@@ -203,7 +236,13 @@ fn test_tier3_pairwise_04_vc_rebac_crypto_shredding() {
 #[test]
 fn test_tier3_pairwise_05_rebac_subkey_tree_xchacha_aad() {
     let mut rebac = RebacEngine::new();
-    rebac.add_tuple(RelationTuple::new("org", "engineering", "contains", "partition", "kernel_src"));
+    rebac.add_tuple(RelationTuple::new(
+        "org",
+        "engineering",
+        "contains",
+        "partition",
+        "kernel_src",
+    ));
 
     let master = MasterKey::new([0x88u8; 32]);
     let partition_key = HkdfSubkeyTree::derive_subkey(

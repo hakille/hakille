@@ -115,16 +115,28 @@ impl From<KernelToUi> for KernelEvent {
                 ),
             },
             KernelToUi::UserContext(c) => Self::Toast {
-                text: format!("contexte : présence {:?}, émotion {}", c.presence.kind, c.primary_emotion),
+                text: format!(
+                    "contexte : présence {:?}, émotion {}",
+                    c.presence.kind, c.primary_emotion
+                ),
             },
             KernelToUi::EmotionUpdate(e) => Self::Toast {
                 text: format!("émotion : {} ({:.2})", e.primary_emotion, e.confidence),
             },
             KernelToUi::FatigueAlert(f) => Self::Toast {
-                text: format!("alerte fatigue : {:?} (PERCLOS {:.2})", f.severity, f.perclos_p80),
+                text: format!(
+                    "alerte fatigue : {:?} (PERCLOS {:.2})",
+                    f.severity, f.perclos_p80
+                ),
             },
             KernelToUi::PrivacyGuardAlert(p) => Self::Toast {
                 text: format!("garde souveraineté : {}", p.description),
+            },
+            KernelToUi::Notification(n) => Self::Toast {
+                text: format!("{}: {}", n.title, n.body),
+            },
+            KernelToUi::NotificationDismissed { id } => Self::Toast {
+                text: format!("notification {id} révoquée"),
             },
         }
     }

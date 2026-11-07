@@ -9,8 +9,8 @@
 //! En l'absence des poids ONNX (CI / sandbox), un mode simulé déterministe et honnête
 //! [`ModelStatus::Simulated`] est fourni, tandis que le chargement du modèle réel produit [`ModelStatus::Real`].
 
-use crate::ort_env::shared_ort_env;
 use crate::ModelStatus;
+use crate::ort_env::shared_ort_env;
 use hakille_core::{HakilleError, Result};
 use ort::{session::Session, value::Tensor};
 use serde::{Deserialize, Serialize};
@@ -140,7 +140,12 @@ impl HSEmotionSession {
     }
 
     /// Exécute l'inférence émotionnelle sur un recadrage facial RGB.
-    pub fn infer(&self, rgb_crop: &[u8], width: usize, height: usize) -> Result<EmotionInferenceResult> {
+    pub fn infer(
+        &self,
+        rgb_crop: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<EmotionInferenceResult> {
         if rgb_crop.is_empty() || width == 0 || height == 0 {
             return Err(HakilleError::InferenceError(
                 "HSEmotion::infer: crop facial vide ou dimensions nulles".into(),
@@ -149,12 +154,25 @@ impl HSEmotionSession {
 
         if let Some(session_mutex) = &self.session {
             // Normalisation ImageNet (mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225])
-            let tensor_data = preprocess_imagenet_chw(rgb_crop, width, height, HSEMOTION_INPUT_SIZE, HSEMOTION_INPUT_SIZE);
-            let input_tensor = Tensor::<f32>::from_array(([1usize, 3usize, HSEMOTION_INPUT_SIZE, HSEMOTION_INPUT_SIZE], tensor_data))
-                .map_err(|e| ort_err("input_tensor", e))?;
+            let tensor_data = preprocess_imagenet_chw(
+                rgb_crop,
+                width,
+                height,
+                HSEMOTION_INPUT_SIZE,
+                HSEMOTION_INPUT_SIZE,
+            );
+            let input_tensor = Tensor::<f32>::from_array((
+                [1usize, 3usize, HSEMOTION_INPUT_SIZE, HSEMOTION_INPUT_SIZE],
+                tensor_data,
+            ))
+            .map_err(|e| ort_err("input_tensor", e))?;
 
-            let mut session = session_mutex.lock().map_err(|_| ort_err("lock", "mutex empoisonné"))?;
-            let outputs = session.run(ort::inputs![input_tensor]).map_err(|e| ort_err("forward", e))?;
+            let mut session = session_mutex
+                .lock()
+                .map_err(|_| ort_err("lock", "mutex empoisonné"))?;
+            let outputs = session
+                .run(ort::inputs![input_tensor])
+                .map_err(|e| ort_err("forward", e))?;
 
             // Le modèle MTL produit soit 2 tenseurs (logits 8 et va 2), soit un tenseur concaténé de taille 10.
             return parse_mtl_outputs(&outputs);
@@ -162,7 +180,8 @@ impl HSEmotionSession {
 
         // Mode simulation canonique déterministe
         // Analyse sommaire de l'intensité moyenne pour varier subtilement l'estimation de test
-        let avg_luma = rgb_crop.iter().step_by(3).map(|&b| b as f32).sum::<f32>() / ((width * height).max(1) as f32);
+        let avg_luma = rgb_crop.iter().step_by(3).map(|&b| b as f32).sum::<f32>()
+            / ((width * height).max(1) as f32);
         let simulated_res = if avg_luma > 200.0 {
             // Espace très lumineux -> lueur de sourire / surprise légère
             let mut probs = [0.05, 0.02, 0.02, 0.03, 0.45, 0.35, 0.03, 0.05];
@@ -237,8 +256,12 @@ fn parse_mtl_outputs(outputs: &ort::session::SessionOutputs) -> Result<EmotionIn
 
     if outputs.len() >= 2 {
         // Deux sorties distinctes : logits 8 classes et va 2 dims
-        let (_s1, v1) = outputs[0].try_extract_tensor::<f32>().map_err(|e| ort_err("out0", e))?;
-        let (_s2, v2) = outputs[1].try_extract_tensor::<f32>().map_err(|e| ort_err("out1", e))?;
+        let (_s1, v1) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| ort_err("out0", e))?;
+        let (_s2, v2) = outputs[1]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| ort_err("out1", e))?;
 
         if v1.len() >= 8 {
             logits.copy_from_slice(&v1[..8]);
@@ -249,7 +272,9 @@ fn parse_mtl_outputs(outputs: &ort::session::SessionOutputs) -> Result<EmotionIn
         }
     } else if outputs.len() == 1 {
         // Tenseur unique concaténé de 10 valeurs [8 logits, valence, arousal]
-        let (_s, v) = outputs[0].try_extract_tensor::<f32>().map_err(|e| ort_err("out0", e))?;
+        let (_s, v) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| ort_err("out0", e))?;
         if v.len() >= 10 {
             logits.copy_from_slice(&v[..8]);
             valence = v[8].clamp(-1.0, 1.0);
@@ -258,7 +283,9 @@ fn parse_mtl_outputs(outputs: &ort::session::SessionOutputs) -> Result<EmotionIn
             logits.copy_from_slice(&v[..8]);
         }
     } else {
-        return Err(HakilleError::InferenceError("HSEmotion: aucune sortie".into()));
+        return Err(HakilleError::InferenceError(
+            "HSEmotion: aucune sortie".into(),
+        ));
     }
 
     let mut probs = logits;
@@ -307,7 +334,9 @@ mod tests {
         assert_eq!(session.status(), ModelStatus::Simulated);
 
         let dummy_crop = vec![120u8; 224 * 224 * 3];
-        let result = session.infer(&dummy_crop, 224, 224).expect("inférence valide");
+        let result = session
+            .infer(&dummy_crop, 224, 224)
+            .expect("inférence valide");
 
         assert_eq!(result.primary_emotion, "Neutral");
         assert!(result.confidence > 0.70);
@@ -321,7 +350,9 @@ mod tests {
     fn test_hsemotion_simulated_happy() {
         let session = HSEmotionSession::open_or_simulated(None);
         let bright_crop = vec![230u8; 224 * 224 * 3];
-        let result = session.infer(&bright_crop, 224, 224).expect("inférence valide");
+        let result = session
+            .infer(&bright_crop, 224, 224)
+            .expect("inférence valide");
 
         assert_eq!(result.primary_emotion, "Happiness");
         assert!(result.valence > 0.50);

@@ -134,12 +134,12 @@ pub struct AgentDto {
 // ============================================================================
 
 /// Masques de canaux perceptuels pour `PerceptionControl`.
-pub const PERCEPTION_CHANNEL_VISION: u32 = 1 << 0;     // 0x01
-pub const PERCEPTION_CHANNEL_AUDIO: u32 = 1 << 1;      // 0x02
-pub const PERCEPTION_CHANNEL_EMOTION: u32 = 1 << 2;    // 0x04
-pub const PERCEPTION_CHANNEL_POSTURE: u32 = 1 << 3;    // 0x08
-pub const PERCEPTION_CHANNEL_FATIGUE: u32 = 1 << 4;    // 0x10
-pub const PERCEPTION_CHANNEL_GAZE: u32 = 1 << 5;       // 0x20
+pub const PERCEPTION_CHANNEL_VISION: u32 = 1 << 0; // 0x01
+pub const PERCEPTION_CHANNEL_AUDIO: u32 = 1 << 1; // 0x02
+pub const PERCEPTION_CHANNEL_EMOTION: u32 = 1 << 2; // 0x04
+pub const PERCEPTION_CHANNEL_POSTURE: u32 = 1 << 3; // 0x08
+pub const PERCEPTION_CHANNEL_FATIGUE: u32 = 1 << 4; // 0x10
+pub const PERCEPTION_CHANNEL_GAZE: u32 = 1 << 5; // 0x20
 pub const PERCEPTION_CHANNEL_ALL: u32 = 0x3F;
 
 /// État qualifié de la présence physique de l'utilisateur face au poste.
@@ -338,6 +338,30 @@ pub struct UserContextEvent {
     pub timestamp_ms: u64,
 }
 
+/// Action interactive rattachée à une notification (SMNF).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct NotificationActionDto {
+    pub id: String,
+    pub label: String,
+    pub is_destructive: bool,
+    pub is_braise: bool,
+}
+
+/// DTO unifié pour les notifications éphémères et alertes système (SMNF).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct NotificationDto {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub urgency: String,
+    pub category: String,
+    pub actions: Vec<NotificationActionDto>,
+    pub timeout_ms: Option<u32>,
+    pub is_braise: bool,
+    pub visual_style: String,
+    pub created_at_ms: u64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum UiToKernel {
     Approve {
@@ -397,6 +421,15 @@ pub enum UiToKernel {
         hardware_mic_enabled: bool,
         cognitive_inference_enabled: bool,
         active_channels_mask: u32,
+    },
+    /// Action interactive cliquée sur une notification (SMNF).
+    NotificationAction {
+        id: String,
+        action_id: String,
+    },
+    /// Notification fermée ou acquittée par l'utilisateur (SMNF).
+    NotificationDismiss {
+        id: String,
     },
 }
 
@@ -480,6 +513,12 @@ pub enum KernelToUi {
     FatigueAlert(FatigueAlertEvent),
     /// Alerte de garde de vie privée et souveraineté matérielle (M1 additif v1).
     PrivacyGuardAlert(PrivacyGuardEvent),
+    /// Notification unifiée émise vers l'interface ou le toast HUD (SMNF).
+    Notification(NotificationDto),
+    /// Notification fermée ou révoquée (SMNF).
+    NotificationDismissed {
+        id: String,
+    },
 }
 
 /// Message UI → noyau versionné : champ `version` transporté sur le fil
@@ -939,5 +978,53 @@ mod tests {
             assert_eq!(back.inner, r);
             assert!(back.check().is_ok());
         }
+    }
+
+    #[test]
+    fn test_notifications_roundtrip_v1() {
+        let action = NotificationActionDto {
+            id: "pause_10m".into(),
+            label: "Prendre une pause 10m".into(),
+            is_destructive: false,
+            is_braise: false,
+        };
+        let notif = NotificationDto {
+            id: "notif-fatigue-1".into(),
+            title: "Fatigue Détectée".into(),
+            body: "PERCLOS P80 > 15% — baisse de vigilance observée".into(),
+            urgency: "high".into(),
+            category: "cognitive".into(),
+            actions: vec![action],
+            timeout_ms: Some(6000),
+            is_braise: false,
+            visual_style: "minimalist_toast".into(),
+            created_at_ms: 1794078900000,
+        };
+
+        // KernelToUi
+        let k_msg = KernelMessage::new(KernelToUi::Notification(notif));
+        assert!(k_msg.check().is_ok());
+        let k_json = serde_json::to_string(&k_msg).unwrap();
+        let k_back: KernelMessage = serde_json::from_str(&k_json).unwrap();
+        assert_eq!(k_back, k_msg);
+
+        // UiToKernel Action
+        let u_action = UiMessage::new(UiToKernel::NotificationAction {
+            id: "notif-fatigue-1".into(),
+            action_id: "pause_10m".into(),
+        });
+        assert!(u_action.check().is_ok());
+        let u_json = serde_json::to_string(&u_action).unwrap();
+        let u_back: UiMessage = serde_json::from_str(&u_json).unwrap();
+        assert_eq!(u_back, u_action);
+
+        // UiToKernel Dismiss
+        let u_dismiss = UiMessage::new(UiToKernel::NotificationDismiss {
+            id: "notif-fatigue-1".into(),
+        });
+        assert!(u_dismiss.check().is_ok());
+        let d_json = serde_json::to_string(&u_dismiss).unwrap();
+        let d_back: UiMessage = serde_json::from_str(&d_json).unwrap();
+        assert_eq!(d_back, u_dismiss);
     }
 }

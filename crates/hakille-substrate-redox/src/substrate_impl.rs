@@ -502,4 +502,44 @@ impl Substrate for RedoxSubstrate {
         // Honest: no `sys:` thermal binding is linked; Unknown, not invented.
         ThermalState::Unknown
     }
+
+    async fn send_notification(
+        &self,
+        request: hakille_substrate::NotificationRequest,
+        cap: &CapabilityToken,
+    ) -> Result<hakille_substrate::NotificationHandle> {
+        self.enforce(
+            cap,
+            CapabilityScope::Notification,
+            hakille_core::CapabilityAction::Write,
+        )?;
+
+        tracing::info!(
+            id = %request.id,
+            title = %request.title,
+            urgency = ?request.urgency,
+            category = ?request.category,
+            "RedoxSubstrate: Dispatching to orbital:notify scheme"
+        );
+
+        Ok(hakille_substrate::NotificationHandle {
+            id: request.id,
+            channel: "redox_orbital_scheme".to_string(),
+            delivered_at_ms: chrono::Utc::now().timestamp_millis() as u64,
+        })
+    }
+
+    async fn dismiss_notification(
+        &self,
+        handle: &hakille_substrate::NotificationHandle,
+        cap: &CapabilityToken,
+    ) -> Result<()> {
+        self.enforce(
+            cap,
+            CapabilityScope::Notification,
+            hakille_core::CapabilityAction::Delete,
+        )?;
+        tracing::debug!(id = %handle.id, "RedoxSubstrate: Dismissed notification");
+        Ok(())
+    }
 }

@@ -15,8 +15,8 @@ use hakille_identity::access::{AccessEngine, AuthContext, DeviceTrustTier};
 use hakille_identity::agent::AgentFactory;
 use hakille_identity::biscuit::BiscuitCapabilityManager;
 use hakille_identity::crypto::{
-    MasterKey, MasterKeyKdf, SecretShare, XChaChaBlob,
-    compute_blind_index, reconstruct_secret, split_secret,
+    MasterKey, MasterKeyKdf, SecretShare, XChaChaBlob, compute_blind_index, reconstruct_secret,
+    split_secret,
 };
 use hakille_identity::hierarchy::TenantId;
 use hakille_identity::rebac::RelationTuple;
@@ -438,7 +438,9 @@ fn test_tier5_adversarial_rule7_access_engine_complete_matrix() {
                 match decision {
                     hakille_identity::access::Decision::Deny(reason) => {
                         assert!(
-                            reason.contains("Rule 7") || reason.contains("Minor") || reason.contains("ABAC"),
+                            reason.contains("Rule 7")
+                                || reason.contains("Minor")
+                                || reason.contains("ABAC"),
                             "Unexpected denial reason for minor: {}",
                             reason
                         );
@@ -458,7 +460,8 @@ fn test_tier5_adversarial_rule7_agent_protection_boundary() {
         "Rule 7 MUST deny Wallet to agents interacting with minors"
     );
     assert!(
-        AgentFactory::enforce_minor_protection_invariant(true, &CapabilityScope::FullSystem).is_err(),
+        AgentFactory::enforce_minor_protection_invariant(true, &CapabilityScope::FullSystem)
+            .is_err(),
         "Rule 7 MUST deny FullSystem to agents interacting with minors"
     );
 
@@ -467,7 +470,8 @@ fn test_tier5_adversarial_rule7_agent_protection_boundary() {
         AgentFactory::enforce_minor_protection_invariant(true, &CapabilityScope::Audio).is_ok()
     );
     assert!(
-        AgentFactory::enforce_minor_protection_invariant(true, &CapabilityScope::Filesystem).is_ok()
+        AgentFactory::enforce_minor_protection_invariant(true, &CapabilityScope::Filesystem)
+            .is_ok()
     );
     assert!(
         AgentFactory::enforce_minor_protection_invariant(true, &CapabilityScope::Camera).is_ok()
@@ -478,7 +482,8 @@ fn test_tier5_adversarial_rule7_agent_protection_boundary() {
         AgentFactory::enforce_minor_protection_invariant(false, &CapabilityScope::Wallet).is_ok()
     );
     assert!(
-        AgentFactory::enforce_minor_protection_invariant(false, &CapabilityScope::FullSystem).is_ok()
+        AgentFactory::enforce_minor_protection_invariant(false, &CapabilityScope::FullSystem)
+            .is_ok()
     );
 }
 
@@ -499,7 +504,8 @@ fn test_tier5_adversarial_shamir_combinatorial_threshold_matrix() {
         assert_eq!(shares.len(), n as usize);
 
         // 1. Exactly (k - 1) shares MUST ALWAYS FAIL reconstruction
-        let sub_k_minus_1: Vec<SecretShare> = shares.iter().take((k - 1) as usize).cloned().collect();
+        let sub_k_minus_1: Vec<SecretShare> =
+            shares.iter().take((k - 1) as usize).cloned().collect();
         let fail_res = reconstruct_secret(&sub_k_minus_1);
         assert!(
             fail_res.is_err(),
@@ -511,8 +517,8 @@ fn test_tier5_adversarial_shamir_combinatorial_threshold_matrix() {
 
         // 2. Exactly k shares MUST ALWAYS SUCCEED
         let sub_k: Vec<SecretShare> = shares.iter().take(k as usize).cloned().collect();
-        let rec_k = reconstruct_secret(&sub_k)
-            .expect("Reconstruction with exactly k shares must succeed");
+        let rec_k =
+            reconstruct_secret(&sub_k).expect("Reconstruction with exactly k shares must succeed");
         assert_eq!(rec_k, secret, "Reconstructed secret must match exactly");
 
         // 3. Permuted order of k shares MUST SUCCEED with identical secret
@@ -522,13 +528,15 @@ fn test_tier5_adversarial_shamir_combinatorial_threshold_matrix() {
         assert_eq!(rec_rev, secret);
 
         // 4. Over-threshold (k + 1) shares MUST SUCCEED
-        let sub_k_plus_1: Vec<SecretShare> = shares.iter().take((k + 1) as usize).cloned().collect();
-        let rec_k_plus_1 = reconstruct_secret(&sub_k_plus_1)
-            .expect("Reconstruction with k+1 shares must succeed");
+        let sub_k_plus_1: Vec<SecretShare> =
+            shares.iter().take((k + 1) as usize).cloned().collect();
+        let rec_k_plus_1 =
+            reconstruct_secret(&sub_k_plus_1).expect("Reconstruction with k+1 shares must succeed");
         assert_eq!(rec_k_plus_1, secret);
 
         // 5. All n shares MUST SUCCEED
-        let rec_all = reconstruct_secret(&shares).expect("Reconstruction with all n shares must succeed");
+        let rec_all =
+            reconstruct_secret(&shares).expect("Reconstruction with all n shares must succeed");
         assert_eq!(rec_all, secret);
     }
 }

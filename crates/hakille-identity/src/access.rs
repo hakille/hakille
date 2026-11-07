@@ -85,15 +85,26 @@ impl AccessEngine {
 
         // 2. RBAC check (Base role compatibility and minor protection Rule 7)
         let is_guest = ctx.base_role.eq_ignore_ascii_case("Guest");
-        let is_minor = ctx.base_role.to_lowercase().contains("minor") || ctx.base_role == "Dependent";
+        let is_minor =
+            ctx.base_role.to_lowercase().contains("minor") || ctx.base_role == "Dependent";
 
-        if is_guest && matches!(ctx.scope, CapabilityScope::Wallet | CapabilityScope::FullSystem) {
+        if is_guest
+            && matches!(
+                ctx.scope,
+                CapabilityScope::Wallet | CapabilityScope::FullSystem
+            )
+        {
             return Decision::Deny(
                 "RBAC rejection: Guest role can never access Wallet or FullSystem".to_string(),
             );
         }
 
-        if is_minor && matches!(ctx.scope, CapabilityScope::Wallet | CapabilityScope::FullSystem) {
+        if is_minor
+            && matches!(
+                ctx.scope,
+                CapabilityScope::Wallet | CapabilityScope::FullSystem
+            )
+        {
             return Decision::Deny(
                 "RBAC rejection: Minor accounts are constitutionally prohibited from Wallet and FullSystem access (Rule 7)"
                     .to_string(),
@@ -119,8 +130,10 @@ impl AccessEngine {
         }
 
         // Hardware device trust check for high-security scopes
-        if matches!(ctx.scope, CapabilityScope::Wallet | CapabilityScope::FullSystem)
-            && ctx.device_tier < DeviceTrustTier::Tier2SoftwareHost
+        if matches!(
+            ctx.scope,
+            CapabilityScope::Wallet | CapabilityScope::FullSystem
+        ) && ctx.device_tier < DeviceTrustTier::Tier2SoftwareHost
         {
             return Decision::Deny(
                 "ABAC rejection: high-security operation requires at least Tier2 host trust"
@@ -180,7 +193,13 @@ mod tests {
     #[test]
     fn test_access_engine_minor_wallet_denied() {
         let mut engine = AccessEngine::new();
-        engine.rebac.add_tuple(RelationTuple::new("wallet", "w1", "owner", "user", "minor_user"));
+        engine.rebac.add_tuple(RelationTuple::new(
+            "wallet",
+            "w1",
+            "owner",
+            "user",
+            "minor_user",
+        ));
 
         let ctx = AuthContext {
             subject: "user:minor_user".into(),
@@ -203,7 +222,9 @@ mod tests {
         let biscuit_mgr = BiscuitCapabilityManager::new();
         let exp = Timestamp(chrono::Utc::now() + chrono::Duration::hours(1));
 
-        engine.rebac.add_tuple(RelationTuple::new("doc", "d1", "reader", "user", "alice"));
+        engine
+            .rebac
+            .add_tuple(RelationTuple::new("doc", "d1", "reader", "user", "alice"));
 
         let token = biscuit_mgr
             .mint_root_token(
@@ -235,7 +256,8 @@ mod tests {
             action: CapabilityAction::Execute,
             ..ctx
         };
-        let dec_wallet = engine.check_permission_with_token(&ctx_wallet, &tuple, &biscuit_mgr, &token);
+        let dec_wallet =
+            engine.check_permission_with_token(&ctx_wallet, &tuple, &biscuit_mgr, &token);
         assert!(!dec_wallet.is_allowed());
     }
 }

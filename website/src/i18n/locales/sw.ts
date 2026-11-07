@@ -1,0 +1,305 @@
+import { TranslationSchema } from '../types';
+
+export const swLocale: TranslationSchema = {
+  meta: {
+    brandSignature: 'Hakille — akili huru na yenye uwajibikaji',
+    preAlphaBadge: 'Pre-Alpha v0.1.0 · Apache-2.0 · 100% Rust',
+    skipToContent: 'Ruka moja kwa moja hadi maudhui makuu',
+  },
+  routes: {
+    home: {
+      navLabel: 'Ilani',
+      title: 'hakille — akili huru · Mfumo wa Uendeshaji wa Utambuzi kwa Rust Halisi',
+      description:
+        'Mfumo usiosahau chochote na unaothibitisha kila hatua uliyochukua. Grafu ya kumbukumbu ya ndani ya SPO, ruhusa za Biscuit, kubonyeza kwa ms 600 na daftari la ukaguzi la SHA-256 + Ed25519.',
+    },
+    architecture: {
+      navLabel: 'Usanifu',
+      title: 'Usanifu wa Tabaka 6 na Vifurushi 41 vya Rust — hakille',
+      description:
+        'Chunguza tabaka 6 za Hakille: mistari 122,639 ya Rust 2024, 0% Python, winit+wgpu+AccessKit, Wasmtime 48 na Cognitive Fabric.',
+    },
+    honestStatus: {
+      navLabel: 'Hali Halisi v0.1',
+      title: 'Jedwali la Ukweli la Pre-Alpha v0.1 — hakille',
+      description:
+        'Uwazi kamili kati ya kile kinachofanya kazi leo (majaribio 1,468, Whisper CPU ×46, Mimi codec, Qwen GGUF) na hatua zijazo.',
+    },
+    security: {
+      navLabel: 'Usalama',
+      title: 'Ruhusa za Biscuit, Kutenga Maudhui Yasiyoaminika na Usalama — hakille',
+      description:
+        'Tokeni za Biscuit v5 zisizopanuka, kinga ya kimuundo dhidi ya prompt injection, hifadhi ya HAKKEY02 Argon2id na RFC 9116 (saa 72).',
+    },
+    constitution: {
+      navLabel: 'Katiba',
+      title: 'Katiba Isiyokiukika v1.0.0 — hakille',
+      description:
+        'Ibara 7 na Kanuni 10 zinazothibitishwa na mashine juu ya kila modeli: viwango vya uhakika, ulinzi wa watoto na itifaki ya dharura.',
+    },
+    install: {
+      navLabel: 'Sakinisha',
+      title: 'Kikokotoo cha RAM, Mifumo ya OS na Ujenzi wa Rust — hakille',
+      description:
+        'Kokotoa matumizi halisi ya kumbukumbu ya Hakille kwenye kifaa chako (GB 2 hadi GB 16+) na ujenge daemon, eneo-kazi la winit+wgpu au daraja la simu la UniFFI.',
+    },
+    privacy: {
+      navLabel: 'Faragha & GDPR',
+      title: 'Sera ya Faragha ya GDPR, ePrivacy na EU AI Act — hakille',
+      description:
+        'Dhamana mbili za uhuru: vidakuzi sifuri na ufuatiliaji sifuri kwenye hakille.ai; kumbukumbu ya ndani ya redb na kufuta ishara za kihisia ndani ya dakika 5.',
+    },
+    legalNotice: {
+      navLabel: 'Taarifa za Kisheria',
+      title: 'Taarifa za Kisheria na Utawala wa Chanzo Huria — hakille',
+      description:
+        'Utambulisho wa mradi wa chanzo huria wa Hakille, mawasiliano rasmi, upangishaji tuli na haki miliki.',
+    },
+    conditions: {
+      navLabel: 'Masharti',
+      title: 'Masharti ya Matumizi na Tahadhari ya Pre-Alpha AS-IS — hakille',
+      description:
+        'Masharti ya kutumia hakille.ai na maelezo muhimu ya kutumia toleo la majaribio la v0.1 KAMA LILIVYO.',
+    },
+    licenses: {
+      navLabel: 'Leseni & Hataza',
+      title: 'Leseni ya Apache-2.0, Ahadi ya Hataza za Kinga na SHA-256 — hakille',
+      description:
+        'Leseni ya Apache-2.0, ahadi ya umma ya hataza za ulinzi, ukaguzi wa cargo-deny na uthibitisho wa SHA-256 wa fonti za SIL OFL 1.1.',
+    },
+    accessibility: {
+      navLabel: 'Ufikivu',
+      title: 'Ufikivu wa WCAG AAA/AA, Kibodi na Maandishi ya Kiafrika na Dunia — hakille',
+      description:
+        'Utofautishaji wa 17:1 AAA, mbadala wa kibodi kwa ms 600, ukuzaji wa maandishi 80–200%, RTL ya Kiarabu pamoja na Adlam na N’Ko.',
+    },
+  },
+  header: {
+    spotlightTrigger: 'Spotlight HUD',
+    spotlightShortcut: 'Alt+Space · Ctrl+K',
+    audioOn: 'Sauti 48 kHz Imewashwa',
+    audioOff: 'Sauti Imenyamazishwa',
+    themeDark: 'Obsidiani',
+    themeLight: 'Ngozi Angavu',
+    accessibilityBtn: 'Onyesho & A11y',
+    languageLabel: 'Lugha',
+    githubLabel: 'Msimbo Chanzo',
+    menuOpen: 'Fungua menyu',
+    menuClose: 'Funga menyu',
+  },
+  footer: {
+    manifestoLine: 'Mfumo usiosahau chochote na unaoeleza daima ulichofanya.',
+    productHeading: 'Mifumo & Uhandisi',
+    trustHeading: 'Sheria, Faragha & Uaminifu',
+    engineeringHeading: 'Takwimu Zilizothibitishwa',
+    zeroExfiltrationBadge: 'Vidakuzi 0 · Vifuatiliaji 0 · Fonti za OFL SHA-256',
+    preAlphaDisclaimer:
+      'Hali ya Pre-Alpha (v0.1.0): mfano wa kihandisi unaotolewa "AS IS". Usitumie bado kwa siri nyeti za uzalishaji.',
+    etymologyNote:
+      'Katika lugha ya Pulaar (Fulani) na Manding, "hakille" inamaanisha akili makini, busara na uwajibikaji.',
+    copyrightLine: '© 2026 Mradi wa Hakille · Leseni ya Apache-2.0 · Katiba v1.0.0',
+  },
+  a11yDrawer: {
+    title: 'Uhuru wa Mwonekano, Sauti na Ufikivu',
+    subtitle: 'Mapendeleo yako yanabaki kwenye kivinjari chako pekee (hakuna vidakuzi).',
+    themeLabel: 'Mandhari ya uso',
+    contrastLabel: 'Utofautishaji wa WCAG',
+    contrastNormal: 'Kiwango cha AAA (17:1)',
+    contrastHigh: 'Utofautishaji wa juu zaidi',
+    textScaleLabel: 'Ukubwa wa maandishi (80% – 200%)',
+    motionLabel: 'Mwendo na nyuzi za Kora',
+    motionNormal: 'Fizikia ya mawimbi',
+    motionReduced: 'Mwendo uliopunguzwa tulivu',
+    soundLabel: 'Usanisi wa Karplus-Strong (48 kHz)',
+    soundHint: 'Kimya kwa chaguo-msingi. Huwasha nyuzi za kihisabati za Kora kutoka sound.rs.',
+    resetBtn: 'Rejesha chaguo-msingi',
+    closeBtn: 'Funga',
+  },
+  home: {
+    heroMeta: 'PRE-ALPHA v0.1.0 · RUST EDITION 2024 · APACHE-2.0 · ZERO PYTHON',
+    heroTitle: 'Mfumo usiosahau chochote na unaothibitisha daima ulichofanya.',
+    heroSubtitle:
+      'Hakille ni mfumo huru wa uendeshaji wa utambuzi ulioandikwa kwa Rust halisi. Si chatbot: kumbukumbu yako inaishi kwenye grafu ya ndani inayokagulika, hatua zisizoweza kutenduliwa zinahitaji kubonyeza kwa ms 600, na kila uamuzi unasainiwa kidijitali.',
+    heroPrimaryCta: 'Jaribu Maabara ya ms 600 & Ukaguzi',
+    heroSecondaryCta: 'Kagua Jedwali la Ukweli v0.1',
+    heroSpotlightPrompt: 'Fungua Spotlight HUD (:status, :models-honest, :powers…)',
+    metricsPackages: 'Vifurushi 41 vya Cargo',
+    metricsLoc: 'Mistari 122,639 ya Rust',
+    metricsTests: 'Majaribio 1,468 ya kiotomatiki',
+    metricsPython: '0% Python · 0% Electron',
+
+    act2Eyebrow: 'SEHEMU YA II · FALSAFA MPYA YA UMAKINI',
+    act2Title: 'Kiolesura kinachofanikiwa kinapotoweka machoni.',
+    act2Body:
+      'Mifumo ya kawaida ya AI inalenga kukuweka kwenye dirisha la gumzo. Hakille inageuza kipimo hicho: kadiri inavyokuelewa, ndivyo muda wako mbele ya skrini unavyopungua.',
+    act2IndustryTitle: 'Chatbots za Mawingu za Kawaida',
+    act2IndustryPoints: [
+      'Dirisha la gumzo la kudumu linalovuta umakini wako kila mara',
+      'Kumbukumbu binafsi iliyofungiwa kwenye seva za kampuni za nje',
+      'Hatari ya kudumu ya maagizo fiche ndani ya barua pepe za nje',
+      'Hakuna uthibitisho wa kikriptografia wa kilichotekelezwa',
+    ],
+    act2HakilleTitle: 'Usanifu Tulivu wa Hakille',
+    act2HakillePoints: [
+      '0 fps ikiwa imetulia · HUD ya 720×64 inayoyeyuka ndani ya ms 1,500',
+      'Grafu ya ndani ya redb SPO inayohamishika kwenda JSON v1 wazi wakati wowote',
+      'Lebo isiyobadilika ya Untrusted inayozuia maudhui hatari ya nje',
+      'Daftari la SHA-256 + Ed25519 lenye maelezo ya Kwa Nini? katika ngazi 3',
+    ],
+
+    act3Eyebrow: 'SEHEMU YA III · MAABARA YA KIKRIPTOGRAFIA MOJA KWA MOJA',
+    act3Title: 'Milisekunde 600 dhidi ya yasiyoweza kutenduliwa. Pamoja na mnyororo wa SHA-256.',
+    act3Body:
+      'Rangi ya Kaa la Moto (#FF7A2F) imepigwa marufuku kwenye 99.5% ya mfumo: huwaka tu pale idhini ya binadamu inapohitajika. Jaribu kuzuia shambulio la barua pepe na ushikilie kitufe kwa ms 600.',
+
+    act4Eyebrow: 'SEHEMU YA IV · KUMBUKUMBU HURU & EU AI ACT',
+    act4Title: 'Utambulisho wako uko kwenye grafu yako ya SPO, si ndani ya uzito wa modeli.',
+    act4Body:
+      'Ukweli huhifadhiwa katika vyumba vilivyotengwa (Binafsi, Kazi, Pamoja). Ishara za hisia (cognition:*) hufutwa kabisa ndani ya dakika 5 bila kuacha alama.',
+
+    act5Eyebrow: 'SEHEMU YA V · USANIFU WA TABAKA 6 & COGNITIVE FABRIC',
+    act5Title: 'Mistari 122,639 ya Rust halisi. Na wingu limefungwa kwa kamba ya sekunde 300.',
+    act5Body:
+      'Badilisha modeli 5 maalum kwa modeli 1 kupitia faili ya TOML bila kupoteza kumbukumbu. Mfumo wa 2 unapounganishwa na BYOM, tokeni ya Biscuit ya sekunde 300 hupima baiti na gharama.',
+
+    act6Eyebrow: 'SEHEMU YA VI · UTULIVU WA NJIA NYINGI & UHURU UNAOPATIKANA HATUA KWA HATUA',
+    act6Title: 'Mapendekezo matatu tu kwa siku. Ngazi tano za uhuru zinazoshuka ukibatilisha hatua.',
+    act6Body:
+      'Jaribu kelele za mazingira, ukimya wa mkutano, au kupanda kutoka Ngazi 0 hadi 4 — pamoja na kushuka papo hapo unapotendua kitendo.',
+
+    act7Eyebrow: 'SEHEMU YA VII · KUTOKA REDOX HADI KIFAA CHA MKONONI',
+    act7Title: 'Ubongo mmoja binafsi katika madaraja matatu ya ukweli wa vifaa.',
+    act7Body:
+      'Hakille haidai kubadilisha kiini cha iOS. Inaeleza wazi dhamana za Daraja la 1 (Redox/Linux), Daraja la 2 (winit + wgpu + AccessKit) na Daraja la 3 (SwiftUI / Compose kupitia UniFFI na Checkpoint v2).',
+
+    act8Eyebrow: 'SEHEMU YA VIII · KATIBA & MAANDISHI YA ULIMWENGU',
+    act8Title: 'Katiba isiyokiukika juu ya modeli. Iliyojengwa juu ya utajiri wa lugha.',
+    act8Body:
+      'Kanuni kumi zinazothibitishwa na mashine hutekelezwa kabla ya modeli — kuanzia ulinzi wa watoto ndani ya <1 ms hadi msaada wa dharura (3114 / 112 / 988).',
+
+    act9Eyebrow: 'SEHEMU YA IX · MKATABA WA UKWELI & KUANZA KWA WASANIDI',
+    act9Title: 'Thibitisha kila dai kwa kuendesha cargo test.',
+    act9Body:
+      'Hakuna orodha bandia za kusubiri wala video za maonyesho: nakili hazina ya Apache-2.0 na ukague kila kifurushi.',
+    act9CopyCmd: 'Nakili',
+    act9Copied: 'Imenakiliwa',
+  },
+  kora: {
+    title: 'Mwangaza Chini ya Tao la Nyuzi 21 za Kora',
+    subtitle: 'Chombo cha Uwepo (brand.rs · nyuzi 21 za Kora · usanisi wa Karplus-Strong)',
+    stateIdle: 'Utulivu (0 fps)',
+    stateListening: 'Inasikiliza',
+    stateThinking: 'Inatafakari',
+    stateSpeaking: 'Inazungumza (nyuzi 21)',
+    stateDecision: 'Uamuzi wa Kaa',
+    stateEmergency: 'Msaada Tulivu',
+    bargeInBtn: 'Katiza Sauti (Barge-In < 80 ms)',
+    bargeInStatus: 'Barge-In imekamilika kwa ms 42: wimbi limezimwa vizuri.',
+    pluckHint: 'Pitisha kipanya au bofya nyuzi 21 za Kora ili kuzipiga.',
+    fpsZeroBadge: 'Kitanzi cha GPU kimesimama · 0.0 fps',
+    fpsActiveBadge: 'Wimbi hai · nyuzi 21',
+  },
+  spotlight: {
+    placeholder: 'Andika amri (:status, :models-honest, :powers, :budget) au nenda kwenye ukurasa…',
+    hintBar: 'Enter kutekeleza · Mishale kuchagua · Esc kufunga',
+    closeEsc: 'Esc',
+    emptyPrompt: 'Amri za papo hapo:',
+    runBtn: 'Endesha',
+  },
+  actionLab: {
+    scenarioInjectionTab: '1. Barua Pepe Hatari (Untrusted)',
+    scenarioTransferTab: '2. Tuma €25 (Isiyotendulika)',
+    scenarioArchiveTab: '3. Hifadhi Uzi (Inayotendulika)',
+    untrustedBadge: '[nje · Untrusted]',
+    trustedBadge: '[nia ya binadamu imethibitishwa]',
+    costPill: 'Gharama: €0.00 (Ndani)',
+    dataPill: 'Data: baiti 0 nje',
+    revPillIrreversible: 'Isiyotendulika · Shikilia ms 600',
+    revPillReversible: 'Inatendulika kwa bofya 1',
+    holdButtonLabel: 'Shikilia ms 600 ili kuthibitisha',
+    holdHoldingLabel: 'Inashikilia…',
+    holdArmedLabel: 'Hatua 1/2 tayari — Bonyeza tena kuthibitisha',
+    holdConfirmedLabel: 'Imefungwa & Kusainiwa Ed25519',
+    holdCancelledHint: 'Imeachiwa kabla ya ms 600: hakuna kilichotekelezwa.',
+    accessibleModeToggle: 'Hali ya kibodi inayofikika (mibonyezo 2 bila kipima muda)',
+    blockedByRule01:
+      'KIZUIZI KIKALI · RULE-01: Maudhui yanatoka TrustLevel::Untrusted. Kitufe cha uthibitisho kimelemazwa kimuundo na jaribio limerekodiwa.',
+    executeReversibleBtn: 'Hifadhi uzi (hakuna kushikilia)',
+    auditHeading: 'Daftari la Ukaguzi la Kikriptografia Moja kwa Moja',
+    chainValidBadge: 'Mnyororo wa SHA-256 + Saini Ziko Salama',
+    chainBrokenBadge: 'TAHADHARI: Ubadilishaji Haramu Umegunduliwa!',
+    tamperBtn: 'Igiza uharibifu wa baiti 1',
+    restoreChainBtn: 'Rejesha daftari salama',
+    whyBtn: 'Kwa nini? (ngazi 3)',
+    undoBtn: 'Tendua hatua',
+    whyLevel1: 'Ngazi 1 · Maelezo rahisi',
+    whyLevel2: 'Ngazi 2 · Ukweli wa SPO uliosomwa',
+    whyLevel3: 'Ngazi 3 · Uthibitisho wa kiufundi & Biscuit',
+    markFactFalseBtn: 'Ukweli huu si sahihi',
+    factDisputedBadge: 'Umebatilishwa na wewe',
+  },
+  memoryLab: {
+    partitionPersonal: 'Chumba Binafsi',
+    partitionPro: 'Chumba cha Kazi',
+    partitionShared: 'Chumba cha Pamoja',
+    timeSliderLabel: 'Muda uliopita (ufutaji wa EU AI Act)',
+    timeNow: 't = dak 0 (Sasa)',
+    time5m: 't = dak 5 (Ufutaji AI Act)',
+    time30d: 't = siku 30',
+    time2y: 't = miaka 2',
+    aiActNotice:
+      'Utiifu wa EU AI Act & Kanuni ya 8: baada ya dakika 5, ishara za hisia (cognition:*) hufutwa kabisa bila kuacha alama kwenye diski.',
+    exportJsonBtn: 'Pakua hakille-graph-export JSON v1',
+    digitalTwilightTitle: 'Mkataba wa Urithi wa Jioni ya Kidijitali',
+    digitalTwilightBody:
+      'Amua mapema kwa agizo lililosainiwa ikiwa kutokuwepo kwa muda mrefu kutafuta kumbukumbu zote au kukabidhi sehemu maalum.',
+  },
+  fabricLab: {
+    layersTab: 'Tabaka 6 za Mfumo',
+    cratesTab: 'Kichunguzi cha Vifurushi 41',
+    system2Tab: 'Kiigaji cha Biscuit sek 300 (Mfumo 2)',
+    searchCratesPlaceholder: 'Chuja kwa jina au teknolojia (wgpu, redb, biscuit, whisper)…',
+    allLayersFilter: 'Tabaka zote (41)',
+    localSystem1Title: 'Mfumo 1 · Ukokotoaji wa Ndani Bila Mtandao',
+    remoteSystem2Title: 'Mfumo 2 · BYOM Chini yaukodishaji wa Biscuit sek 300',
+    issueBiscuitBtn: 'Toa tokeni ya Biscuit sek 300',
+    simulateStreamBtn: 'Igiza ujumbe wa mbali (+1.8 KB / +€0.004)',
+    revokeTokenBtn: 'Batilisha tokeni mara moja',
+  },
+  ambientLab: {
+    channelHeading: 'Kichaguzi cha Njia za Mawasiliano',
+    noiseLabel: 'Kelele za mazingira zilizopimwa',
+    meetingToggle: 'Kwenye mkutano (kalenda / maikrofoni)',
+    thirdPartyToggle: 'Mtu mwingine yupo chumbani',
+    headphonesToggle: 'Vipokea sauti binafsi vimeunganishwa',
+    silenceBudgetHeading: 'Bajeti ya Ukimya (mikopo 3 / siku)',
+    triggerNudgeBtn: 'Jaribu pendekezo',
+    dismissTopicBtn: 'Nyamazisha mada (siku 14)',
+    resetDayBtn: 'Anza siku upya',
+    autonomyHeading: 'Ngazi ya Uhuru kwa Kila Eneo (0 → 4)',
+    validate20Btn: '+5 hatua sahihi zilizothibitishwa',
+    promoteCrankBtn: 'Kubali kupanda ngazi',
+    humanUndoBtn: 'Tendua hatua (Shuka ngazi -1 papo hapo)',
+  },
+  inspector: {
+    title: 'Kikaguzi cha Kutovujisha Data Moja kwa Moja',
+    subtitle: 'Inaendeshwa moja kwa moja ndani ya kivinjari chako kwenye ukurasa huu.',
+    cookiesLabel: 'Vidakuzi vilivyohifadhiwa (document.cookie)',
+    thirdPartyReqLabel: 'Maombi kwa vikoa vya nje (Performance API)',
+    fontShaLabel: 'Fonti ya ndani InterVariable.ttf (SIL OFL 1.1)',
+    storageKeysLabel: 'Funguo za mapendeleo (localStorage)',
+    rescanBtn: 'Kagua tena sasa',
+    wipeLocalBtn: 'Futa mapendeleo kwa bofya 1',
+    wipedConfirm: 'Mapendeleo yamefutwa; chaguo-msingi zimerejeshwa.',
+  },
+  common: {
+    readFullDoc: 'Soma maelezo kamili',
+    verifiedInRepo: 'Imethibitishwa kwenye hazina kuu',
+    preAlphaWarningTitle: 'Uwazi wa Pre-Alpha v0.1.0',
+    preAlphaWarningBody:
+      'Hakille inaonyesha wazi kinachofanya kazi kikamilifu leo dhidi ya kilicho bado kwenye mpango.',
+    plainSummaryTitle: 'Muhtasari Rahisi (sekunde 30)',
+    lastUpdated: 'Ilisasishwa mwisho',
+    filterAll: 'Zote',
+  },
+};

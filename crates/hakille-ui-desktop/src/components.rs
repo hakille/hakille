@@ -484,7 +484,10 @@ impl ActionCard {
         Self {
             verb: "Pause".to_string(),
             object: "Vigilance & Repos".to_string(),
-            reason: format!("Fatigue détectée ({level}) — PERCLOS: {:.1}% ({recommended_action})", perclos_score * 100.0),
+            reason: format!(
+                "Fatigue détectée ({level}) — PERCLOS: {:.1}% ({recommended_action})",
+                perclos_score * 100.0
+            ),
             cost: "0.00 EUR".to_string(),
             data: "Biométrie locale éphémère (Règle 8)".to_string(),
             reversible: "Immédiat".to_string(),
@@ -589,6 +592,81 @@ impl Sheet {
         }
         .draw(scene, ctx, self.rect.x + 16.0, self.rect.y + 30.0);
         body(scene, ctx);
+    }
+}
+
+// ---- 13. NotificationToast ----
+/// Toast de notification moderne éphémère (SMNF).
+#[derive(Debug, Clone)]
+pub struct NotificationToast {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub urgency: String,
+    pub is_braise: bool,
+    pub remaining_progress: f32,
+    pub rect: Rect,
+}
+
+impl NotificationToast {
+    pub fn new(
+        id: impl Into<String>,
+        title: impl Into<String>,
+        body: impl Into<String>,
+        urgency: impl Into<String>,
+        is_braise: bool,
+        rect: Rect,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            title: title.into(),
+            body: body.into(),
+            urgency: urgency.into(),
+            is_braise,
+            remaining_progress: 1.0,
+            rect,
+        }
+    }
+
+    pub fn draw(&self, scene: &mut Scene, ctx: &PrimitiveCtx) {
+        // Fond sombre acrylique arrondi
+        scene.fill(
+            Rect::new(self.rect.x, self.rect.y, self.rect.w, self.rect.h).rounded(12.0),
+            Color::from_hex(ctx.theme.surface1),
+        );
+
+        // Bordure d'accentuation
+        let border_hex = if self.is_braise || self.urgency == "critical" {
+            ctx.theme.braise
+        } else {
+            ctx.theme.line
+        };
+
+        // Titre
+        Text {
+            content: self.title.clone(),
+            size: ty::TYPE_BODY_SIZE as f32,
+            mono: false,
+        }
+        .draw(scene, ctx, self.rect.x + 16.0, self.rect.y + 24.0);
+
+        // Corps
+        Text {
+            content: self.body.clone(),
+            size: ty::TYPE_CAPTION_SIZE as f32,
+            mono: false,
+        }
+        .draw(scene, ctx, self.rect.x + 16.0, self.rect.y + 44.0);
+
+        // Barre d'auto-évaporation en bas de carte
+        let progress_width = (self.rect.w - 32.0) * self.remaining_progress.clamp(0.0, 1.0);
+        let bar_rect = Rect::new(
+            self.rect.x + 16.0,
+            self.rect.y + self.rect.h - 4.0,
+            progress_width,
+            2.0,
+        );
+        scene.fill(bar_rect, Color::from_hex(border_hex));
     }
 }
 
@@ -722,5 +800,22 @@ mod tests {
         presence.draw(&mut s, &ctx);
         // 21 wires (Rect fills) + 1 central core (Ring) = 22 drawing commands
         assert_eq!(s.cmds.len(), 22);
+    }
+
+    #[test]
+    fn test_notification_toast_render_and_evaporation() {
+        let ctx = PrimitiveCtx::new(Theme::dark());
+        let mut scene = Scene::new(720, 640, true);
+        let toast = NotificationToast::new(
+            "notif-001",
+            "Mise à jour Souveraine",
+            "Triplets synchronisés sans fuite cloud",
+            "normal",
+            false,
+            Rect::new(10.0, 10.0, 360.0, 72.0),
+        );
+        toast.draw(&mut scene, &ctx);
+        assert!(!scene.cmds.is_empty());
+    }
     }
 }

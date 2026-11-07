@@ -96,7 +96,8 @@ impl HeightEstimator {
         let head_top_y = eye_mid_y - (nose.position.y - eye_mid_y).abs() * 1.8;
 
         let ankles_visible = left_ankle.is_confident(0.25) || right_ankle.is_confident(0.25);
-        let is_standing = skeleton.posture == PostureKind::Standing || (ankles_visible && skeleton.posture != PostureKind::Seated);
+        let is_standing = skeleton.posture == PostureKind::Standing
+            || (ankles_visible && skeleton.posture != PostureKind::Seated);
 
         if is_standing && ankles_visible {
             // Cas 1 : Utilisateur debout, corps complet visible
@@ -150,7 +151,8 @@ impl HeightEstimator {
             };
             // Modèle anthropométrique de stature assise (NASA-STD-3000 / ISO 7250) :
             // Le segment tête-hanche mesuré est mis à l'échelle de l'assise complète
-            let sitting_metric_m = ((torso_pixels * camera_distance_m / self.fy) * 1.35 + 0.32).max(0.79);
+            let sitting_metric_m =
+                ((torso_pixels * camera_distance_m / self.fy) * 1.35 + 0.32).max(0.79);
             let full_height_m = sitting_metric_m / SEATED_STATURE_RATIO;
             let height_cm = (full_height_m * 100.0).clamp(90.0, 225.0);
 
@@ -178,11 +180,19 @@ mod tests {
         // Sur 640px de large avec FOV 70°, fx ~ 457px.
         // IPD = 63mm à 1.0m donne environ 28.8 pixels.
         let dist = est.estimate_camera_distance(28.8);
-        assert!((dist - 1.0).abs() < 0.1, "distance proche de 1.0m : {}", dist);
+        assert!(
+            (dist - 1.0).abs() < 0.1,
+            "distance proche de 1.0m : {}",
+            dist
+        );
 
         // IPD = 57.6 pixels donne 0.50m
         let dist_close = est.estimate_camera_distance(57.6);
-        assert!((dist_close - 0.50).abs() < 0.05, "distance proche de 0.5m : {}", dist_close);
+        assert!(
+            (dist_close - 0.50).abs() < 0.05,
+            "distance proche de 0.5m : {}",
+            dist_close
+        );
     }
 
     #[test]
@@ -191,20 +201,30 @@ mod tests {
         let mut joints = [SkeletonJoint3D::default(); 17];
 
         // Tête à y = 100px, Hanches à y = 350px (torso = 250px)
-        joints[CocoJointId::Nose as usize] = SkeletonJoint3D::new(0, Point3D::new(320.0, 110.0, 0.8), 0.9);
-        joints[CocoJointId::LeftEye as usize] = SkeletonJoint3D::new(1, Point3D::new(305.0, 100.0, 0.8), 0.9);
-        joints[CocoJointId::RightEye as usize] = SkeletonJoint3D::new(2, Point3D::new(335.0, 100.0, 0.8), 0.9);
-        joints[CocoJointId::LeftShoulder as usize] = SkeletonJoint3D::new(5, Point3D::new(240.0, 180.0, 0.8), 0.9);
-        joints[CocoJointId::RightShoulder as usize] = SkeletonJoint3D::new(6, Point3D::new(400.0, 180.0, 0.8), 0.9);
-        joints[CocoJointId::LeftHip as usize] = SkeletonJoint3D::new(11, Point3D::new(260.0, 350.0, 0.8), 0.9);
-        joints[CocoJointId::RightHip as usize] = SkeletonJoint3D::new(12, Point3D::new(380.0, 350.0, 0.8), 0.9);
+        joints[CocoJointId::Nose as usize] =
+            SkeletonJoint3D::new(0, Point3D::new(320.0, 110.0, 0.8), 0.9);
+        joints[CocoJointId::LeftEye as usize] =
+            SkeletonJoint3D::new(1, Point3D::new(305.0, 100.0, 0.8), 0.9);
+        joints[CocoJointId::RightEye as usize] =
+            SkeletonJoint3D::new(2, Point3D::new(335.0, 100.0, 0.8), 0.9);
+        joints[CocoJointId::LeftShoulder as usize] =
+            SkeletonJoint3D::new(5, Point3D::new(240.0, 180.0, 0.8), 0.9);
+        joints[CocoJointId::RightShoulder as usize] =
+            SkeletonJoint3D::new(6, Point3D::new(400.0, 180.0, 0.8), 0.9);
+        joints[CocoJointId::LeftHip as usize] =
+            SkeletonJoint3D::new(11, Point3D::new(260.0, 350.0, 0.8), 0.9);
+        joints[CocoJointId::RightHip as usize] =
+            SkeletonJoint3D::new(12, Point3D::new(380.0, 350.0, 0.8), 0.9);
 
         let skeleton = BodySkeleton3D::new(joints, PostureKind::Seated);
         let profile = est.estimate_profile(&skeleton, 35.0, 14.0);
 
         assert!(profile.is_seated);
-        assert!(profile.estimated_height_cm >= 150.0 && profile.estimated_height_cm <= 195.0,
-            "Taille assise humaine réaliste : {} cm", profile.estimated_height_cm);
+        assert!(
+            profile.estimated_height_cm >= 150.0 && profile.estimated_height_cm <= 195.0,
+            "Taille assise humaine réaliste : {} cm",
+            profile.estimated_height_cm
+        );
         assert!(profile.height_margin_error_cm <= 6.0);
         assert!(profile.confidence > 0.80);
     }

@@ -409,6 +409,10 @@ fn allowed(message: &UiToKernel) -> bool {
         | UiToKernel::StatusRequest
         | UiToKernel::AgentListRequest
         | UiToKernel::PerceptionControl { .. } => true,
+        UiToKernel::NotificationAction { id, action_id } => {
+            !id.is_empty() && id.len() <= 256 && !action_id.is_empty() && action_id.len() <= 256
+        }
+        UiToKernel::NotificationDismiss { id } => !id.is_empty() && id.len() <= 256,
         UiToKernel::Undo { .. }
         | UiToKernel::RevokeAll
         | UiToKernel::SettingsToggle { .. }

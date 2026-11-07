@@ -1,5 +1,7 @@
 use hakille_audio::{YinPitchDetector, YinWorkspace};
-use hakille_perception::audio::capture::{ContinuousAudioRingBuffer, SAMPLES_PER_100MS, SAMPLES_PER_10MS};
+use hakille_perception::audio::capture::{
+    ContinuousAudioRingBuffer, SAMPLES_PER_10MS, SAMPLES_PER_100MS,
+};
 use hakille_perception::audio::prosody::VocalProsodyAnalyzer;
 use std::f32::consts::PI;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -23,7 +25,9 @@ fn generate_white_noise(n: usize, seed: u64, amplitude: f32) -> Vec<f32> {
     let mut state = seed;
     (0..n)
         .map(|_| {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let unit = ((state >> 32) as u32 as f32) / (u32::MAX as f32);
             (unit * 2.0 - 1.0) * amplitude
         })
@@ -79,10 +83,16 @@ fn test_acoustic_saturated_signals_and_extreme_clipping() {
     // 1. Rail DC plat saturé (+1.0 continu)
     let dc_rail_pos = [1.0f32; SAMPLES_PER_100MS];
     let f_dc_pos = detector.analyze(&dc_rail_pos);
-    assert!(!f_dc_pos.is_voiced, "Un signal DC constant +1.0 n'est pas voisé");
+    assert!(
+        !f_dc_pos.is_voiced,
+        "Un signal DC constant +1.0 n'est pas voisé"
+    );
     assert_eq!(f_dc_pos.f0_hz, None);
     assert_eq!(f_dc_pos.periodicity, 0.0);
-    assert!(f_dc_pos.hnr_db.is_finite(), "HNR ne doit pas être Inf ou NaN sur DC");
+    assert!(
+        f_dc_pos.hnr_db.is_finite(),
+        "HNR ne doit pas être Inf ou NaN sur DC"
+    );
     assert_eq!(f_dc_pos.jitter_local, None);
     assert_eq!(f_dc_pos.shimmer_local, None);
 
@@ -105,13 +115,26 @@ fn test_acoustic_saturated_signals_and_extreme_clipping() {
     let period_samples = 80;
     let mut square_wave = [0.0f32; SAMPLES_PER_100MS];
     for (i, sample) in square_wave.iter_mut().enumerate() {
-        *sample = if (i % period_samples) < (period_samples / 2) { 1.0 } else { -1.0 };
+        *sample = if (i % period_samples) < (period_samples / 2) {
+            1.0
+        } else {
+            -1.0
+        };
     }
     let f_square = detector.analyze(&square_wave);
-    assert!(f_square.is_voiced, "Onde carrée harmonique 200 Hz doit être détectée");
-    assert!(f_square.f0_hz.is_some(), "F0 doit être extrait pour onde carrée périodique");
+    assert!(
+        f_square.is_voiced,
+        "Onde carrée harmonique 200 Hz doit être détectée"
+    );
+    assert!(
+        f_square.f0_hz.is_some(),
+        "F0 doit être extrait pour onde carrée périodique"
+    );
     let f0 = f_square.f0_hz.unwrap();
-    assert!((f0 - 200.0).abs() < 5.0, "F0 onde carrée attendu ~200 Hz, obtenu: {f0}");
+    assert!(
+        (f0 - 200.0).abs() < 5.0,
+        "F0 onde carrée attendu ~200 Hz, obtenu: {f0}"
+    );
     assert!(f_square.hnr_db.is_finite());
     assert!(!f_square.hnr_db.is_nan());
     assert!(!f_square.periodicity.is_nan());
@@ -123,7 +146,10 @@ fn test_acoustic_saturated_signals_and_extreme_clipping() {
     assert!(f_clipped.is_voiced);
     assert!(f_clipped.f0_hz.is_some());
     let f0_c = f_clipped.f0_hz.unwrap();
-    assert!((f0_c - 250.0).abs() < 5.0, "F0 sinusoïde saturée attendu ~250 Hz, obtenu: {f0_c}");
+    assert!(
+        (f0_c - 250.0).abs() < 5.0,
+        "F0 sinusoïde saturée attendu ~250 Hz, obtenu: {f0_c}"
+    );
     assert!(f_clipped.hnr_db.is_finite());
 }
 
@@ -140,9 +166,16 @@ fn test_acoustic_pure_white_noise_unvoiced_across_seeds() {
         let noise = generate_white_noise(SAMPLES_PER_100MS, seed, 0.8);
         let f = detector.analyze(&noise);
 
-        assert!(!f.is_voiced, "Bruit blanc pur (graine {seed}) ne doit JAMAIS être classé voisé");
+        assert!(
+            !f.is_voiced,
+            "Bruit blanc pur (graine {seed}) ne doit JAMAIS être classé voisé"
+        );
         assert_eq!(f.f0_hz, None, "Pitch doit être None pour bruit blanc");
-        assert!(f.periodicity < 0.65, "Périodicité du bruit blanc doit être basse (obtenu: {})", f.periodicity);
+        assert!(
+            f.periodicity < 0.65,
+            "Périodicité du bruit blanc doit être basse (obtenu: {})",
+            f.periodicity
+        );
         assert!(f.hnr_db.is_finite(), "HNR bruit blanc doit être fini");
         assert!(!f.hnr_db.is_nan());
         assert_eq!(f.jitter_local, None);
@@ -177,7 +210,10 @@ fn test_acoustic_rapid_frequency_jumps_and_transitions() {
         }
         if let Some(s) = f.shimmer_local {
             assert!(s.is_finite() && !s.is_nan());
-            assert!((0.0..=1.0).contains(&s), "Shimmer {s} doit être dans [0, 1]");
+            assert!(
+                (0.0..=1.0).contains(&s),
+                "Shimmer {s} doit être dans [0, 1]"
+            );
         }
     }
 
@@ -277,8 +313,14 @@ fn test_prosody_analyzer_prolonged_silence_behavior() {
     }
 
     let p = last_p.unwrap();
-    assert_eq!(p.voiced_ratio, 0.0, "Après 15 trames de silence, voiced_ratio doit être 0.0");
-    assert_eq!(p.smoothed_f0_hz, None, "F0 lissé doit être None après silence prolongé");
+    assert_eq!(
+        p.voiced_ratio, 0.0,
+        "Après 15 trames de silence, voiced_ratio doit être 0.0"
+    );
+    assert_eq!(
+        p.smoothed_f0_hz, None,
+        "F0 lissé doit être None après silence prolongé"
+    );
     assert_eq!(p.f0_range_hz, None, "Plage de F0 doit être None");
     assert_eq!(p.mean_rms_energy, 0.0, "RMS moyen doit être 0.0");
     assert!(p.smoothed_hnr_db.is_finite());
@@ -434,7 +476,10 @@ fn test_ring_buffer_and_prosody_concurrency_stress() {
         total_reads, total_torn
     );
 
-    assert!(total_reads > 50, "Doit avoir effectué au moins 50 lectures concurrentes");
+    assert!(
+        total_reads > 50,
+        "Doit avoir effectué au moins 50 lectures concurrentes"
+    );
     assert_eq!(
         total_torn, 0,
         "VIOLATION INTÉGRITÉ AUDIO : lectures concurrentes avec déchirures de données !"
@@ -442,7 +487,8 @@ fn test_ring_buffer_and_prosody_concurrency_stress() {
 
     // Vérification finale de lecture après l'arrêt
     let mut final_window = [0.0f32; SAMPLES_PER_100MS];
-    rb.read_prosody_100ms(&mut final_window).expect("lecture finale réussie");
+    rb.read_prosody_100ms(&mut final_window)
+        .expect("lecture finale réussie");
     assert_eq!(final_window[0], (240_000 - 1_600) as f32);
     assert_eq!(final_window[1_599], 239_999.0);
 }
@@ -480,7 +526,10 @@ fn test_shared_mutex_prosody_analyzer_concurrency() {
 
     for h in handles {
         let (id, count) = h.join().expect("thread ok");
-        assert_eq!(count, 50, "Thread {id} doit avoir effectué 50 analyses sans blocage");
+        assert_eq!(
+            count, 50,
+            "Thread {id} doit avoir effectué 50 analyses sans blocage"
+        );
     }
 
     let mut final_state = shared_analyzer.lock().unwrap();

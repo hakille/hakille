@@ -77,7 +77,11 @@ impl GazeTracker {
 
         // Estimation de l'orientation de tête
         let eye_mid = left_eye_ext.midpoint(&right_eye_ext);
-        let head_h_vec = Vector3D::new(right_eye_ext.x - left_eye_ext.x, right_eye_ext.y - left_eye_ext.y, right_eye_ext.z - left_eye_ext.z);
+        let head_h_vec = Vector3D::new(
+            right_eye_ext.x - left_eye_ext.x,
+            right_eye_ext.y - left_eye_ext.y,
+            right_eye_ext.z - left_eye_ext.z,
+        );
         let _head_v_vec = Vector3D::new(chin.x - eye_mid.x, chin.y - eye_mid.y, chin.z - eye_mid.z);
 
         // Yaw : asymétrie horizontale du nez par rapport au milieu des yeux
@@ -105,11 +109,15 @@ impl GazeTracker {
         let left_eye_center = landmarks[33].midpoint(&landmarks[133]);
         let right_eye_center = landmarks[362].midpoint(&landmarks[263]);
 
-        let left_eye_dx = (left_iris.x - left_eye_center.x) / (landmarks[33].distance_to(&landmarks[133]).max(1e-4));
-        let left_eye_dy = (left_iris.y - left_eye_center.y) / (landmarks[33].distance_to(&landmarks[133]).max(1e-4));
+        let left_eye_dx = (left_iris.x - left_eye_center.x)
+            / (landmarks[33].distance_to(&landmarks[133]).max(1e-4));
+        let left_eye_dy = (left_iris.y - left_eye_center.y)
+            / (landmarks[33].distance_to(&landmarks[133]).max(1e-4));
 
-        let right_eye_dx = (right_iris.x - right_eye_center.x) / (landmarks[362].distance_to(&landmarks[263]).max(1e-4));
-        let right_eye_dy = (right_iris.y - right_eye_center.y) / (landmarks[362].distance_to(&landmarks[263]).max(1e-4));
+        let right_eye_dx = (right_iris.x - right_eye_center.x)
+            / (landmarks[362].distance_to(&landmarks[263]).max(1e-4));
+        let right_eye_dy = (right_iris.y - right_eye_center.y)
+            / (landmarks[362].distance_to(&landmarks[263]).max(1e-4));
 
         let eye_yaw = ((left_eye_dx + right_eye_dx) * 0.5 * 1.2).clamp(-0.6, 0.6);
         let eye_pitch = ((left_eye_dy + right_eye_dy) * 0.5 * 1.2).clamp(-0.6, 0.6);
@@ -122,7 +130,8 @@ impl GazeTracker {
         let gaze_origin = Point3D::new(origin_x, origin_y, camera_distance_m);
 
         // Combinaison Head Pose + Eye Rotation avec biais de visée écran (webcam en haut de l'écran)
-        let screen_pitch_bias = ((self.screen_bounds.center.y - origin_y) / camera_distance_m.max(0.1)).atan();
+        let screen_pitch_bias =
+            ((self.screen_bounds.center.y - origin_y) / camera_distance_m.max(0.1)).atan();
         let total_pitch = (screen_pitch_bias * 0.8) + head_pitch + eye_pitch;
         let total_yaw = head_yaw + eye_yaw;
 
@@ -169,10 +178,21 @@ mod tests {
 
         let res = tracker.track(&canonical_pts, 0.75, 640.0, 480.0);
 
-        assert!(res.is_screen_focused, "Regard centré canonique doit fixer l'écran");
+        assert!(
+            res.is_screen_focused,
+            "Regard centré canonique doit fixer l'écran"
+        );
         assert!(res.screen_intersection.is_some());
-        assert!(res.gaze_angles.0.abs() < 0.25, "Pitch proche de l'horizontale : {}", res.gaze_angles.0);
-        assert!(res.gaze_angles.1.abs() < 0.25, "Yaw proche de l'axe central : {}", res.gaze_angles.1);
+        assert!(
+            res.gaze_angles.0.abs() < 0.25,
+            "Pitch proche de l'horizontale : {}",
+            res.gaze_angles.0
+        );
+        assert!(
+            res.gaze_angles.1.abs() < 0.25,
+            "Yaw proche de l'axe central : {}",
+            res.gaze_angles.1
+        );
         assert!(res.confidence >= 0.85);
     }
 }

@@ -8,12 +8,14 @@
 //! - Zéro allocation dynamique pour les calculs géométriques fondamentaux (structures `Copy`).
 //! - Sérialisation et désérialisation complètes via `serde`.
 
+pub mod gaze;
 pub mod geometry;
 pub mod head_pose;
 pub mod skeleton;
-pub mod gaze;
 
+pub use gaze::{GazeRay3D, ScreenBounds};
 pub use geometry::{Point3D, Vector3D};
 pub use head_pose::{CameraIntrinsics, HeadPose6D};
-pub use skeleton::{BodySkeleton3D, CocoJointId, PostureKind, SkeletonJoint3D, COCO_KEYPOINTS_COUNT};
-pub use gaze::{GazeRay3D, ScreenBounds};
+pub use skeleton::{
+    BodySkeleton3D, COCO_KEYPOINTS_COUNT, CocoJointId, PostureKind, SkeletonJoint3D,
+};

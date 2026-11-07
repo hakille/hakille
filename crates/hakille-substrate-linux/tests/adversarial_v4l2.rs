@@ -1,9 +1,7 @@
-use std::time::Duration;
 use hakille_core::{CapabilityAction, CapabilityAuthority, CapabilityScope, Timestamp};
 use hakille_substrate::{CameraConfig, CameraFacing, ImageFormat, Substrate};
-use hakille_substrate_linux::{
-    bgr_to_rgb, camera_v4l2, yuyv_to_rgb8, LinuxSubstrate,
-};
+use hakille_substrate_linux::{LinuxSubstrate, bgr_to_rgb, camera_v4l2, yuyv_to_rgb8};
+use std::time::Duration;
 
 #[test]
 fn test_adv_v4l2_enumerate_devices_headless_no_crash() {
@@ -22,6 +20,7 @@ fn test_adv_v4l2_select_device_empty_list_returns_none() {
 
 #[test]
 fn test_adv_v4l2_start_without_emulation_fails_honestly() {
+    let _env_guard = camera_v4l2::CAMERA_EMULATION_ENV_LOCK.blocking_lock();
     unsafe { std::env::remove_var("HAKILLE_CAMERA_EMULATION") };
     let config = CameraConfig {
         width: 640,
@@ -30,7 +29,13 @@ fn test_adv_v4l2_start_without_emulation_fails_honestly() {
         facing: CameraFacing::Front,
     };
     match camera_v4l2::start(&config) {
-        Ok(_) => panic!("Should have failed when /dev/video* does not exist"),
+        Ok(stream) => {
+            stream.stop_and_join();
+            assert!(
+                !camera_v4l2::enumerate_devices().is_empty(),
+                "Should have failed when /dev/video* does not exist"
+            );
+        }
         Err(e) => {
             assert!(
                 e.contains("camera unavailable") && e.contains("V4L2"),
@@ -42,6 +47,10 @@ fn test_adv_v4l2_start_without_emulation_fails_honestly() {
 
 #[test]
 fn test_adv_v4l2_refuses_when_emulation_not_enabled() {
+    let _env_guard = camera_v4l2::CAMERA_EMULATION_ENV_LOCK.blocking_lock();
+    if !camera_v4l2::enumerate_devices().is_empty() {
+        return;
+    }
     for val in &["0", "false", "FALSE", "disabled", "junk", ""] {
         unsafe { std::env::set_var("HAKILLE_CAMERA_EMULATION", val) };
         let config = CameraConfig {
@@ -60,6 +69,7 @@ fn test_adv_v4l2_refuses_when_emulation_not_enabled() {
 
 #[tokio::test]
 async fn test_adv_v4l2_emulation_activations_and_lifecycle() {
+    let _env_guard = camera_v4l2::CAMERA_EMULATION_ENV_LOCK.lock().await;
     for val in &["1", "true", "TRUE", "True"] {
         unsafe { std::env::set_var("HAKILLE_CAMERA_EMULATION", val) };
         let config = CameraConfig {
@@ -94,6 +104,7 @@ async fn test_adv_v4l2_emulation_activations_and_lifecycle() {
 
 #[tokio::test]
 async fn test_adv_v4l2_emulation_zero_dimension_fallback() {
+    let _env_guard = camera_v4l2::CAMERA_EMULATION_ENV_LOCK.lock().await;
     unsafe { std::env::set_var("HAKILLE_CAMERA_EMULATION", "1") };
     let config = CameraConfig {
         width: 0,

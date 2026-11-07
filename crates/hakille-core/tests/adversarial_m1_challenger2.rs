@@ -1,13 +1,12 @@
 //! Challenger 2: Adversarial Stress-Test Suite for Milestone 1 (F04–F07)
 //! Probing edge cases, boundary conditions, malformed inputs, replay/splicing, and noise limits.
 
-use hakille_core::crypto::{
-    BlindIndexStore, CryptoError, DidJwk, DidKey, FuzzyExtractor,
-    VerifiableCredential, compute_blind_index, compute_blind_prefix_index,
-    format_did_jwk, format_did_key, normalize_term, parse_did_jwk, parse_did_key,
-    reconstruct_secret, split_secret, SecretShare,
-};
 use ed25519_dalek::{Signer, SigningKey};
+use hakille_core::crypto::{
+    BlindIndexStore, CryptoError, DidJwk, DidKey, FuzzyExtractor, SecretShare,
+    VerifiableCredential, compute_blind_index, compute_blind_prefix_index, format_did_jwk,
+    format_did_key, normalize_term, parse_did_jwk, parse_did_key, reconstruct_secret, split_secret,
+};
 use rand::rngs::OsRng;
 
 // =============================================================================
@@ -28,7 +27,10 @@ fn test_f04_blind_indexing_unicode_multibyte() {
     let cjk2 = "  北京欢迎你  ";
     let token_cjk1 = compute_blind_index(cjk1, &key);
     let token_cjk2 = compute_blind_index(cjk2, &key);
-    assert_eq!(token_cjk1, token_cjk2, "CJK whitespace normalization failed");
+    assert_eq!(
+        token_cjk1, token_cjk2,
+        "CJK whitespace normalization failed"
+    );
     assert_ne!(token_cjk1, [0u8; 32]);
 
     // Arabic characters (right-to-left script)
@@ -41,7 +43,10 @@ fn test_f04_blind_indexing_unicode_multibyte() {
     let cyr_lower = "совершенно секретно";
     let token_cyr_upper = compute_blind_index(cyr_upper, &key);
     let token_cyr_lower = compute_blind_index(cyr_lower, &key);
-    assert_eq!(token_cyr_upper, token_cyr_lower, "Cyrillic case normalization failed");
+    assert_eq!(
+        token_cyr_upper, token_cyr_lower,
+        "Cyrillic case normalization failed"
+    );
 
     // Latin with diverse diacritics
     let latin_accents = "Crème brûlée à l'Élysée & São Paulo";
@@ -90,7 +95,10 @@ fn test_f04_blind_indexing_empty_and_whitespace_only() {
 
     assert_eq!(token_empty, token_spaces);
     assert_eq!(token_spaces, token_tabs);
-    assert_ne!(token_empty, [0u8; 32], "Empty string should have valid HMAC token");
+    assert_ne!(
+        token_empty, [0u8; 32],
+        "Empty string should have valid HMAC token"
+    );
 
     // Prefix on empty string
     let p0 = compute_blind_prefix_index(empty, 0, &key);
@@ -131,8 +139,14 @@ fn test_f04_blind_index_store_adversarial_queries() {
     store.insert("", "rec-003", &key_a);
 
     // Exact matches
-    assert_eq!(store.search_exact("jean-luc picard", &key_a), vec!["rec-001"]);
-    assert_eq!(store.search_exact("🚀 mission mars", &key_a), vec!["rec-002"]);
+    assert_eq!(
+        store.search_exact("jean-luc picard", &key_a),
+        vec!["rec-001"]
+    );
+    assert_eq!(
+        store.search_exact("🚀 mission mars", &key_a),
+        vec!["rec-002"]
+    );
     assert_eq!(store.search_exact("   ", &key_a), vec!["rec-003"]);
 
     // Key isolation: searching with key_b returns empty
@@ -159,7 +173,10 @@ fn test_f05_shamir_k_minus_1_shares_cannot_reconstruct() {
 
     // A degree-2 polynomial cannot be reconstructed from 2 points.
     // The candidate MUST NOT match the original secret.
-    assert_ne!(candidate, secret, "k-1 shares must never yield original secret");
+    assert_ne!(
+        candidate, secret,
+        "k-1 shares must never yield original secret"
+    );
 
     // Try another 2-share subset
     let two_shares_other = vec![shares[2].clone(), shares[4].clone()];
@@ -224,35 +241,50 @@ fn test_f05_shamir_invalid_threshold_parameters() {
     let err_k_gt_n = split_secret(&secret, 5, 3).unwrap_err();
     assert_eq!(
         err_k_gt_n,
-        CryptoError::InvalidShareParameters { threshold: 5, total: 3 }
+        CryptoError::InvalidShareParameters {
+            threshold: 5,
+            total: 3
+        }
     );
 
     // k = 0
     let err_k_zero = split_secret(&secret, 0, 5).unwrap_err();
     assert_eq!(
         err_k_zero,
-        CryptoError::InvalidShareParameters { threshold: 0, total: 5 }
+        CryptoError::InvalidShareParameters {
+            threshold: 0,
+            total: 5
+        }
     );
 
     // n = 0
     let err_n_zero = split_secret(&secret, 3, 0).unwrap_err();
     assert_eq!(
         err_n_zero,
-        CryptoError::InvalidShareParameters { threshold: 3, total: 0 }
+        CryptoError::InvalidShareParameters {
+            threshold: 3,
+            total: 0
+        }
     );
 
     // k = 0, n = 0
     let err_both_zero = split_secret(&secret, 0, 0).unwrap_err();
     assert_eq!(
         err_both_zero,
-        CryptoError::InvalidShareParameters { threshold: 0, total: 0 }
+        CryptoError::InvalidShareParameters {
+            threshold: 0,
+            total: 0
+        }
     );
 
     // Empty shares slice passed to reconstruct
     let err_empty = reconstruct_secret(&[]).unwrap_err();
     assert_eq!(
         err_empty,
-        CryptoError::InsufficientShares { required: 1, provided: 0 }
+        CryptoError::InsufficientShares {
+            required: 1,
+            provided: 0
+        }
     );
 }
 
@@ -310,7 +342,10 @@ fn test_f06_fuzzy_extractor_noise_thresholds() {
         probe_40[bit / 8] ^= 1 << (bit % 8);
     }
     let res_40 = extractor.reproduce_from_bits(&probe_40, &record);
-    assert_eq!(res_40.unwrap_err(), CryptoError::BiometricVerificationFailed);
+    assert_eq!(
+        res_40.unwrap_err(),
+        CryptoError::BiometricVerificationFailed
+    );
 
     // Uniform noise above 50% (55% bit flips flips majority of replicas): MUST be rejected
     let mut probe_55 = FuzzyExtractor::quantize(&embedding);
@@ -320,12 +355,19 @@ fn test_f06_fuzzy_extractor_noise_thresholds() {
         probe_55[bit / 8] ^= 1 << (bit % 8);
     }
     let res_55 = extractor.reproduce_from_bits(&probe_55, &record);
-    assert_eq!(res_55.unwrap_err(), CryptoError::BiometricVerificationFailed);
+    assert_eq!(
+        res_55.unwrap_err(),
+        CryptoError::BiometricVerificationFailed
+    );
 
     // Independent continuous face embedding from a different person: MUST be rejected
-    let different_person_embedding: Vec<f32> = (0..512).map(|i| ((i as f32) * 0.13).sin()).collect();
+    let different_person_embedding: Vec<f32> =
+        (0..512).map(|i| ((i as f32) * 0.13).sin()).collect();
     let res_different = extractor.reproduce_key(&different_person_embedding, &record);
-    assert_eq!(res_different.unwrap_err(), CryptoError::BiometricVerificationFailed);
+    assert_eq!(
+        res_different.unwrap_err(),
+        CryptoError::BiometricVerificationFailed
+    );
 
     // Continuous embedding with extreme uncorrelated alternating noise: MUST be rejected
     let noisy_embedding: Vec<f32> = embedding
@@ -334,7 +376,10 @@ fn test_f06_fuzzy_extractor_noise_thresholds() {
         .map(|(i, &x)| if i % 2 == 0 { x + 2.0 } else { x - 2.0 })
         .collect();
     let res_continuous = extractor.reproduce_key(&noisy_embedding, &record);
-    assert_eq!(res_continuous.unwrap_err(), CryptoError::BiometricVerificationFailed);
+    assert_eq!(
+        res_continuous.unwrap_err(),
+        CryptoError::BiometricVerificationFailed
+    );
 }
 
 #[test]
@@ -357,7 +402,10 @@ fn test_f06_fuzzy_extractor_orthogonal_and_inverted_embeddings() {
     // Querying with inverted embedding -A must fail
     let emb_neg_a: Vec<f32> = emb_a.iter().map(|&x| -x).collect();
     let res_neg_a = extractor.reproduce_key(&emb_neg_a, &record_a);
-    assert_eq!(res_neg_a.unwrap_err(), CryptoError::BiometricVerificationFailed);
+    assert_eq!(
+        res_neg_a.unwrap_err(),
+        CryptoError::BiometricVerificationFailed
+    );
 }
 
 #[test]
@@ -371,12 +419,18 @@ fn test_f06_fuzzy_extractor_dimension_mismatch_and_empty() {
     // Query with 128-dim vector (different dimension changes hyperplane seed)
     let emb_128 = vec![0.5f32; 128];
     let res_dim = extractor.reproduce_key(&emb_128, &record);
-    assert_eq!(res_dim.unwrap_err(), CryptoError::BiometricVerificationFailed);
+    assert_eq!(
+        res_dim.unwrap_err(),
+        CryptoError::BiometricVerificationFailed
+    );
 
     // Query with empty vector
     let emb_empty: Vec<f32> = vec![];
     let res_empty = extractor.reproduce_key(&emb_empty, &record);
-    assert_eq!(res_empty.unwrap_err(), CryptoError::BiometricVerificationFailed);
+    assert_eq!(
+        res_empty.unwrap_err(),
+        CryptoError::BiometricVerificationFailed
+    );
 }
 
 #[test]
@@ -391,19 +445,28 @@ fn test_f06_fuzzy_extractor_tampered_records() {
     let mut bad_helper_record = record.clone();
     bad_helper_record.helper_data.truncate(100);
     let res_trunc = extractor.reproduce_key(&emb, &bad_helper_record);
-    assert!(matches!(res_trunc.unwrap_err(), CryptoError::BiometricQuantizationError(_)));
+    assert!(matches!(
+        res_trunc.unwrap_err(),
+        CryptoError::BiometricQuantizationError(_)
+    ));
 
     // Tampered salt
     let mut bad_salt_record = record.clone();
     bad_salt_record.salt[0] ^= 0xff;
     let res_salt = extractor.reproduce_key(&emb, &bad_salt_record);
-    assert_eq!(res_salt.unwrap_err(), CryptoError::BiometricVerificationFailed);
+    assert_eq!(
+        res_salt.unwrap_err(),
+        CryptoError::BiometricVerificationFailed
+    );
 
     // Tampered commitment hash
     let mut bad_commit_record = record.clone();
     bad_commit_record.commitment[0] ^= 0xff;
     let res_commit = extractor.reproduce_key(&emb, &bad_commit_record);
-    assert_eq!(res_commit.unwrap_err(), CryptoError::BiometricVerificationFailed);
+    assert_eq!(
+        res_commit.unwrap_err(),
+        CryptoError::BiometricVerificationFailed
+    );
 }
 
 // =============================================================================
@@ -499,7 +562,8 @@ fn test_f07_did_jwk_malformed_inputs() {
         "crv": "Ed25519",
         "x": hakille_core::crypto::base64url_encode(&[0x42; 32])
     });
-    let rsa_encoded = hakille_core::crypto::base64url_encode(&serde_json::to_vec(&rsa_jwk).unwrap());
+    let rsa_encoded =
+        hakille_core::crypto::base64url_encode(&serde_json::to_vec(&rsa_jwk).unwrap());
     assert!(matches!(
         parse_did_jwk(&format!("did:jwk:{rsa_encoded}")),
         Err(CryptoError::InvalidDid(_))
@@ -511,7 +575,8 @@ fn test_f07_did_jwk_malformed_inputs() {
         "crv": "P-256",
         "x": hakille_core::crypto::base64url_encode(&[0x42; 32])
     });
-    let p256_encoded = hakille_core::crypto::base64url_encode(&serde_json::to_vec(&p256_jwk).unwrap());
+    let p256_encoded =
+        hakille_core::crypto::base64url_encode(&serde_json::to_vec(&p256_jwk).unwrap());
     assert!(matches!(
         parse_did_jwk(&format!("did:jwk:{p256_encoded}")),
         Err(CryptoError::InvalidDid(_))
@@ -523,7 +588,8 @@ fn test_f07_did_jwk_malformed_inputs() {
         "crv": "Ed25519",
         "x": hakille_core::crypto::base64url_encode(&[0x42; 16])
     });
-    let short_x_encoded = hakille_core::crypto::base64url_encode(&serde_json::to_vec(&short_x_jwk).unwrap());
+    let short_x_encoded =
+        hakille_core::crypto::base64url_encode(&serde_json::to_vec(&short_x_jwk).unwrap());
     assert!(matches!(
         parse_did_jwk(&format!("did:jwk:{short_x_encoded}")),
         Err(CryptoError::InvalidDid(_))

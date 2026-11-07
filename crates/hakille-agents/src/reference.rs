@@ -305,7 +305,9 @@ mod tests {
             let mut agent = sandbox
                 .load(&artifact.name, &bytes)
                 .expect("chargement de l'agent métier");
-            let output = agent.run(input, RunLimits::default()).expect("exécution métier");
+            let output = agent
+                .run(input, RunLimits::default())
+                .expect("exécution métier");
             let val: serde_json::Value = serde_json::from_str(&output).expect("JSON valide");
             assert_eq!(val["status"], "ready");
             assert_eq!(val["agent"], artifact.name.as_str());
@@ -325,7 +327,10 @@ mod tests {
             ("agent-calendar", "agents/calendar/calendar.wasm"),
             ("agent-code", "agents/code/code.wasm"),
             ("agent-home", "agents/home/home.wasm"),
-            ("agent-wallet-readonly", "agents/wallet-readonly/wallet-readonly.wasm"),
+            (
+                "agent-wallet-readonly",
+                "agents/wallet-readonly/wallet-readonly.wasm",
+            ),
         ];
         for (name, path) in targets {
             let wasm = pairs.iter().find(|(n, _)| *n == name).unwrap().1.clone();

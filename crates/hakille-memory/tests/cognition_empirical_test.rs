@@ -8,21 +8,20 @@
 
 use chrono::{Duration, Utc};
 use hakille_core::{Timestamp, TrustLevel};
+use hakille_memory::GraphStorage;
 use hakille_memory::cognition::{
-    active_user_node_id, build_cognitive_triplet, build_cognitive_triplet_with_weight,
-    cognitive_predicate_id, create_attention_level_triplet, create_emotion_triplet,
-    create_estimated_age_triplet, create_fatigue_index_triplet, create_posture_triplet,
-    is_cognitive_predicate, prune_cognitive_signals, ALL_COGNITIVE_PREDICATES,
-    COGNITIVE_DECAY_RATE, DEFAULT_COGNITIVE_CUTOFF_WEIGHT, DEFAULT_COGNITIVE_TRUST,
-    PREDICATE_COGNITION_ATTENTION_LEVEL, PREDICATE_COGNITION_EMOTION,
+    ALL_COGNITIVE_PREDICATES, COGNITIVE_DECAY_RATE, DEFAULT_COGNITIVE_CUTOFF_WEIGHT,
+    DEFAULT_COGNITIVE_TRUST, PREDICATE_COGNITION_ATTENTION_LEVEL, PREDICATE_COGNITION_EMOTION,
     PREDICATE_COGNITION_ESTIMATED_AGE, PREDICATE_COGNITION_FATIGUE_INDEX,
-    PREDICATE_COGNITION_POSTURE, SUBJECT_ACTIVE_USER,
+    PREDICATE_COGNITION_POSTURE, SUBJECT_ACTIVE_USER, active_user_node_id, build_cognitive_triplet,
+    build_cognitive_triplet_with_weight, cognitive_predicate_id, create_attention_level_triplet,
+    create_emotion_triplet, create_estimated_age_triplet, create_fatigue_index_triplet,
+    create_posture_triplet, is_cognitive_predicate, prune_cognitive_signals,
 };
 use hakille_memory::context_partition::ContextPartition;
 use hakille_memory::graph::KnowledgeGraph;
 use hakille_memory::storage::edge::EdgeStore;
 use hakille_memory::triplet::{NodeType, NodeValue, TripletSource};
-use hakille_memory::GraphStorage;
 use std::sync::Arc;
 
 // ============================================================================
@@ -178,15 +177,24 @@ fn test_purge_physical_zero_tombstone_guarantee() {
     let report = prune_cognitive_signals(&mut graph, 0.05);
 
     // Assertions strictes d'anti-surveillance et de purge physique :
-    assert_eq!(report.nodes_removed, 1, "Le nœud cognitif doit être supprimé");
+    assert_eq!(
+        report.nodes_removed, 1,
+        "Le nœud cognitif doit être supprimé"
+    );
     assert_eq!(
         report.nodes_faded, 0,
         "STRICTEMENT AUCUN TOMBSTONE ne doit être conservé !"
     );
 
     // Vérifier l'absence absolue dans le graphe RAM
-    assert!(!graph.contains(&id_emo), "graph.contains(id_emo) doit être faux");
-    assert!(graph.get(&id_emo).is_none(), "graph.get(id_emo) doit être None");
+    assert!(
+        !graph.contains(&id_emo),
+        "graph.contains(id_emo) doit être faux"
+    );
+    assert!(
+        graph.get(&id_emo).is_none(),
+        "graph.get(id_emo) doit être None"
+    );
 
     // Vérifier qu'aucun résidu n'existe dans la table d'indexation
     let active_user = active_user_node_id();
@@ -275,19 +283,34 @@ fn test_adversarial_invalid_confidence_values() {
         );
 
         let res_emo = create_emotion_triplet("test", conf);
-        assert!(res_emo.is_err(), "create_emotion_triplet doit rejeter {conf}");
+        assert!(
+            res_emo.is_err(),
+            "create_emotion_triplet doit rejeter {conf}"
+        );
 
         let res_age = create_estimated_age_triplet(30.0, conf);
-        assert!(res_age.is_err(), "create_estimated_age_triplet doit rejeter {conf}");
+        assert!(
+            res_age.is_err(),
+            "create_estimated_age_triplet doit rejeter {conf}"
+        );
 
         let res_post = create_posture_triplet("Upright", conf);
-        assert!(res_post.is_err(), "create_posture_triplet doit rejeter {conf}");
+        assert!(
+            res_post.is_err(),
+            "create_posture_triplet doit rejeter {conf}"
+        );
 
         let res_att = create_attention_level_triplet("high", conf);
-        assert!(res_att.is_err(), "create_attention_level_triplet doit rejeter {conf}");
+        assert!(
+            res_att.is_err(),
+            "create_attention_level_triplet doit rejeter {conf}"
+        );
 
         let res_fat = create_fatigue_index_triplet(0.1, conf);
-        assert!(res_fat.is_err(), "create_fatigue_index_triplet doit rejeter {conf}");
+        assert!(
+            res_fat.is_err(),
+            "create_fatigue_index_triplet doit rejeter {conf}"
+        );
     }
 
     // Valeurs limites valides [0.0, 1.0]
@@ -352,7 +375,10 @@ fn test_cognitive_schema_constants_and_types() {
     assert_eq!(PREDICATE_COGNITION_EMOTION, "cognition:emotion");
     assert_eq!(PREDICATE_COGNITION_ESTIMATED_AGE, "cognition:estimated_age");
     assert_eq!(PREDICATE_COGNITION_POSTURE, "cognition:posture");
-    assert_eq!(PREDICATE_COGNITION_ATTENTION_LEVEL, "cognition:attention_level");
+    assert_eq!(
+        PREDICATE_COGNITION_ATTENTION_LEVEL,
+        "cognition:attention_level"
+    );
     assert_eq!(PREDICATE_COGNITION_FATIGUE_INDEX, "cognition:fatigue_index");
 
     for pred in ALL_COGNITIVE_PREDICATES {

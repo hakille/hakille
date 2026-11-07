@@ -160,7 +160,14 @@ impl MultimodalCognitiveEngine {
     }
 
     /// Convertit le snapshot en événements pour diffusion sur le bus IPC.
-    pub fn create_ipc_events(&self, snapshot: &UserMultimodalSnapshot) -> (UserContextEvent, Option<EmotionUpdateEvent>, Option<FatigueAlertEvent>) {
+    pub fn create_ipc_events(
+        &self,
+        snapshot: &UserMultimodalSnapshot,
+    ) -> (
+        UserContextEvent,
+        Option<EmotionUpdateEvent>,
+        Option<FatigueAlertEvent>,
+    ) {
         let ts_ms = snapshot.timestamp.0.timestamp_millis() as u64;
 
         let presence = UserPresenceDto {
@@ -177,7 +184,11 @@ impl MultimodalCognitiveEngine {
             } else {
                 AttentionKind::Distracted
             },
-            score: if snapshot.attention.is_screen_focused { 0.92 } else { 0.40 },
+            score: if snapshot.attention.is_screen_focused {
+                0.92
+            } else {
+                0.40
+            },
             gaze_on_screen: snapshot.attention.is_screen_focused,
             fixation_duration_ms: 1200,
             timestamp_ms: ts_ms,
@@ -233,7 +244,8 @@ impl MultimodalCognitiveEngine {
                 ear: snapshot.attention.eye_aspect_ratio,
                 mar: 0.15,
                 yawn_count: snapshot.attention.recent_yawn_count as u32,
-                recommendation: "Prenez une pause de 10 minutes pour soulager vos yeux.".to_string(),
+                recommendation: "Prenez une pause de 10 minutes pour soulager vos yeux."
+                    .to_string(),
                 timestamp_ms: ts_ms,
             })
         } else {
@@ -260,7 +272,9 @@ fn fuse_emotions(
     let mut confidence = visual.confidence;
     let mut primary_emotion = visual.primary_emotion.clone();
 
-    if let Some(audio) = audio_pitch && audio.is_voiced {
+    if let Some(audio) = audio_pitch
+        && audio.is_voiced
+    {
         // Poids bayésiens : 70% vision, 30% prosodie vocale
         let w_v = 0.70;
         let w_a = 0.30;
@@ -326,7 +340,10 @@ mod tests {
         assert_eq!(snapshot.emotion.primary_emotion, "Neutral");
         assert!(snapshot.emotion.confidence > 0.70);
         assert!(!snapshot.demographics.is_minor);
-        assert!(snapshot.physique.estimated_height_cm >= 150.0 && snapshot.physique.estimated_height_cm <= 195.0);
+        assert!(
+            snapshot.physique.estimated_height_cm >= 150.0
+                && snapshot.physique.estimated_height_cm <= 195.0
+        );
         assert!(snapshot.physique.is_seated);
         assert!(snapshot.attention.is_screen_focused);
         assert!(!snapshot.attention.is_drowsy);
@@ -335,7 +352,10 @@ mod tests {
         let (user_ctx, emotion_evt, fatigue_evt) = engine.create_ipc_events(&snapshot);
         assert_eq!(user_ctx.primary_emotion, "Neutral");
         assert!(emotion_evt.is_some());
-        assert!(fatigue_evt.is_none(), "Pas d'alerte fatigue en conditions nominales");
+        assert!(
+            fatigue_evt.is_none(),
+            "Pas d'alerte fatigue en conditions nominales"
+        );
     }
 
     #[test]
@@ -360,7 +380,15 @@ mod tests {
             .process_frame(now, ts, &dummy_rgb, 640, 480, Some(&agitated_voice))
             .expect("process_frame avec audio réussi");
 
-        assert!(snapshot.emotion.arousal > 0.0, "La voix aiguë augmente l'arousal : {}", snapshot.emotion.arousal);
-        assert!(snapshot.emotion.valence > 0.0, "Le HNR élevé augmente la valence : {}", snapshot.emotion.valence);
+        assert!(
+            snapshot.emotion.arousal > 0.0,
+            "La voix aiguë augmente l'arousal : {}",
+            snapshot.emotion.arousal
+        );
+        assert!(
+            snapshot.emotion.valence > 0.0,
+            "Le HNR élevé augmente la valence : {}",
+            snapshot.emotion.valence
+        );
     }
 }

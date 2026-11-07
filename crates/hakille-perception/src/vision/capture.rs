@@ -66,7 +66,9 @@ pub enum VideoIngestionError {
         data_len: usize,
     },
 
-    #[error("Sous-dimensionnement du tampon : {expected} octets attendus pour {width}x{height} {format:?}, reçu {actual} octets")]
+    #[error(
+        "Sous-dimensionnement du tampon : {expected} octets attendus pour {width}x{height} {format:?}, reçu {actual} octets"
+    )]
     BufferUnderflow {
         expected: usize,
         actual: usize,
@@ -267,13 +269,14 @@ pub fn yuyv_to_rgb24(
     width: u32,
     height: u32,
 ) -> Result<(), VideoIngestionError> {
-    let num_pixels = (width as usize)
-        .checked_mul(height as usize)
-        .ok_or(VideoIngestionError::EmptyFrame {
-            width,
-            height,
-            data_len: src.len(),
-        })?;
+    let num_pixels =
+        (width as usize)
+            .checked_mul(height as usize)
+            .ok_or(VideoIngestionError::EmptyFrame {
+                width,
+                height,
+                data_len: src.len(),
+            })?;
     let expected_src = num_pixels.checked_mul(2).unwrap_or(0);
     let expected_dst = num_pixels.checked_mul(3).unwrap_or(0);
 
@@ -327,13 +330,14 @@ pub fn rgba_to_rgb24(
     width: u32,
     height: u32,
 ) -> Result<(), VideoIngestionError> {
-    let num_pixels = (width as usize)
-        .checked_mul(height as usize)
-        .ok_or(VideoIngestionError::EmptyFrame {
-            width,
-            height,
-            data_len: src.len(),
-        })?;
+    let num_pixels =
+        (width as usize)
+            .checked_mul(height as usize)
+            .ok_or(VideoIngestionError::EmptyFrame {
+                width,
+                height,
+                data_len: src.len(),
+            })?;
     let expected_src = num_pixels.checked_mul(4).unwrap_or(0);
     let expected_dst = num_pixels.checked_mul(3).unwrap_or(0);
 
@@ -367,13 +371,14 @@ pub fn bgra_to_rgb24(
     width: u32,
     height: u32,
 ) -> Result<(), VideoIngestionError> {
-    let num_pixels = (width as usize)
-        .checked_mul(height as usize)
-        .ok_or(VideoIngestionError::EmptyFrame {
-            width,
-            height,
-            data_len: src.len(),
-        })?;
+    let num_pixels =
+        (width as usize)
+            .checked_mul(height as usize)
+            .ok_or(VideoIngestionError::EmptyFrame {
+                width,
+                height,
+                data_len: src.len(),
+            })?;
     let expected_src = num_pixels.checked_mul(4).unwrap_or(0);
     let expected_dst = num_pixels.checked_mul(3).unwrap_or(0);
 
@@ -516,13 +521,13 @@ impl VideoFrameBridge {
                 (width, height, buf)
             }
             FrameFormat::Rgba8 => {
-                let num_px = (width as usize)
-                    .checked_mul(height as usize)
-                    .ok_or(VideoIngestionError::EmptyFrame {
+                let num_px = (width as usize).checked_mul(height as usize).ok_or(
+                    VideoIngestionError::EmptyFrame {
                         width,
                         height,
                         data_len: raw_data.len(),
-                    })?;
+                    },
+                )?;
                 let required_src = num_px * 4;
                 let required_dst = num_px * 3;
                 if raw_data.len() < required_src {
@@ -540,13 +545,13 @@ impl VideoFrameBridge {
                 (width, height, buf)
             }
             FrameFormat::Bgra8 => {
-                let num_px = (width as usize)
-                    .checked_mul(height as usize)
-                    .ok_or(VideoIngestionError::EmptyFrame {
+                let num_px = (width as usize).checked_mul(height as usize).ok_or(
+                    VideoIngestionError::EmptyFrame {
                         width,
                         height,
                         data_len: raw_data.len(),
-                    })?;
+                    },
+                )?;
                 let required_src = num_px * 4;
                 let required_dst = num_px * 3;
                 if raw_data.len() < required_src {
@@ -564,13 +569,13 @@ impl VideoFrameBridge {
                 (width, height, buf)
             }
             FrameFormat::Yuyv => {
-                let num_px = (width as usize)
-                    .checked_mul(height as usize)
-                    .ok_or(VideoIngestionError::EmptyFrame {
+                let num_px = (width as usize).checked_mul(height as usize).ok_or(
+                    VideoIngestionError::EmptyFrame {
                         width,
                         height,
                         data_len: raw_data.len(),
-                    })?;
+                    },
+                )?;
                 let required_src = num_px * 2;
                 let required_dst = num_px * 3;
                 if raw_data.len() < required_src {

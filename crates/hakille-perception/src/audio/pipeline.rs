@@ -20,7 +20,7 @@ use crate::audio::asr::{AsrEngine, SenseVoiceSmall};
 use crate::audio::capture::AudioChunk;
 use crate::audio::prosody::VocalProsodyAnalyzer;
 use crate::audio::wake_word::WakeBackendKind;
-use hakille_inference::{resolve_vad_model_path, OrtVadSession};
+use hakille_inference::{OrtVadSession, resolve_vad_model_path};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -516,7 +516,9 @@ impl VoicePipeline {
             Ok(hyp) => {
                 self.last_utterance = None;
                 self.state = PipelineState::Idle;
-                let mut events = vec![VoiceEvent::Transcript { text: hyp.transcript }];
+                let mut events = vec![VoiceEvent::Transcript {
+                    text: hyp.transcript,
+                }];
 
                 // Propagation sans perte des émotions et balises acoustiques SenseVoice
                 if !hyp.emotion.is_empty() || !hyp.acoustic_events.is_empty() {
@@ -1241,11 +1243,15 @@ mod tests {
     fn emotion_hook_and_event_variants() {
         let calls: Arc<Mutex<Vec<(String, Vec<String>, f32)>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&calls);
-        let hook = Arc::new(move |emotion: &str, acoustic_events: &[String], confidence: f32| {
-            sink.lock()
-                .expect("lock")
-                .push((emotion.to_string(), acoustic_events.to_vec(), confidence));
-        });
+        let hook = Arc::new(
+            move |emotion: &str, acoustic_events: &[String], confidence: f32| {
+                sink.lock().expect("lock").push((
+                    emotion.to_string(),
+                    acoustic_events.to_vec(),
+                    confidence,
+                ));
+            },
+        );
 
         hook.on_emotion("HAPPY", &["Laughter".to_string()], 0.95);
         let rec = calls.lock().unwrap().clone();
@@ -1293,6 +1299,8 @@ mod tests {
         let prosody_event = VoiceEvent::ProsodyUpdate {
             features: prosody_features,
         };
-        assert!(matches!(prosody_event, VoiceEvent::ProsodyUpdate { features } if features.f0_hz == Some(220.0)));
+        assert!(
+            matches!(prosody_event, VoiceEvent::ProsodyUpdate { features } if features.f0_hz == Some(220.0))
+        );
     }
 }
