@@ -72,7 +72,7 @@ impl GgufValue {
             Self::Uint8(v) => Some(*v as i64),
             Self::Uint16(v) => Some(*v as i64),
             Self::Uint32(v) => Some(*v as i64),
-            Self::Uint64(v) => Some(*v as i64),
+            Self::Uint64(v) => i64::try_from(*v).ok(),
             _ => None,
         }
     }
@@ -134,6 +134,10 @@ impl GgufModel {
                 e
             ))
         })?;
+        let file_len = file
+            .metadata()
+            .map_err(|e| HakilleError::InferenceError(format!("Taille GGUF : {e}")))?
+            .len();
         let mut reader = BufReader::new(file);
 
         // 1. Read header (24 bytes)
@@ -147,6 +151,15 @@ impl GgufModel {
         })?;
 
         let header = GgufRuntime::parse_header(&header_buf)?;
+        if header.tensor_count > 1_000_000
+            || header.metadata_kv_count > 100_000
+            || header.tensor_count > file_len / 24
+            || header.metadata_kv_count > file_len / 12
+        {
+            return Err(HakilleError::InferenceError(
+                "Comptages GGUF incohérents avec la taille du fichier".into(),
+            ));
+        }
 
         // 2. Read metadata KV pairs
         let mut metadata = HashMap::new();
@@ -155,9 +168,23 @@ impl GgufModel {
         for _ in 0..header.metadata_kv_count {
             let key = Self::read_string(&mut reader)?;
             let val_type = Self::read_u32(&mut reader)?;
-            let val = Self::read_value(&mut reader, val_type)?;
+            let val = Self::read_value(&mut reader, val_type, file_len)?;
+            if metadata.contains_key(&key) {
+                return Err(HakilleError::InferenceError(format!(
+                    "Métadonnée GGUF dupliquée : {key}"
+                )));
+            }
             metadata.insert(key.clone(), val.to_display_string());
             metadata_raw.insert(key, val);
+            if reader
+                .stream_position()
+                .map_err(|e| HakilleError::InferenceError(e.to_string()))?
+                > 64 * 1024 * 1024
+            {
+                return Err(HakilleError::InferenceError(
+                    "Métadonnées GGUF supérieures à 64 Mio".into(),
+                ));
+            }
         }
 
         // 3. Read tensor info headers
@@ -167,21 +194,47 @@ impl GgufModel {
         for _ in 0..header.tensor_count {
             let name = Self::read_string(&mut reader)?;
             let n_dims = Self::read_u32(&mut reader)?;
+            if !(1..=4).contains(&n_dims) {
+                return Err(HakilleError::InferenceError(format!(
+                    "Nombre de dimensions GGUF invalide : {n_dims}"
+                )));
+            }
             let mut dimensions = Vec::with_capacity(n_dims as usize);
             for _ in 0..n_dims {
-                dimensions.push(Self::read_u64(&mut reader)?);
+                let dimension = Self::read_u64(&mut reader)?;
+                if dimension == 0 {
+                    return Err(HakilleError::InferenceError("Dimension GGUF nulle".into()));
+                }
+                dimensions.push(dimension);
             }
             let tensor_type = Self::read_u32(&mut reader)?;
             let offset = Self::read_u64(&mut reader)?;
 
             // Accumulate parameter count for weight matrices
             if !dimensions.is_empty() {
-                let count: u64 = dimensions.iter().product();
+                let count = dimensions
+                    .iter()
+                    .try_fold(1u64, |count, dim| count.checked_mul(*dim))
+                    .ok_or_else(|| {
+                        HakilleError::InferenceError("Produit des dimensions GGUF débordant".into())
+                    })?;
                 if !name.ends_with(".bias") && !name.contains("rotary") {
-                    estimated_params += count;
+                    estimated_params = estimated_params.checked_add(count).ok_or_else(|| {
+                        HakilleError::InferenceError("Nombre de paramètres GGUF débordant".into())
+                    })?;
                 }
             }
 
+            if tensors.contains_key(&name) {
+                return Err(HakilleError::InferenceError(format!(
+                    "Tenseur GGUF dupliqué : {name}"
+                )));
+            }
+            if offset >= file_len {
+                return Err(HakilleError::InferenceError(format!(
+                    "Offset GGUF hors fichier : {name}"
+                )));
+            }
             tensors.insert(
                 name.clone(),
                 GgufTensorInfo {
@@ -221,7 +274,7 @@ impl GgufModel {
     }
 
     pub fn context_length(&self) -> Option<u64> {
-        let arch = self.architecture().unwrap_or("qwen2");
+        let arch = self.architecture()?;
         let key = format!("{}.context_length", arch);
         self.metadata_raw
             .get(&key)
@@ -230,7 +283,7 @@ impl GgufModel {
     }
 
     pub fn embedding_length(&self) -> Option<u64> {
-        let arch = self.architecture().unwrap_or("qwen2");
+        let arch = self.architecture()?;
         let key = format!("{}.embedding_length", arch);
         self.metadata_raw
             .get(&key)
@@ -239,7 +292,7 @@ impl GgufModel {
     }
 
     pub fn block_count(&self) -> Option<u64> {
-        let arch = self.architecture().unwrap_or("qwen2");
+        let arch = self.architecture()?;
         let key = format!("{}.block_count", arch);
         self.metadata_raw
             .get(&key)
@@ -331,8 +384,10 @@ impl GgufModel {
     }
 
     fn read_string<R: Read>(reader: &mut R) -> Result<String> {
-        let len = Self::read_u64(reader)? as usize;
-        if len > 50 * 1024 * 1024 {
+        let len = usize::try_from(Self::read_u64(reader)?).map_err(|_| {
+            HakilleError::InferenceError("Longueur de chaîne GGUF débordante".into())
+        })?;
+        if len > 16 * 1024 * 1024 {
             return Err(HakilleError::InferenceError(format!(
                 "String length {} exceeds safety threshold",
                 len
@@ -347,7 +402,29 @@ impl GgufModel {
         })
     }
 
-    fn read_value<R: Read + Seek>(reader: &mut R, value_type: u32) -> Result<GgufValue> {
+    /// Un seek au-delà d'EOF réussit sur File : vérifier explicitement la
+    /// borne pour ne pas accepter un vocabulaire GGUF tronqué.
+    fn skip_exact<R: Read + Seek>(reader: &mut R, count: u64, file_len: u64) -> Result<()> {
+        let current = reader
+            .stream_position()
+            .map_err(|e| HakilleError::InferenceError(e.to_string()))?;
+        let target = current
+            .checked_add(count)
+            .filter(|target| *target <= file_len)
+            .ok_or_else(|| {
+                HakilleError::InferenceError("Tableau GGUF tronqué ou taille débordante".into())
+            })?;
+        reader
+            .seek(SeekFrom::Start(target))
+            .map_err(|e| HakilleError::InferenceError(e.to_string()))?;
+        Ok(())
+    }
+
+    fn read_value<R: Read + Seek>(
+        reader: &mut R,
+        value_type: u32,
+        file_len: u64,
+    ) -> Result<GgufValue> {
         match value_type {
             0 => Ok(GgufValue::Uint8(Self::read_u8(reader)?)),
             1 => Ok(GgufValue::Int8(Self::read_u8(reader)? as i8)),
@@ -361,6 +438,11 @@ impl GgufModel {
             9 => {
                 let elem_type = Self::read_u32(reader)?;
                 let array_len = Self::read_u64(reader)?;
+                if elem_type == 9 || elem_type > 12 || array_len > 4_000_000 {
+                    return Err(HakilleError::InferenceError(
+                        "Tableau GGUF imbriqué, type inconnu ou taille excessive".into(),
+                    ));
+                }
 
                 // If array is large (e.g. tokenizer vocab with 150,000 items), skip seeking to avoid allocating huge memory
                 if array_len > 256 {
@@ -373,27 +455,15 @@ impl GgufModel {
                     };
 
                     if let Some(elem_size) = fixed_elem_size {
-                        let total_bytes = elem_size * array_len;
-                        reader
-                            .seek(SeekFrom::Current(total_bytes as i64))
-                            .map_err(|e| {
-                                HakilleError::InferenceError(format!(
-                                    "Seek error skipping array: {}",
-                                    e
-                                ))
-                            })?;
+                        let total_bytes = elem_size.checked_mul(array_len).ok_or_else(|| {
+                            HakilleError::InferenceError("Taille de tableau GGUF débordante".into())
+                        })?;
+                        Self::skip_exact(reader, total_bytes, file_len)?;
                     } else if elem_type == 8 {
                         // String array: skip each string efficiently
                         for _ in 0..array_len {
                             let str_len = Self::read_u64(reader)?;
-                            reader
-                                .seek(SeekFrom::Current(str_len as i64))
-                                .map_err(|e| {
-                                    HakilleError::InferenceError(format!(
-                                        "Seek error skipping string in array: {}",
-                                        e
-                                    ))
-                                })?;
+                            Self::skip_exact(reader, str_len, file_len)?;
                         }
                     } else {
                         return Err(HakilleError::InferenceError(format!(
@@ -409,7 +479,7 @@ impl GgufModel {
                 } else {
                     let mut items = Vec::with_capacity(array_len as usize);
                     for _ in 0..array_len {
-                        items.push(Self::read_value(reader, elem_type)?);
+                        items.push(Self::read_value(reader, elem_type, file_len)?);
                     }
                     Ok(GgufValue::Array(items))
                 }
@@ -444,6 +514,11 @@ impl GgufRuntime {
         }
 
         let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        if version != 3 {
+            return Err(HakilleError::InferenceError(format!(
+                "Version GGUF {version} non prise en charge (v3 attendue)"
+            )));
+        }
         let tensor_count = u64::from_le_bytes([
             bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
         ]);
@@ -526,15 +601,18 @@ impl GgufInferenceEngine {
     }
 
     pub fn model_name(&self) -> &str {
-        self.model.name().unwrap_or("qwen2.5")
+        self.model.name().unwrap_or("modèle GGUF inconnu")
     }
 
     pub fn architecture(&self) -> &str {
-        self.model.architecture().unwrap_or("qwen2")
+        self.model.architecture().unwrap_or("architecture inconnue")
     }
 
     pub fn context_length(&self) -> usize {
-        self.model.context_length().unwrap_or(32768) as usize
+        self.model
+            .context_length()
+            .and_then(|length| usize::try_from(length).ok())
+            .unwrap_or(0)
     }
 
     /// SUPPRIMÉ (ex-`generate_instruct` simulé par gabarits) : la génération
@@ -581,5 +659,106 @@ impl GgufInferenceEngine {
             "SIMULÉ supprimé — GgufInferenceEngine::generate_gui_action_plan ne décode aucun VLM (modèle '{}'). Utilisez UiTarsAgent::predict_intent_from_task + ancrage sur régions CV mesurées.",
             self.model_name(),
         )))
+    }
+}
+
+#[cfg(test)]
+mod gguf_safety_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn header(tensors: u64, metadata: u64) -> Vec<u8> {
+        let mut bytes = GGUF_MAGIC.to_le_bytes().to_vec();
+        bytes.extend(3u32.to_le_bytes());
+        bytes.extend(tensors.to_le_bytes());
+        bytes.extend(metadata.to_le_bytes());
+        bytes
+    }
+
+    fn string(bytes: &mut Vec<u8>, text: &str) {
+        bytes.extend((text.len() as u64).to_le_bytes());
+        bytes.extend(text.as_bytes());
+    }
+
+    fn parse_fixture(bytes: &[u8]) -> Result<GgufModel> {
+        let path = std::env::temp_dir().join(format!("hakille-gguf-{}.gguf", uuid::Uuid::new_v4()));
+        std::fs::write(&path, bytes).unwrap();
+        let result = GgufModel::read_from_file(&path);
+        std::fs::remove_file(path).unwrap();
+        result
+    }
+
+    #[test]
+    fn versions_and_unsigned_conversion_are_checked() {
+        let mut bytes = header(0, 0);
+        bytes[4..8].copy_from_slice(&99u32.to_le_bytes());
+        assert!(GgufRuntime::parse_header(&bytes).is_err());
+        assert_eq!(GgufValue::Uint64(u64::MAX).as_i64(), None);
+        assert_eq!(GgufValue::Uint64(42).as_i64(), Some(42));
+    }
+
+    #[test]
+    fn truncated_large_arrays_and_nested_arrays_are_refused() {
+        for (kind, count) in [(4u32, 300u64), (8, 300), (9, 1), (4, u64::MAX)] {
+            let mut bytes = kind.to_le_bytes().to_vec();
+            bytes.extend(count.to_le_bytes());
+            let len = bytes.len() as u64;
+            assert!(GgufModel::read_value(&mut Cursor::new(bytes), 9, len).is_err());
+        }
+        let mut bytes = 4u32.to_le_bytes().to_vec();
+        bytes.extend(300u64.to_le_bytes());
+        bytes.extend(vec![0u8; 1200]);
+        let len = bytes.len() as u64;
+        assert!(matches!(
+            GgufModel::read_value(&mut Cursor::new(bytes), 9, len).unwrap(),
+            GgufValue::LargeArray { len: 300, .. }
+        ));
+    }
+
+    #[test]
+    fn invalid_dimensions_and_overflow_are_refused_before_allocation() {
+        let mut bytes = header(1, 0);
+        string(&mut bytes, "weight");
+        bytes.extend(u32::MAX.to_le_bytes());
+        assert!(
+            parse_fixture(&bytes)
+                .unwrap_err()
+                .to_string()
+                .contains("dimensions")
+        );
+        let mut bytes = header(1, 0);
+        string(&mut bytes, "weight");
+        bytes.extend(2u32.to_le_bytes());
+        bytes.extend(u64::MAX.to_le_bytes());
+        bytes.extend(2u64.to_le_bytes());
+        bytes.extend(0u32.to_le_bytes());
+        bytes.extend(0u64.to_le_bytes());
+        assert!(
+            parse_fixture(&bytes)
+                .unwrap_err()
+                .to_string()
+                .contains("débordant")
+        );
+    }
+
+    #[test]
+    fn duplicate_architecture_cannot_silently_replace_ui_tars_metadata() {
+        let mut bytes = header(0, 2);
+        for arch in ["qwen2vl", "qwen2"] {
+            string(&mut bytes, "general.architecture");
+            bytes.extend(8u32.to_le_bytes());
+            string(&mut bytes, arch);
+        }
+        assert!(
+            parse_fixture(&bytes)
+                .unwrap_err()
+                .to_string()
+                .contains("dupliquée")
+        );
+        let unknown = parse_fixture(&header(0, 0)).unwrap();
+        assert_eq!(unknown.context_length(), None);
+        let inspector = GgufInferenceEngine::new(unknown);
+        assert_eq!(inspector.architecture(), "architecture inconnue");
+        assert_eq!(inspector.context_length(), 0);
     }
 }

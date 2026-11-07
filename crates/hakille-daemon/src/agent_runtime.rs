@@ -105,6 +105,38 @@ impl ReferenceAgentRuntime {
         })
     }
 
+    /// Matérialise et charge également les 5 agents métier sandboxés (mail, calendar, code, home, wallet-readonly).
+    #[allow(dead_code)]
+    pub fn provision_with_business_agents(data_dir: &Path) -> Result<Self, AgentError> {
+        let mut runtime = Self::provision(data_dir)?;
+        let business_artifacts = hakille_agents::materialize_business_agents(&runtime.dir)?;
+        let sandbox = AgentSandbox::new()?;
+        for artifact in business_artifacts {
+            let bytes = fs::read(&artifact.path).map_err(|e| AgentError::ArtifactIo {
+                path: artifact.path.display().to_string(),
+                message: e.to_string(),
+            })?;
+            let actual = sha256_hex(&bytes);
+            if actual != artifact.sha256 {
+                return Err(AgentError::ArtifactHashMismatch {
+                    path: artifact.path.display().to_string(),
+                    expected: artifact.sha256,
+                    actual,
+                });
+            }
+            let mut agent = sandbox.load(&artifact.name, &bytes)?;
+            let output = agent.run(SELF_TEST_INPUT, run_limits())?;
+            serde_json::from_str::<serde_json::Value>(&output).map_err(|e| {
+                AgentError::InvalidOutput {
+                    agent: artifact.name.clone(),
+                    message: format!("auto-test non JSON : {e}"),
+                }
+            })?;
+            runtime.loaded.push(loaded_agent(artifact, agent));
+        }
+        Ok(runtime)
+    }
+
     /// Agents chargés (ordre de matérialisation stable).
     pub fn agents(&self) -> &[LoadedReferenceAgent] {
         &self.loaded
@@ -230,5 +262,26 @@ mod tests {
             matches!(err, AgentError::InputTooLarge { .. }),
             "attendu InputTooLarge, vu {err:?}"
         );
+    }
+
+    #[test]
+    fn provisions_and_runs_business_agents_in_sandbox() {
+        let dir = tempfile::tempdir().expect("répertoire temporaire");
+        let mut runtime = ReferenceAgentRuntime::provision_with_business_agents(dir.path())
+            .expect("provisionnement avec agents métier");
+        assert_eq!(runtime.agents().len(), 7); // 2 de référence + 5 métier
+
+        for name in [
+            "agent-mail",
+            "agent-calendar",
+            "agent-code",
+            "agent-home",
+            "agent-wallet-readonly",
+        ] {
+            let res = runtime.run(name, r#"{"probe":true}"#).expect("exécution métier");
+            assert_eq!(res.agent, name);
+            let val: serde_json::Value = serde_json::from_str(&res.output).unwrap();
+            assert_eq!(val["status"], "ready");
+        }
     }
 }

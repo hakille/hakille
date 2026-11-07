@@ -1,0 +1,4 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+  <string name="voice_permission_resume">The permission prompt interrupted the voice turn. After granting access, enable conversation mode again and press Speak. Sending and microphone capture never resume automatically.</string>
+</resources>

@@ -1,3 +1,4 @@
+pub mod camera_v4l2;
 pub mod cgroups;
 pub mod compute_impl;
 pub mod daemon;
@@ -8,6 +9,7 @@ pub mod seccomp;
 pub mod substrate_impl;
 pub mod telemetry;
 
+pub use camera_v4l2::*;
 pub use cgroups::*;
 pub use compute_impl::*;
 pub use daemon::*;
@@ -319,7 +321,7 @@ SwapFree:        4194304 kB
     }
 
     #[tokio::test]
-    async fn test_linux_camera_honest_unimplemented() {
+    async fn test_linux_camera_v4l2_or_honest_refusal() {
         let substrate = LinuxSubstrate::new();
         let cap = hakille_core::CapabilityAuthority::new()
             .create_root_token(
@@ -335,16 +337,68 @@ SwapFree:        4194304 kB
             facing: hakille_substrate::CameraFacing::Front,
         };
         assert!(!config.is_available());
-        let err = substrate
+        match substrate.start_camera_capture(config.clone(), &cap).await {
+            Ok(handle) => {
+                let frame = substrate
+                    .capture_camera_frame(handle, &cap)
+                    .await
+                    .expect("frame must be captured");
+                assert!(matches!(frame.format, hakille_substrate::ImageFormat::Rgb8));
+                substrate
+                    .stop_camera_capture_with_cap(handle, &cap)
+                    .await
+                    .expect("stop must succeed");
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("camera unavailable") || msg.contains("camera not implemented"),
+                    "error must name failure mode, got: {msg}"
+                );
+                assert!(
+                    msg.contains("V4L2"),
+                    "must name V4L2 backend, got: {msg}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_linux_camera_emulation_integration() {
+        unsafe { std::env::set_var("HAKILLE_CAMERA_EMULATION", "1") };
+        let substrate = LinuxSubstrate::new();
+        let cap = hakille_core::CapabilityAuthority::new()
+            .create_root_token(
+                vec![CapabilityScope::Camera],
+                vec![hakille_core::CapabilityAction::Read],
+                future_expiry(),
+            )
+            .unwrap();
+        let config = hakille_substrate::CameraConfig {
+            width: 640,
+            height: 480,
+            fps: 30,
+            facing: hakille_substrate::CameraFacing::Front,
+        };
+
+        let handle = substrate
             .start_camera_capture(config, &cap)
             .await
-            .expect_err("camera without V4L2 binding must be refused");
-        let msg = err.to_string();
-        assert!(msg.contains("camera not implemented"), "got: {msg}");
-        assert!(
-            msg.contains("V4L2"),
-            "must name the missing backend, got: {msg}"
-        );
+            .expect("emulated stream should start cleanly");
+        let frame = substrate
+            .capture_camera_frame(handle, &cap)
+            .await
+            .expect("emulated frame should be received");
+        assert_eq!(frame.width, 640);
+        assert_eq!(frame.height, 480);
+        assert!(matches!(frame.format, hakille_substrate::ImageFormat::Rgb8));
+        assert_eq!(frame.data.len(), 640 * 480 * 3);
+
+        substrate
+            .stop_camera_capture_with_cap(handle, &cap)
+            .await
+            .expect("emulated stream should stop cleanly");
+        unsafe { std::env::remove_var("HAKILLE_CAMERA_EMULATION") };
     }
 
     #[test]
@@ -390,10 +444,8 @@ SwapFree:        4194304 kB
             .unwrap();
 
         // Display capture test
-        let screen = substrate.capture_screen(&screen_cap).await.unwrap();
-        assert_eq!(screen.width, 1920);
-        assert_eq!(screen.height, 1080);
-        assert_eq!(screen.data.len(), 1920 * 1080 * 4);
+        let error = substrate.capture_screen(&screen_cap).await.unwrap_err();
+        assert!(error.to_string().contains("aucune image du poste capturée"));
 
         // Test Wayland and X11 screencopy engines directly
         let wayland_engine =
@@ -464,5 +516,177 @@ SwapFree:        4194304 kB
             }
             Err(other) => panic!("erreur injection inattendue : {other:?}"),
         }
+    }
+}
+
+/// Régressions du contrat d'exécution : aucun handle synthétique n'est un succès.
+#[cfg(test)]
+mod sandbox_execution_tests {
+    use super::LinuxSubstrate;
+    use hakille_core::{
+        CapabilityAction, CapabilityAuthority, CapabilityScope, HakilleError, Timestamp,
+    };
+    use hakille_substrate::Substrate;
+
+    // Module WASM vide valide : magic + version, sans import ni fonction.
+    const VALID_EMPTY_WASM: &[u8] = b"\0asm\x01\0\0\0";
+
+    #[tokio::test]
+    async fn spawn_sandboxed_refuses_unavailable_execution_with_valid_authorization() {
+        let authority = CapabilityAuthority::new();
+        let substrate = LinuxSubstrate::new().with_trusted_root(authority.root_public_key());
+        let cap = authority
+            .create_root_token(
+                vec![CapabilityScope::Filesystem],
+                vec![CapabilityAction::Read],
+                Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
+            )
+            .unwrap();
+        let error = substrate
+            .spawn_sandboxed(VALID_EMPTY_WASM, vec![cap])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, HakilleError::SubstrateError(message) if message.contains("moteur WASM non raccordé") && message.contains("aucun processus lancé")),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_sandboxed_checks_authorization_before_unavailable_execution() {
+        let authority = CapabilityAuthority::new();
+        let foreign_authority = CapabilityAuthority::new();
+        let substrate = LinuxSubstrate::new().with_trusted_root(authority.root_public_key());
+        let cap = foreign_authority
+            .create_root_token(
+                vec![CapabilityScope::Filesystem],
+                vec![CapabilityAction::Read],
+                Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
+            )
+            .unwrap();
+        let error = substrate
+            .spawn_sandboxed(VALID_EMPTY_WASM, vec![cap])
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, HakilleError::CapabilityDenied(_)),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_sandboxed_empty_delegation_does_not_create_process() {
+        let authority = CapabilityAuthority::new();
+        let substrate = LinuxSubstrate::new().with_trusted_root(authority.root_public_key());
+        assert!(matches!(
+            substrate.spawn_sandboxed(VALID_EMPTY_WASM, vec![]).await,
+            Err(HakilleError::SubstrateError(_))
+        ));
+    }
+}
+
+#[cfg(test)]
+mod native_effect_tests {
+    use super::LinuxSubstrate;
+    use hakille_core::{
+        CapabilityAction, CapabilityAuthority, CapabilityScope, CapabilityToken, HakilleError,
+        Timestamp,
+    };
+    use hakille_substrate::{AudioConfig, AudioStreamHandle, InputAction, Substrate};
+
+    fn config() -> AudioConfig {
+        AudioConfig {
+            sample_rate: 16_000,
+            channels: 1,
+            format: "s16le".to_string(),
+        }
+    }
+
+    fn token(authority: &CapabilityAuthority, scopes: Vec<CapabilityScope>) -> CapabilityToken {
+        authority
+            .create_root_token(
+                scopes,
+                vec![
+                    CapabilityAction::Read,
+                    CapabilityAction::Write,
+                    CapabilityAction::Execute,
+                ],
+                Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
+            )
+            .unwrap()
+    }
+
+    fn assert_unavailable<T: std::fmt::Debug>(result: hakille_core::Result<T>, operation: &str) {
+        let error = result.unwrap_err();
+        assert!(
+            matches!(&error, HakilleError::SubstrateError(message) if message.contains(operation) && message.contains("indisponible")),
+            "{error}"
+        );
+    }
+
+    fn assert_denied<T: std::fmt::Debug>(result: hakille_core::Result<T>) {
+        let error = result.unwrap_err();
+        assert!(
+            matches!(error, HakilleError::CapabilityDenied(_)),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn audio_without_backend_never_reports_capture_playback_or_stop_success() {
+        let authority = CapabilityAuthority::new();
+        let substrate = LinuxSubstrate::new().with_trusted_root(authority.root_public_key());
+        let cap = token(&authority, vec![CapabilityScope::Audio]);
+        assert_unavailable(
+            substrate.start_audio_capture(config(), &cap).await,
+            "capture audio",
+        );
+        assert_unavailable(
+            substrate.play_audio(&[0; 320], config(), &cap).await,
+            "lecture audio",
+        );
+        assert_unavailable(
+            substrate.stop_audio_capture(AudioStreamHandle(42)).await,
+            "arrêt audio",
+        );
+        assert_unavailable(
+            substrate
+                .stop_audio_capture_with_cap(AudioStreamHandle(42), &cap)
+                .await,
+            "arrêt audio",
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_effects_still_require_capabilities_before_device_access() {
+        let authority = CapabilityAuthority::new();
+        let substrate = LinuxSubstrate::new().with_trusted_root(authority.root_public_key());
+        let wrong_cap = token(&authority, vec![CapabilityScope::Filesystem]);
+        assert_denied(substrate.start_audio_capture(config(), &wrong_cap).await);
+        assert_denied(substrate.play_audio(&[0; 320], config(), &wrong_cap).await);
+        assert_denied(substrate.capture_screen(&wrong_cap).await);
+        assert_denied(
+            substrate
+                .inject_input(
+                    InputAction::Type {
+                        text: "test".into(),
+                    },
+                    &wrong_cap,
+                )
+                .await,
+        );
+        assert_denied(
+            substrate
+                .stop_audio_capture_with_cap(AudioStreamHandle(42), &wrong_cap)
+                .await,
+        );
+    }
+
+    #[tokio::test]
+    async fn screen_without_binding_returns_no_synthetic_pixels() {
+        let authority = CapabilityAuthority::new();
+        let substrate = LinuxSubstrate::new().with_trusted_root(authority.root_public_key());
+        let cap = token(&authority, vec![CapabilityScope::Sensor]);
+        assert_unavailable(substrate.capture_screen(&cap).await, "capture d'écran");
     }
 }

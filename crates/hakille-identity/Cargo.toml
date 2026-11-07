@@ -1,0 +1,27 @@
+[package]
+name = "hakille-identity"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Sovereign 5-Tier Identity Hierarchy, ReBAC Engine, SSI DIDs and ZK Storage"
+
+[dependencies]
+hakille-core = { path = "../hakille-core" }
+hakille-keystore = { path = "../hakille-keystore" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+biscuit-auth = { workspace = true }
+ed25519-dalek = { workspace = true }
+chacha20poly1305 = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+redb = { workspace = true }
+bincode = { workspace = true }
+async-trait = { workspace = true }
+zeroize = "1"
+
+[dev-dependencies]
+tokio = { workspace = true }

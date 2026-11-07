@@ -4,18 +4,18 @@ use hakille_core::{EncryptedBlob, Tier};
 use serde::{Deserialize, Serialize};
 
 /// Version du protocole de sync (négociée via `Handshake`).
-pub const SYNC_PROTOCOL_VERSION: u32 = 1;
+pub const SYNC_PROTOCOL_VERSION: u32 = 2;
 
 fn default_sync_protocol_version() -> u32 {
-    SYNC_PROTOCOL_VERSION
+    1 // Ancien message sans version : lisible, mais jamais promu implicitement en v2.
 }
 
-/// Compatibilité inter-versions : pour l'instant égalité stricte (v1 ↔ v1).
+/// Compatibilité inter-versions : pour l'instant version implémentée uniquement (v2 ↔ v2).
 /// Toute évolution majeure devra incrémenter `SYNC_PROTOCOL_VERSION` et
 /// élargir cette fonction (ex. plage compatible), jamais de compat
 /// silencieuse.
 pub fn versions_compatible(a: u32, b: u32) -> bool {
-    a == b
+    a == SYNC_PROTOCOL_VERSION && b == SYNC_PROTOCOL_VERSION
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,10 +92,10 @@ mod tests {
             success: true,
             protocol_version: SYNC_PROTOCOL_VERSION,
         };
-        assert_eq!(msg.version(), 1);
-        assert!(msg.compatible(1));
-        assert!(!msg.compatible(2));
-        assert!(versions_compatible(1, 1));
+        assert_eq!(msg.version(), 2);
+        assert!(msg.compatible(2));
+        assert!(!msg.compatible(1));
+        assert!(!versions_compatible(1, 1));
         assert!(!versions_compatible(1, 0));
     }
 
@@ -104,6 +104,7 @@ mod tests {
         // Les messages anciens sans champ version se désérialisent en v1.
         let json = r#"{"Acknowledge":{"device_id":"n1","success":true}}"#;
         let msg: SyncMessage = serde_json::from_str(json).unwrap();
-        assert_eq!(msg.version(), SYNC_PROTOCOL_VERSION);
+        assert_eq!(msg.version(), 1);
+        assert!(!msg.compatible(SYNC_PROTOCOL_VERSION));
     }
 }

@@ -21,6 +21,13 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true }
 async-trait = { workspace = true }
+argon2 = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+zeroize = { workspace = true }
+subtle = { workspace = true }
+sha2 = { workspace = true }
+bincode = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

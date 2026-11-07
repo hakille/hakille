@@ -22,6 +22,13 @@
 //! fichiers/réseau/env/args : zéro ambient authority. Les seuls I/O sont
 //! l'input et l'output ci-dessus.
 //!
+//! Les documents JSON sont limités à 1 Mio chacun. L'entrée est validée
+//! avant toute fonction `start`. Les tables sont limitées à 16 384 entrées
+//! chacune, quatre tables au plus. Les dépassements restent des erreurs,
+//! même si le guest ignore le résultat négatif de `table.grow`.
+//! L'ABI exige une mémoire wasm32 non partagée ; les erreurs de parsing
+//! ne recopient jamais le contenu des entrées/sorties dans les journaux.
+//!
 //! Chaque `run` instancie un `Store` neuf : les agents sont donc
 //! déterministes et sans état résiduel entre deux appels.
 
@@ -37,6 +44,11 @@ use wasmtime::{
 /// Intervalle du tic d'epoch partagé par un `AgentSandbox` (timeout à la
 /// granularité de ce tic).
 const EPOCH_TICK_MS: u64 = 5;
+
+/// Plafond de chaque document JSON d'entrée/sortie, avant parsing ou copie.
+pub const MAX_AGENT_IO_BYTES: usize = 1024 * 1024;
+/// Plafond par table ; au plus quatre tables par instance (65 536 entrées au total).
+pub const MAX_AGENT_TABLE_ELEMENTS: usize = 16_384;
 
 /// Quotas réellement appliqués à chaque `run`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +94,14 @@ pub enum AgentError {
         input_len: usize,
         max_bytes: usize,
     },
+    #[error("Agent '{agent}' : limite de table dépassée ({max_elements} entrées par table)")]
+    TableLimitExceeded { agent: String, max_elements: usize },
+    #[error("Agent '{agent}' : sortie trop volumineuse ({output_len} octets, {max_bytes} max)")]
+    OutputTooLarge {
+        agent: String,
+        output_len: usize,
+        max_bytes: usize,
+    },
     #[error("Agent '{agent}' : sortie invalide : {message}")]
     InvalidOutput { agent: String, message: String },
     #[error("Agent '{agent}' : trap WASM : {message}")]
@@ -117,6 +137,7 @@ struct SandboxState {
     memory_limit_bytes: usize,
     max_memory_pages: u32,
     memory_denied: bool,
+    table_denied: bool,
 }
 
 impl ResourceLimiter for SandboxState {
@@ -137,10 +158,15 @@ impl ResourceLimiter for SandboxState {
     fn table_growing(
         &mut self,
         _current: usize,
-        _desired: usize,
+        desired: usize,
         _maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
-        Ok(true)
+        if desired > MAX_AGENT_TABLE_ELEMENTS {
+            self.table_denied = true;
+            Ok(false)
+        } else {
+            Ok(true)
+        }
     }
 
     fn instances(&self) -> usize {
@@ -275,7 +301,15 @@ impl AgentSandbox {
         for export in module.exports() {
             match export.name() {
                 "memory" => match export.ty() {
-                    ExternType::Memory(_) => has_memory = true,
+                    ExternType::Memory(memory) if !memory.is_64() && !memory.is_shared() => {
+                        has_memory = true;
+                    }
+                    ExternType::Memory(_) => {
+                        return Err(AgentError::InvalidAbi {
+                            agent: name.to_string(),
+                            message: "mémoire AEl attendue : wasm32 non partagée".to_string(),
+                        });
+                    }
                     other => {
                         return Err(AgentError::InvalidAbi {
                             agent: name.to_string(),
@@ -333,12 +367,32 @@ impl Agent {
     /// Exécute `run(input_ptr, input_len)` sur un `Store` neuf (déterminisme)
     /// avec fuel, timeout (epoch) et mémoire bornés.
     pub fn run(&mut self, input_json: &str, limits: RunLimits) -> Result<String, AgentError> {
+        // Valider avant l'instanciation : une fonction `start` appartient au guest
+        // et ne doit pas s'exécuter avec une entrée refusée.
+        if input_json.len() > MAX_AGENT_IO_BYTES {
+            return Err(AgentError::InputTooLarge {
+                agent: self.name.clone(),
+                input_len: input_json.len(),
+                max_bytes: MAX_AGENT_IO_BYTES,
+            });
+        }
+        serde_json::from_str::<serde_json::Value>(input_json).map_err(|e| {
+            AgentError::InvalidInput {
+                agent: self.name.clone(),
+                message: format!(
+                    "JSON invalide à la ligne {}, colonne {}",
+                    e.line(),
+                    e.column()
+                ),
+            }
+        })?;
         let memory_limit_bytes =
             usize::try_from(u64::from(limits.max_memory_pages) * 65_536).unwrap_or(usize::MAX);
         let state = SandboxState {
             memory_limit_bytes,
             max_memory_pages: limits.max_memory_pages,
             memory_denied: false,
+            table_denied: false,
         };
         let mut store = Store::new(&self.engine, state);
         store.limiter(|state| state as &mut dyn ResourceLimiter);
@@ -362,7 +416,7 @@ impl Agent {
         let instance_result = linker.instantiate(&mut *store, &self.module);
         let instance = match instance_result {
             Ok(instance) => instance,
-            Err(e) => return Err(self.map_instantiate_error(store, &e)),
+            Err(e) => return Err(self.map_instantiate_error(store, &e, limits)),
         };
 
         let memory =
@@ -436,8 +490,8 @@ impl Agent {
             Ok(values) => values,
             Err(e) => return Err(self.map_call_error(store, &e, limits)),
         };
-        if store.data().memory_denied {
-            return Err(self.memory_limit_error(store));
+        if let Some(error) = self.resource_limit_error(store) {
+            return Err(error);
         }
 
         let size = memory.data_size(&*store);
@@ -454,16 +508,26 @@ impl Agent {
                 });
             }
         };
+        if len > MAX_AGENT_IO_BYTES {
+            return Err(AgentError::OutputTooLarge {
+                agent: self.name.clone(),
+                output_len: len,
+                max_bytes: MAX_AGENT_IO_BYTES,
+            });
+        }
         let bytes = memory.data(&*store)[start..end].to_vec();
         let output = String::from_utf8(bytes).map_err(|e| AgentError::InvalidOutput {
             agent: self.name.clone(),
             message: format!("sortie non UTF-8 : {e}"),
         })?;
         serde_json::from_str::<serde_json::Value>(&output).map_err(|e| {
-            let preview: String = output.chars().take(200).collect();
             AgentError::InvalidOutput {
                 agent: self.name.clone(),
-                message: format!("sortie non JSON ({e}) : {preview:?}"),
+                message: format!(
+                    "sortie non JSON à la ligne {}, colonne {}",
+                    e.line(),
+                    e.column()
+                ),
             }
         })?;
         Ok(output)
@@ -476,13 +540,31 @@ impl Agent {
         }
     }
 
+    fn resource_limit_error(&self, store: &Store<SandboxState>) -> Option<AgentError> {
+        if store.data().memory_denied {
+            Some(self.memory_limit_error(store))
+        } else if store.data().table_denied {
+            Some(AgentError::TableLimitExceeded {
+                agent: self.name.clone(),
+                max_elements: MAX_AGENT_TABLE_ELEMENTS,
+            })
+        } else {
+            None
+        }
+    }
+
     fn map_instantiate_error(
         &self,
         store: &Store<SandboxState>,
         e: &wasmtime::Error,
+        limits: &RunLimits,
     ) -> AgentError {
-        if store.data().memory_denied {
-            return self.memory_limit_error(store);
+        if let Some(error) = self.resource_limit_error(store) {
+            return error;
+        }
+        // Les fonctions `start` consomment les mêmes budgets que `run`.
+        if e.downcast_ref::<wasmtime::Trap>().is_some() {
+            return self.map_call_error(store, e, limits);
         }
         let message = e.to_string();
         if message.contains("unknown import") || message.contains("incompatible import type") {
@@ -519,8 +601,8 @@ impl Agent {
                 _ => {}
             }
         }
-        if store.data().memory_denied {
-            return self.memory_limit_error(store);
+        if let Some(error) = self.resource_limit_error(store) {
+            return error;
         }
         AgentError::Trap {
             agent: self.name.clone(),
@@ -621,12 +703,218 @@ pub fn reference_agents() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+pub const MAIL_AGENT_WAT: &str = r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 16) "{\"agent\":\"agent-mail\",\"status\":\"ready\",\"messages\":[]}")
+  (func (export "run") (param i32 i32) (result i32 i32)
+    (i32.const 16)
+    (i32.const 53)))"#;
+
+pub const CALENDAR_AGENT_WAT: &str = r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 16) "{\"agent\":\"agent-calendar\",\"status\":\"ready\",\"events\":[]}")
+  (func (export "run") (param i32 i32) (result i32 i32)
+    (i32.const 16)
+    (i32.const 55)))"#;
+
+pub const CODE_AGENT_WAT: &str = r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 16) "{\"agent\":\"agent-code\",\"status\":\"ready\",\"symbols\":[]}")
+  (func (export "run") (param i32 i32) (result i32 i32)
+    (i32.const 16)
+    (i32.const 52)))"#;
+
+pub const HOME_AGENT_WAT: &str = r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 16) "{\"agent\":\"agent-home\",\"status\":\"ready\",\"devices\":[]}")
+  (func (export "run") (param i32 i32) (result i32 i32)
+    (i32.const 16)
+    (i32.const 52)))"#;
+
+pub const WALLET_AGENT_WAT: &str = r#"(module
+  (memory (export "memory") 1)
+  (data (i32.const 16) "{\"agent\":\"agent-wallet-readonly\",\"status\":\"ready\",\"accounts\":[]}")
+  (func (export "run") (param i32 i32) (result i32 i32)
+    (i32.const 16)
+    (i32.const 64)))"#;
+
+/// Agents métier compilables sous l'ABI minimale AEl sans import hôte.
+pub fn business_agents() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("agent-mail", MAIL_AGENT_WAT),
+        ("agent-calendar", CALENDAR_AGENT_WAT),
+        ("agent-code", CODE_AGENT_WAT),
+        ("agent-home", HOME_AGENT_WAT),
+        ("agent-wallet-readonly", WALLET_AGENT_WAT),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn sandbox() -> AgentSandbox {
         AgentSandbox::new().expect("bac à sable wasmtime")
+    }
+
+    #[test]
+    fn malformed_input_is_rejected_before_guest_start() {
+        let sandbox = sandbox();
+        let mut agent = sandbox
+            .load(
+                "start-trap",
+                r#"(module
+            (memory (export "memory") 1)
+            (func $start unreachable) (start $start)
+            (func (export "run") (param i32 i32) (result i32 i32)
+                local.get 0 local.get 1))"#,
+            )
+            .unwrap();
+        let error = agent
+            .run("private-not-json", RunLimits::default())
+            .unwrap_err();
+        assert!(matches!(error, AgentError::InvalidInput { .. }));
+        assert!(!error.to_string().contains("private-not-json"));
+    }
+
+    #[test]
+    fn io_limit_applies_before_json_parse_and_output_copy() {
+        let sandbox = sandbox();
+        let mut echo = sandbox.load("echo", ECHO_AGENT_WAT).unwrap();
+        let error = echo
+            .run(&"x".repeat(MAX_AGENT_IO_BYTES + 1), RunLimits::default())
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            AgentError::InputTooLarge {
+                max_bytes: MAX_AGENT_IO_BYTES,
+                ..
+            }
+        ));
+        let input = format!("\"{}\"", "x".repeat(MAX_AGENT_IO_BYTES - 2));
+        assert_eq!(echo.run(&input, RunLimits::default()).unwrap(), input);
+        let mut agent = sandbox
+            .load(
+                "large-output",
+                format!(
+                    r#"(module
+            (memory (export "memory") 17)
+            (func (export "run") (param i32 i32) (result i32 i32)
+                i32.const 0 i32.const {}))"#,
+                    MAX_AGENT_IO_BYTES + 1
+                ),
+            )
+            .unwrap();
+        assert!(matches!(
+            agent.run("null", RunLimits::default()).unwrap_err(),
+            AgentError::OutputTooLarge { .. }
+        ));
+    }
+
+    #[test]
+    fn static_and_dynamic_tables_are_bounded() {
+        let sandbox = sandbox();
+        for (name, initial, grow) in [
+            ("static", MAX_AGENT_TABLE_ELEMENTS + 1, 0),
+            ("dynamic", 1, MAX_AGENT_TABLE_ELEMENTS),
+        ] {
+            let mut agent = sandbox
+                .load(
+                    name,
+                    format!(
+                        r#"(module
+                (memory (export "memory") 1)
+                (table {} funcref)
+                (func (export "run") (param i32 i32) (result i32 i32)
+                    ref.null func i32.const {} table.grow drop
+                    local.get 0 local.get 1))"#,
+                        initial, grow
+                    ),
+                )
+                .unwrap();
+            assert!(matches!(
+                agent.run("null", RunLimits::default()).unwrap_err(),
+                AgentError::TableLimitExceeded { .. }
+            ));
+        }
+        let mut bounded = sandbox
+            .load(
+                "bounded",
+                format!(
+                    r#"(module
+            (memory (export "memory") 1) (table {} funcref)
+            (func (export "run") (param i32 i32) (result i32 i32)
+                local.get 0 local.get 1))"#,
+                    MAX_AGENT_TABLE_ELEMENTS
+                ),
+            )
+            .unwrap();
+        assert_eq!(bounded.run("null", RunLimits::default()).unwrap(), "null");
+    }
+
+    #[test]
+    fn start_function_obeys_fuel_and_timeout_classification() {
+        let sandbox = sandbox();
+        let mut agent = sandbox
+            .load(
+                "start-loop",
+                r#"(module
+            (memory (export "memory") 1)
+            (func $start (loop (br 0))) (start $start)
+            (func (export "run") (param i32 i32) (result i32 i32)
+                local.get 0 local.get 1))"#,
+            )
+            .unwrap();
+        let fuel = RunLimits {
+            fuel: 100,
+            timeout: Duration::from_secs(30),
+            ..RunLimits::default()
+        };
+        assert!(matches!(
+            agent.run("null", fuel).unwrap_err(),
+            AgentError::FuelExhausted { .. }
+        ));
+        let timeout = RunLimits {
+            fuel: u64::MAX,
+            timeout: Duration::ZERO,
+            ..RunLimits::default()
+        };
+        assert!(matches!(
+            agent.run("null", timeout).unwrap_err(),
+            AgentError::Timeout { .. }
+        ));
+    }
+
+    #[test]
+    fn memory64_is_rejected_at_load() {
+        let sandbox = sandbox();
+        let error = sandbox
+            .load(
+                "memory64",
+                r#"(module
+            (memory (export "memory") i64 1)
+            (func (export "run") (param i32 i32) (result i32 i32)
+                local.get 0 local.get 1))"#,
+            )
+            .unwrap_err();
+        assert!(matches!(error, AgentError::InvalidAbi { .. }));
+    }
+
+    #[test]
+    fn invalid_output_does_not_leak_guest_payload() {
+        let sandbox = sandbox();
+        let mut agent = sandbox
+            .load(
+                "private-output",
+                r#"(module
+            (memory (export "memory") 1) (data (i32.const 0) "PRIVATE_PAYLOAD")
+            (func (export "run") (param i32 i32) (result i32 i32)
+                i32.const 0 i32.const 15))"#,
+            )
+            .unwrap();
+        let error = agent.run("null", RunLimits::default()).unwrap_err();
+        assert!(matches!(error, AgentError::InvalidOutput { .. }));
+        assert!(!error.to_string().contains("PRIVATE_PAYLOAD"));
     }
 
     #[test]

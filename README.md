@@ -8,7 +8,7 @@
 # Hakille — Sovereign Cognitive Operating System (Rust Native)
 
 [![Rust Version](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org)
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](.github/workflows/ci.yml)
+[![Build Status](https://github.com/hakille/hakille/actions/workflows/ci.yml/badge.svg)](https://github.com/hakille/hakille/actions/workflows/ci.yml)
 [![Conformance](https://img.shields.io/badge/conformance-66%20fast%20%2B12%20slow%20ignored-yellow.svg)](.github/workflows/ci.yml)
 [![Security](https://img.shields.io/badge/security-Biscuit%20Capabilities-red.svg)]()
 [![No Python](https://img.shields.io/badge/python-0%25%20(Pure%20Rust)-purple.svg)]()
@@ -18,9 +18,9 @@
 > **Statut : prototype / pré-alpha.** Voir [SECURITY.md](SECURITY.md) :
 > l'inférence est **réelle et golden-testée lorsque les artefacts sont
 > provisionnés** (forwards `ort` VAD/ASR/CAM++/MiniLM, Qwen 2.5 Candle, TTS
-> formantique, grounding CV). Le codec Mimi fait un RVQ nearest-L2 sur de vrais
-> codebooks, sans décodeur neural complet ; le VLM UI-TARS reste inspecté sans
-> forward ; le modèle neuronal Moshi 7,6B n'est pas provisionné
+> formantique). Le codec Mimi exécute son encodeur/décodeur neuronal Candle ;
+> UI-TARS exécute son VLM via un serveur llama.cpp local et son projecteur.
+> Voir le [guide d’inférence locale](docs/INFERENCE_LOCALE.md). Le modèle de dialogue Moshi 7,6B n’est pas provisionné
 > (`MoshiEngine::is_simulated() == true`). Les cinq agents métier de `agents/` restent des manifests déclaratifs :
 > aucun binaire `.wasm` métier n'est livré ni exécuté, et `spawn_sandboxed`
 > n'est toujours pas branché pour ces crates. En revanche, les deux agents de
@@ -40,7 +40,7 @@ Hakille n'est ni une application de chat, ni un wrapper d'API, ni un agent promp
 1. **La Continuité d'État (*No-Session Continuity*)** : Aucun concept de session qui s'achève. Un fil de vie continu persistant dans un graphe de connaissances distribué.
 2. **L'Initiative Bornée (*Bounded Initiative*)** : Le système agit et anticipe de façon proactive dans un périmètre strict garanti par des contrats cryptographiques et un budget de silence.
 3. **La Généralité Pratique (*Practical Generality*)** : Coder, auditer des contrats, planifier des événements, piloter l'environnement graphique ou la domotique sans changer de contexte.
-4. **L'Éradication Absolue de Python en Production (*Zero-Python Runtime*)** : Tous les modèles (ASR, Full-Duplex Speech, VLM, LLM) s'exécutent en Rust natif via **Candle**, **ONNX Runtime (`ort`)** et des chargeurs binaires GGUF v3 purs, garantissant sûreté mémoire et absence de garbage collector.
+4. **L'Éradication Absolue de Python en Production (*Zero-Python Runtime*)** : Les moteurs locaux utilisent **Candle**, **ONNX Runtime (`ort`)** et, pour UI-TARS, **llama.cpp** natif sur loopback. Aucun runtime Python n’est nécessaire au produit. Les modèles non provisionnés restent explicitement indisponibles.
 
 ---
 
@@ -95,7 +95,7 @@ Hakille n'est ni une application de chat, ni un wrapper d'API, ni un agent promp
 ```
 
 > Le bloc « Kyutai Moshi Full-Duplex » désigne la **cible** : le runtime actuel
-> fournit un duplex RVQ Mimi + VAD réel, sans modèle neuronal Moshi 7,6B
+> fournit le codec neuronal Mimi + VAD réel, sans modèle de dialogue Moshi 7,6B
 > (`MoshiEngine::is_simulated() == true`). De même, la couche 5 est partiellement réelle : le démon exécute deux agents
 > WASM de référence, mais les cinq agents métier restent des manifests
 > déclaratifs. Le détail par moteur est dans
@@ -105,7 +105,7 @@ Hakille n'est ni une application de chat, ni un wrapper d'API, ni un agent promp
 
 ## 📦 Structure du Workspace (31 Crates + 5 Agents + Conformance)
 
-Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agents WASM de référence réellement exécutés**, **5 manifests métier déclaratifs**, une suite de conformité exhaustive (78 tests : 66 fast + 12 slow ignorés — 7 dans `conformance`, 5 dans `hakille-kernel` — voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
+Le projet est un monorepo Cargo structuré en **33 crates modulaires**, **2 agents WASM de référence réellement exécutés**, **5 manifests métier déclaratifs**, une suite de conformité exhaustive (78 tests : 66 fast + 12 slow ignorés — 7 dans `conformance`, 5 dans `hakille-kernel` — voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
 
 ### 1. Fondations & Substrates OS
 - [`hakille-core`](crates/hakille-core) : Primitives cryptographiques (Ed25519, ChaCha20Poly1305), jetons Biscuit, types temporels, bus de messages typés (`Message`) et niveaux de confiance (`TrustLevel`).
@@ -114,18 +114,18 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agen
 - [`hakille-substrate-linux`](crates/hakille-substrate-linux) : Backend Linux natif (compilateur Seccomp-BPF avec simulateur de bytecode, Namespaces PID/Mount/Net, Cgroups v2, télémétrie `/proc` et `/sys`, injection `/dev/uinput`, Wayland/X11).
 - [`hakille-substrate-macos`](crates/hakille-substrate-macos) : Backend macOS Darwin natif (profils Sandbox Seatbelt `(deny default)`, Endpoint Security muting, Mach `host_statistics64`, IOKit, capture Retina 2x CoreGraphics).
 - [`hakille-substrate-redox`](crates/hakille-substrate-redox) : Backend micro-noyau souverain Redox OS (schemes natifs `chan:`, `orbital:`, `disk:`, `sys:`, `audio:`, sérialisation `RedoxPacket`, table de capacités microkernel).
-- [`hakille-substrate-mobile`](crates/hakille-substrate-mobile) : Backend mobile Android/iOS (synchronisation d'ombre *Shadow Sync* avec horloges de Lamport, scoped storage, machine à états Doze).
+- [`hakille-substrate-mobile`](crates/hakille-substrate-mobile) : Substrat invité : conteneur de fichiers confiné, file de synchronisation avec ACK, politiques batterie/cycle de vie et pilotes natifs explicites. Voir le [guide mobile](mobile/README.md).
 - [`hakille-substrate-web`](crates/hakille-substrate-web) : Backend WebAssembly pour navigateur (bridge Web Audio avec rééchantillonnage 48kHz -> 16kHz, tampon anti-overrun, Canvas ImageData, limites WebGPU).
 
 ### 2. Mémoire & Synchronisation
 - [`hakille-memory`](crates/hakille-memory) : Graphe en triplets SPO avec triple indexation (SPO, POS, OSP), backend local ACID `redb`, index vectoriel sémantique HNSW `instant-distance`, GraphQueryLang DSL, déclin temporel et résolution des contradictions.
-- [`hakille-sync`](crates/hakille-sync) : Synchronisation CRDT (grow-only sets + tombstones, vector clocks), handoff de tâche cross-device et réplication TiKV.
+- [`hakille-sync`](crates/hakille-sync) : Fusion CRDT avec tombstones et horloges vectorielles, handoff signé v2 entre pairs explicitement approuvés. Le transport réseau et la réplication TiKV ne sont pas déployés ; voir les [limites de convergence et de persistance](crates/hakille-sync/README.md).
 
 ### 3. Perception, Voix & Inférence Neuronale
-- [`hakille-perception`](crates/hakille-perception) : Pipeline audio (SenseVoice-Small, Silero VAD, openWakeWord, CAM++ speaker ID, Nemotron-3 diarisation), CameraPipeline et WorldModel situationnel continu.
+- [`hakille-perception`](crates/hakille-perception) : Pipeline audio (SenseVoice-Small, Silero VAD, CAM++ et diarisation par clustering), client UI-TARS local, CameraPipeline et WorldModel. L’activation passe par Whisper puis un contrôleur lexical ; aucun frontend openWakeWord compatible ni modèle Nemotron n’est fourni.
 - [`hakille-audio`](crates/hakille-audio) : I/O audio temps réel via `cpal` — capture micro 16 kHz (downmix + rééchantillonnage) et lecture PCM ; aucune simulation, erreur explicite si aucun périphérique.
-- [`hakille-voice`](crates/hakille-voice) : Moteur vocal — RVQ Mimi nearest-L2 sur de vrais codebooks (12,5 Hz), TTS formantique Klatt (`FormantTts`, 24 kHz) et détecteur d'interruption Barge-In ; pas de décodeur neural Mimi complet, et `MoshiEngine::is_simulated()` vaut `true`.
-- [`hakille-inference`](crates/hakille-inference) : Runtimes neuronaux natifs (parseur binaire streaming GGUF v3, parseur Safetensors Candle, inspecteur ONNX Runtime `ort`, registre LRU de pagination VRAM) et provisioner d'artefacts.
+- [`hakille-voice`](crates/hakille-voice) : Service d’écoute locale Silero → Whisper → activation, codec Mimi neuronal complet (24 kHz, trames de 80 ms), TTS formantique Klatt et détecteur d’interruption Barge-In. Le modèle de dialogue Moshi est absent ; `MoshiEngine::is_simulated()` reste `true`.
+- [`hakille-inference`](crates/hakille-inference) : Runtimes neuronaux natifs (parseur binaire streaming GGUF v3, parseur Safetensors Candle, inspecteur ONNX Runtime `ort`, registre de réservations mémoire bornées) et provisioner d’artefacts vérifiés. Le registre ne décharge pas automatiquement les tenseurs des moteurs.
 
 ### 4. Cognition, Agents, Confiance & UI
 - [`hakille-kernel`](crates/hakille-kernel) : Fabric cognitif, routeur System 1/2, Working Memory scratchpad, Deliberate Planner, Self-Model introspectif, Graph Curiosity Scanner, Dry-Run Simulator et budgets de latence par étage.
@@ -142,7 +142,9 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agen
 - [`hakille-ui-platform`](crates/hakille-ui-platform) : Abstraction plateforme pour fenêtres, icône de zone de notification et intégration système.
 - [`hakille-ui-desktop`](crates/hakille-ui-desktop) : Rendu desktop (scène, texte multi-script, accessibilité, runtime) sous forme d'application native ; carte d'action 720×360, décision clavier/AccessKit et accusé d'audit réel.
 - [`hakille-metrics`](crates/hakille-metrics) : Tableau de bord des 3 métriques cardinales (Continuité, Initiative Bornée, Généralité Pratique) et détecteur de dérive des valeurs éthiques.
-- [`hakille-ipc`](crates/hakille-ipc) : Transport IPC local (named pipe Windows, socket Unix) pour les clients du démon ; pas de TCP exposé.
+- [`hakille-ipc`](crates/hakille-ipc) : Transport IPC local du démon (named pipe Windows, socket Unix).
+- [`hakille-mobile`](crates/hakille-mobile) : État du client mobile Rust et liaisons UniFFI pour les interfaces natives Android/iOS ; checkpoint v2 et suivi durable des opérations à l'issue inconnue.
+- [`hakille-mobile-gateway`](crates/hakille-mobile-gateway) : Passerelle HTTP loopback, lancée explicitement et authentifiée par un jeton distinct, vers le hub personnel. Voir [ADR-011](adr/011-mobile-native-client-and-hub.md) pour le périmètre et les limites mobiles.
 - [`hakille-spikes`](crates/hakille-spikes) : Spikes techniques isolés (arbre de rendu S1, rendu S2, accessibilité S3) utilisés pour valider l'UI avant intégration.
 - [`hakille-daemon`](crates/hakille-daemon) : Démon système exécutable orchestrant l'ensemble de la pile avec invite interactive REPL, mode `--serve` IPC et cartes d'action auditées.
 
@@ -171,10 +173,10 @@ Le projet est un monorepo Cargo structuré en **31 crates modulaires**, **2 agen
 | :--- | :--- | :--- | :--- | :--- |
 | **Souverain** | Station dédiée Redox OS / Linux Souverain | SenseVoice-Small + VibeVoice (60m) + Moshi (Full-Duplex sub-200ms) + UI-TARS 7B | Qwen3-8B local + escalade System 2 + redb / cluster TiKV | Contrôle total des schemes natifs, zéro sandbox intermédiaire. |
 | **Natif** | Laptop Windows, Linux, macOS | SenseVoice-Small (veille CPU) + CAM++ + CosyVoice2 / NeuTTS + UI-TARS (on demand) | Qwen 7B (Q4) local + redb local | Contrôle quasi-total via sandboxing OS (AppContainer, Seccomp, Seatbelt). |
-| **Invité** | Mobile Android / iOS / Web WASM | Moonshine + SenseVoice Mobile (NPU/CoreML) + WebAudio 16kHz | Ombre déportée sur Hub personnel via sync CRDT | Accès restreint par l'OS hôte, continuité portée par le cluster. |
+| **Invité (cible)** | Mobile Android / iOS / Web WASM | Android/iOS : dictée OS locale optionnelle selon moteur installé ; aucun poids Hakille embarqué. NPU mobile à raccorder. | Client du hub personnel ; réplication réseau CRDT à raccorder | Accès restreint par l'OS hôte ; voir [l'état mobile](adr/011-mobile-native-client-and-hub.md). |
 
 > Les modèles neuronaux non provisionnés (Moshi 7,6B, VibeVoice, CosyVoice2/NeuTTS,
-> UI-TARS, Moonshine) sont des **cibles**. Le runtime actuel signale leur état via
+> UI-TARS 7B, Moonshine) sont des **cibles**. UI-TARS 2B est exécutable localement avec son projecteur et llama.cpp. Le runtime actuel signale leur état via
 > `:models-honest` et `is_simulated()` ; il n'affiche jamais un statut `Operational` feint.
 
 ---
@@ -224,12 +226,58 @@ cargo run -p hakille-ui-desktop --bin hakille-desktop
 # Baseline headless de migration (snapshot, view-models — filet de sécurité) :
 cargo test -p hakille-ui-model -p hakille-ui-shell
 
-# Tokens design (source unique TOML → Rust/Swift/Kotlin/CSS, CI) :
+# Tokens design (vérifie aussi les exports Kotlin/Swift mobiles versionnés) :
 cargo xtask tokens --check
 cargo xtask tokens export-swift   # target/tokens/HakilleTokens.swift
 cargo xtask tokens export-kotlin  # target/tokens/HakilleTokens.kt
 cargo xtask tokens export-css     # target/tokens/hakille-tokens.css
 ```
+
+Le contrôle de types macOS Intel ne démontre pas une exécution ONNX :
+ONNX Runtime 1.31 ne distribue plus de binaire Intel. La liaison et les
+moteurs ONNX sur cette architecture restent à valider avec un runtime compatible.
+
+### Applications mobiles natives
+
+Les applications Kotlin/Compose et Swift/SwiftUI partagent le cœur Rust via
+UniFFI et rejoignent explicitement le hub personnel. La passerelle utilise
+un jeton distinct et écoute sur loopback ; un téléphone distant demande un
+reverse proxy ou tunnel HTTPS configuré. Le démon ne sert qu'une connexion
+IPC : déconnecter le HUD desktop pendant l'utilisation de la passerelle.
+
+La dictée est optionnelle et locale via l'OS : Android 12/API 31+ exige un
+moteur sur l'appareil disponible ; iOS 16+ exige la prise en charge locale
+de la langue choisie. Sans ce support, elle est indisponible, sans repli cloud.
+Une action explicite demande les permissions, puis le résultat final complète
+le brouillon ; **Envoyer** reste une action séparée. Aucun modèle Hakille
+n'est chargé sur le téléphone et aucun réveil vocal permanent n'y est fourni.
+
+L’interface privilégie désormais la voix : quatre espaces **Voix, Mémoire,
+Activité et Hub**, logo officiel, police Inter et thèmes issus des tokens.
+Le mode conversation, activé explicitement, envoie la transcription finale
+au hub et lit uniquement la réponse corrélée avec une voix locale disponible.
+Chaque tour exige une pression ; les cartes gardent leur approbation séparée.
+Le panneau téléphone propose caméra, fichier choisi, localisation ponctuelle
+et ouverture confirmée d’applications autorisées. Les aperçus restent locaux.
+Voir le [design et son périmètre](docs/DESIGN_MOBILE_2026-11-04.md).
+
+Avant HTTP, les hôtes sauvegardent un checkpoint v2 durable. Une mutation
+encore marquée en cours revient comme `unknown` au redémarrage, sans rejeu
+automatique.
+Le statut et le journal restent consultables ; prendre en compte les
+avertissements permet la reprise mais ne confirme pas les effets métier.
+Le handoff signé v2 de la bibliothèque de synchronisation exige séparément
+une paire identité/clé approuvée ; il ne fournit pas un appairage ni une
+synchronisation réseau automatique de ces applications.
+
+Le [guide mobile](mobile/README.md) décrit la construction, la connexion et
+les scripts d'inspection APK, de parcours sur émulateur Android et de tests
+iOS sur simulateur. Le [rapport de seconde itération](docs/VALIDATION_MOBILE_SUITE_2026-11-04.md)
+sépare les résultats acquis des validations restantes. La CI macOS et Android
+a ensuite validé la version `22510d6` ; les résultats de la nouvelle interface
+sont suivis dans le [rapport design/voix](docs/VALIDATION_DESIGN_VOIX_MOBILE_2026-11-04.md).
+La dictée avec microphone physique, TalkBack et VoiceOver restent à valider
+sur les appareils ciblés.
 
 ### Cartes d'action (démon → desktop)
 
@@ -260,6 +308,36 @@ Le démon expose son runtime WASM au desktop par un contrat IPC additif :
 - une demande de panneau faite avant la connexion au démon est **rejouée** à la connexion (sinon le panneau resterait vide).
 
 Limites explicites : seuls `echo-agent` et `count-agent` ont un binaire réel ; les cinq agents métier de `agents/` restent des manifests déclaratifs (pas de `.wasm` livré, `spawn_sandboxed` non branché).
+
+### Activation vocale locale : microphone explicite
+
+Le worker vocal raccorde capture, Silero VAD, Whisper et reconnaissance
+textuelle de « Hakille ». L'énergie sonore seule ne peut plus activer le
+mot-clé. Le microphone est **désactivé par défaut**.
+
+```bash
+cargo run --locked -p hakille-daemon -- models download --model silero-vad-v5
+cargo run --locked -p hakille-daemon -- models download --model whisper-tiny-multilingual
+cargo run --locked -p hakille-daemon -- voice devices
+# Session continue ; Ctrl+C arrête :
+cargo run --locked -p hakille-daemon -- --listen --models-dir models --voice-language fr
+# Diagnostic WAV sans microphone ni exécution de commande :
+cargo run --locked -p hakille-daemon -- voice test --audio commande.wav --models-dir models --language fr
+```
+
+Dans le desktop connecté au démon `--serve`, utiliser **F8 avec la fenêtre
+active**, le bouton microphone ou l'option `--voice`. F8 n'est pas global ;
+masquer le HUD ne coupe pas une écoute explicitement activée. Les commandes
+vocales suivent les contrôles habituels, et les segments coupés à la limite
+de 12 secondes sont refusés. `--listen` et `--serve` sont incompatibles.
+
+Whisper expose 99 codes de langue, sans garantie de précision sur chacune :
+les phrases courtes et le nom propre Hakille restent sensibles aux erreurs
+ASR. Le service fournit l'indice lexical explicite « Hakille » au décodeur,
+sans remplacer le texte reconnu ; cela ne garantit pas une commande correcte.
+Ce lot est testé sur Linux sans microphone physique ; Windows/macOS et
+les périphériques réels restent à vérifier. Commandes, alias, états du HUD
+et preuves : [Activation vocale](docs/ACTIVATION_VOCALE.md).
 
 ### Voix : timeline de visèmes (approximation documentée)
 
@@ -310,9 +388,14 @@ hakille> :exit             # Arrêt propre du démon
 
 Pour explorer chaque sous-système en profondeur, consultez les guides dédiés :
 
+- [**Analyse multiplateforme et améliorations du 3 novembre 2026**](docs/ANALYSE_MULTIPLATEFORME_2026-11-03.md) : état réel des six plateformes, corrections et preuves de validation, limites restantes et priorités.
+- [**Analyse approfondie et deuxième lot de corrections**](docs/ANALYSE_APPROFONDIE_2026-11-03.md) : stockage des clés, persistance, calendrier, patches, dépendances corrigées et vérification du workspace.
+
 - 🏛️ [**Architecture Système Complète**](docs/ARCHITECTURE.md) : Les 6 couches, flux de données, graphe des dépendances inter-crates et invariants.
 - ⚙️ [**Spécification des Substrates OS**](docs/SUBSTRATES.md) : Implémentations natives des 6 OS (Windows, Linux, macOS, Redox, Mobile, Web), sandboxes et télémétrie.
 - 🧠 [**Noyau Cognitif & Mémoire Distribuée**](docs/COGNITION.md) : Système 1/2, Cognitive Fabric, Working Memory, Deliberate Planner, Self-Model, Curiosité, Graphe SPO et DSL.
+- [**Utiliser et tester l’inférence locale**](docs/INFERENCE_LOCALE.md) : commandes des sept modèles, fichiers audio, texte et images.
+- [**Validation des sept modèles locaux**](docs/VALIDATION_INFERENCE_LOCALE_2026-11-03.md) : forwards réels, résultats des tests, provenance et limites.
 - 🤖 [**Modèles Fondations & Runtimes d'Inférence**](docs/MODELS.md) : Spécifications des 7 modèles, parseurs binaires GGUF v3 / Safetensors / ONNX et registre LRU VRAM.
 - 🛡️ [**Sécurité, Capabilities & Gouvernance**](docs/SECURITY_AND_GOVERNANCE.md) : Jetons Biscuit, Registre de Consentement, Journal chaîné Ed25519, Constitution et Anti-Spoofing.
 - 👁️ [**Interfaces Ambiantes & Perception**](docs/INTERFACES_AND_PERCEPTION.md) : Présence discrète, HUD Spotlight éphémère, Sélecteur de Canal, Budget de Silence, World Model et moteur vocal duplex (RVQ/VAD v1).

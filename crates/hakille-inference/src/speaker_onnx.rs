@@ -8,17 +8,10 @@
 //!     output `embedding` f32 `[N,192]`.
 //!   - si un checkpoint exposait `[1,80,200]`, le layout est transposé à la
 //!     volée (détection sur la shape du graphe, pas de constante en dur).
-//! - Pré-traitement 100 % Rust DANS ce fichier (aucun import depuis un
-//!   `mel.rs` externe pour éviter les conflits inter-agents) :
-//!   pre-emphasis 0.97, fenêtrage 25 ms / 10 ms, fenêtre de Hamming,
-//!   FFT radix-2 maison (NFFT 512), 80 filtres mel triangulaires (HTK,
-//!   0–8 kHz), log + CMN.
-//! - Forward `ort` RÉEL `[1,200,80]` (≈2 s) -> `[1,192]`, L2-norm réelle.
-//! - `verify` = similarité cosinus réelle.
-//! - Erreur LOUD si modèle absent ; aucun panic sur silence / court.
-//!
-//! Qualité visée : Google — latences mesurées en tests, pas d'heuristique
-//! déguisée (le vecteur vient du forward neural, jamais d'un hash).
+//! - Frontend Kaldi commun : retrait DC, préaccentuation 0.97 par trame,
+//!   fenêtre Povey 25 ms / 10 ms, FFT512, mel20–8000Hz, CMN.
+//! - Tout le segment est traité lorsque l'axe temporel du graphe est dynamique.
+//! - Embeddings réels de 192 composantes normalisés L2, entrées invalides refusées.
 
 use hakille_core::{HakilleError, Result};
 use ort::session::Session;
@@ -71,7 +64,7 @@ pub struct CampplusOnnx {
     input_name: String,
     output_name: String,
     layout: InputLayout,
-    frames: usize,
+    frames: Option<usize>,
 }
 
 impl CampplusOnnx {
@@ -88,6 +81,8 @@ impl CampplusOnnx {
         let env = shared_ort_env()?;
         let session = Session::builder(&env)
             .map_err(|e| ort_err("open(builder)", e))?
+            .with_intra_threads(4)
+            .map_err(|e| ort_err("open(threads)", e))?
             .commit_from_file(path)
             .map_err(|e| ort_err("open(commit_from_file)", e))?;
 
@@ -122,22 +117,37 @@ impl CampplusOnnx {
         } else {
             output_names[0].clone()
         };
-        // Détection du layout depuis la shape du dtype réel.
-        let mut layout = InputLayout::BatchTimeMel;
-        for inp in session.inputs() {
-            if inp.name() == input_name {
-                let dbg = format!("{:?}", inp.dtype());
-                // Heuristique robuste sur la représentation du ValueType :
-                // si la shape se termine par 80 -> [N,T,80], sinon [N,80,T].
-                // On inspecte la fin de la chaîne de debug de façon défensive.
-                if dbg.contains("80, -1") || dbg.contains("80, 200") {
-                    layout = InputLayout::BatchMelTime;
-                } else {
-                    layout = InputLayout::BatchTimeMel;
-                }
-                break;
-            }
+        let input = session
+            .inputs()
+            .iter()
+            .find(|input| input.name() == input_name)
+            .ok_or_else(|| ort_err("open", "entrée absente"))?;
+        let shape = input
+            .dtype()
+            .tensor_shape()
+            .ok_or_else(|| ort_err("open", "tenseur attendu"))?;
+        if input_names.len() != 1
+            || input.dtype().tensor_type() != Some(ort::value::TensorElementType::Float32)
+            || shape.len() != 3
+            || (shape[0] != -1 && shape[0] != 1)
+        {
+            return Err(ort_err(
+                "open",
+                "CAM++ attend un tenseur float32 [1,T,80] ou [1,80,T]",
+            ));
         }
+        let (layout, temporal) = if shape[2] == CAMP_N_MELS as i64 {
+            (InputLayout::BatchTimeMel, shape[1])
+        } else if shape[1] == CAMP_N_MELS as i64 {
+            (InputLayout::BatchMelTime, shape[2])
+        } else {
+            return Err(ort_err("open", "axe 80 mels absent"));
+        };
+        let frames = match temporal {
+            -1 => None,
+            1..=12_000 => Some(temporal as usize),
+            _ => return Err(ort_err("open", "nombre de trames incompatible")),
+        };
         tracing::info!(
             model = %path.display(),
             input = %input_name,
@@ -152,7 +162,7 @@ impl CampplusOnnx {
             input_name,
             output_name,
             layout,
-            frames: CAMP_N_FRAMES,
+            frames,
         })
     }
 
@@ -234,15 +244,25 @@ impl CampplusOnnx {
     /// trames paddées/tuilées, erreur uniquement si `ort` échoue.
     pub fn embed(&self, pcm_16k: &[f32]) -> Result<Vec<f32>> {
         let t0 = Instant::now();
-        let fbank_tm = fbank_80x200(pcm_16k); // [T=200, M=80] row-major
-        debug_assert_eq!(fbank_tm.len(), CAMP_N_FRAMES * CAMP_N_MELS);
-        let flat: Vec<f32> = match self.layout {
+        if pcm_16k.len() < CAMP_WIN
+            || pcm_16k.len() > 16_000 * 120
+            || pcm_16k.iter().any(|x| !x.is_finite() || x.abs() > 1.0)
+        {
+            return Err(ort_err(
+                "embed",
+                "PCM mono 16 kHz normalisé fini, 25 ms à 120 s requis",
+            ));
+        }
+        let features = camp_fbank(pcm_16k, self.frames);
+        let frames = features.len();
+        let fbank_tm: Vec<f32> = features.into_iter().flatten().collect();
+        let flat = match self.layout {
             InputLayout::BatchTimeMel => fbank_tm,
-            InputLayout::BatchMelTime => transpose_tm_to_mt(&fbank_tm, self.frames, CAMP_N_MELS),
+            InputLayout::BatchMelTime => transpose_tm_to_mt(&fbank_tm, frames, CAMP_N_MELS),
         };
         let shape = match self.layout {
-            InputLayout::BatchTimeMel => [1usize, self.frames, CAMP_N_MELS],
-            InputLayout::BatchMelTime => [1usize, CAMP_N_MELS, self.frames],
+            InputLayout::BatchTimeMel => [1usize, frames, CAMP_N_MELS],
+            InputLayout::BatchMelTime => [1usize, CAMP_N_MELS, frames],
         };
         let input_tensor = Tensor::<f32>::from_array((shape, flat))
             .map_err(|e| ort_err("embed(input_tensor)", e))?;
@@ -258,6 +278,7 @@ impl CampplusOnnx {
         let raw: Vec<f32> = outputs
             .get(&output_key)
             .and_then(|v| v.try_extract_tensor::<f32>().ok())
+            .filter(|(shape, _)| shape.as_ref() == [1, CAMP_EMB_DIM as i64])
             .map(|(_, data)| data.to_vec())
             .ok_or_else(|| {
                 HakilleError::InferenceError(format!(
@@ -278,6 +299,9 @@ impl CampplusOnnx {
             }
         }
         let emb = l2_normalize(&raw);
+        if emb.iter().all(|x| *x == 0.0) {
+            return Err(ort_err("embed", "embedding de norme nulle"));
+        }
         tracing::debug!(
             elapsed_ms = t0.elapsed().as_millis(),
             "CampplusOnnx::embed: forward réel OK"
@@ -287,20 +311,22 @@ impl CampplusOnnx {
 
     /// Variante avec ré-échantillonnage linéaire si `sample_rate != 16 kHz`.
     pub fn embed_resampled(&self, pcm: &[f32], sample_rate: u32) -> Result<Vec<f32>> {
-        if sample_rate == CAMP_SAMPLE_RATE {
-            return self.embed(pcm);
-        }
-        if sample_rate == 0 {
-            return Err(HakilleError::InferenceError(
-                "CampplusOnnx::embed_resampled: sample_rate nul".to_string(),
-            ));
-        }
-        let resampled = resample_linear(pcm, sample_rate, CAMP_SAMPLE_RATE);
+        let resampled = crate::audio_resample::try_to_mono_16k(pcm, 1, sample_rate)?;
         self.embed(&resampled)
     }
 
     /// Vérification locuteur : cosinus réel + seuil.
     pub fn verify(&self, emb: &[f32], reference: &[f32], threshold: f32) -> (bool, f32) {
+        if emb.len() != CAMP_EMB_DIM
+            || reference.len() != CAMP_EMB_DIM
+            || !threshold.is_finite()
+            || !(-1.0..=1.0).contains(&threshold)
+            || emb.iter().chain(reference).any(|x| !x.is_finite())
+            || emb.iter().all(|x| *x == 0.0)
+            || reference.iter().all(|x| *x == 0.0)
+        {
+            return (false, 0.0);
+        }
         let sim = cosine_similarity(emb, reference);
         (sim >= threshold, sim)
     }
@@ -308,45 +334,29 @@ impl CampplusOnnx {
 
 /// Similarité cosinus réelle (vecteurs quelconques ; 0.0 si dégénéré).
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
+    if a.len() != b.len() || a.is_empty() || a.iter().chain(b).any(|x| !x.is_finite()) {
         return 0.0;
     }
-    let mut dot = 0.0f32;
-    let mut na = 0.0f32;
-    let mut nb = 0.0f32;
-    for i in 0..a.len() {
-        let x = a[i];
-        let y = b[i];
-        if !x.is_finite() || !y.is_finite() {
-            continue;
-        }
-        dot += x * y;
-        na += x * x;
-        nb += y * y;
+    let dot: f64 = a.iter().zip(b).map(|(a, b)| *a as f64 * *b as f64).sum();
+    let norm = |v: &[f32]| v.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+    let denominator = norm(a) * norm(b);
+    if denominator == 0.0 {
+        0.0
+    } else {
+        (dot / denominator).clamp(-1.0, 1.0) as f32
     }
-    if na <= 0.0 || nb <= 0.0 {
-        return 0.0;
-    }
-    (dot / (na.sqrt() * nb.sqrt())).clamp(-1.0, 1.0)
 }
 
-/// Normalisation L2 réelle (zéros si norme nulle).
+/// Normalisation L2 réelle, accumulation f64 sans débordement sur f32 finis.
 pub fn l2_normalize(v: &[f32]) -> Vec<f32> {
-    let mut norm = 0.0f32;
-    for x in v.iter() {
-        let c = if x.is_finite() { *x } else { 0.0 };
-        norm += c * c;
+    if v.iter().any(|x| !x.is_finite()) {
+        return vec![0.0; v.len()];
     }
-    norm = norm.sqrt();
-    if norm <= 0.0 || !norm.is_finite() {
-        return vec![0.0f32; v.len()];
+    let norm = v.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt();
+    if norm == 0.0 {
+        return vec![0.0; v.len()];
     }
-    v.iter()
-        .map(|x| {
-            let c = if x.is_finite() { *x } else { 0.0 };
-            c / norm
-        })
-        .collect()
+    v.iter().map(|x| (*x as f64 / norm) as f32).collect()
 }
 
 /// Ré-échantillonnage linéaire pur Rust.
@@ -404,174 +414,31 @@ fn transpose_tm_to_mt(tm: &[f32], frames: usize, mels: usize) -> Vec<f32> {
 /// avec tuilage cyclique si l'audio est court et troncature si long.
 /// Ne panique jamais (entrée vide -> trames de zéros).
 pub fn fbank_80x200(pcm_16k: &[f32]) -> Vec<f32> {
-    // 1. Sanitize + pre-emphasis.
-    let clean: Vec<f32> = pcm_16k.iter().map(|s| sanitize_sample(*s)).collect();
-    let mut emphasized = Vec::with_capacity(clean.len().max(1));
-    for (i, s) in clean.iter().enumerate() {
-        if i == 0 {
-            emphasized.push(*s);
-        } else {
-            emphasized.push(*s - CAMP_PREEMPH * clean[i - 1]);
-        }
-    }
-    // 2. Cadrage à la longueur exacte de 200 trames.
-    let need_samples = (CAMP_N_FRAMES - 1) * CAMP_HOP + CAMP_WIN;
-    let mut framed_pcm: Vec<f32> = Vec::with_capacity(need_samples);
-    if emphasized.is_empty() {
-        framed_pcm.resize(need_samples, 0.0);
-    } else if emphasized.len() >= need_samples {
-        framed_pcm.extend_from_slice(&emphasized[..need_samples]);
-    } else {
-        // Tuilage cyclique (préserve l'identité locuteur, pas de silence
-        // partagé qui gonflerait artificiellement les similarités).
-        framed_pcm.extend_from_slice(&emphasized);
-        let mut idx = 0;
-        while framed_pcm.len() < need_samples {
-            framed_pcm.push(emphasized[idx % emphasized.len()]);
-            idx += 1;
-        }
-    }
-    // 3. Fenêtre de Hamming (400 pts).
-    let mut hamming = vec![0.0f32; CAMP_WIN];
-    for (n, slot) in hamming.iter_mut().enumerate() {
-        *slot = 0.54 - 0.46 * (2.0 * std::f32::consts::PI * n as f32 / (CAMP_WIN - 1) as f32).cos();
-    }
-    // 4. Banc mel (80×257) pré-calculé.
-    let mel_fb = mel_filterbank_80();
-    // 5. Boucle trames : FFT -> puissance -> mel -> log.
-    let mut log_mel = vec![0.0f32; CAMP_N_FRAMES * CAMP_N_MELS];
-    let mut re = vec![0.0f32; CAMP_NFFT];
-    let mut im = vec![0.0f32; CAMP_NFFT];
-    for t in 0..CAMP_N_FRAMES {
-        let start = t * CAMP_HOP;
-        for c in re.iter_mut() {
-            *c = 0.0;
-        }
-        for c in im.iter_mut() {
-            *c = 0.0;
-        }
-        for n in 0..CAMP_WIN {
-            re[n] = framed_pcm[start + n] * hamming[n];
-        }
-        fft_radix2(&mut re, &mut im);
-        // Puissance 0..256.
-        for m in 0..CAMP_N_MELS {
-            let row = &mel_fb[m];
-            let mut e = 0.0f32;
-            for k in 0..=CAMP_NFFT / 2 {
-                let power = re[k] * re[k] + im[k] * im[k];
-                e += power * row[k];
-            }
-            log_mel[t * CAMP_N_MELS + m] = (e.max(1e-10)).ln();
-        }
-    }
-    // 6. CMN : moyenne cepstrale soustraite par bande mel.
-    for m in 0..CAMP_N_MELS {
-        let mut mean = 0.0f32;
-        for t in 0..CAMP_N_FRAMES {
-            mean += log_mel[t * CAMP_N_MELS + m];
-        }
-        mean /= CAMP_N_FRAMES as f32;
-        for t in 0..CAMP_N_FRAMES {
-            log_mel[t * CAMP_N_MELS + m] -= mean;
-        }
-    }
-    log_mel
+    camp_fbank(pcm_16k, Some(CAMP_N_FRAMES))
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
-/// 80 filtres mel triangulaires (HTK), 0–8 kHz, NFFT 512 @16 kHz.
-fn mel_filterbank_80() -> Vec<Vec<f32>> {
-    const N_BINS: usize = CAMP_NFFT / 2 + 1; // 257
-    let sr = CAMP_SAMPLE_RATE as f32;
-    let low_mel = 0.0f32;
-    let high_mel = 2595.0 * (1.0 + (sr / 2.0) / 700.0).log10();
-    let mut points_mel = vec![0.0f32; CAMP_N_MELS + 2];
-    for (i, slot) in points_mel.iter_mut().enumerate() {
-        *slot = low_mel + (high_mel - low_mel) * i as f32 / (CAMP_N_MELS + 1) as f32;
-    }
-    let mut points_hz = vec![0.0f32; CAMP_N_MELS + 2];
-    for (i, m) in points_mel.iter().enumerate() {
-        points_hz[i] = 700.0 * (10f32.powf(*m / 2595.0) - 1.0);
-    }
-    let mut points_bin = vec![0usize; CAMP_N_MELS + 2];
-    for (i, f) in points_hz.iter().enumerate() {
-        points_bin[i] = ((*f / sr * CAMP_NFFT as f32).floor() as usize).min(N_BINS - 1);
-    }
-    let mut fb = vec![vec![0.0f32; N_BINS]; CAMP_N_MELS];
-    for m in 1..=CAMP_N_MELS {
-        let f_m_minus = points_bin[m - 1];
-        let f_m = points_bin[m];
-        let f_m_plus = points_bin[m + 1];
-        if f_m > f_m_minus {
-            let row = &mut fb[m - 1];
-            for (k, slot) in row.iter_mut().enumerate().take(f_m).skip(f_m_minus) {
-                *slot = (k - f_m_minus) as f32 / (f_m - f_m_minus).max(1) as f32;
-            }
+fn camp_fbank(pcm: &[f32], frames: Option<usize>) -> Vec<Vec<f32>> {
+    let mut samples: Vec<f32> = pcm.iter().map(|x| sanitize_sample(*x)).collect();
+    if let Some(frames) = frames {
+        let needed = (frames - 1) * CAMP_HOP + CAMP_WIN;
+        if samples.is_empty() {
+            samples.resize(needed, 0.0);
         }
-        if f_m_plus > f_m {
-            let row = &mut fb[m - 1];
-            for (k, slot) in row.iter_mut().enumerate().take(f_m_plus).skip(f_m) {
-                *slot = (f_m_plus - k) as f32 / (f_m_plus - f_m).max(1) as f32;
-            }
+        let original = samples.len();
+        while samples.len() < needed {
+            samples.push(samples[samples.len() % original]);
         }
+        samples.truncate(needed);
     }
-    fb
+    let mut features = crate::mel::kaldi_fbank(&samples, true);
+    crate::mel::center_mel(&mut features);
+    features
 }
 
-/// FFT radix-2 itérative maison (en place, `re`/`im` de taille 2^k).
-fn fft_radix2(re: &mut [f32], im: &mut [f32]) {
-    let n = re.len();
-    debug_assert_eq!(n, im.len());
-    debug_assert!(n.is_power_of_two());
-    // Bit-reversal.
-    let mut j = 0usize;
-    for i in 1..n {
-        let mut bit = n >> 1;
-        while j & bit != 0 {
-            j ^= bit;
-            bit >>= 1;
-        }
-        j ^= bit;
-        if i < j {
-            re.swap(i, j);
-            im.swap(i, j);
-        }
-    }
-    let mut len = 2usize;
-    while len <= n {
-        let ang = -2.0 * std::f32::consts::PI / len as f32;
-        let w_re = ang.cos();
-        let w_im = ang.sin();
-        let half = len / 2;
-        let mut i = 0usize;
-        while i < n {
-            let mut wr = 1.0f32;
-            let mut wi = 0.0f32;
-            for k in 0..half {
-                let u_re = re[i + k];
-                let u_im = im[i + k];
-                let v_re = re[i + k + half] * wr - im[i + k + half] * wi;
-                let v_im = re[i + k + half] * wi + im[i + k + half] * wr;
-                re[i + k] = u_re + v_re;
-                im[i + k] = u_im + v_im;
-                re[i + k + half] = u_re - v_re;
-                im[i + k + half] = u_im - v_im;
-                let nxt_wr = wr * w_re - wi * w_im;
-                wi = wr * w_im + wi * w_re;
-                wr = nxt_wr;
-            }
-            i += len;
-        }
-        len <<= 1;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Synthèse de test (sine + harmoniques) — utilitaire pur, pas d'inférence.
-// ---------------------------------------------------------------------------
-
-/// Génère un signal voisé déterministe (fondamentale + harmoniques).
-/// `f0` distingue les locuteurs simulés pour les tests.
+/// Signal synthétique déterministe pour tests DSP ; pas une preuve biométrique.
 pub fn synth_voiced_16k(freq_hz: f32, seconds: f32, phase: f32) -> Vec<f32> {
     let n = (seconds * CAMP_SAMPLE_RATE as f32).round().max(1.0) as usize;
     let mut out = Vec::with_capacity(n);
@@ -588,7 +455,6 @@ pub fn synth_voiced_16k(freq_hz: f32, seconds: f32, phase: f32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     fn open_or_skip() -> Option<CampplusOnnx> {
         match CampplusOnnx::open_default() {
@@ -631,44 +497,51 @@ mod tests {
     }
 
     #[test]
-    fn test_campplus_forward_reel_meme_locuteur() {
+    fn test_campplus_forward_real_determinism() {
         let Some(sess) = open_or_skip() else { return };
-        // Même locuteur : deux segments chevauchants (50 %) d'un même signal
-        // voisé continu (même sine+harmoniques, comme les fenêtres de la
-        // diarisation). Mesuré sur le vrai forward : sim ≈ 0.9865.
-        let long = synth_voiced_16k(120.0, 4.0, 0.0);
-        let a = long[..32_000].to_vec();
-        let b = long[16_000..48_000].to_vec();
-        let t0 = Instant::now();
-        let ea = sess.embed(&a).expect("forward réel A");
-        let dt_a = t0.elapsed();
-        let t0 = Instant::now();
-        let eb = sess.embed(&b).expect("forward réel B");
-        let dt_b = t0.elapsed();
-        assert_eq!(ea.len(), 192);
-        assert_eq!(eb.len(), 192);
-        let na: f32 = ea.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let nb: f32 = eb.iter().map(|x| x * x).sum::<f32>().sqrt();
+        // Un sinus n'est pas un locuteur annoté. On vérifie uniquement le
+        // contrat numérique reproductible, pas un taux de reconnaissance.
+        let signal = synth_voiced_16k(120.0, 2.0, 0.0);
+        let a = sess.embed(&signal).unwrap();
+        let b = sess.embed(&signal).unwrap();
+        assert_eq!(a.len(), CAMP_EMB_DIM);
+        let norm: f32 = a.iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5);
+        assert!((cosine_similarity(&a, &b) - 1.0).abs() < 1e-5);
+        assert!(sess.verify(&a, &b, 0.95).0);
+        assert!(!sess.verify(&[f32::NAN; 192], &a, 0.0).0);
+        assert!(!sess.verify(&[0.0; 192], &a, 0.0).0);
+        assert!(!sess.verify(&a, &b, f32::NAN).0);
+    }
+
+    /// Même fixture publique sherpa en.wav que le test ASR. Ce test vérifie
+    /// le forward et l'utilisation du segment entier, pas une précision biométrique.
+    #[test]
+    #[ignore = "nécessite modèle CAM++ et HAKILLE_TEST_PCM16K_F32"]
+    fn official_voice_fixture_full_segment() {
+        let path = std::env::var("HAKILLE_TEST_PCM16K_F32").expect("fixture requise");
+        let bytes = std::fs::read(path).unwrap();
+        let pcm: Vec<_> = bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        let sess = CampplusOnnx::open_default().expect("CAM++ requis");
+        let a = sess.embed(&pcm).unwrap();
+        let repeat = sess.embed(&pcm).unwrap();
+        assert!((cosine_similarity(&a, &repeat) - 1.0).abs() < 1e-5);
+        let mut modified = pcm.clone();
+        modified[32_000..].fill(0.0);
+        let b = sess.embed(&modified).unwrap();
+        let difference: f32 = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).sum();
         eprintln!(
-            "norm_a={na:.6} norm_b={nb:.6} lat_a={}ms lat_b={}ms",
-            dt_a.as_millis(),
-            dt_b.as_millis()
+            "CAM++ fixture: norm={}, cosine_repeat={}, tail_change_l1={difference}",
+            a.iter().map(|x| x * x).sum::<f32>().sqrt(),
+            cosine_similarity(&a, &repeat)
         );
-        assert!((na - 1.0).abs() < 1e-4, "norme==1, got {na}");
-        assert!((nb - 1.0).abs() < 1e-4, "norme==1, got {nb}");
-        let sim = cosine_similarity(&ea, &eb);
-        eprintln!("sim_meme_locuteur={sim:.4}");
         assert!(
-            sim > 0.93,
-            "même locuteur (même sine+harmoniques) : similarité haute attendue, got {sim}"
+            difference > 0.01,
+            "le segment après 2 s doit contribuer à l'embedding"
         );
-        let (ok, s) = sess.verify(&ea, &eb, 0.6);
-        assert!(ok && (s - sim).abs() < 1e-6);
-        // Déterminisme : même entrée -> similarité 1.0.
-        let ea2 = sess.embed(&a).expect("forward réel A bis");
-        let sim_id = cosine_similarity(&ea, &ea2);
-        eprintln!("sim_identique={sim_id:.4}");
-        assert!((sim_id - 1.0).abs() < 1e-5, "déterminisme, got {sim_id}");
     }
 
     #[test]
@@ -706,10 +579,9 @@ mod tests {
     }
 
     #[test]
-    fn test_campplus_locuteurs_distincts_ordonnes() {
+    fn test_campplus_distinct_synthetic_signals() {
         let Some(sess) = open_or_skip() else { return };
-        // Locuteurs distincts (f0 120 vs 220 Hz) : mesuré ≈ 0.907, sous la
-        // cohérence même-locuteur (≈ 0.9865) — le forward réel ordonne.
+        // Mesure de sensibilité à deux signaux; aucune identité humaine déduite.
         let ea = sess
             .embed(&synth_voiced_16k(120.0, 2.0, 0.0))
             .expect("forward A");
@@ -717,15 +589,8 @@ mod tests {
             .embed(&synth_voiced_16k(220.0, 2.0, 0.5))
             .expect("forward C");
         let sim_cross = cosine_similarity(&ea, &ec);
-        let long = synth_voiced_16k(120.0, 4.0, 0.0);
-        let same_a = sess.embed(&long[..32_000]).expect("forward same A");
-        let same_b = sess.embed(&long[16_000..48_000]).expect("forward same B");
-        let sim_same = cosine_similarity(&same_a, &same_b);
-        eprintln!("sim_cross={sim_cross:.4} sim_same={sim_same:.4}");
-        assert!(
-            sim_cross < sim_same,
-            "distincts ({sim_cross:.4}) < même-locuteur ({sim_same:.4})"
-        );
+        assert!(sim_cross.is_finite() && (-1.0..=1.0).contains(&sim_cross));
+        assert!(ea.iter().zip(&ec).any(|(a, c)| (a - c).abs() > 1e-4));
     }
 
     #[test]
@@ -735,8 +600,11 @@ mod tests {
             let pcm = synth_voiced_16k(110.0, len as f32 / 16_000.0, 0.0);
             let pcm = if len == 0 { vec![] } else { pcm };
             let e = sess.embed(&pcm);
-            assert!(e.is_ok(), "court len={len} ne doit pas paniquer : {e:?}");
-            assert_eq!(e.unwrap().len(), 192);
+            if len < CAMP_WIN {
+                assert!(e.is_err(), "signal trop court len={len} doit être refusé");
+            } else {
+                assert_eq!(e.expect("forward court réel").len(), 192);
+            }
         }
     }
 }

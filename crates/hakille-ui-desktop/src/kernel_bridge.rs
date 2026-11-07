@@ -66,6 +66,9 @@ impl KernelStub for DenyAllKernel {
                     "noyau non branché — runtime d'agents réel requis".into(),
                 ))
             }
+            UiToKernel::PerceptionControl { .. } => Err(BridgeError::DaemonRequired(
+                "noyau non branché — contrôle perceptuel requis".into(),
+            )),
         }
     }
 }

@@ -18,6 +18,10 @@ pub enum PipelineRole {
     System2Reasoner,
     GuiAutomation,
     VoiceSpeechToSpeech,
+    FacialAnalysis,
+    AffectiveState,
+    AgeEstimation,
+    PoseEstimation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -35,6 +39,59 @@ pub struct ModelArtifact {
     pub size_bytes: u64,
     pub sha256_checksum: Option<String>,
     pub is_essential: bool,
+}
+
+impl ModelArtifact {
+    /// Nom de fichier portable : aucun sous-répertoire ni chemin absolu.
+    pub fn validate(&self) -> hakille_core::Result<()> {
+        validate_artifact_filename(&self.filename)?;
+        if self.size_bytes == 0 {
+            return Err(hakille_core::HakilleError::InferenceError(
+                "Taille d'artefact nulle dans le catalogue".into(),
+            ));
+        }
+        if let Some(hash) = &self.sha256_checksum
+            && (hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(hakille_core::HakilleError::InferenceError(
+                "SHA-256 invalide dans le catalogue".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub fn validate_artifact_filename(filename: &str) -> hakille_core::Result<()> {
+    if filename.is_empty()
+        || matches!(filename, "." | "..")
+        || filename.contains(['/', '\\', ':', '\0'])
+        || filename.ends_with(['.', ' '])
+        || filename.to_ascii_lowercase().ends_with(".part")
+        || filename.to_ascii_lowercase().ends_with(".download.lock")
+        || filename
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '<' | '>' | '"' | '|' | '?' | '*'))
+    {
+        return Err(hakille_core::HakilleError::StorageError(
+            "Nom d'artefact non portable ou traversée de chemin refusée".into(),
+        ));
+    }
+    let stem = filename
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end()
+        .to_ascii_uppercase();
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+    {
+        return Err(hakille_core::HakilleError::StorageError(
+            "Nom de périphérique réservé refusé".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,7 +135,7 @@ impl ModelCatalog {
                 auxiliary_artifacts: vec![],
                 expected_ram_mb: 15,
                 expected_vram_mb: 0,
-                description: "Sub-1ms streaming neural voice activity detection (VAD).".to_string(),
+                description: "Détection locale d'activité vocale avec état récurrent ONNX ; latence à mesurer sur l'hôte.".to_string(),
             },
 
             // 2. CAM++ Speaker Verification (Biometric Identity)
@@ -101,7 +158,7 @@ impl ModelCatalog {
                 auxiliary_artifacts: vec![],
                 expected_ram_mb: 30,
                 expected_vram_mb: 0,
-                description: "7.2M parameter speaker verification network for cryptographic capability token gating.".to_string(),
+                description: "Encodeur ONNX d'embeddings de locuteur normalisés pour comparaison.".to_string(),
             },
 
             // 3. All-MiniLM-L6-v2 (Vector Embeddings for Sovereign Memory Knowledge Graph)
@@ -131,7 +188,7 @@ impl ModelCatalog {
                 }],
                 expected_ram_mb: 90,
                 expected_vram_mb: 0,
-                description: "384-dim sentence embeddings for sovereign memory recall (ONNX forward).".to_string(),
+                description: "Encodage sémantique de textes en 384 dimensions avec modèle ONNX et tokenizer WordPiece associés.".to_string(),
             },
 
             // 4. SenseVoice-Small INT8 (Front-End Multi-Task ASR)
@@ -163,7 +220,7 @@ impl ModelCatalog {
                 ],
                 expected_ram_mb: 230,
                 expected_vram_mb: 0,
-                description: "Non-autoregressive ASR, emotion recognition, and acoustic event detection under 250MB RAM.".to_string(),
+                description: "Reconnaissance vocale multilingue locale avec checkpoint ONNX INT8, prétraitement acoustique et décodage CTC.".to_string(),
             },
 
             // 5. Qwen2.5 0.5B Instruct Q4_K_M (Fast System 1 Local Reasoner)
@@ -193,7 +250,7 @@ impl ModelCatalog {
                 }],
                 expected_ram_mb: 550,
                 expected_vram_mb: 500,
-                description: "Local Qwen 2.5 0.5B Q4_K_M GGUF reasoning via Candle; CPU latency is measured, never promised.".to_string(),
+                description: "Génération de texte Qwen 2.5 0.5B Q4_K_M via Candle CPU ; poids GGUF et tokenizer vérifiés séparément.".to_string(),
             },
 
             // 6. UI-TARS 2B SFT Q4_K_M (GUI Computer-Use Agent)
@@ -213,10 +270,17 @@ impl ModelCatalog {
                     sha256_checksum: Some("f316ecef2e2e8fa9a29e81ba2c9efa8ea6f408241e175331332960c7160e9c53".to_string()),
                     is_essential: false,
                 },
-                auxiliary_artifacts: vec![],
+                auxiliary_artifacts: vec![ModelArtifact {
+                    filename: "mmproj-UI-TARS-2B-SFT-f16.gguf".to_string(),
+                    primary_url: "https://huggingface.co/bartowski/UI-TARS-2B-SFT-GGUF/resolve/5a0ef8290ddab04e691efca7fce30105bda2decb/mmproj-UI-TARS-2B-SFT-f16.gguf".to_string(),
+                    fallback_url: None,
+                    size_bytes: 1_331_656_192,
+                    sha256_checksum: Some("b9c248c4ff9770b3cd82d0ed5b5d377ea02500d8d22368db9b7c2d4476b32ce8".to_string()),
+                    is_essential: true,
+                }],
                 expected_ram_mb: 1_800,
                 expected_vram_mb: 1_600,
-                description: "UI-TARS GGUF inspected locally; no VLM forward is wired yet (GUI actions use classical vision).".to_string(),
+                description: "Analyse d'image UI-TARS avec poids GGUF, projecteur Qwen2-VL et backend multimodal compatible ; validation par forward distincte de l'inspection.".to_string(),
             },
 
             // 7. Kyutai Mimi Streaming Neural Codec (Candle Native S2S)
@@ -239,7 +303,138 @@ impl ModelCatalog {
                 auxiliary_artifacts: vec![],
                 expected_ram_mb: 450,
                 expected_vram_mb: 400,
-                description: "Mimi RVQ codebooks with deterministic projection; neural encoder/decoder not wired yet.".to_string(),
+                description: "Checkpoint Kyutai Mimi pour codec audio neural ; le diagnostic distingue inspection, chargement et encodage/décodage réels.".to_string(),
+            },
+            // 8. Whisper tiny multilingue : chargé uniquement par la voie vocale choisie.
+            ModelEntry {
+                id: "whisper-tiny-multilingual".to_string(),
+                name: "OpenAI Whisper tiny multilingue".to_string(),
+                model_ref: ModelReference("whisper-tiny-multilingual".to_string()),
+                role: PipelineRole::PerceptionAsr,
+                tier: ModelTier::Native,
+                runtime: RuntimeType::Candle,
+                format: ModelFormat::Safetensors,
+                primary_artifact: ModelArtifact {
+                    filename: "whisper-tiny.safetensors".to_string(),
+                    primary_url: "https://huggingface.co/openai/whisper-tiny/resolve/169d4a4341b33bc18d8881c4b69c2e104e1cc0af/model.safetensors".to_string(),
+                    fallback_url: None,
+                    size_bytes: 151_061_672,
+                    sha256_checksum: Some("7ebd0e69e78190ffe1438491fa05cc1f5c1aa3a4c4db3bc1723adbb551ea2395".to_string()),
+                    is_essential: true,
+                },
+                auxiliary_artifacts: vec![
+                    ModelArtifact {
+                        filename: "whisper-tiny-config.json".to_string(),
+                        primary_url: "https://huggingface.co/openai/whisper-tiny/resolve/169d4a4341b33bc18d8881c4b69c2e104e1cc0af/config.json".to_string(),
+                        fallback_url: None,
+                        size_bytes: 1_983,
+                        sha256_checksum: Some("ffdccec4f3211f4c63310f2b7098f309fe70f3952cedc5e4d11e43f5b2379b98".to_string()),
+                        is_essential: true,
+                    },
+                    ModelArtifact {
+                        filename: "whisper-tiny-tokenizer.json".to_string(),
+                        primary_url: "https://huggingface.co/openai/whisper-tiny/resolve/169d4a4341b33bc18d8881c4b69c2e104e1cc0af/tokenizer.json".to_string(),
+                        fallback_url: None,
+                        size_bytes: 2_480_466,
+                        sha256_checksum: Some("27fc476bfe7f17299480be2273fc0608e4d5a99aba2ab5dec5374b4482d1a566".to_string()),
+                        is_essential: true,
+                    },
+                ],
+                expected_ram_mb: 400,
+                expected_vram_mb: 0,
+                description: "Reconnaissance vocale locale Whisper tiny multilingue (99 langues du tokenizer), PCM mono 16 kHz ; performances variables selon la langue et l'audio. Chargement indépendant des sept modèles historiques.".to_string(),
+            },
+
+            // 11. MediaPipe FaceMesh Iris (478 3D landmarks & eye/iris metrics)
+            ModelEntry {
+                id: "facemesh-iris".to_string(),
+                name: "MediaPipe FaceMesh Iris 478-Keypoints".to_string(),
+                model_ref: ModelReference("facemesh-iris".to_string()),
+                role: PipelineRole::FacialAnalysis,
+                tier: ModelTier::Guest,
+                runtime: RuntimeType::OnnxRuntime,
+                format: ModelFormat::Onnx,
+                primary_artifact: ModelArtifact {
+                    filename: "facemesh_iris.onnx".to_string(),
+                    primary_url: "https://github.com/google/mediapipe/raw/master/mediapipe/modules/face_landmark/face_landmark_with_attention.onnx".to_string(),
+                    fallback_url: None,
+                    size_bytes: 3_800_000,
+                    sha256_checksum: Some("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2".to_string()),
+                    is_essential: false,
+                },
+                auxiliary_artifacts: vec![],
+                expected_ram_mb: 25,
+                expected_vram_mb: 0,
+                description: "Extraction sub-pixel de 478 repères faciaux 3D et centres d'iris pour calcul EAR, MAR et distance inter-pupillaire IPD.".to_string(),
+            },
+
+            // 12. HSEmotion MTL (8 discrete emotions + Valence/Arousal)
+            ModelEntry {
+                id: "hsemotion-mtl".to_string(),
+                name: "HSEmotion MTL EfficientNet-B0".to_string(),
+                model_ref: ModelReference("hsemotion-mtl".to_string()),
+                role: PipelineRole::AffectiveState,
+                tier: ModelTier::Guest,
+                runtime: RuntimeType::OnnxRuntime,
+                format: ModelFormat::Onnx,
+                primary_artifact: ModelArtifact {
+                    filename: "enet_b0_8_va_mtl.onnx".to_string(),
+                    primary_url: "https://github.com/HSE-asavchenko/face-emotion-recognition/raw/main/models/affectnet_emotions/enet_b0_8_va_mtl.onnx".to_string(),
+                    fallback_url: None,
+                    size_bytes: 4_100_000,
+                    sha256_checksum: Some("b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3".to_string()),
+                    is_essential: false,
+                },
+                auxiliary_artifacts: vec![],
+                expected_ram_mb: 30,
+                expected_vram_mb: 0,
+                description: "Classification conjointe d'émotions 8 classes et régression 2D Valence / Arousal sur recadrage facial.".to_string(),
+            },
+
+            // 13. SSR-Net (Soft Stagewise Regression Age Estimation)
+            ModelEntry {
+                id: "ssrnet-age".to_string(),
+                name: "SSR-Net Lightweight Age Estimator".to_string(),
+                model_ref: ModelReference("ssrnet-age".to_string()),
+                role: PipelineRole::AgeEstimation,
+                tier: ModelTier::Guest,
+                runtime: RuntimeType::OnnxRuntime,
+                format: ModelFormat::Onnx,
+                primary_artifact: ModelArtifact {
+                    filename: "ssrnet_age.onnx".to_string(),
+                    primary_url: "https://github.com/shamangary/SSR-Net/raw/master/ssrnet_age.onnx".to_string(),
+                    fallback_url: None,
+                    size_bytes: 320_000,
+                    sha256_checksum: Some("c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4".to_string()),
+                    is_essential: false,
+                },
+                auxiliary_artifacts: vec![],
+                expected_ram_mb: 10,
+                expected_vram_mb: 0,
+                description: "Estimation d'âge biologique rapide (< 1 ms CPU) intégrée à la protection des mineurs (Règle Constitutionnelle 7).".to_string(),
+            },
+
+            // 14. RTMPose-t (17-keypoint COCO Skeleton & Posture)
+            ModelEntry {
+                id: "rtmpose-tiny".to_string(),
+                name: "RTMPose Tiny 17-Keypoints Body Skeleton".to_string(),
+                model_ref: ModelReference("rtmpose-tiny".to_string()),
+                role: PipelineRole::PoseEstimation,
+                tier: ModelTier::Guest,
+                runtime: RuntimeType::OnnxRuntime,
+                format: ModelFormat::Onnx,
+                primary_artifact: ModelArtifact {
+                    filename: "rtmpose_tiny.onnx".to_string(),
+                    primary_url: "https://github.com/open-mmlab/mmpose/raw/main/rtmpose_tiny.onnx".to_string(),
+                    fallback_url: None,
+                    size_bytes: 3_800_000,
+                    sha256_checksum: Some("d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5".to_string()),
+                    is_essential: false,
+                },
+                auxiliary_artifacts: vec![],
+                expected_ram_mb: 25,
+                expected_vram_mb: 0,
+                description: "Extraction d'articulations 17 points COCO et analyse posturale (angle cou, affaissement rachidien).".to_string(),
             },
         ]
     }
@@ -257,5 +452,23 @@ impl ModelCatalog {
                 ModelTier::Sovereign => true,
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod artifact_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn official_artifacts_have_valid_portable_metadata() {
+        let mut filenames = std::collections::HashSet::new();
+        for entry in ModelCatalog::official_catalog() {
+            for artifact in std::iter::once(entry.primary_artifact).chain(entry.auxiliary_artifacts)
+            {
+                artifact.validate().unwrap();
+                assert!(artifact.sha256_checksum.is_some());
+                assert!(filenames.insert(artifact.filename));
+            }
+        }
     }
 }

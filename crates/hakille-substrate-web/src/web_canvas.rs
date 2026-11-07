@@ -59,6 +59,8 @@ impl WebScreenCaptureAdapter {
         })
     }
 
+    /// Génère une image de démonstration ; aucun appel à getDisplayMedia.
+    /// Ne doit jamais être présenté comme une capture du navigateur hôte.
     pub fn capture_frame(&self) -> ScreenCapture {
         let width = self.config.viewport_width;
         let height = self.config.viewport_height;

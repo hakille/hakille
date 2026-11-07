@@ -350,3 +350,179 @@ async fn fresh_token_is_64_lowercase_hex() {
     }
     assert_ne!(first, second, "deux jetons ne doivent pas coïncider");
 }
+
+fn wire(frame: &Frame) -> Vec<u8> {
+    let mut bytes = serde_json::to_vec(frame).expect("JSON");
+    bytes.push(b'\n');
+    bytes
+}
+
+#[tokio::test]
+async fn coalesced_frames_are_preserved_in_order() {
+    let frames = [
+        Frame::hello(TOKEN_A),
+        Frame::welcome("prêt"),
+        Frame::request(9, UiToKernel::StatusRequest),
+    ];
+    let bytes: Vec<u8> = frames.iter().flat_map(wire).collect();
+    let mut reader = bytes.as_slice();
+    for expected in frames {
+        assert_eq!(read_frame(&mut reader).await.unwrap(), Some(expected));
+    }
+    assert!(read_frame(&mut reader).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn fragmented_utf8_and_multiple_frames_survive_small_buffers() {
+    let frames = vec![
+        Frame::welcome("État : prêt 🦀"),
+        Frame::request(27, UiToKernel::StatusRequest),
+    ];
+    let bytes: Vec<u8> = frames.iter().flat_map(wire).collect();
+    let (mut writer, stream) = tokio::io::duplex(17);
+    let sender = tokio::spawn(async move {
+        for chunk in bytes.chunks(3) {
+            writer.write_all(chunk).await.unwrap();
+            tokio::task::yield_now().await;
+        }
+    });
+    let mut reader = tokio::io::BufReader::with_capacity(7, stream);
+    for expected in frames {
+        assert_eq!(read_frame(&mut reader).await.unwrap(), Some(expected));
+    }
+    assert!(read_frame(&mut reader).await.unwrap().is_none());
+    sender.await.unwrap();
+}
+
+#[tokio::test]
+async fn handshake_preserves_pipelined_request() {
+    let (mut client, server) = tokio::io::duplex(4096);
+    let request = Frame::request(42, UiToKernel::StatusRequest);
+    let mut bytes = wire(&Frame::hello(TOKEN_A));
+    bytes.extend(wire(&request));
+    client.write_all(&bytes).await.unwrap();
+    let mut server = tokio::io::BufReader::new(server);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        server_handshake(&mut server, TOKEN_A),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let received = tokio::time::timeout(std::time::Duration::from_secs(2), read_frame(&mut server))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(received, Some(request));
+}
+
+#[tokio::test]
+async fn client_handshake_preserves_coalesced_reply() {
+    let (client, mut server) = tokio::io::duplex(4096);
+    let reply = Frame::error(3, ErrorCode::Busy, "occupé");
+    let mut bytes = wire(&Frame::welcome("prêt"));
+    bytes.extend(wire(&reply));
+    server.write_all(&bytes).await.unwrap();
+    let mut client = tokio::io::BufReader::new(client);
+    client_handshake(&mut client, TOKEN_A).await.unwrap();
+    let received = tokio::time::timeout(std::time::Duration::from_secs(2), read_frame(&mut client))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(received, Some(reply));
+}
+
+#[tokio::test]
+async fn eof_requires_a_complete_delimited_frame() {
+    let frame = Frame::welcome("prêt");
+    let bytes = serde_json::to_vec(&frame).unwrap();
+    let mut reader = bytes.as_slice();
+    assert!(
+        matches!(read_frame(&mut reader).await, Err(IpcError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof)
+    );
+    let mut empty = &b""[..];
+    assert!(read_frame(&mut empty).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn frame_size_limit_is_exact_and_leaves_next_frame() {
+    let base = Frame::error(1, ErrorCode::Internal, "");
+    let overhead = serde_json::to_vec(&base).unwrap().len();
+    let frame = Frame::error(
+        1,
+        ErrorCode::Internal,
+        "x".repeat(MAX_FRAME_BYTES - overhead),
+    );
+    let next = Frame::welcome("suite");
+    let mut bytes = wire(&frame);
+    bytes.extend(wire(&next));
+    let mut reader = tokio::io::BufReader::with_capacity(13, bytes.as_slice());
+    assert_eq!(read_frame(&mut reader).await.unwrap(), Some(frame));
+    assert_eq!(read_frame(&mut reader).await.unwrap(), Some(next));
+    let oversized = Frame::error(
+        1,
+        ErrorCode::Internal,
+        "x".repeat(MAX_FRAME_BYTES - overhead + 1),
+    );
+    let bytes = wire(&oversized);
+    let mut reader = bytes.as_slice();
+    assert!(matches!(
+        read_frame(&mut reader).await,
+        Err(IpcError::TooLarge)
+    ));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bind_never_removes_existing_files_or_sockets() {
+    let endpoint = unique_endpoint("occupied");
+    std::fs::write(&endpoint, b"fichier a conserver").unwrap();
+    assert!(IpcListener::bind(&endpoint).await.is_err());
+    assert_eq!(std::fs::read(&endpoint).unwrap(), b"fichier a conserver");
+    std::fs::remove_file(&endpoint).unwrap();
+    let listener = IpcListener::bind(&endpoint).await.unwrap();
+    assert!(IpcListener::bind(&endpoint).await.is_err());
+    let client = connect(&endpoint).await.unwrap();
+    let accepted = tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    drop((client, accepted, listener));
+    // Même un socket périmé nécessite une décision explicite de nettoyage.
+    assert!(IpcListener::bind(&endpoint).await.is_err());
+    assert!(std::fs::symlink_metadata(&endpoint).is_ok());
+    cleanup_endpoint(&endpoint);
+}
+
+#[cfg(unix)]
+#[test]
+fn token_publication_does_not_follow_destination_symlink() {
+    let dir = unique_temp_dir("token-symlink");
+    std::fs::create_dir_all(&dir).unwrap();
+    let victim = dir.join("unrelated");
+    std::fs::write(&victim, b"a conserver").unwrap();
+    let token = dir.join("ipc.token");
+    std::os::unix::fs::symlink(&victim, &token).unwrap();
+    write_token_file(&token, TOKEN_A).unwrap();
+    assert_eq!(std::fs::read(&victim).unwrap(), b"a conserver");
+    assert!(
+        !std::fs::symlink_metadata(&token)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(read_token_file(&token).unwrap(), TOKEN_A);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn failed_token_publication_cleans_temporary_file() {
+    let dir = unique_temp_dir("token-failure");
+    let destination = dir.join("directory");
+    std::fs::create_dir_all(&destination).unwrap();
+    assert!(write_token_file(&destination, TOKEN_A).is_err());
+    assert!(destination.is_dir());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}

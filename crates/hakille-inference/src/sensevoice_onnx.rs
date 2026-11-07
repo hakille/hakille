@@ -1,53 +1,7 @@
-//! MOTEUR RÉEL — forward ort + mel/LFR pur Rust + décodage CTC greedy.
-//!
-//! Contrat du graphe (mesuré + sources officielles) :
-//! - Entrée `x` `(batch, temps, 560)` f32 : 80 mels empilés LFR(7, 6)
-//!   via [`crate::mel::pcm_to_sensevoice_feats`]. L'ordre `(temps, 560)` est
-//!   prouvé par l'erreur ORT (`dim[2]` attend 560) et l'export de référence
-//!   `sherpa-onnx/scripts/sense-voice/export-onnx.py`
-//!   (`input_names=["x","x_length","language","text_norm"]`, exemple
-//!   `x=(N, T, 560)`).
-//! - `x_length` : trames empilées valides, int32 (ORT refuse int64).
-//! - `language` : indice embed int32 (`lid_dict` de
-//!   `FunAudioLLM/SenseVoice/model.py` : auto=0, zh=3, en=4, yue=7, ja=11,
-//!   ko=12, nospeech=13). v1 : toujours `auto` (0), la langue RÉELLE est
-//!   lue dans les tokens `<|xx|>` émis par le modèle.
-//! - `text_norm` : indice embed int32 (`textnorm_dict` : withitn=14,
-//!   woitn=15). v1 : `withitn` (14, ponctuation incluse).
-//!   Les 4 requêtes (langue + 2×émotion/event + style) sont préfixées
-//!   DANS le graphe (`x_length += 4` interne) : `x_length` = trames LFR
-//!   sans le +4.
-//! - Sortie logits bruts `(batch, T_out, 25055)` (export sherpa =
-//!   `ctc_lo` sans softmax ; si un export sort des log-probs, la confiance
-//!   bascule sur `exp(max)` — détection `max <= 0` documentée).
-//! - Normalisation : les métadonnées du graphe (`neg_mean`, `inv_stddev`,
-//!   écrites par l'export sherpa depuis `am.mvn`) sont lues au runtime via
-//!   `session.metadata()` et appliquées en CMVN global exact ; les ids de
-//!   requêtes (`lang_auto`, `with_itn`) viennent aussi des métadonnées.
-//!   Sans métadonnées : repli documenté (MVN utterance, `auto`=0,
-//!   `withitn`=14 — valeurs `lid_dict`/`textnorm_dict` de `model.py`).
-//! - Décodage = `inference()` officielle : `unique_consecutive` sur le
-//!   chemin greedy (un blank intercalé ne bloque PAS la ré-émission)
-//!   puis suppression des blanks (`blank_id = 0`, soit `<unk>`).
-//!   Les ids blank `{0,1,2}` (`<unk>/<s>/</s>`) sont VÉRIFIÉS présents dans
-//!   `tokens.txt`, jamais supposés (et recoupent `blank_id/sos/eos` de
-//!   `model.py`).
-//! - Confiance = moyenne des softmax-max sur les trames non-blank
-//!   (vrai calcul ; 0.0 si tout-blank, ex. silence).
-//! - Langue = premier token LID `<|xx|>` du chemin greedy, sinon `"und"`
-//!   honnête (jamais `"fr"` fixe).
-//!
-//! La signature (noms d'inputs/outputs) est lue dynamiquement via
-//! `session.inputs()` / `session.outputs()` ; les noms canoniques sont
-//! préférés avec repli documenté, et toute signature incompatible remonte
-//! en erreur LOUD (jamais de zéros simulés).
-//!
-//! Reste v1 (documenté, pas simulé) :
-//! - pas de beam search (greedy seul) ;
-//! - pas de décodage structuré des têtes auxiliaires : `transcribe` ne
-//!   retourne que texte + langue + confiance ;
-//! - frontend approximatif (Hamming/HTK, MVN utterance au lieu d'`am.mvn`
-//!   global absent de `models/`, pas de `dither`) — voir [`crate::mel`].
+//! SenseVoice-Small sherpa : frontend Kaldi Hamming, LFR(7,6), CMVN global
+//! obligatoire depuis les métadonnées, puis décodage CTC greedy réel.
+//! PCM mono normalisé 16 kHz, de 25 ms à 120 secondes. Les requêtes de beam
+//! search non implémentées et les exports incompatibles échouent explicitement.
 
 use hakille_core::{HakilleError, Result};
 use ort::session::Session;
@@ -67,35 +21,191 @@ pub const LANGUAGE_AUTO_FALLBACK: i32 = 0;
 /// Repli requête style si métadonnées absentes (`textnorm_dict["withitn"]`).
 pub const TEXTNORM_WITH_ITN_FALLBACK: i32 = 14;
 
+/// Émotion vocale discrète émise par le discriminateur multi-tâche SenseVoice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum VocalEmotionKind {
+    Neutral,
+    Happy,
+    Sad,
+    Angry,
+    Fearful,
+    Disgusted,
+    Surprised,
+}
+
+impl Default for VocalEmotionKind {
+    fn default() -> Self {
+        Self::Neutral
+    }
+}
+
+impl VocalEmotionKind {
+    /// Parse un tag brut SenseVoice (ex: `<|HAPPY|>`, `HAPPY`, `happy`).
+    pub fn from_tag(tag: &str) -> Self {
+        let clean = tag
+            .trim()
+            .trim_start_matches("<|")
+            .trim_end_matches("|>")
+            .to_uppercase();
+        match clean.as_str() {
+            "HAPPY" => Self::Happy,
+            "SAD" => Self::Sad,
+            "ANGRY" => Self::Angry,
+            "FEARFUL" => Self::Fearful,
+            "DISGUSTED" => Self::Disgusted,
+            "SURPRISED" => Self::Surprised,
+            _ => Self::Neutral,
+        }
+    }
+
+    /// Nom canonique statique de l'émotion.
+    pub const fn to_str(&self) -> &'static str {
+        match self {
+            Self::Neutral => "Neutral",
+            Self::Happy => "Happy",
+            Self::Sad => "Sad",
+            Self::Angry => "Angry",
+            Self::Fearful => "Fearful",
+            Self::Disgusted => "Disgusted",
+            Self::Surprised => "Surprised",
+        }
+    }
+
+    /// Projection dans l'espace affectif circumplex de Russell : (Valence, Arousal) $\in [-1.0, 1.0]^2$.
+    pub const fn to_circumplex(&self) -> (f32, f32) {
+        match self {
+            Self::Neutral => (0.0, 0.0),
+            Self::Happy => (0.8, 0.6),
+            Self::Sad => (-0.7, -0.5),
+            Self::Angry => (-0.6, 0.8),
+            Self::Fearful => (-0.6, 0.7),
+            Self::Disgusted => (-0.7, 0.2),
+            Self::Surprised => (0.3, 0.8),
+        }
+    }
+}
+
+/// Événement paralinguistique ou acoustique détecté dans le flux audio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum AcousticEventKind {
+    Speech,
+    Laughter,
+    Cry,
+    Applause,
+    Sneeze,
+    Cough,
+    Snort,
+    Breath,
+    Music,
+    Noise,
+    Other,
+}
+
+impl AcousticEventKind {
+    /// Parse un tag brut SenseVoice (ex: `<|LAUGHTER|>`, `Laughter`, `laughter`).
+    pub fn from_tag(tag: &str) -> Self {
+        let clean = tag
+            .trim()
+            .trim_start_matches("<|")
+            .trim_end_matches("|>")
+            .to_uppercase();
+        match clean.as_str() {
+            "SPEECH" => Self::Speech,
+            "LAUGHTER" => Self::Laughter,
+            "CRY" => Self::Cry,
+            "APPLAUSE" => Self::Applause,
+            "SNEEZE" => Self::Sneeze,
+            "COUGH" => Self::Cough,
+            "SNORT" => Self::Snort,
+            "BREATH" => Self::Breath,
+            "MUSIC" | "BGM" => Self::Music,
+            "NOISE" => Self::Noise,
+            _ => Self::Other,
+        }
+    }
+
+    /// Nom canonique statique de l'événement.
+    pub const fn to_str(&self) -> &'static str {
+        match self {
+            Self::Speech => "Speech",
+            Self::Laughter => "Laughter",
+            Self::Cry => "Cry",
+            Self::Applause => "Applause",
+            Self::Sneeze => "Sneeze",
+            Self::Cough => "Cough",
+            Self::Snort => "Snort",
+            Self::Breath => "Breath",
+            Self::Music => "Music",
+            Self::Noise => "Noise",
+            Self::Other => "Other",
+        }
+    }
+}
+
 /// Transcription réelle : texte décodé + langue détectée + confiance mesurée.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SenseVoiceTranscript {
     pub text: String,
     pub language: String,
     pub confidence: f32,
-    /// Têtes auxiliaires émotion/événements (TODO structuré : défaut vide
-    /// honnête — le graphe SenseVoice émet ces tokens mais le décodage
-    /// structuré n'est pas encore branché, voir `EmotionEvent`).
+    /// Émotion et événements réellement émis par le modèle (bruts).
     pub emotion_event: EmotionEvent,
+    /// Émotion vocale catégorisée typée.
+    pub vocal_emotion: VocalEmotionKind,
+    /// Liste des événements acoustiques paralinguistiques détectés.
+    pub acoustic_events: Vec<AcousticEventKind>,
+    /// Vecteur des confiances mesurées pour chaque trame temporelle CTC.
+    pub frame_confidences: Vec<f32>,
+}
+
+impl SenseVoiceTranscript {
+    /// Confiance moyenne calculée sur toutes les trames de décodage.
+    pub fn mean_frame_confidence(&self) -> f32 {
+        if self.frame_confidences.is_empty() {
+            self.confidence
+        } else {
+            let sum: f32 = self.frame_confidences.iter().sum();
+            sum / self.frame_confidences.len() as f32
+        }
+    }
+
+    /// Coordonnées (Valence, Arousal) dans le modèle circumplex.
+    pub fn to_circumplex(&self) -> (f32, f32) {
+        self.vocal_emotion.to_circumplex()
+    }
 }
 
 /// Têtes auxiliaires SenseVoice (émotion + événements acoustiques).
-///
-/// TODO structuré : décoder les tokens `<|HAPPY|>/<|SAD|>/…` et
-/// `<|Speech|>/<|Music|>/…` du chemin greedy vers ces champs (actuellement
-/// `default()` vide honnête — `transcribe` ne remplit que texte/langue/
-/// confiance, cf. `asr.rs` qui expose déjà `emotion=""` + `events=[]`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct EmotionEvent {
     pub emotion: String,
     pub events: Vec<String>,
 }
 
+impl EmotionEvent {
+    /// Retourne l'émotion vocale typée.
+    pub fn vocal_emotion(&self) -> VocalEmotionKind {
+        VocalEmotionKind::from_tag(&self.emotion)
+    }
+
+    /// Retourne la liste des événements acoustiques typés.
+    pub fn acoustic_events(&self) -> Vec<AcousticEventKind> {
+        self.events
+            .iter()
+            .map(|e| AcousticEventKind::from_tag(e))
+            .collect()
+    }
+
+    /// Projection dans l'espace circumplex (Valence, Arousal).
+    pub fn to_circumplex(&self) -> (f32, f32) {
+        self.vocal_emotion().to_circumplex()
+    }
+}
+
 /// Options de décodage CTC (beam optionnel).
 ///
 /// - `beam_size == 1` (défaut) : greedy seul (v1 prouvé par goldens).
-/// - `beam_size > 1` : TODO — recherche faisceau CTC (actuellement repli
-///   honnête sur greedy + `tracing::warn!`, jamais de score inventé).
+/// - `beam_size > 1` : erreur explicite (recherche faisceau non implémentée).
 #[derive(Debug, Clone, Copy)]
 pub struct DecodeOptions {
     pub beam_size: usize,
@@ -157,7 +267,7 @@ pub struct SenseVoiceOnnx {
     textnorm_input: Option<String>,
     blank_ids: Vec<u32>,
     /// CMVN global `(neg_mean, inv_stddev)` lu des métadonnées du graphe ;
-    /// `None` -> repli MVN utterance documenté.
+    /// Vérifié présent et valide à l'ouverture.
     cmvn: Option<(Vec<f32>, Vec<f32>)>,
     /// Id de requête langue (métadonnée `lang_auto`, sinon repli).
     lang_auto: i32,
@@ -172,8 +282,8 @@ pub struct SenseVoiceOnnx {
 fn parse_meta_vec(s: &str) -> Option<Vec<f32>> {
     let v: Vec<f32> = s
         .split(',')
-        .filter_map(|t| t.trim().parse::<f32>().ok())
-        .collect();
+        .map(|t| t.trim().parse::<f32>().ok())
+        .collect::<Option<Vec<_>>>()?;
     if v.len() == STACKED_DIM && v.iter().all(|x| x.is_finite()) {
         Some(v)
     } else {
@@ -228,7 +338,10 @@ fn detect_language(argmax: &[u32], tokenizer: &SenseVoiceTokenizer) -> String {
         {
             let inner = &tok[2..tok.len() - 2];
             let code = inner.split('/').next().unwrap_or("").to_lowercase();
-            if (2..=7).contains(&code.len()) && code.chars().all(|c| c.is_ascii_lowercase()) {
+            if matches!(
+                code.as_str(),
+                "zh" | "en" | "ja" | "ko" | "yue" | "nospeech" | "fr" | "de" | "es" | "ru"
+            ) {
                 return code;
             }
         }
@@ -260,6 +373,8 @@ impl SenseVoiceOnnx {
         let env = shared_sensevoice_env()?;
         let session = Session::builder(&env)
             .map_err(|e| ort_err("open(builder)", e))?
+            .with_intra_threads(4)
+            .map_err(|e| ort_err("open(threads)", e))?
             .commit_from_file(model_path)
             .map_err(|e| ort_err("open(commit_from_file)", e))?;
 
@@ -314,11 +429,11 @@ impl SenseVoiceOnnx {
                 ),
             ));
         }
-        if len_input.is_none() {
-            tracing::warn!(
-                inputs = ?input_names,
-                "SenseVoiceOnnx::open: pas d'entrée de longueur — envoi sans x_length"
-            );
+        if len_input.is_none() || input_names.len() != 4 {
+            return Err(ort_err(
+                "open",
+                "signature attendue: x, x_length, language, text_norm",
+            ));
         }
 
         // Blanks vérifiés présents dans tokens.txt (jamais supposés).
@@ -366,7 +481,7 @@ impl SenseVoiceOnnx {
                     _ => {
                         tracing::warn!(
                             keys = ?meta_keys,
-                            "SenseVoiceOnnx::open: neg_mean/inv_stddev illisibles — repli MVN utterance"
+                            "SenseVoiceOnnx::open: neg_mean/inv_stddev illisibles — export incompatible"
                         );
                     }
                 }
@@ -392,9 +507,19 @@ impl SenseVoiceOnnx {
             }
             Err(e) => {
                 tracing::warn!(
-                    "SenseVoiceOnnx::open: métadonnées illisibles ({e}) — repli MVN utterance + ids par défaut"
+                    "SenseVoiceOnnx::open: métadonnées illisibles ({e}) — export incompatible + ids par défaut"
                 );
             }
+        }
+
+        if cmvn
+            .as_ref()
+            .is_none_or(|(_, inv)| inv.iter().any(|v| *v <= 0.0))
+        {
+            return Err(ort_err(
+                "open",
+                "CMVN global absent ou invalide: export sherpa requis",
+            ));
         }
 
         Ok(Self {
@@ -436,7 +561,7 @@ impl SenseVoiceOnnx {
     }
 
     /// `true` si le CMVN global `am.mvn` (métadonnées) est utilisé,
-    /// `false` si repli MVN utterance.
+    /// Les exports sans ces statistiques sont refusés à l'ouverture.
     pub fn uses_global_cmvn(&self) -> bool {
         self.cmvn.is_some()
     }
@@ -459,11 +584,19 @@ impl SenseVoiceOnnx {
         pcm_16k: &[f32],
         options: &DecodeOptions,
     ) -> Result<SenseVoiceTranscript> {
-        if options.beam_size > 1 {
-            tracing::warn!(
-                beam = options.beam_size,
-                "SenseVoiceOnnx: beam search CTC non implémentée v1 — repli honnête sur greedy (beam=1)"
-            );
+        if options.beam_size != 1 {
+            return Err(ort_err(
+                "transcribe",
+                "seul le décodage greedy (beam_size=1) est implémenté",
+            ));
+        }
+        if !(400..=16_000 * 120).contains(&pcm_16k.len())
+            || pcm_16k.iter().any(|x| !x.is_finite() || x.abs() > 1.0)
+        {
+            return Err(ort_err(
+                "transcribe",
+                "PCM mono 16 kHz attendu: 25 ms à 120 s, valeurs finies dans [-1,1]",
+            ));
         }
         let first = self.transcribe_single_pass(pcm_16k, self.lang_auto, options)?;
         let detected_lid = lid_id_for_code(&first.language);
@@ -475,16 +608,7 @@ impl SenseVoiceOnnx {
                     auto = self.lang_auto,
                     "SenseVoiceOnnx: 2e passe avec lid détecté (forward réel)"
                 );
-                match self.transcribe_single_pass(pcm_16k, lid, options) {
-                    Ok(second) => Ok(second),
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "SenseVoiceOnnx: 2e passe en échec — retour 1re passe (auto)"
-                        );
-                        Ok(first)
-                    }
-                }
+                self.transcribe_single_pass(pcm_16k, lid, options)
             }
             _ => Ok(first),
         }
@@ -497,15 +621,6 @@ impl SenseVoiceOnnx {
         lang_id: i32,
         _options: &DecodeOptions,
     ) -> Result<SenseVoiceTranscript> {
-        if pcm_16k.is_empty() {
-            return Ok(SenseVoiceTranscript {
-                text: String::new(),
-                language: "und".to_string(),
-                confidence: 0.0,
-                emotion_event: EmotionEvent::default(),
-            });
-        }
-
         // 1. Frontend : CMVN global si métadonnées, sinon MVN utterance.
         //    Tenseur [1, T_lfr, 560] (ordre (batch, temps, mel) exigé).
         let feats = match &self.cmvn {
@@ -561,6 +676,7 @@ impl SenseVoiceOnnx {
             let total = outputs
                 .get(name)
                 .and_then(|v| v.try_extract_tensor::<f32>().ok())
+                .filter(|(shape, _)| shape.len() == 3 && shape[0] == 1 && shape[2] == vocab as i64)
                 .map(|(_, data)| data.len())
                 .unwrap_or(0);
             seen.push((name.clone(), total));
@@ -602,18 +718,10 @@ impl SenseVoiceOnnx {
             })?;
 
         // 4. Greedy : argmax + softmax-max par trame (vrai calcul stable).
-        //    Export sherpa = logits bruts ; un export log-probs
-        //    (`max <= 0`) bascule sur `exp(max)`.
-        let mut global_max = f32::NEG_INFINITY;
-        for &l in logits.iter() {
-            if l.is_finite() && l > global_max {
-                global_max = l;
-            }
-        }
-        if !global_max.is_finite() {
+        //    Softmax stable pour les logits et les log-probabilités.
+        if logits.iter().any(|x| !x.is_finite()) {
             return Err(ort_err("transcribe(logits)", "logits non-finis"));
         }
-        let logprob_mode = global_max <= 0.0;
         let mut argmax: Vec<u32> = Vec::with_capacity(n_frames);
         let mut frame_conf: Vec<f32> = Vec::with_capacity(n_frames);
         for f in 0..n_frames {
@@ -628,16 +736,9 @@ impl SenseVoiceOnnx {
                 }
             }
             argmax.push(best_id);
-            if logprob_mode {
-                frame_conf.push(best_val.exp().clamp(0.0, 1.0));
-            } else {
-                let mut sum = 0.0f32;
-                for &l in row.iter() {
-                    let v = if l.is_finite() { l } else { f32::NEG_INFINITY };
-                    sum += (v - best_val).exp();
-                }
-                frame_conf.push((1.0 / sum).clamp(0.0, 1.0));
-            }
+            // Softmax fonctionne aussi pour des log-probabilités normalisées.
+            let sum: f32 = row.iter().map(|v| (*v - best_val).exp()).sum();
+            frame_conf.push(1.0 / sum);
         }
         // 5. Langue (tokens LID sur le chemin greedy) + collapse CTC + texte.
         //    Déségmentation SentencePiece : `▁` = espace (équivalent du
@@ -645,6 +746,32 @@ impl SenseVoiceOnnx {
         //    l'espace, ce n'est pas cosmétique).
         let language = detect_language(&argmax, &self.tokenizer);
         let (collapsed, confidence) = greedy_ctc_collapse(&argmax, &frame_conf, &self.blank_ids);
+        let mut emotion_event = EmotionEvent::default();
+        for &id in &collapsed {
+            if let Some(token) = self.tokenizer.id_to_token(id) {
+                let name = token.trim_start_matches("<|").trim_end_matches("|>");
+                if matches!(
+                    name,
+                    "HAPPY" | "SAD" | "ANGRY" | "NEUTRAL" | "FEARFUL" | "DISGUSTED" | "SURPRISED"
+                ) {
+                    emotion_event.emotion = name.to_string();
+                } else if matches!(
+                    name,
+                    "Speech"
+                        | "BGM"
+                        | "Music"
+                        | "Applause"
+                        | "Laughter"
+                        | "Cry"
+                        | "Sneeze"
+                        | "Breath"
+                        | "Cough"
+                ) && !emotion_event.events.iter().any(|event| event == name)
+                {
+                    emotion_event.events.push(name.to_string());
+                }
+            }
+        }
         let raw = self.tokenizer.decode(&collapsed);
         let mut text = raw.replace('▁', " ");
         text = text
@@ -653,12 +780,16 @@ impl SenseVoiceOnnx {
             .join(" ")
             .trim()
             .to_string();
+        let vocal_emotion = emotion_event.vocal_emotion();
+        let acoustic_events = emotion_event.acoustic_events();
         Ok(SenseVoiceTranscript {
             text,
             language,
             confidence: confidence.clamp(0.0, 1.0),
-            // TODO structuré : décoder les têtes émotion/event (actuellement vide honnête).
-            emotion_event: EmotionEvent::default(),
+            emotion_event,
+            vocal_emotion,
+            acoustic_events,
+            frame_confidences: frame_conf,
         })
     }
 }
@@ -689,6 +820,14 @@ mod tests {
         let (ids_empty, c_empty) = greedy_ctc_collapse(&[0, 0, 0], &[0.9, 0.9, 0.9], &[0]);
         assert!(ids_empty.is_empty());
         assert_eq!(c_empty, 0.0);
+    }
+
+    #[test]
+    fn metadata_must_not_silently_drop_invalid_values() {
+        let valid = vec!["1.0"; STACKED_DIM].join(",");
+        assert!(parse_meta_vec(&valid).is_some());
+        assert!(parse_meta_vec(&format!("invalid,{valid}")).is_none());
+        assert!(parse_meta_vec(&valid.replacen("1.0", "NaN", 1)).is_none());
     }
 
     #[test]
@@ -735,6 +874,49 @@ mod tests {
         None
     }
 
+    /// Fixture publique sherpa en.wav, transcription de référence publiée dans
+    /// k2-fsa/sherpa docs/source/onnx/sense-voice/code/2024-07-17-itn.txt.
+    /// La référence upstream contient « code » (pas une vérité terrain annotée).
+    #[test]
+    #[ignore = "nécessite modèles locaux et HAKILLE_TEST_PCM16K_F32 (fixture sherpa en.wav convertie en f32 LE)"]
+    fn official_english_fixture() {
+        let models = workspace_models_dir().expect("modèles requis");
+        let path = std::env::var("HAKILLE_TEST_PCM16K_F32").expect("fixture requise");
+        let bytes = std::fs::read(path).unwrap();
+        assert_eq!(bytes.len() % 4, 0);
+        let pcm: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .collect();
+        let mut model = SenseVoiceOnnx::open(
+            models.join(SENSEVOICE_MODEL_FILE),
+            models.join(SENSEVOICE_TOKENS_FILE),
+        )
+        .unwrap();
+        assert!(model.transcribe(&[]).is_err());
+        assert!(model.transcribe(&[f32::NAN; 512]).is_err());
+        assert!(
+            model
+                .transcribe_with_options(&pcm, &DecodeOptions::with_beam(4))
+                .is_err()
+        );
+        let result = model.transcribe(&pcm).unwrap();
+        eprintln!("OFFICIAL ASR: {:?}", result);
+        assert_eq!(result.language, "en");
+        assert_eq!(result.emotion_event.emotion, "NEUTRAL");
+        assert!(result.emotion_event.events.iter().any(|e| e == "Speech"));
+        let words: Vec<_> = result.text.split_whitespace().collect();
+        assert!(words.len() >= 14 && words.len() <= 19);
+        assert!(
+            result
+                .text
+                .to_lowercase()
+                .starts_with("the tribal chieftain called for the boy and presented him with")
+        );
+        assert!(result.text.contains("50 pieces of"));
+        assert!(result.confidence > 0.8);
+    }
+
     /// Golden test — vrai modèle 239 MB : forward ort RÉEL + décodage réel.
     #[test]
     fn golden_real_sensevoice_silence_and_sine() {
@@ -779,20 +961,7 @@ mod tests {
         );
         assert!(dt_sine.as_secs() < 30, "latence sine {dt_sine:?} < 30 s");
 
-        // 2. Silence 1 s : COMPORTEMENT RÉEL MESURÉ (pas de Gate énergie —
-        //    interdit par le scope, ce serait de la transduction heuristique).
-        //    Preuve de fidélité : une parole anglaise réelle (WAV 16 kHz,
-        //    2,2 s, hors repo) décode "He tried to think how it could be."
-        //    (langue `en`, conf 0.9872) — le frontend est donc fidèle et le
-        //    silence ci-dessous exerce le VRAI modèle sur entrée hors
-        //    distribution. L'encodeur SenseVoice hallucine alors un token
-        //    court ("Yeah.", `en`, conf mesurée ~0.80) au lieu du vide :
-        //    c'est le comportement genuine du modèle sans VAD amont
-        //    (FunASR segmente avec fsmn-vad AVANT l'encodeur ; le vide-sur-
-        //    silence est une propriété SYSTÈME, pas encodeur). Forcer du
-        //    vide ici exigerait un gate d'énergie = simulation interdite.
-        //    On asserte donc le contrat réel : forward sans erreur, texte
-        //    court (pas d'emballement), valeurs mesurées finies.
+        // Le modèle ASR peut halluciner sur silence; le VAD amont est requis.
         let silence = vec![0.0f32; 16_000];
         let t0 = Instant::now();
         let r = engine
@@ -815,5 +984,48 @@ mod tests {
         );
         assert!(!r.language.is_empty(), "silence : langue détectée non vide");
         assert!(dt.as_secs() < 30, "latence silence {dt:?} < 30 s");
+    }
+
+    #[test]
+    fn test_vocal_emotion_circumplex_projection() {
+        assert_eq!(VocalEmotionKind::Neutral.to_circumplex(), (0.0, 0.0));
+        let (h_val, h_ar) = VocalEmotionKind::Happy.to_circumplex();
+        assert!(h_val > 0.5 && h_ar > 0.0);
+
+        let (s_val, s_ar) = VocalEmotionKind::Sad.to_circumplex();
+        assert!(s_val < 0.0 && s_ar < 0.0);
+
+        let (a_val, a_ar) = VocalEmotionKind::Angry.to_circumplex();
+        assert!(a_val < 0.0 && a_ar > 0.5);
+
+        assert_eq!(VocalEmotionKind::from_tag("<|HAPPY|>"), VocalEmotionKind::Happy);
+        assert_eq!(VocalEmotionKind::from_tag("<|ANGRY|>"), VocalEmotionKind::Angry);
+        assert_eq!(VocalEmotionKind::from_tag("other"), VocalEmotionKind::Neutral);
+    }
+
+    #[test]
+    fn test_acoustic_event_kinds() {
+        assert_eq!(AcousticEventKind::from_tag("<|LAUGHTER|>"), AcousticEventKind::Laughter);
+        assert_eq!(AcousticEventKind::from_tag("Cry"), AcousticEventKind::Cry);
+        assert_eq!(AcousticEventKind::from_tag("BGM"), AcousticEventKind::Music);
+        assert_eq!(AcousticEventKind::from_tag("Unknown"), AcousticEventKind::Other);
+    }
+
+    #[test]
+    fn test_transcript_mean_confidence() {
+        let transcript = SenseVoiceTranscript {
+            text: "test".to_string(),
+            language: "fr".to_string(),
+            confidence: 0.9,
+            emotion_event: EmotionEvent {
+                emotion: "HAPPY".to_string(),
+                events: vec!["Laughter".to_string()],
+            },
+            vocal_emotion: VocalEmotionKind::Happy,
+            acoustic_events: vec![AcousticEventKind::Laughter],
+            frame_confidences: vec![0.8, 0.9, 1.0],
+        };
+        assert!((transcript.mean_frame_confidence() - 0.9).abs() < 1e-4);
+        assert_eq!(transcript.to_circumplex(), VocalEmotionKind::Happy.to_circumplex());
     }
 }

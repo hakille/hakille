@@ -1,35 +1,19 @@
-//! # Codec Mimi RÉEL v1 (24 kHz → 12,5 Hz, RVQ 8 codebooks)
+//! Codec Mimi 24 kHz, 12,5 trames/s, 8 codebooks.
 //!
-//! Pipeline RÉEL, zéro sinusoïde :
+//! `with_safetensors_file` exécute le réseau complet Candle : encodeur
+//! SEANet, transformer causal, RVQ, transformer et décodeur SEANet.
+//! Un checkpoint incompatible est refusé ; aucun repli synthétique silencieux.
 //!
-//! 1. **Pré-traitement (REAL)** : pré-emphase (`y[n] = x[n] − 0,97·x[n−1]`,
-//!    standard parole) + fenêtrage de Hann sur 80 ms @ 24 kHz = 1920
-//!    échantillons (constantes `MIMI_*` déjà correctes, conservées).
-//! 2. **Projection vers l'espace codebook (v1 documenté)** : l'encodeur Mimi
-//!    complet (convolutions + transformer 512-d + `input_proj` 512→256) ne
-//!    peut pas tourner dans ce crate (std uniquement, pas de runtime Candle
-//!    — `Cargo.toml` intouchable). `with_safetensors_file()` cherche
-//!    honnêtement une matrice d'encodeur directement mappable
-//!    (`try_mappable_encoder_matrix`, aucun tenseur 2D compatible dans le
-//!    checkpoint → repli documenté) puis utilise la
-//!    **projection d'entrée v1** : matrice déterministe (xorshift, seed fixe)
-//!    1920→`dim`, échelle `1/√1920` (pseudo-inverse ≈ transposée).
-//! 3. **RVQ (REAL)** : [`rvq`](crate::codec::rvq) avec les VRAIS codebooks Mimi
-//!    (`embed_sum`/`cluster_usage` du header) — 8 premiers étages acoustiques
-//!    si présents, sinon les N lus. Nearest-neighbor L2 résiduel.
-//! 4. **Décodage (REAL)** : somme des centroïdes → projection inverse
-//!    (transposée) → dés-emphase → overlap-add avec la trame précédente
-//!    (crossfade 480 échantillons, anti-clic).
-//!
-//! Traçabilité : [`MimiCodec::rvq_source_kind`] indique à tout instant si les
-//! poids Mimi réels sont chargés (`MimiWeights`) ou s'il s'agit du secours
-//! déterministe (`SyntheticV1` / `GeometryOnlyV1`).
+//! `new` et `with_safetensors` conservent le codec historique de démonstration
+//! (projection déterministe + RVQ), explicitement marqué synthétique ou
+//! géométrie seule. Ces constructeurs n'exécutent pas le réseau Mimi.
+//! `is_neural` distingue la présence du véritable encodeur/décodeur.
 
 #[path = "rvq.rs"]
 pub mod rvq;
 
 use hakille_core::Result;
-use hakille_inference::SafetensorsModel;
+use hakille_inference::{MimiEngine, SafetensorsModel};
 use std::path::Path;
 
 pub use rvq::{RvqCodebooks, RvqSource};
@@ -47,8 +31,21 @@ pub const OVERLAP_SAMPLES: usize = 480;
 /// Seed fixe de la projection d'entrée v1 (reproductible).
 pub const INPUT_PROJECTION_SEED: u64 = 0x4D494D4932313234;
 
+/// Les tokens historiques et neuronaux ont huit indices mais pas la même
+/// signification. Le format est transporté pour interdire un décodage croisé.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MimiTokenFormat {
+    #[default]
+    LegacyProjectionV1,
+    NeuralMimiV1,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MimiFrameTokens {
+    /// Les anciennes trames sans ce champ restent des tokens de démonstration.
+    #[serde(default)]
+    pub format: MimiTokenFormat,
     pub codebooks: [u16; MIMI_NUM_CODEBOOKS],
 }
 
@@ -57,6 +54,7 @@ use serde::{Deserialize, Serialize};
 impl Default for MimiFrameTokens {
     fn default() -> Self {
         Self {
+            format: MimiTokenFormat::LegacyProjectionV1,
             codebooks: [0; MIMI_NUM_CODEBOOKS],
         }
     }
@@ -65,6 +63,8 @@ impl Default for MimiFrameTokens {
 /// Origine des poids RVQ utilisés par ce codec (traçabilité).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RvqWeightsKind {
+    /// Réseau Mimi complet, avec encodeur et décodeur neuronaux exécutés.
+    NeuralMimi,
     /// Vrais centroïdes Mimi lus de `path`.
     MimiWeights,
     /// Géométrie réelle du header, poids de secours (bytes indisponibles).
@@ -74,6 +74,7 @@ pub enum RvqWeightsKind {
 }
 
 pub struct MimiCodec {
+    neural: Option<MimiEngine>,
     frame_counter: u64,
     safetensors_metadata: Option<SafetensorsModel>,
     safetensors_path: Option<String>,
@@ -110,26 +111,6 @@ fn build_input_projection(dim: usize, seed: u64) -> Vec<f32> {
     m
 }
 
-/// Cherche honnêtement une matrice d'encodeur directement mappable
-/// (tenseur 2D `[dim, 1920]` ou `[1920, dim]`) dans le header.
-/// Retourne `None` si aucun (cas réel du checkpoint Mimi : l'encodeur est un
-/// stack convolutif + transformer, pas une matrice compatible) — le codec
-/// replie alors sur la projection d'entrée v1 documentée.
-fn try_mappable_encoder_matrix(model: &SafetensorsModel) -> Option<(String, Vec<usize>)> {
-    for (name, info) in &model.tensors {
-        let is_encoderish =
-            name.contains("encoder") || name.contains("input_proj") || name.contains("front_end");
-        if !is_encoderish || info.shape.len() != 2 {
-            continue;
-        }
-        let (r, c) = (info.shape[0], info.shape[1]);
-        if (r == SAMPLES_PER_FRAME || c == SAMPLES_PER_FRAME) && (r <= 4096 && c <= 4096) {
-            return Some((name.clone(), info.shape.clone()));
-        }
-    }
-    None
-}
-
 /// Géométrie de repli (aucun header) : identique à Mimi publié
 /// (8 codebooks × 2048 entrées × dim 256).
 fn fallback_geometry() -> (usize, usize, usize) {
@@ -140,6 +121,7 @@ impl MimiCodec {
     fn with_rvq(rvq: RvqCodebooks, kind: RvqWeightsKind) -> Self {
         let dim = rvq.dim();
         Self {
+            neural: None,
             frame_counter: 0,
             safetensors_metadata: None,
             safetensors_path: None,
@@ -161,32 +143,41 @@ impl MimiCodec {
         )
     }
 
-    /// Charge le codec depuis le checkpoint : VRAIS codebooks Mimi.
+    /// Charge le réseau neuronal complet. Les poids manquants ou incompatibles
+    /// sont une erreur ; ce constructeur ne produit jamais un codec synthétique.
     pub fn with_safetensors_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let model = SafetensorsModel::read_from_file(path)?;
-        // Recherche honnête d'une matrice d'encodeur mappable (traçabilité).
-        let _mappable = try_mappable_encoder_matrix(&model);
-        let rvq = match rvq::load_acoustic_from_file(path, &model, MIMI_NUM_CODEBOOKS) {
-            Ok(r) => r,
-            Err(_) => {
-                // Header sans codebook exploitable : géométrie réelle si dispo.
-                let (nb, dim, entries) = rvq::geometry_from_header(&model)
-                    .map(|(n, d, e)| (n.min(MIMI_NUM_CODEBOOKS), d, e))
-                    .unwrap_or_else(fallback_geometry);
-                let mut codec = Self::with_rvq(
-                    rvq::synthetic_v1(nb, dim, entries, INPUT_PROJECTION_SEED),
-                    RvqWeightsKind::GeometryOnlyV1,
-                );
-                codec.safetensors_metadata = Some(model);
-                codec.safetensors_path = Some(path.display().to_string());
-                return Ok(codec);
-            }
-        };
-        let mut codec = Self::with_rvq(rvq, RvqWeightsKind::MimiWeights);
+        let neural = MimiEngine::load(path)?;
+        let rvq = rvq::load_acoustic_from_file(path, &model, MIMI_NUM_CODEBOOKS)?;
+        let mut codec = Self::with_rvq(rvq, RvqWeightsKind::NeuralMimi);
+        codec.neural = Some(neural);
         codec.safetensors_metadata = Some(model);
         codec.safetensors_path = Some(path.display().to_string());
         Ok(codec)
+    }
+
+    pub fn is_neural(&self) -> bool {
+        self.neural.is_some()
+    }
+
+    /// Flux indépendant partageant les poids neuronaux, sans historique audio.
+    pub fn fresh_stream(&self) -> Self {
+        let mut codec = Self::with_rvq(self.rvq.clone(), self.weights_kind.clone());
+        codec.neural = self.neural.as_ref().map(MimiEngine::fresh_stream);
+        codec.safetensors_metadata = self.safetensors_metadata.clone();
+        codec.safetensors_path = self.safetensors_path.clone();
+        codec
+    }
+
+    pub fn reset(&mut self) {
+        if let Some(neural) = &mut self.neural {
+            neural.reset();
+        }
+        self.frame_counter = 0;
+        self.overlap.fill(0.0);
+        self.deemph_state = 0.0;
+        self.preemph_state = 0.0;
     }
 
     /// Métadonnées seules (sans bytes) : géométrie RÉELLE du header, poids de
@@ -216,6 +207,8 @@ impl MimiCodec {
         &self.weights_kind
     }
 
+    /// Diagnostic des codebooks acoustiques historiques. Le réseau neuronal
+    /// utilise ses propres codebooks (1 sémantique + 7 acoustiques).
     pub fn rvq(&self) -> &RvqCodebooks {
         &self.rvq
     }
@@ -273,8 +266,17 @@ impl MimiCodec {
         frame
     }
 
-    /// Encode une trame : pré-traitement → projection → VRAI RVQ Mimi.
+    /// Encode une trame par le réseau neuronal chargé, ou par la projection
+    /// historique explicitement étiquetée lorsque ce codec est une démo.
     pub fn encode_frame(&mut self, samples: &[f32]) -> Result<MimiFrameTokens> {
+        if let Some(neural) = &mut self.neural {
+            let codebooks = neural.encode_frame(samples)?;
+            self.frame_counter += 1;
+            return Ok(MimiFrameTokens {
+                format: MimiTokenFormat::NeuralMimiV1,
+                codebooks,
+            });
+        }
         self.frame_counter += 1;
         let frame = self.preprocess(samples);
         let latent = self.project_in(&frame);
@@ -284,11 +286,30 @@ impl MimiCodec {
         for (i, &idx) in indices.iter().take(nb).enumerate() {
             codebooks[i] = idx;
         }
-        Ok(MimiFrameTokens { codebooks })
+        Ok(MimiFrameTokens {
+            format: MimiTokenFormat::LegacyProjectionV1,
+            codebooks,
+        })
     }
 
-    /// Décode des tokens : VRAI RVQ inverse → overlap-add. Jamais de sinus.
+    /// Décode par SEANet neuronal ou par reconstruction historique selon le
+    /// backend chargé. Les formats de tokens incompatibles sont refusés.
     pub fn decode_frame(&mut self, tokens: &MimiFrameTokens) -> Result<Vec<f32>> {
+        let expected = if self.is_neural() {
+            MimiTokenFormat::NeuralMimiV1
+        } else {
+            MimiTokenFormat::LegacyProjectionV1
+        };
+        if tokens.format != expected {
+            return Err(hakille_core::HakilleError::InferenceError(
+                "Mimi : format des tokens incompatible avec le décodeur chargé".into(),
+            ));
+        }
+        if let Some(neural) = &mut self.neural {
+            let audio = neural.decode_frame(&tokens.codebooks)?;
+            self.frame_counter += 1;
+            return Ok(audio);
+        }
         self.frame_counter += 1;
         let nb = self.num_books();
         let latent = self.rvq.decode(&tokens.codebooks[..nb])?;
@@ -418,7 +439,9 @@ mod tests {
             return;
         }
         let mut codec = MimiCodec::with_safetensors_file(&path).expect("vrais poids");
-        assert_eq!(*codec.rvq_source_kind(), RvqWeightsKind::MimiWeights);
+        assert_eq!(*codec.rvq_source_kind(), RvqWeightsKind::NeuralMimi);
+        assert!(codec.is_neural());
+        assert!(codec.decode_frame(&MimiFrameTokens::default()).is_err());
         assert_eq!(codec.num_books(), MIMI_NUM_CODEBOOKS);
         let input = noise(SAMPLES_PER_FRAME, 5);
         let t0 = std::time::Instant::now();
@@ -433,5 +456,21 @@ mod tests {
             dt_enc,
             dec.iter().map(|x| x.abs()).fold(0.0f32, f32::max)
         );
+    }
+    #[test]
+    fn token_format_prevents_neural_and_legacy_cross_decoding() {
+        let legacy: MimiFrameTokens =
+            serde_json::from_str(r#"{"codebooks":[0,0,0,0,0,0,0,0]}"#).unwrap();
+        assert_eq!(legacy.format, MimiTokenFormat::LegacyProjectionV1);
+        let neural = MimiFrameTokens {
+            format: MimiTokenFormat::NeuralMimiV1,
+            ..legacy
+        };
+        let mut codec = MimiCodec::new();
+        assert!(codec.decode_frame(&neural).is_err());
+        assert_eq!(codec.frame_counter, 0);
+        let roundtrip: MimiFrameTokens =
+            serde_json::from_str(&serde_json::to_string(&neural).unwrap()).unwrap();
+        assert_eq!(roundtrip, neural);
     }
 }

@@ -75,6 +75,9 @@ impl LinuxDisplayCaptureEngine {
         self.server
     }
 
+    /// Image synthétique réservée aux démonstrations et tests structurels.
+    /// Aucun pixel du poste hôte n’est lu ; `Substrate::capture_screen` refuse
+    /// explicitement tant que le binding natif n’est pas raccordé.
     pub fn capture_screen(&self) -> ScreenCapture {
         match self.server {
             LinuxDisplayServer::Wayland => {
@@ -90,14 +93,12 @@ impl LinuxDisplayCaptureEngine {
     }
 
     pub fn capture_wayland_screencopy(&self, _config: &WaylandScreencopyConfig) -> ScreenCapture {
-        // Wayland zwlr_screencopy_manager_v1 capture protocol abstraction:
-        // Returns frame synchronized with Wayland compositor surface
+        // Démonstration synthétique : aucun échange avec le compositeur Wayland.
         self.render_framebuffer(25, 45, 65)
     }
 
     pub fn capture_x11_shm(&self, _config: &X11ShmConfig) -> ScreenCapture {
-        // X11 MIT-SHM shared memory segment capture abstraction:
-        // Reads directly from XShmSegmentInfo attached pixel map
+        // Démonstration synthétique : aucun appel X11 MIT-SHM.
         self.render_framebuffer(35, 30, 50)
     }
 

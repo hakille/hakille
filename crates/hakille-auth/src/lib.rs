@@ -1,17 +1,27 @@
+pub mod biohash;
 pub mod continuous;
 pub mod enrollment;
+pub mod face;
+pub mod face_liveness;
+pub mod gdpr;
 pub mod guest;
 pub mod household;
 pub mod liveness;
 pub mod minor;
+pub mod multimodal;
 pub mod wallet;
 
+pub use biohash::*;
 pub use continuous::*;
 pub use enrollment::*;
+pub use face::*;
+pub use face_liveness::*;
+pub use gdpr::*;
 pub use guest::*;
 pub use household::*;
 pub use liveness::*;
 pub use minor::*;
+pub use multimodal::*;
 pub use wallet::*;
 
 #[cfg(test)]

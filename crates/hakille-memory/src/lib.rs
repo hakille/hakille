@@ -1,3 +1,4 @@
+pub mod cognition;
 pub mod context_partition;
 pub mod contradiction;
 pub mod decay;
@@ -12,6 +13,7 @@ pub mod task;
 pub mod triplet;
 pub mod vector;
 
+pub use cognition::*;
 pub use context_partition::*;
 pub use contradiction::*;
 pub use decay::*;
@@ -192,6 +194,11 @@ impl MemoryManager {
         DecayEngine::apply_decay(&mut self.graph, cutoff_weight)
     }
 
+    /// Applique la purge cognitive physique aux signaux passés sous le cutoff (sans tombstone).
+    pub fn apply_cognitive_decay(&mut self, cutoff_weight: f64) -> DecayReport {
+        cognition::prune_cognitive_signals(&mut self.graph, cutoff_weight)
+    }
+
     /// Persiste le graphe RAM vers redb (idempotent, sans ramasse-miettes).
     /// Rend `Err` si la façade est RAM seule (construite via [`Self::new`]).
     pub async fn persist(&self) -> hakille_core::Result<()> {
@@ -199,6 +206,18 @@ impl MemoryManager {
             Some(edge) => self.graph.persist_to(edge).await,
             None => Err(hakille_core::HakilleError::StorageError(
                 "MemoryManager::persist sans base câblée : construire via MemoryManager::open(path)"
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// Persiste le graphe RAM vers redb en éliminant physiquement les fantômes
+    /// purgés de la mémoire RAM (indispensable après `apply_cognitive_decay`).
+    pub async fn persist_with_gc(&self) -> hakille_core::Result<()> {
+        match &self.edge {
+            Some(edge) => self.graph.persist_to_with_gc(edge).await,
+            None => Err(hakille_core::HakilleError::StorageError(
+                "MemoryManager::persist_with_gc sans base câblée : construire via MemoryManager::open(path)"
                     .to_string(),
             )),
         }

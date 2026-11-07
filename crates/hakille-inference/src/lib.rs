@@ -4,34 +4,52 @@ pub mod candle_runtime;
 pub mod catalog;
 pub mod downloader;
 pub mod embed_onnx;
+pub mod facemesh_onnx;
 pub mod gguf_runtime;
+pub mod hsemotion_onnx;
 pub mod llm_engine;
 pub mod manager;
 pub mod mel;
+pub mod mimi_engine;
 pub mod model_registry;
+pub mod models;
 pub mod onnx_runtime;
 pub mod ort_env;
 pub mod ort_vad;
+pub mod pose_onnx;
 pub mod quantization;
 pub mod sensevoice_onnx;
 pub mod speaker_onnx;
+pub mod ssrnet_onnx;
+pub mod whisper_engine;
 
 pub use audio_resample::*;
 pub use candle_runtime::*;
 pub use catalog::*;
 pub use downloader::*;
 pub use embed_onnx::*;
+pub use facemesh_onnx::*;
 pub use gguf_runtime::*;
+pub use hsemotion_onnx::*;
 pub use llm_engine::*;
 pub use manager::*;
 pub use mel::*;
+pub use mimi_engine::MimiEngine;
+pub use models::{
+    AgeGroup, CanonicalPnPPoints, FaceMeshEngine, GenderKind, HsEmotionEngine,
+    LetterboxTransform, NormalizationMode, RtmPoseEngine, SsrNetEngine, VisionEngine,
+    decode_simcc_joints, synthetic_blank_rgb, synthetic_checkerboard_rgb,
+    synthetic_face_crop, synthetic_gradient_rgb,
+};
 pub use model_registry::*;
 pub use onnx_runtime::*;
 pub use ort_env::shared_ort_env;
 pub use ort_vad::*;
+pub use pose_onnx::*;
 pub use quantization::*;
 pub use sensevoice_onnx::*;
 pub use speaker_onnx::*;
+pub use ssrnet_onnx::*;
 
 // ---------------------------------------------------------------------------
 // Honnêteté Inspector vs Engine (RÉEL prouvé par goldens, sauf legacy).

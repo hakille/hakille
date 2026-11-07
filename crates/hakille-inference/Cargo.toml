@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 hakille-core = { path = "../hakille-core" }
 hakille-substrate = { path = "../hakille-substrate" }
+hakille-spatial = { path = "../hakille-spatial" }
+hakille-constitution = { path = "../hakille-constitution" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -21,11 +23,11 @@ futures-util = { workspace = true }
 sha2 = { workspace = true }
 ort = { version = "=2.0.0-rc.14", features = ["download-binaries", "copy-dylibs"] }
 # REAL-04 — génération LLM Qwen 100% réelle (pur Rust, CPU v1, pas de C++/cmake) :
-# trio candle épinglé en synchro (même version upstream 0.11.0, sinon types
+# trio candle épinglé en synchro (même version upstream 0.11.1, sinon types
 # quantifiés incompatibles) + tokenizers BPE Qwen sans backend C (onig/esaxx
 # désactivés via default-features=false, fancy-regex pur Rust pour le
 # pré-tokenizer Qwen2). Device CPU uniquement (GPU en TODO documenté).
-candle-core = { version = "=0.11.0", default-features = false }
-candle-nn = { version = "=0.11.0", default-features = false }
-candle-transformers = { version = "=0.11.0", default-features = false }
+candle-core = { version = "=0.11.1", default-features = false }
+candle-nn = { version = "=0.11.1", default-features = false }
+candle-transformers = { version = "=0.11.1", default-features = false }
 tokenizers = { version = "=0.23.1", default-features = false, features = ["fancy-regex"] }

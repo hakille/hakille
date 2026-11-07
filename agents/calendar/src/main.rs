@@ -1,10 +1,10 @@
 use agent_calendar::CalendarManager;
 
 fn main() {
-    println!("Hakille Calendar Agent initialized with local graph synchronization.");
+    println!("Agent calendrier Hakille — agenda local initialisé.");
     let mgr = CalendarManager::new();
     println!(
-        "  -> {} événements synchronisés dans l'agenda souverain.",
+        "  -> {} événement(s) présent(s) dans l'agenda local.",
         mgr.events().len()
     );
 }

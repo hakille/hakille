@@ -8,6 +8,9 @@ license.workspace = true
 hakille-core = { path = "../hakille-core" }
 hakille-substrate = { path = "../hakille-substrate" }
 hakille-inference = { path = "../hakille-inference" }
+hakille-spatial = { path = "../hakille-spatial" }
+hakille-audio = { path = "../hakille-audio" }
+hakille-ui-protocol = { path = "../hakille-ui-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -18,3 +21,6 @@ uuid = { workspace = true }
 bytes = { workspace = true }
 async-trait = { workspace = true }
 sha2 = { workspace = true }
+reqwest = { workspace = true }
+base64 = "0.22.1"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }

@@ -20,6 +20,32 @@ pub enum CapabilityScope {
     Audio,
     Camera,
     FullSystem,
+    /// Données biométriques brutes ou dérivées directes (repères faciaux 478 pts, iris, pitch fondamental, embeddings).
+    Biometrics,
+    /// Géométrie spatiale 3D de l'utilisateur (Point3D, HeadPose6D, Squelette 17 points, GazeRay 3D).
+    Spatial,
+    /// Inférences cognitives et affectives de haut niveau (émotions, âge estimé, attention, fatigue, posture).
+    CognitiveInference,
+}
+
+impl CapabilityScope {
+    /// Nom canonique Datalog Biscuit v5 (snake_case).
+    pub fn datalog_name(&self) -> &'static str {
+        match self {
+            CapabilityScope::Filesystem => "filesystem",
+            CapabilityScope::Network => "network",
+            CapabilityScope::GuiInput => "guiinput",
+            CapabilityScope::Wallet => "wallet",
+            CapabilityScope::Sensor => "sensor",
+            CapabilityScope::ModelInference => "modelinference",
+            CapabilityScope::Audio => "audio",
+            CapabilityScope::Camera => "camera",
+            CapabilityScope::FullSystem => "fullsystem",
+            CapabilityScope::Biometrics => "biometrics",
+            CapabilityScope::Spatial => "spatial",
+            CapabilityScope::CognitiveInference => "cognitive_inference",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -120,7 +146,7 @@ impl CapabilityAuthority {
     ) -> Result<CapabilityToken> {
         let mut builder = Biscuit::builder();
         for scope in &scopes {
-            let s = format!("{:?}", scope).to_lowercase();
+            let s = scope.datalog_name();
             for action in &actions {
                 let a = format!("{:?}", action).to_lowercase();
                 let fact = format!("right(\"{}\", \"{}\")", s, a);
@@ -175,14 +201,17 @@ impl CapabilityAuthority {
             let parent_actions: std::collections::HashSet<String> =
                 parent_rights.iter().map(|(_, a)| a.clone()).collect();
             for scope in &restricted_scopes {
-                let s = format!("{:?}", scope).to_lowercase();
-                if !parent_scopes.contains(&s) {
+                let s = scope.datalog_name();
+                if !parent_scopes.contains(s)
+                    && !(s == "cognitive_inference" && parent_scopes.contains("cognitiveinference"))
+                    && !parent_scopes.contains("fullsystem")
+                {
                     return Err(HakilleError::AttenuationViolation);
                 }
             }
             for action in &restricted_actions {
                 let a = format!("{:?}", action).to_lowercase();
-                if !parent_actions.contains(&a) {
+                if !parent_actions.contains(&a) && !parent_actions.contains("admin") {
                     return Err(HakilleError::AttenuationViolation);
                 }
             }
@@ -202,7 +231,7 @@ impl CapabilityAuthority {
                 .map_err(|_e| HakilleError::AttenuationViolation)?;
         } else {
             for scope in &restricted_scopes {
-                let s = format!("{:?}", scope).to_lowercase();
+                let s = scope.datalog_name();
                 let fact = format!("allowed_scope(\"{}\")", s);
                 block
                     .add_fact(fact.as_str())
@@ -267,7 +296,7 @@ impl CapabilityAuthority {
         let mut authorizer = pinned
             .authorizer()
             .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
-        let s = format!("{:?}", required_scope).to_lowercase();
+        let s = required_scope.datalog_name();
         let a = format!("{:?}", required_action).to_lowercase();
         let now_ts = chrono::Utc::now().timestamp();
 
@@ -357,6 +386,27 @@ impl CapabilityAuthority {
         }
         self.verify_pinned(token, required_scope, required_action)
     }
+
+    /// Atténue un token parent pour restreindre STRICTEMENT l'accès aux
+    /// inférences cognitives (`CognitiveInference`), interdisant toute fuite
+    /// des données brutes (`Biometrics`, `Spatial`, `Camera`, `Audio`).
+    pub fn attenuate_cognitive_inference(
+        &self,
+        parent_token: &CapabilityToken,
+        allowed_resources: &[&str],
+        new_expiry: Timestamp,
+    ) -> Result<CapabilityToken> {
+        attenuate_cognitive_inference_token(parent_token, allowed_resources, new_expiry)
+    }
+
+    /// Vérifie l'accès à une ressource cognitive visée contre la clé publique racine épinglée.
+    pub fn verify_cognitive_inference(
+        &self,
+        token: &CapabilityToken,
+        target_resource: &str,
+    ) -> Result<()> {
+        verify_cognitive_inference_with_root_key(token, &self.root_public_key(), target_resource)
+    }
 }
 
 /// Verify a capability token given only the pinned root *public* key.
@@ -382,7 +432,7 @@ pub fn verify_capability_with_root_key(
     let mut authorizer = pinned
         .authorizer()
         .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
-    let s = format!("{:?}", required_scope).to_lowercase();
+    let s = required_scope.datalog_name();
     let a = format!("{:?}", required_action).to_lowercase();
     let now_ts = chrono::Utc::now().timestamp();
     let time_fact = format!("time({now_ts})");
@@ -444,7 +494,7 @@ pub fn verify_capability_with_root_key_and_resource(
     let mut authorizer = pinned
         .authorizer()
         .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
-    let s = format!("{:?}", required_scope).to_lowercase();
+    let s = required_scope.datalog_name();
     let a = format!("{:?}", required_action).to_lowercase();
     let now_ts = chrono::Utc::now().timestamp();
     authorizer
@@ -531,6 +581,129 @@ pub fn enforce_with_revocation(
     )
 }
 
+/// Atténue un token pour limiter STRICTEMENT l'accès aux inférences cognitives.
+/// Interdit toute fuite de données brutes (Camera, Audio, Biometrics, Spatial).
+pub fn attenuate_cognitive_inference_token(
+    parent_token: &CapabilityToken,
+    allowed_resources: &[&str],
+    new_expiry: Timestamp,
+) -> Result<CapabilityToken> {
+    // 1. Monotonie : Le token parent DOIT détenir le droit CognitiveInference:Read (ou FullSystem:Admin)
+    let parent_rights = effective_rights(parent_token)?;
+    let has_cog_read = parent_rights.contains(&("cognitive_inference".to_string(), "read".to_string()))
+        || parent_rights.contains(&("cognitiveinference".to_string(), "read".to_string()))
+        || parent_rights.contains(&("fullsystem".to_string(), "admin".to_string()));
+    if !has_cog_read {
+        return Err(HakilleError::AttenuationViolation);
+    }
+
+    // 2. Monotonie temporelle
+    let new_exp_ts = new_expiry.0.timestamp();
+    match min_expiry_in_token(parent_token) {
+        Some(parent_exp) if new_exp_ts <= parent_exp => {}
+        _ => return Err(HakilleError::AttenuationViolation),
+    }
+
+    // 3. Validation stricte des noms de ressources (anti-injection Datalog)
+    for res in allowed_resources {
+        validate_binding_value(res)?;
+    }
+
+    // 4. Construction du bloc d'atténuation Biscuit v5
+    let mut block = biscuit_auth::builder::BlockBuilder::new();
+
+    // Règle 1 : Verrouillage strict de l'opération (ANTI-FUITE DES DONNÉES BRUTES)
+    // Interdit formellement toute tentative d'opération sur camera, audio, biometrics, spatial.
+    block
+        .add_check("check if operation(\"cognitive_inference\", \"read\")")
+        .map_err(|_| HakilleError::AttenuationViolation)?;
+
+    // Règle 2 : Filtrage fail-closed des ressources cognitives
+    if allowed_resources.is_empty() {
+        // Liste vide = Deny-all strict
+        block
+            .add_check("check if false")
+            .map_err(|_| HakilleError::AttenuationViolation)?;
+    } else {
+        block
+            .add_check("check if target_resource($r), allowed_cognitive_resource($r)")
+            .map_err(|_| HakilleError::AttenuationViolation)?;
+        for res in allowed_resources {
+            let fact = format!("allowed_cognitive_resource(\"{res}\")");
+            block
+                .add_fact(fact.as_str())
+                .map_err(|_| HakilleError::AttenuationViolation)?;
+        }
+    }
+
+    // Règle 3 : Borne temporelle
+    let time_check = format!("check if time($time), $time <= {new_exp_ts}");
+    block
+        .add_check(time_check.as_str())
+        .map_err(|_| HakilleError::AttenuationViolation)?;
+
+    let attenuated = parent_token
+        .biscuit
+        .append(block)
+        .map_err(|_| HakilleError::AttenuationViolation)?;
+    Ok(CapabilityToken { biscuit: attenuated })
+}
+
+/// Vérifie l'accès à une inférence cognitive avec la seule clé publique racine épinglée.
+pub fn verify_cognitive_inference_with_root_key(
+    token: &CapabilityToken,
+    root_public_key: &PinnedRootPublicKey,
+    target_resource: &str,
+) -> Result<()> {
+    if target_resource.is_empty() || target_resource.len() > 256 {
+        return Err(HakilleError::CapabilityDenied("target_resource vide ou trop longue".to_string()));
+    }
+    validate_binding_value(target_resource)?;
+    if token.is_expired() {
+        return Err(HakilleError::CapabilityExpired);
+    }
+    let bytes = token
+        .biscuit
+        .to_vec()
+        .map_err(|e| HakilleError::CapabilityDenied(format!("token serialization: {e}")))?;
+    let pinned = Biscuit::from(bytes, *root_public_key)
+        .map_err(|e| HakilleError::CapabilityDenied(format!("root key pin mismatch: {e}")))?;
+
+    let mut authorizer = pinned
+        .authorizer()
+        .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+
+    let now_ts = chrono::Utc::now().timestamp();
+    authorizer
+        .add_fact(format!("time({now_ts})").as_str())
+        .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+    authorizer
+        .add_fact("operation(\"cognitive_inference\", \"read\")")
+        .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+    authorizer
+        .add_fact(format!("target_resource(\"{target_resource}\")").as_str())
+        .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+    authorizer
+        .add_check("check if right(\"cognitive_inference\", \"read\")")
+        .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+    authorizer
+        .allow()
+        .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+
+    let limits = biscuit_auth::AuthorizerLimits {
+        max_time: std::time::Duration::from_millis(500),
+        ..Default::default()
+    };
+    authorizer.authorize_with_limits(limits).map_err(|e| {
+        if token.is_expired() {
+            HakilleError::CapabilityExpired
+        } else {
+            HakilleError::CapabilityDenied(e.to_string())
+        }
+    })?;
+    Ok(())
+}
+
 /// Faits de liaison `(resource, nonce/jti, aud)` décodés depuis tous les blocs.
 /// `None` = fait absent (token legacy sans liaison).
 pub fn token_binding_facts(
@@ -607,7 +780,7 @@ pub fn verify_capability_unpinned(
         .biscuit
         .authorizer()
         .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
-    let s = format!("{:?}", required_scope).to_lowercase();
+    let s = required_scope.datalog_name();
     let a = format!("{:?}", required_action).to_lowercase();
     let now_ts = chrono::Utc::now().timestamp();
     authorizer
@@ -931,5 +1104,76 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn test_cognitive_inference_attenuation_fail_closed_and_no_raw_leak() {
+        let authority = CapabilityAuthority::new();
+        let root = authority.root_public_key();
+        let exp = future_ts();
+
+        // 1. Émission d'un token parent disposant de tous les accès capteurs et inférences
+        let parent = authority
+            .create_root_token(
+                vec![
+                    CapabilityScope::Camera,
+                    CapabilityScope::Audio,
+                    CapabilityScope::Biometrics,
+                    CapabilityScope::Spatial,
+                    CapabilityScope::CognitiveInference,
+                ],
+                vec![CapabilityAction::Read],
+                exp.clone(),
+            )
+            .unwrap();
+
+        // Le parent peut lire les données brutes
+        assert!(authority.verify(&parent, CapabilityScope::Camera, CapabilityAction::Read).is_ok());
+        assert!(authority.verify(&parent, CapabilityScope::Biometrics, CapabilityAction::Read).is_ok());
+
+        // 2. Atténuation stricte pour un agent tiers : autorise UNIQUEMENT "emotion" et "presence"
+        let agent_token = authority
+            .attenuate_cognitive_inference(&parent, &["emotion", "presence"], exp.clone())
+            .unwrap();
+
+        // A. Accès autorisés : OK
+        assert!(authority.verify_cognitive_inference(&agent_token, "emotion").is_ok());
+        assert!(authority.verify_cognitive_inference(&agent_token, "presence").is_ok());
+        assert!(verify_cognitive_inference_with_root_key(&agent_token, &root, "emotion").is_ok());
+
+        // B. Ressource cognitive non autorisée ("fatigue", "estimated_age") : REFUS STRICT (Fail-Closed)
+        assert!(authority.verify_cognitive_inference(&agent_token, "fatigue").is_err());
+        assert!(authority.verify_cognitive_inference(&agent_token, "estimated_age").is_err());
+
+        // C. Tentative d'accès aux flux caméra bruts : REFUS STRICT (Fail-Closed, anti-fuite)
+        assert!(authority.verify(&agent_token, CapabilityScope::Camera, CapabilityAction::Read).is_err());
+
+        // D. Tentative d'accès aux repères biométriques bruts : REFUS STRICT
+        assert!(authority.verify(&agent_token, CapabilityScope::Biometrics, CapabilityAction::Read).is_err());
+
+        // E. Tentative d'accès au squelette 3D spatial brut : REFUS STRICT
+        assert!(authority.verify(&agent_token, CapabilityScope::Spatial, CapabilityAction::Read).is_err());
+
+        // F. Token forgé avec mauvaise clé racine : REFUS STRICT
+        let rogue_authority = CapabilityAuthority::new();
+        let rogue_token = rogue_authority
+            .create_root_token(vec![CapabilityScope::CognitiveInference], vec![CapabilityAction::Read], exp.clone())
+            .unwrap();
+        assert!(verify_cognitive_inference_with_root_key(&rogue_token, &root, "emotion").is_err());
+
+        // G. Atténuation sans droit parent : REJET
+        let camera_only_parent = authority
+            .create_root_token(vec![CapabilityScope::Camera], vec![CapabilityAction::Read], exp.clone())
+            .unwrap();
+        assert!(authority.attenuate_cognitive_inference(&camera_only_parent, &["emotion"], exp.clone()).is_err());
+
+        // H. Atténuation avec liste vide : Deny-all (aucun accès)
+        let deny_all = authority
+            .attenuate_cognitive_inference(&parent, &[], exp.clone())
+            .unwrap();
+        assert!(authority.verify_cognitive_inference(&deny_all, "emotion").is_err());
+
+        // I. Tentative d'injection Datalog dans le nom de ressource : REJET IMMÉDIAT
+        assert!(authority.attenuate_cognitive_inference(&parent, &["emotion\", evil"], exp).is_err());
     }
 }

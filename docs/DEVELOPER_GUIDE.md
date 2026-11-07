@@ -34,7 +34,7 @@ cd hakille
 
 ## 2. Compilation du Projet
 
-Le workspace Cargo est configuré pour compiler les 31 crates (+ 5 crates d'agents de référence, `conformance`, `xtask`) de façon unifiée :
+Le workspace Cargo est configuré pour compiler les 33 crates (+ 5 crates d'agents de référence, `conformance`, `xtask`) de façon unifiée :
 
 ```bash
 # 1. Vérification statique rapide de l'ensemble des crates
@@ -48,6 +48,16 @@ cargo build --workspace --release
 ```
 
 ---
+
+### Client mobile Android/iOS
+
+Le [guide mobile](../mobile/README.md) décrit les projets Compose/SwiftUI,
+UniFFI et la connexion au hub. Android exige un **JDK complet** (avec `javac`),
+SDK 35 et NDK 27.2.12479018 ; iOS exige macOS/Xcode. Le script
+`scripts/build-mobile-rust.sh android|ios` compile les bibliothèques et régénère
+les bindings. Il n'installe pas automatiquement les SDK ou cibles Rust.
+Le [workflow mobile](../.github/workflows/mobile.yml) ajoute les contrôles
+natifs ; une compilation ne constitue pas un essai sur téléphone.
 
 ## 3. Exécution des Suites de Tests et Validation Formelle
 
@@ -138,9 +148,9 @@ Au démarrage, le démon affiche les six étapes d'initialisation du système :
   CRDT State: 0 tombstones, vector clock ready
 
 [4/6] Bootstrapping Inference Models & Cognitive Pipeline...
-  Audio Pipeline: 16kHz continuous capture buffer ready
-  SenseVoice-Small: mel + LFR + forward ort + CTC greedy — real ASR, measured confidence
-  Voice/GUI: Mimi RVQ nearest-L2, TTS formantique Klatt, grounding CV — pas de Moshi neural ni de forward VLM
+  Audio : moteurs VAD/ASR configurés, chargement et inférence au premier appel.
+  SenseVoice : frontend Kaldi, CMVN du modèle et décodage CTC ; aucune transcription au démarrage.
+  Voice/GUI: Mimi neuronal via Candle, UI-TARS via llama.cpp local configuré ; TTS formantique distinct et modèle de dialogue Moshi absent
 
 [5/6] Registering Agent Manifests & WASM Runtime...
   Registered 5 declarative business agent manifests (scopes déclarés, aucun binaire métier fourni)
@@ -324,3 +334,12 @@ rustup target add x86_64-apple-darwin aarch64-apple-darwin
 Écart honnête : la vérification croisée depuis un hôte Windows échoue sans chaîne C pour la cible (`ring`, dépendance de `biscuit-auth`, compile du C) ; en CI, Linux passe sur runner natif `ubuntu-latest`, et **la CI macOS restera `continue-on-error` tant que le labo n'a pas validé l'OS** (ADR-010).
 
 **Contrat d'honnêteté :** un chemin OS non implémenté renvoie une erreur ou un état explicite, jamais un faux succès — `TrayError::NotifierMissing` (hôte tray absent), `HotkeyError::Registration` (les deux causes réelles du raccourci, pas de succès feint), `PlatformKind` déduit uniquement des `cfg`. Les parseurs Linux/macOS (seccomp BPF, Seatbelt, Endpoint Security) sont testés host-indépendamment par la conformance (73 tests : 66 fast + 7 slow).
+
+## Activation vocale locale
+
+Le desktop ouvre le microphone uniquement après F8, clic sur Micro ou `--voice`.
+Le CLI propose une session continue avec `--listen --voice-language fr` ;
+`--serve --listen` est refusé, car le desktop possède alors sa capture locale.
+Le worker partagé est `hakille_voice::input` (CPAL, Silero, Whisper, activation).
+Voir [le guide de démarrage et de diagnostic vocal](ACTIVATION_VOCALE.md) et
+[les mesures et limites de transcription](VALIDATION_VOCALE_2026-11-04.md).

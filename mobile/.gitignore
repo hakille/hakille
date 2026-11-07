@@ -1,0 +1,13 @@
+android/.gradle/
+android/.kotlin/
+android/local.properties
+android/**/build/
+android/app/src/main/jniLibs/
+android/app/src/main/java/uniffi/
+ios/Generated/*
+!ios/Generated/.gitkeep
+ios/*.xcodeproj/
+ios/*.xcworkspace/
+ios/build/
+ios/Frameworks/
+.DS_Store

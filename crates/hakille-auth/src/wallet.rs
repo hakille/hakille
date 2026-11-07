@@ -183,6 +183,119 @@ impl WalletManager {
             records: snap.records,
         })
     }
+
+    /// Strict Constitutional Rule 7 & Privilege Step-Up Guard (§30e, F21, F23).
+    /// Enforces:
+    /// 1. Minors under 18 and holders of Restriction::NoWallet are unconditionally denied.
+    /// 2. Session confidence must satisfy tau >= 0.90 for high-privilege crypto-wallet operations.
+    pub fn verify_stepup_and_rule7(
+        &self,
+        session_tau: f32,
+        is_minor: bool,
+        restrictions: &[crate::household::Restriction],
+    ) -> Result<()> {
+        if is_minor || restrictions.contains(&crate::household::Restriction::NoWallet) {
+            return Err(HakilleError::CapabilityDenied(
+                "Constitutional Rule 7: Minors under 18 are strictly prohibited from crypto-wallet operations (NoWallet invariant).".to_string(),
+            ));
+        }
+
+        if session_tau < 0.90 {
+            return Err(HakilleError::CapabilityDenied(format!(
+                "Privilege step-up required: crypto-wallet operations require session confidence >= 0.90, current is {:.2}",
+                session_tau
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Provision a guarded wallet capability requiring step-up authentication (tau >= 0.90)
+    /// and strictly enforcing the Rule 7 Minor NoWallet invariant.
+    pub fn create_guarded_wallet_cap(
+        &self,
+        user_id: UserId,
+        max_amount: u64,
+        currency: String,
+        category: SpendingCategory,
+        expires: Timestamp,
+        session_tau: f32,
+        is_minor: bool,
+        restrictions: &[crate::household::Restriction],
+    ) -> Result<WalletCapability> {
+        self.verify_stepup_and_rule7(session_tau, is_minor, restrictions)?;
+        Ok(self.create_wallet_cap(user_id, max_amount, currency, category, expires))
+    }
+
+    /// Authorize and cryptographically sign a financial transaction.
+    /// Invariants enforced:
+    /// - Rule 7: Absolute denial for minors
+    /// - F21: Continuous confidence tau >= 0.90
+    /// - Budget limit within wallet capability
+    /// - Currency and category match
+    /// - Ledger spend record appended
+    pub fn authorize_and_sign_transaction(
+        &mut self,
+        wallet: &mut WalletCapability,
+        tx: WalletTransaction,
+        session_tau: f32,
+        is_minor: bool,
+        restrictions: &[crate::household::Restriction],
+        signing_key: &[u8; 32],
+    ) -> Result<SignedTransactionProof> {
+        self.verify_stepup_and_rule7(session_tau, is_minor, restrictions)?;
+
+        self.record_spend(
+            wallet,
+            tx.amount_cents,
+            tx.description.clone(),
+            &tx.currency,
+            tx.category.clone(),
+        )?;
+
+        // Cryptographically sign canonical transaction payload with signing key
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(signing_key);
+        hasher.update(tx.tx_id.as_bytes());
+        hasher.update(&tx.amount_cents.to_le_bytes());
+        hasher.update(tx.currency.as_bytes());
+        hasher.update(tx.recipient.as_bytes());
+        hasher.update(&tx.nonce.to_le_bytes());
+        let digest = hasher.finalize();
+
+        let mut signature_digest = [0u8; 32];
+        signature_digest.copy_from_slice(&digest);
+
+        Ok(SignedTransactionProof {
+            transaction: tx,
+            signature_digest,
+            authorized_at_confidence: session_tau,
+            authorized_at: Timestamp::now(),
+        })
+    }
+}
+
+/// Transaction payload for crypto-wallet signing and transfers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletTransaction {
+    pub tx_id: uuid::Uuid,
+    pub recipient: String,
+    pub amount_cents: u64,
+    pub currency: String,
+    pub category: SpendingCategory,
+    pub description: String,
+    pub nonce: u64,
+    pub timestamp: Timestamp,
+}
+
+/// Attestation proof of an authorized, signed wallet transaction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignedTransactionProof {
+    pub transaction: WalletTransaction,
+    pub signature_digest: [u8; 32],
+    pub authorized_at_confidence: f32,
+    pub authorized_at: Timestamp,
 }
 
 #[cfg(test)]
@@ -348,4 +461,116 @@ mod tests {
         assert_eq!(manager.remaining_budget(&wallet), 5000);
         assert!(manager.history().is_empty());
     }
+
+    #[test]
+    fn test_guarded_wallet_cap_stepup_and_rule7() {
+        let manager = WalletManager::new();
+        let adult_id = UserId(Uuid::new_v4());
+        let minor_id = UserId(Uuid::new_v4());
+
+        // 1. Minor user strictly rejected regardless of confidence
+        let res_minor = manager.create_guarded_wallet_cap(
+            minor_id,
+            10000,
+            "EUR".into(),
+            SpendingCategory::Food,
+            future_ts(),
+            0.99,
+            true, // is_minor
+            &[crate::household::Restriction::NoWallet],
+        );
+        assert!(res_minor.is_err());
+
+        // 2. Adult with insufficient confidence (< 0.90) rejected
+        let res_low_tau = manager.create_guarded_wallet_cap(
+            adult_id.clone(),
+            10000,
+            "EUR".into(),
+            SpendingCategory::Food,
+            future_ts(),
+            0.85,
+            false,
+            &[],
+        );
+        assert!(res_low_tau.is_err());
+
+        // 3. Adult with tau >= 0.90 and no minor restriction succeeds
+        let res_ok = manager.create_guarded_wallet_cap(
+            adult_id,
+            10000,
+            "EUR".into(),
+            SpendingCategory::Food,
+            future_ts(),
+            0.95,
+            false,
+            &[],
+        );
+        assert!(res_ok.is_ok());
+    }
+
+    #[test]
+    fn test_authorize_and_sign_transaction() {
+        let mut manager = WalletManager::new();
+        let user_id = UserId(Uuid::new_v4());
+        let mut wallet = manager.create_wallet_cap(
+            user_id,
+            10000,
+            "EUR".into(),
+            SpendingCategory::Food,
+            future_ts(),
+        );
+
+        let tx = WalletTransaction {
+            tx_id: Uuid::new_v4(),
+            recipient: "0x1234567890abcdef".to_string(),
+            amount_cents: 2500,
+            currency: "EUR".to_string(),
+            category: SpendingCategory::Food,
+            description: "Team Lunch".to_string(),
+            nonce: 1,
+            timestamp: Timestamp::now(),
+        };
+
+        let signing_key = [0xabu8; 32];
+
+        // Minor attempt rejected
+        let res_minor = manager.authorize_and_sign_transaction(
+            &mut wallet,
+            tx.clone(),
+            0.95,
+            true, // is_minor
+            &[crate::household::Restriction::NoWallet],
+            &signing_key,
+        );
+        assert!(res_minor.is_err());
+
+        // Insufficient confidence rejected
+        let res_low_tau = manager.authorize_and_sign_transaction(
+            &mut wallet,
+            tx.clone(),
+            0.88,
+            false,
+            &[],
+            &signing_key,
+        );
+        assert!(res_low_tau.is_err());
+
+        // Valid authorization succeeds and signs
+        let proof = manager
+            .authorize_and_sign_transaction(
+                &mut wallet,
+                tx.clone(),
+                0.95,
+                false,
+                &[],
+                &signing_key,
+            )
+            .expect("Signing transaction must succeed");
+
+        assert_eq!(proof.transaction.amount_cents, 2500);
+        assert_ne!(proof.signature_digest, [0u8; 32]);
+        assert_eq!(manager.remaining_budget(&wallet), 7500);
+        assert_eq!(manager.history().len(), 1);
+    }
 }
+

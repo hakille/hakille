@@ -315,6 +315,11 @@ async fn main() {
                     std::process::exit(1);
                 }
                 println!("✓ generated.rs à jour.");
+                tokens::check_mobile_exports(&root).unwrap_or_else(|error| {
+                    eprintln!("✗ {error}");
+                    std::process::exit(1);
+                });
+                println!("✓ Exports Swift et Kotlin des applications mobiles à jour.");
             } else {
                 std::fs::write(&target, out).unwrap_or_else(|e| {
                     eprintln!("✗ écriture {target:?} : {e}");
@@ -337,7 +342,7 @@ async fn main() {
             println!("  download-models [tier]      Download models (guest, native, sovereign)");
             println!("  verify-models               Verify SHA-256 integrity of local model cache");
             println!(
-                "  tokens [--check]            Régénérer/vérifier les tokens design (TOML → Rust)"
+                "  tokens [--check]            Régénérer Rust / vérifier Rust et exports mobiles"
             );
             println!(
                 "  tokens export-all           Générer Swift, Kotlin et CSS dans target/tokens/"

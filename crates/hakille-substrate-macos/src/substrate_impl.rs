@@ -15,7 +15,6 @@ use hakille_substrate::{
     ScreenCapture, Substrate, ThermalState,
 };
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Missing native binding reported by every macOS camera method.
 const MACOS_CAMERA_UNIMPLEMENTED: &str = "camera not implemented for macOS substrate: AVFoundation binding missing \
@@ -24,8 +23,6 @@ const MACOS_CAMERA_UNIMPLEMENTED: &str = "camera not implemented for macOS subst
 pub struct MacosSubstrate {
     manifest: PlatformManifest,
     attestation_keypair: KeyPair,
-    audio_counter: AtomicU64,
-    process_counter: AtomicU64,
     display_capture: MacosQuartzDisplayCapture,
     es_client: EndpointSecurityClient,
     virtual_fs_root: PathBuf,
@@ -75,8 +72,6 @@ impl MacosSubstrate {
         Self {
             manifest,
             attestation_keypair: KeyPair::generate(),
-            audio_counter: AtomicU64::new(1),
-            process_counter: AtomicU64::new(1),
             display_capture: MacosQuartzDisplayCapture::new(),
             es_client: EndpointSecurityClient::default(),
             virtual_fs_root: PathBuf::from("/Users/Shared/Hakille/vfs"),
@@ -358,12 +353,15 @@ impl Substrate for MacosSubstrate {
             CapabilityScope::Audio,
             hakille_core::CapabilityAction::Read,
         )?;
-        let id = self.audio_counter.fetch_add(1, Ordering::SeqCst);
-        Ok(AudioStreamHandle(id))
+        Err(hakille_core::HakilleError::SubstrateError(
+            "capture audio indisponible : backend audio non raccordé au substrat macos; aucun flux démarré".to_string(),
+        ))
     }
 
     async fn stop_audio_capture(&self, _handle: AudioStreamHandle) -> Result<()> {
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "arrêt audio indisponible : aucun flux audio natif géré par ce substrat".to_string(),
+        ))
     }
 
     async fn play_audio(
@@ -377,7 +375,9 @@ impl Substrate for MacosSubstrate {
             CapabilityScope::Audio,
             hakille_core::CapabilityAction::Write,
         )?;
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "lecture audio indisponible : backend audio non raccordé au substrat macos; aucun son joué".to_string(),
+        ))
     }
 
     async fn start_camera_capture(
@@ -422,7 +422,9 @@ impl Substrate for MacosSubstrate {
             CapabilityScope::Sensor,
             hakille_core::CapabilityAction::Read,
         )?;
-        Ok(self.display_capture.capture_screen())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "capture d'écran indisponible : binding CoreGraphics non raccordé; aucune image du poste capturée".to_string(),
+        ))
     }
 
     async fn inject_input(&self, _action: InputAction, cap: &CapabilityToken) -> Result<()> {
@@ -431,8 +433,9 @@ impl Substrate for MacosSubstrate {
             CapabilityScope::GuiInput,
             hakille_core::CapabilityAction::Execute,
         )?;
-        // macOS CGEventPost input injection abstraction
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "injection d'entrée indisponible : binding CGEventPost non raccordé; aucun événement émis".to_string(),
+        ))
     }
 
     async fn spawn_sandboxed(
@@ -482,8 +485,12 @@ impl Substrate for MacosSubstrate {
                 )));
             }
         }
-        let id = self.process_counter.fetch_add(1, Ordering::SeqCst);
-        Ok(ProcessHandle(id))
+        // Aucun moteur WASM n'est relié à cette API : ne jamais inventer
+        // un handle de processus. Le runtime des agents de référence est distinct.
+        Err(hakille_core::HakilleError::SubstrateError(
+            "spawn_sandboxed indisponible : moteur WASM non raccordé au substrat macos; aucun processus lancé"
+                .to_string(),
+        ))
     }
 
     fn power_state(&self) -> PowerState {

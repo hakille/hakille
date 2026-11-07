@@ -1,0 +1,14 @@
+[package]
+name = "hakille-spatial"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license.workspace = true
+description = "Primitives géométriques 3D, pose de tête 6-DOF, squelette COCO 17 points et rayon de regard pour Hakille"
+repository = "https://github.com/hakille/hakille"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]

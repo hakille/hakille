@@ -21,6 +21,7 @@
 //!   (calibré pour qu'une région centrale couvrant 1/8 du champ ≈ 0,65 m,
 //!   ordre de grandeur webcam laptop ; borné à [0,2 m, 5,0 m]).
 //!   **Approximation d'ordre de grandeur, jamais une mesure télémétrique.**
+use crate::vision::capture::{FrameFormat, VideoFrame};
 use crate::vision::cv;
 use crate::world_model::WorldModel;
 use hakille_core::Timestamp;
@@ -214,6 +215,113 @@ impl CameraPipeline {
 
         // 5. Distance : taille relative de la plus grande région centrale
         //    non-fond (mesure cv), convertie par approximation sténopé.
+        let distance_m = self.estimate_distance(&gray, frame.width, frame.height);
+
+        VisualSceneContext {
+            user_presence,
+            estimated_distance_m: distance_m,
+            user_gaze_focused_on_device: gaze_focused,
+            people_count,
+            lighting,
+            privacy_preserving_frame_hash: frame_hash,
+            timestamp: Timestamp::now(),
+        }
+    }
+
+    /// Process a normalized VideoFrame (e.g. from VideoFrameBridge).
+    /// Guarantees that raw pixels are processed entirely in ephemeral RAM and discarded.
+    pub fn process_video_frame(&mut self, frame: &VideoFrame) -> VisualSceneContext {
+        self.frames_processed += 1;
+
+        let mut hasher = Sha256::new();
+        hasher.update(&frame.data);
+        let frame_hash: [u8; 32] = hasher.finalize().into();
+
+        let absent = |lighting| VisualSceneContext {
+            user_presence: UserPresence::Absent,
+            estimated_distance_m: 0.0,
+            user_gaze_focused_on_device: false,
+            people_count: 0,
+            lighting,
+            privacy_preserving_frame_hash: frame_hash,
+            timestamp: Timestamp::now(),
+        };
+
+        if frame.data.is_empty() || frame.width == 0 || frame.height == 0 {
+            return absent(LightingCondition::Dark);
+        }
+
+        let layout = match frame.format {
+            FrameFormat::Rgb8 => cv::PixelLayout::RGB,
+            FrameFormat::Rgba8 => cv::PixelLayout::RGBA,
+            FrameFormat::Bgra8 => cv::PixelLayout::BGRA,
+            FrameFormat::Jpeg | FrameFormat::Yuyv => return absent(LightingCondition::Dark),
+        };
+        let gray = match cv::to_grayscale(&frame.data, frame.width, frame.height, layout) {
+            Some(g) => g,
+            None => return absent(LightingCondition::Dark),
+        };
+        let (mean_lum, std_lum) = cv::luminance_stats(&gray);
+
+        let lighting = if mean_lum < Self::DARK_BELOW as f32 {
+            LightingCondition::Dark
+        } else if mean_lum < Self::DIM_BELOW as f32 {
+            LightingCondition::Dim
+        } else if mean_lum < Self::DAYLIGHT_ABOVE as f32 {
+            LightingCondition::IndoorAdequate
+        } else {
+            LightingCondition::Daylight
+        };
+
+        if std_lum < Self::NOISE_FLOOR_CONTRAST {
+            return absent(lighting);
+        }
+
+        let w = frame.width as usize;
+        let h = frame.height as usize;
+        let sobel = cv::sobel_magnitude(&gray, w, h);
+        let n = sobel.len() as f32;
+        let m_mean = sobel.iter().map(|&v| v as f32).sum::<f32>() / n;
+        let m_var = sobel
+            .iter()
+            .map(|&v| (v as f32 - m_mean).powi(2))
+            .sum::<f32>()
+            / n;
+        let edge_thresh = m_mean + m_var.sqrt();
+        let center_density =
+            cv::edge_density_in_rect(&sobel, w, h, edge_thresh, 0.25, 1.0 / 3.0, 0.75, 2.0 / 3.0);
+        let total_edges = sobel.iter().filter(|&&v| v as f32 > edge_thresh).count();
+        let center_area =
+            ((0.75 - 0.25) * w as f32) as usize * ((2.0 / 3.0 - 1.0 / 3.0) * h as f32) as usize;
+        let total_area = w * h;
+        let periphery_density = if total_area > center_area {
+            (total_edges.saturating_sub((center_density * center_area as f32).round() as usize))
+                as f32
+                / (total_area - center_area) as f32
+        } else {
+            0.0
+        };
+
+        let has_central_subject =
+            center_density > periphery_density && center_density > Self::MIN_CENTRAL_DENSITY;
+        let has_peripheral_subject =
+            periphery_density > center_density && periphery_density > Self::MIN_CENTRAL_DENSITY;
+
+        let (user_presence, people_count, gaze_focused) =
+            if has_central_subject && has_peripheral_subject {
+                (UserPresence::MultiplePeopleDetected { count: 2 }, 2, false)
+            } else if has_central_subject {
+                let attentive = center_density >= periphery_density;
+                let presence = if attentive {
+                    UserPresence::Present
+                } else {
+                    UserPresence::Distracted
+                };
+                (presence, 1, attentive)
+            } else {
+                return absent(lighting);
+            };
+
         let distance_m = self.estimate_distance(&gray, frame.width, frame.height);
 
         VisualSceneContext {

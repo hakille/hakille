@@ -1,0 +1,54 @@
+<resources>
+<string name="app_name">Hakille</string>
+<string name="chat">Chat</string><string name="status">Status</string><string name="memory">Memory</string><string name="journal">Journal</string><string name="agents">Agents</string><string name="connection">Connection</string>
+<string name="endpoint">Gateway base URL</string><string name="token">Mobile gateway token</string><string name="connect">Connect and save securely</string><string name="saved_hub">Reconnect saved hub</string><string name="forget">Disconnect and erase credentials</string>
+<string name="connection_help">Your own gateway connects this app to Hakille. Use HTTPS, or 127.0.0.1 through an explicit local tunnel. Keep the desktop client disconnected while using the gateway.</string>
+<string name="message">Message to Hakille</string><string name="send">Send</string><string name="refresh">Refresh</string><string name="cancel_request">Cancel waiting — result may be unknown</string><string name="waiting">Request in progress. No automatic retry.</string>
+<string name="microphone_unavailable">Microphone unavailable: native speech capture is not connected in this app.</string>
+<string name="empty">No data received.</string><string name="search">Memory search</string><string name="remember">Save memory</string><string name="memory_text">Text to remember</string>
+<string name="agent_input">Agent input (JSON)</string><string name="run_agent">Run this agent</string><string name="agent_unavailable">Agent artifact unavailable</string>
+<string name="decision">Decision required</string><string name="reason">Reason</string><string name="cost">Cost</string><string name="data_exit">Data destination</string><string name="provenance">Provenance</string><string name="reversible">Reversible</string><string name="irreversible">Irreversible</string>
+<string name="hold_approve">Hold for 600 ms, then release to approve</string><string name="confirm_ready">Confirm approval after 600 ms</string><string name="approval_a11y">Approve in two steps. Activate once to begin confirmation, then again after 600 milliseconds.</string><string name="reject">Reject</string><string name="cancel_approval">Cancel confirmation</string>
+<string name="outcomes">Request outcomes</string><string name="connected">Connected</string><string name="disconnected">Disconnected</string><string name="connecting">Connecting</string><string name="unknown">Connection or outcome unknown</string>
+<string name="you">You</string><string name="assistant">Hakille</string><string name="yes">Yes</string><string name="no">No</string>
+<string name="history_trimmed">Older entries are omitted. Consult the journal.</string>
+<string name="data_local">Remains on your hub</string>
+<string name="data_cloud">Cloud provider</string>
+<string name="external_origin">External origin</string>
+<string name="verified_skill">Verified skill</string>
+<string name="metadata_unknown">Unrecognized metadata — check before approving</string>
+<string name="rtl_layout">Right-to-left layout</string>
+<string name="dictation_explanation">On-device dictation, started only by this button. Text is added to the draft; review it before sending. This is not continuous wake-word listening.</string>
+<string name="dictation_start">Dictate into draft</string>
+<string name="dictation_finish">Finish dictation</string>
+<string name="dictation_cancel">Stop and discard dictation</string>
+<string name="dictation_system_language">Device language</string>
+<string name="dictation_french">French</string>
+<string name="dictation_english">English</string>
+<string name="dictation_idle">Microphone off</string>
+<string name="dictation_permission">Microphone permission requested. No capture has started.</string>
+<string name="dictation_starting">Preparing the on-device recognizer…</string>
+<string name="dictation_listening">Microphone active — speak now.</string>
+<string name="dictation_finishing">End of capture requested…</string>
+<string name="dictation_processing">Recognizing speech on this device…</string>
+<string name="dictation_finished">Text added to the draft. Nothing was sent.</string>
+<string name="dictation_cancelled">Dictation stopped. Tap Dictate to start a new session.</string>
+<string name="dictation_android_version">On-device dictation requires Android 12 (API 31) or later. No network recognizer is used as a fallback.</string>
+<string name="dictation_engine_missing">No on-device speech recognizer is available on this device. No cloud fallback.</string>
+<string name="dictation_permission_denied">Microphone permission denied. You can allow it in Android settings, then tap Dictate again.</string>
+<string name="dictation_permission_revoked">Microphone permission is no longer available. Dictation has stopped.</string>
+<string name="dictation_busy">The device recognizer is busy. Try again later.</string>
+<string name="dictation_audio_error">Microphone capture failed. Check Android microphone access and your device.</string>
+<string name="dictation_language_error">This language is not available in the on-device recognizer. Choose an installed language.</string>
+<string name="dictation_no_match">No usable final text was recognized. The draft is unchanged.</string>
+<string name="dictation_timeout">Dictation stopped after 30 seconds. No unfinished text was added.</string>
+<string name="dictation_context_changed">Dictation was discarded because the draft or session changed.</string>
+<string name="dictation_result_invalid">The recognized text is invalid or the draft exceeds 8192 UTF-8 bytes. Nothing was truncated or added.</string>
+<string name="dictation_engine_error">The on-device recognizer failed. Dictation stopped without a cloud fallback.</string>
+<string name="draft_restoring">Restoring the local draft and previous operation markers…</string>
+<string name="draft_restore_failed">The saved local state cannot be read safely. No request will be sent. Keep app data for recovery; do not erase it if previous operation outcomes still need checking.</string>
+<string name="draft_save_failed">Local state could not be saved. Recent changes may be lost if the app closes. Check available storage; no new request can be sent until its state is saved.</string>
+<string name="recovery_explanation">A previous operation has an unknown outcome, possibly on another hub. Nothing is retried automatically. Check the hub journal before making a new attempt. Acknowledging this warning does not cancel the operation or confirm its outcome.</string>
+<string name="recovery_acknowledge">I have read this warning — archive it</string>
+<string name="draft_request_not_sent">The request was not sent: its local recovery marker could not be saved.</string>
+</resources>
