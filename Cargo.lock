@@ -2621,6 +2621,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "hakille-capability"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "biscuit-auth",
+ "bytes",
+ "chrono",
+ "ed25519-dalek",
+ "hakille-audit",
+ "hakille-core",
+ "hex",
+ "proptest",
+ "rand 0.8.8",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "hakille-constitution"
 version = "0.1.0"
 dependencies = [
@@ -6509,6 +6538,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

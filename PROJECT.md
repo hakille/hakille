@@ -1,86 +1,145 @@
-# Project: Hakille Sovereign Cognitive OS Architecture & Experience
+# Project: Hakille Universal Capability, Tools & AI Integrations Architecture
 
 ## Architecture
-Hakille follows a strict sovereign, layered, headless-first architecture across 7 core subsystems:
-1. `tokens/`: Single source of truth for design tokens (color, motion, type), checked via `cargo xtask tokens --check` and exported to Rust, Swift, Kotlin, and CSS.
-2. `crates/hakille-design`: Pure Rust design system constants, palettes (Abyss dark `#0B0C0F`, Text `#ECEEF2`, Braise `#FF7A2F`), typography, WCAG AA contrast validation, Karplus-Strong sound synthesis, 21-wire kora geometry, and action card layouts.
-3. `crates/hakille-core`: Foundational security, Biscuit Datalog capability tokens with monotonic attenuation, authorization contexts, VFS path normalization, Ed25519/ChaCha20-Poly1305 cryptography, confidence calculus ($0.6 \cdot \text{model} + 0.4 \cdot \text{graph}$), and domain thresholds.
-4. `crates/hakille-memory`: Distributed Subject-Predicate-Object (SPO) semantic store, RAM knowledge graph (`KnowledgeGraph`), redb 2.0 persistent storage (`EdgeStore`) across 6 tables, hybrid HNSW vector indexing (`instant-distance`, 384-dim), declarative graph query DSL (`GraphQuery`), exponential decay engine, and `MemoryRuntime` facade.
-5. `crates/hakille-ui` & `crates/hakille-ui-model`: Headless ambient presence (6 states), Spotlight HUD, environmental channel selector, silence budget, immutable snapshots (`StableSnapshot`), and 18 validated UI events.
-6. `crates/hakille-ui-protocol` & `crates/hakille-ipc`: Versioned (v1) communication wire schema between kernel, daemon, and UI. Secure local-only transport (1 MiB framing, CSPRNG token file with 0600 permissions, constant-time verification, named pipe / domain socket separation, and `TokenDelta` streaming).
-7. `crates/hakille-ui-platform` & `crates/hakille-ui-desktop`: Cross-platform host abstraction (`DesktopHost`) and native desktop shell running on `winit 0.30` + `wgpu 30` with `softbuffer 0.4` software fallback, `accesskit 0.24`, Win32 layered colorkey transparency, 720×64 HUD expanding to 720×360 consultation panels.
-8. Substrate crates (`hakille-substrate-*`): 6 OS targets (Linux, Windows, macOS, Redox OS orbital, Mobile, Web WASM) with clean separation of privilege tiers (Native, Sovereign, Guest), real Seccomp/Namespaces/Cgroups v2 on Linux, and Redox microkernel packet routing.
-9. `crates/hakille-agents`: Sandboxed agent runtime featuring pure AEl zero-import sandbox (`wasm_runner.rs`) with fuel metering and 5ms epoch preemption, scoped WASI preview-1 runtime (`runtime.rs`), Biscuit attenuation verification, quota tracking, and declarative reference agents.
-10. `crates/hakille-perception`: Telemetry capture, Silero VAD v5, SenseVoice-Small speech recognition, 21-wire kora audio metering, pure-Rust CV algorithms, and ambient world model.
-11. `crates/hakille-audit`: ACID redb audit ledger with SHA-256 hash chaining, Ed25519 signatures, capability token binding, and non-destructive action reversal via signed flags.
-12. `crates/hakille-daemon`: System service (`hakilled`), multi-turn cognition, ActionCard proposal/approval, durable crash-safe outbox queuing (`outbox.json`), and WASM reference agent execution.
+Hakille Universal Capability Architecture unifies all forms of tool and agent extensibility into a sovereign, high-performance, cryptographically secure Rust platform. It bridges local cognitive models (System 2 Qwen 2.5, Candle, ONNX Runtime), external frontier APIs (OpenAI, Anthropic, Gemini), and diverse extension ecosystems without modifying the kernel core.
+
+The architecture comprises 5 foundational layers:
+1. **Universal Capability Contract & Data Model (`crates/hakille-capability`)**:
+   - Canonical Tool Contract (`CanonicalToolDefinition`, `CanonicalToolCall`, `CanonicalToolResult`, `CanonicalContentBlock`, `ExecutionMetadata`).
+   - Bidirectional lossless schema translation for OpenAI Strict Function Calling, Anthropic Thinking Blocks & Tool Use, Gemini Function Declarations, and local ChatML GGUF.
+   - Capability Descriptor & Manifest schema (`CapabilityDescriptor`, `CapabilityType`, `CapabilityManifest`, `Version`, `Author`).
+2. **Core Capability Engines (`crates/hakille-capability`)**:
+   - `UniversalCapabilityRegistry`: Thread-safe, versioned repository managing registration, provenance, metadata, dependencies, availability, and lifecycle.
+   - `CapabilityDiscoveryEngine`: Hybrid search combining semantic HNSW vector retrieval (MiniLM 384-dim embeddings via `hakille-memory`) and structured metadata/scope filtering to eliminate context window saturation.
+   - `UniversalExecutionEngine`: Sandboxed execution orchestrator with fuel metering, timeout cancellation, concurrency limits, and error classification.
+   - `PermissionSecurityEngine`: Sovereign defense-in-depth model combining Biscuit v5 Datalog monotonic capability attenuation, 4-tier risk classification (Tier 0 Read, Tier 1 Mutating, Tier 2 Network, Tier 3 Critical/CodeExec), anti-SSRF IP filtering, and zero-knowledge credential injection.
+3. **Capability Adapters**:
+   - `McpClientAdapter`: Zero-bloat, asynchronous Tokio-based Model Context Protocol client supporting stdio (child process pipes) and SSE transports, complete JSON-RPC 2.0 lifecycle, tools/resources/prompts primitives, and connection resilience.
+   - `SkillsLoader`: Open standard `SKILL.md` parser with YAML frontmatter catalog indexing, 3-tier progressive loading, and instruction injection.
+   - `NativeToolsAdapter`: Pure-Rust native tools executing in-process with minimal overhead for system, VFS filesystem, and memory graph operations.
+   - `WasmCapabilityAdapter`: Wasmtime 48 sandboxed execution with fuel limits and epoch preemption.
+4. **Kernel & Daemon Integration (`crates/hakille-kernel` & `crates/hakille-daemon`)**:
+   - Seamless integration with `System2Engine` and `orchestrator.rs`: Tool discovery before inference, prompt augmentation, function calling loop, result feedback, and multi-turn tool chaining.
+   - UI ActionCard integration: High-risk (Tier 3) capability invocations prompt the user with 600ms hold-to-confirm physical verification.
+   - Cryptographic Audit Trail: Every invocation logged to `hakille-audit` redb ledger with SHA-256 Merkle chaining and Biscuit token hash.
+5. **Requirement-Driven E2E Test & Benchmark Harness (`tests/`)**:
+   - Comprehensive multi-tier test suite (Tiers 1–4) validating discovery, execution, permissions, MCP servers, skills, error recovery, and performance benchmarks.
+
+---
 
 ## Feature Inventory
 | # | Feature | Description | Milestone | Source |
 |---|---------|-------------|-----------|--------|
-| 1 | Decoupled Token Tooling | Make token checking/exporting runnable via `xtask` without linking ONNX/inference C++ runtimes | M1 | Survey Explorer 2 |
-| 2 | Functional & Glass Design Tokens | Add error, success, caution, acrylic blur, glass reflection, and interactive state tokens to `tokens/*.toml` | M1 | Survey Explorer 2 |
-| 3 | Complete Multi-Target Exporters | Fix Swift, Kotlin, and CSS exporters in `xtask` to export cubic-bezier easings, font stacks, and typed color constructs | M1 | Survey Explorer 2 |
-| 4 | Token-Generated Rust Sync | Ensure `hakille-design/src/generated.rs` stays 100% in sync with enriched `tokens/*.toml` with full test validation | M1 | Survey Explorer 2 |
-| 5 | Protocol Waveform & Haptic Schemas | Add voice waveform meter telemetry and haptic trigger variants to `hakille-ui-protocol` | M2 | Survey Explorer 1 & 3 |
-| 6 | Rich Action Card Attachments | Support rich attachments (code diff previews, memory provenance links, cryptographic audit badges) in protocol and viewmodels | M2 | Survey Explorer 1 |
-| 7 | Protocol Versioning & Golden Snapshot | Verify protocol v1 compatibility and update `schema_snapshot.json` with golden tests | M2 | Survey Explorer 1 |
-| 8 | Viewmodel & Snapshot Parity | Maintain `StableSnapshot` 100% field-by-field parity guarantees with new telemetry/features | M2 | Survey Explorer 1 |
-| 9 | WidgetState Interactive Transitions | Add `Hover`, `Active`, and `Disabled` states to `WidgetState` in `hakille-ui-desktop` | M3 | Survey Explorer 2 |
-| 10 | Specular Glass Edge Highlights | Implement 1px top specular glass highlight and acrylic depth rendering for HUD and Action Cards | M3 | Survey Explorer 2 |
-| 11 | 21-Wire Kora Presence Waveform Protocol | Implement 21 animated kora string waveforms contract in design tokens and E2E verification | M3 | Survey Explorer 2 & 3 |
-| 12 | 600ms Hold-to-Confirm Progress Ring | Implement circular Braise progress ring on Action Card validation button during 600ms hold | M3 | Survey Explorer 2 & 3 |
-| 13 | Elimination of Hardcoded Magic Colors | Replace hardcoded `0xFF5A5A`, `CORAL_HEX`, and blur constants with design token references | M3 | Survey Explorer 2 |
-| 14 | Desktop Window Dragging & Transparency | Maintain and harden Win32 layered colorkey (`0x010101`) and non-Windows opaque windowing with strict hit-testing | M4 | Survey Explorer 3 |
-| 15 | Multi-Platform Host Abstraction | Enhance Linux (Wayland layer-shell & X11 fallback), macOS (NSPanel & CGEventTap), Redox (orbital:), Web (Canvas), Mobile | M4 | Survey Explorer 3 |
-| 16 | AccessKit Tree & Screen-Reader Audit | Maintain 100% labeled interactive controls and screen-reader accessibility tree parity | M4 | Survey Explorer 1 & 3 |
-| 17 | Quiescence & Battery Energy Budget | Guarantee 0-frame idle/hidden quiescence and 30 fps battery throttling | M4 | Survey Explorer 1 & 3 |
-| 18 | E2E Requirement-Driven Test Suite | Implement comprehensive opaque-box test runner and test cases across Tiers 1-4 | E2E-Track | Dual Track |
-| 19 | 100% E2E Test Suite Pass | Verify implementation against 100% of E2E test suite published in `TEST_READY.md` | M5 | Dual Track |
-| 20 | Adversarial Coverage Hardening (Tier 5) | Adversarial challenger-driven stress testing and coverage gap elimination | M5 | Dual Track |
-| 21 | Daemon Multi-Substrate Dispatch | Dynamically instantiate native OS substrate via `cfg(target_os)` in `hakille-daemon` instead of hardcoding `WindowsSubstrate` | M6 | Survey Explorer 2 |
-| 22 | Headless Audio Fallback & Systemd Lifecycle | Add dummy/mock audio fallback in `hakille-audio` for headless environments and systemd daemonization support in `hakille-substrate-linux` | M6 | Survey Explorer 2 |
-| 23 | redb GraphQuery Push-Down & Index Encryption | Implement range scan query pushdown in `EdgeStore` and protect prefix keys in redb tables | M7 | Survey Explorer 1 |
-| 24 | Persistent Capability Revocation Store | Add redb-backed persistent `RevocationStore` in `hakille-core` / `hakille-audit` for Biscuit token revocation | M7 | Survey Explorer 1 |
-| 25 | GLIBC 2.36 C23 Linker Compatibility Shim | Provide C23 symbol compatibility shim (`__isoc23_strtol`) to enable test binaries linking on Debian Bookworm | M8 | Survey Explorer 3 |
-| 26 | 21-Wire Animated Kora Presence UI Component | Implement animated 21-wire kora presence bars in `crates/hakille-ui-desktop/src/components.rs` (`Presence::draw`) for Speaking state | M8 | Survey Explorer 3 |
-| 27 | Full Sovereign OS Regression & Victory Audit Readiness | Run 100% verification across all 12 subsystems and 230 E2E tests, verifying zero regressions | M9 | Survey Explorers 1-3 |
+| 1 | Architectural Decision Records (ADRs) | Produce ADR-001 through ADR-007 documenting core architectural choices, tradeoffs, and rejected alternatives | M1 | ORIGINAL_REQUEST §10.D |
+| 2 | Canonical Tool Contract & Data Model | Define `CanonicalToolDefinition`, `CanonicalToolCall`, `CanonicalToolResult`, `CanonicalContentBlock`, and `ExecutionMetadata` in Rust | M1 | Spec Miner §5 |
+| 3 | Lossless Provider Schema Translators | Implement bidirectional schema and call translators for OpenAI, Anthropic, Gemini, MCP, and GGUF ChatML | M1 | Spec Miner §4 |
+| 4 | Capability Descriptor & Manifest Specification | Define universal descriptor, manifest format, provenance metadata, semantic tags, and version constraints | M1 | ORIGINAL_REQUEST §4, §5 |
+| 5 | Universal Capability Registry | Centralized, thread-safe registry with registration, query, lifecycle state, and version resolution | M2 | ORIGINAL_REQUEST §5 |
+| 6 | Hybrid Capability Discovery Engine | Multi-modal search engine combining HNSW vector similarity (MiniLM 384-dim) and structured attribute/scope filtering | M2 | ORIGINAL_REQUEST §5, §6 |
+| 7 | Universal Execution Engine | Asynchronous tool execution runtime with timeouts, cancellation tokens, resource bounds, and error categorization | M2 | ORIGINAL_REQUEST §5 |
+| 8 | Sovereign Permission & Security Engine | Biscuit v5 Datalog token enforcement, 4-tier risk classification, least-privilege checks, and anti-SSRF network validation | M2 | ORIGINAL_REQUEST §5, §7 |
+| 9 | Zero-Knowledge Secret Egress Proxy | Safe credential management injecting API keys into outbound headers without exposing secrets to tool memory | M2 | WASM Explorer §4 |
+| 10 | Cryptographic Audit Log Integration | Automatic logging of capability invocations to `hakille-audit` with SHA-256 Merkle chaining and token binding | M2 | Codebase Auditor §3 |
+| 11 | Sovereign Tokio MCP Client Adapter | Full JSON-RPC 2.0 MCP client supporting stdio and SSE transports, tool calling, resource reading, and prompts | M3 | ORIGINAL_REQUEST §3.B, §8 |
+| 12 | MCP Lifecycle, Reconnection & Error Resilience | MCP `initialize`, `ping`, graceful cancellation, exponential backoff reconnects, and `isError` payload handling | M3 | Spec Miner §2 |
+| 13 | Agent Skills Loader & Progressive Loading | `SKILL.md` parser with frontmatter catalog indexing, 3-tier progressive context injection, and resource access | M3 | ORIGINAL_REQUEST §3.C, §8 |
+| 14 | Native Rust Capability Adapter | Direct in-process adapter for foundational tools (VFS inspection, system info, memory graph queries) | M3 | ORIGINAL_REQUEST §4, §8 |
+| 15 | Wasmtime Sandboxed Capability Adapter | WASI sandbox runner with fuel metering, epoch interruption, and memory limits | M3 | WASM Explorer §2 |
+| 16 | Kernel & System 2 Function Calling Orchestration | Integrate capability discovery, tool calling, and result synthesis into `hakille-kernel`'s multi-turn reasoning loop | M3 | ORIGINAL_REQUEST §8 |
+| 17 | UI ActionCard & 600ms Hold-to-Confirm Integration | Wire Tier 3 sensitive capability executions into Hakille desktop UI confirmation flows | M3 | Codebase Auditor §2 |
+| 18 | E2E Testing Infrastructure & Runner | Test harness for capability discovery, execution, permissions, MCP, and skills | E2E | ORIGINAL_REQUEST §9 |
+| 19 | Tier 1 Feature Coverage Tests | ≥5 isolated unit & integration tests per feature across all capability components | E2E | Project Pattern §Dual Track |
+| 20 | Tier 2 Boundary & Negative Tests | Robustness tests for empty inputs, oversized schemas, malformed JSON-RPC, timeouts, cancelled tasks, and revoked tokens | E2E | Project Pattern §Dual Track |
+| 21 | Tier 3 Combinatorial & Cross-Adapter Tests | Pairwise integration tests (e.g. MCP + Skill chaining, Biscuit attenuation on MCP, HNSW search + execution) | E2E | Project Pattern §Dual Track |
+| 22 | Tier 4 Real-World Application Workloads | End-to-end cognitive scenarios: user query → semantic discovery → permission gate → tool execution → audit logging → response | E2E | Project Pattern §Dual Track |
+| 23 | 100% E2E Test Suite Pass | Complete passing run of all E2E capability tests | M4 | Project Pattern §Implementation Track |
+| 24 | Tier 5 Adversarial Coverage Hardening | White-box adversarial testing, edge-case hardening, and fuzzing of capability inputs and JSON-RPC parsing | M4 | Project Pattern §Implementation Track |
+| 25 | Performance Benchmarks | Measure and document discovery latency, execution overhead, MCP throughput, and memory consumption | M4 | ORIGINAL_REQUEST §9 |
+| 26 | Comprehensive Architecture Documentation & SDK Guide | Complete technical architecture reference, developer SDK documentation, and security specifications | M5 | ORIGINAL_REQUEST §10.C, §10.E |
+| 27 | Real Demonstration Suites & Examples | Working standalone examples: real MCP server demo, functional Skill demo, and native capability workflow | M5 | ORIGINAL_REQUEST §10.G |
+| 28 | Final Validation & Verification Report | Detailed validation report documenting test results, benchmark metrics, security posture, and future roadmap | M5 | ORIGINAL_REQUEST §10.H |
+
+---
 
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| M1 | Design Tokens, Multi-Target Exporters & Check Tooling | Decouple `xtask` token commands, enrich `tokens/*.toml`, complete Swift/Kotlin/CSS exporters, sync `hakille-design` | none | COMPLETE |
-| M2 | Protocol & View-Model Feature Extension | Enrich `hakille-ui-protocol` and `hakille-ui-model` (waveform streaming, rich card attachments, diffs), update schema snapshot | M1 | COMPLETE |
-| M3 | Aesthetic Elevation, Futuristic Components & Desktop Shell | Upgrade `hakille-ui-desktop` (interactive `WidgetState`, specular glass reflections, 21-wire kora presence protocol, 600ms ring) | M1, M2 | COMPLETE |
-| M4 | Multi-Platform Substrates & Platform Abstraction Hardening | Platform host adapters (`hakille-ui-platform`, Linux, Windows, macOS, Redox, Web, Mobile), AccessKit audit, quiescence | M2, M3 | COMPLETE |
-| M5 | 100% E2E Test Suite Pass & Adversarial Hardening | Pass 100% E2E tests (Tiers 1-4) from `TEST_READY.md` and adversarial hardening | M1-M4, TEST_READY | COMPLETE |
-| E2E | E2E Testing Track (Parallel) | Requirement-driven test suite (Tiers 1-4: Feature, Boundary, Combinatorial, Real-World Scenarios) | none | COMPLETE |
-| M6 | Daemon Multi-Substrate Dispatch, IPC & Lifecycle | Dynamic substrate detection (`cfg(target_os)`), headless audio fallback in `hakille-audio`, systemd daemonization integration, consolidate tray/hotkey abstractions | M1-M5 | COMPLETE |
-| M7 | Cognitive Kernel & Memory Hardening | redb range scan pushdown for `GraphQuery`, salt-hashed prefix keys, persistent Biscuit revocation store in `hakille-core`/`hakille-audit` | M6 | COMPLETE |
-| M8 | WASM Agent Runtime, Linker Shim & 21-Wire Kora UI Rendering | GLIBC 2.36 C23 linker compatibility shim, 21-wire kora presence bars in `Presence::draw`, agent resource quota verification | M6, M7 | COMPLETE |
-| M9 | Sovereign Cognitive OS E2E Regression & Victory Audit | Run 100% tests across all crates, verify 230 E2E tests pass, zero warnings/errors, and notify Sentinel for Victory Audit | M6, M7, M8 | COMPLETE |
+| M1 | Target Architecture, ADRs, Specs & Canonical Data Model | Produce ADRs (001–007), target architecture doc, and `crates/hakille-capability` foundation (Canonical Tool Contract, descriptor, manifest, provider translators) | none | COMPLETE |
+| M2 | Core Capability Engines (Registry, Discovery, Execution, Security) | Implement `UniversalCapabilityRegistry`, `CapabilityDiscoveryEngine` (HNSW + filters), `UniversalExecutionEngine`, `PermissionSecurityEngine` (Biscuit v5 + 4-tier risk), and audit logging | M1 | COMPLETE |
+| M3 | Capability Adapters & Ecosystem Integration | Implement `McpClientAdapter` (stdio/duplex/SSE), `ProgressiveSkillsLoader` (`SKILL.md`), `NativeToolsAdapter`, and `IntelligentToolOrchestrator` | M1, M2 | COMPLETE |
+| E2E | E2E Requirement-Driven Test Suite Track (Parallel) | Standalone test infrastructure and Tiers 1–4 test cases for all capability features | M1, M2 | COMPLETE |
+| M4 | 100% E2E Test Suite Pass & Adversarial Hardening (Tier 5) | Pass all Tier 1–5 tests, adversarial stress suites, and reproducible benchmarks | M3, E2E | COMPLETE |
+| M5 | Final Documentation, Working Demos & Validation Report | Complete architecture documentation, Capability SDK, runnable showcase demo, and final validation report | M4 | COMPLETE |
+
+---
 
 ## Interface Contracts
-### `crates/hakille-daemon` ↔ `crates/hakille-substrate-*`
-- `hakille-daemon` instantiates the host substrate via `hakille_substrate::detect_substrate(authority.root_public_key())` using `cfg(target_os)`.
-- Fallback to mock host only in explicit unit testing mode.
+### `crates/hakille-capability` ↔ External AI Providers & Local GGUF
+- `CanonicalToolDefinition`:
+  ```rust
+  pub struct CanonicalToolDefinition {
+      pub name: String,
+      pub description: String,
+      pub parameters: serde_json::Value, // JSON Schema draft 2020-12
+      pub strict: bool,
+  }
+  ```
+- `CanonicalToolCall`:
+  ```rust
+  pub struct CanonicalToolCall {
+      pub call_id: String,
+      pub tool_name: String,
+      pub arguments: serde_json::Value,
+  }
+  ```
+- `CanonicalToolResult`:
+  ```rust
+  pub struct CanonicalToolResult {
+      pub call_id: String,
+      pub content: Vec<CanonicalContentBlock>,
+      pub is_error: bool,
+      pub metadata: ExecutionMetadata,
+  }
+  ```
 
-### `crates/hakille-memory` ↔ `crates/hakille-core`
-- `GraphQuery` translates filter predicates directly into redb prefix scans (`SPO_TABLE`, `POS_TABLE`, `OSP_TABLE`).
-- Capability tokens presented for memory mutations must be verified against `RevocationStore`.
+### `crates/hakille-capability` ↔ `crates/hakille-core`
+- Invocations must present a valid `CapabilityToken` (Biscuit v5) attenuated with the required `CapabilityScope` (e.g. `Filesystem`, `Network`, `GuiInput`) and action rights (`Read`, `Write`, `Execute`).
+- `PermissionSecurityEngine` evaluates presented token against pinned root authority and verifies against `RevocationStore`.
 
-### `crates/hakille-ui-desktop` ↔ `crates/hakille-design`
-- `Presence::draw` for `PresenceState::Speaking` (3) renders 21 vertical wires (2.0 px wire, 3.0 px gap, total span 102 px).
-- Viewports under 24 px fallback to 7 compact wires (`wire_count(px)`).
+### `crates/hakille-capability` ↔ `crates/hakille-audit`
+- Successful and failed executions generate an `AuditEntry` with `ActionRecord`, `token_hash`, Merkle `prev_hash`, and Ed25519 signature before returning result to caller.
+
+### `crates/hakille-capability` ↔ `crates/hakille-memory`
+- `CapabilityDiscoveryEngine` leverages `instant-distance` HNSW index with 384-dimensional vectors generated by MiniLM-L6-v2 to perform sub-millisecond semantic search over registered capability descriptions.
+
+---
 
 ## Code Layout
-- `tokens/`: `color.toml`, `motion.toml`, `type.toml`
-- `crates/hakille-core/src/`: `auth.rs`, `capability.rs`, `crypto.rs`, `trust.rs`, `types.rs`, `message.rs`, `error.rs`
-- `crates/hakille-memory/src/`: `graph.rs`, `triplet.rs`, `query_lang.rs`, `decay.rs`, `contradiction.rs`, `storage/edge.rs`, `vector/mod.rs`, `runtime.rs`
-- `crates/hakille-agents/src/`: `wasm_runner.rs`, `runtime.rs`, `sandbox.rs`, `capability.rs`, `registry.rs`, `protocol.rs`
-- `crates/hakille-perception/src/`: `audio/capture.rs`, `audio/vad.rs`, `audio/pipeline.rs`, `vision/cv.rs`, `world_model.rs`
-- `crates/hakille-audit/src/`: `journal.rs`, `entry.rs`, `consent_registry.rs`
-- `crates/hakille-substrate-*`: Linux, Windows, macOS, Redox, Mobile, Web substrate implementations
-- `crates/hakille-daemon/src/`: `main.rs`, `ipc.rs`, `agent_runtime.rs`
-- `crates/hakille-ui-desktop/src/`: `components.rs`, `renderer.rs`, `app.rs`, `theme.rs`, `a11y.rs`, `bin/desktop.rs`
-- `tests/e2e/`: 230 requirement-driven E2E tests
+- `crates/hakille-capability/`:
+  - `Cargo.toml`
+  - `src/lib.rs`
+  - `src/types.rs`: Canonical tool contracts, descriptors, manifests, execution metadata.
+  - `src/translators/`: Bidirectional schema mappings (`openai.rs`, `anthropic.rs`, `gemini.rs`, `chatml.rs`).
+  - `src/registry/`: `UniversalCapabilityRegistry`, versioning, catalog indexing.
+  - `src/discovery/`: `CapabilityDiscoveryEngine`, HNSW vector indexing, structured filtering.
+  - `src/execution/`: `UniversalExecutionEngine`, timeout, cancellation, fuel limits.
+  - `src/security/`: `PermissionSecurityEngine`, Biscuit v5 verification, 4-tier risk classification, anti-SSRF.
+  - `src/adapters/`:
+    - `mcp/`: Async Tokio MCP client (stdio, sse, JSON-RPC 2.0).
+    - `skills/`: `SKILL.md` parser, progressive loader.
+    - `native/`: In-process native tools.
+    - `wasm/`: Wasmtime 48 sandboxed execution.
+- `crates/hakille-kernel/src/`:
+  - `orchestrator.rs`: Dynamic tool discovery and function calling loop integration.
+- `crates/hakille-daemon/src/`:
+  - `capability_service.rs`: Daemon IPC exposure of capability registry.
+- `tests/capability_e2e.rs`: End-to-end integration test suite.
+- `benches/capability_bench.rs`: Criterion / standalone reproducible benchmarks.
+- `docs/capabilities/`:
+  - `ARCHITECTURE.md`: Complete architectural reference.
+  - `ADR/`: Architecture Decision Records (001–007).
+  - `SDK.md`: Capability Development Kit guide.
+  - `VALIDATION_REPORT.md`: Comprehensive validation report.
+- `examples/capabilities/`:
+  - `mcp_server_demo/`: Working example MCP server.
+  - `skills_demo/`: Example standalone skill.

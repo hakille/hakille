@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/hakille-core",
+    "crates/hakille-capability",
     "crates/hakille-substrate",
     "crates/hakille-memory",
     "crates/hakille-spatial",
