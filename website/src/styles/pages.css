@@ -1,0 +1,364 @@
+@layer pages {
+  .hero-section {
+    padding-block: var(--hakille-space-64) var(--hakille-space-48);
+    border-block-end: 1px solid var(--hakille-ligne);
+    background: radial-gradient(
+      ellipse 78% 52% at 50% -12%,
+      color-mix(in srgb, var(--hakille-lueur) 8%, transparent),
+      transparent 72%
+    );
+  }
+
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1.08fr 0.92fr;
+    gap: var(--hakille-space-48);
+    align-items: center;
+  }
+
+  @media (max-width: 980px) {
+    .hero-grid {
+      grid-template-columns: 1fr;
+      gap: var(--hakille-space-32);
+    }
+  }
+
+  .eyebrow-mono {
+    font-family: var(--hakille-font-mono);
+    font-size: 0.76rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--hakille-texte-3);
+  }
+
+  .display-h1 {
+    font-size: clamp(2rem, 3.6vw, 3.1rem);
+    line-height: 1.08;
+    font-weight: var(--hakille-type-display-weight);
+    letter-spacing: -0.024em;
+    color: var(--hakille-texte-1);
+  }
+
+  .hero-lead {
+    font-size: clamp(1.02rem, 1.25vw, 1.16rem);
+    line-height: 1.62;
+    color: var(--hakille-texte-2);
+    max-width: 64ch;
+  }
+
+  .hero-cta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--hakille-space-12);
+    padding-block-start: var(--hakille-space-8);
+  }
+
+  .metrics-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-control);
+    background: var(--hakille-surface-1);
+    overflow: hidden;
+    margin-block-start: var(--hakille-space-32);
+  }
+
+  .metric-cell {
+    padding: var(--hakille-space-16);
+    border-inline-end: 1px solid var(--hakille-ligne);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .metric-cell:last-child {
+    border-inline-end: none;
+  }
+
+  @media (max-width: 760px) {
+    .metrics-strip {
+      grid-template-columns: 1fr 1fr;
+    }
+    .metric-cell:nth-child(2) {
+      border-inline-end: none;
+    }
+    .metric-cell:nth-child(1),
+    .metric-cell:nth-child(2) {
+      border-block-end: 1px solid var(--hakille-ligne);
+    }
+  }
+
+  .act-section {
+    padding-block: var(--hakille-space-64);
+    border-block-end: 1px solid var(--hakille-ligne);
+  }
+
+  .section-header {
+    max-width: 760px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-12);
+    margin-block-end: var(--hakille-space-32);
+  }
+
+  .section-h2 {
+    font-size: var(--hakille-type-title-size);
+    line-height: var(--hakille-type-title-line);
+    font-weight: var(--hakille-type-title-weight);
+    letter-spacing: -0.018em;
+    color: var(--hakille-texte-1);
+  }
+
+  .section-lead {
+    color: var(--hakille-texte-2);
+    line-height: 1.65;
+  }
+
+  .comparison-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--hakille-space-24);
+    margin-block-end: var(--hakille-space-32);
+  }
+
+  @media (max-width: 820px) {
+    .comparison-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .arch-card {
+    background: var(--hakille-surface-1);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-card);
+    padding: var(--hakille-space-24);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-16);
+  }
+
+  .arch-card[data-emphasis="lueur"] {
+    border-color: var(--hakille-texte-2);
+  }
+
+  .clean-list {
+    list-style: none;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-12);
+  }
+
+  .clean-list li {
+    display: block;
+    color: var(--hakille-texte-2);
+    line-height: 1.65;
+  }
+
+  .clean-list li:has(> .mono:first-child) {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--hakille-space-12);
+  }
+
+  .tier-grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--hakille-space-24);
+  }
+
+  @media (max-width: 980px) {
+    .tier-grid-3 {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* Subpages & Legal Trust Center */
+  .page-hero {
+    padding-block: var(--hakille-space-48) var(--hakille-space-32);
+    border-block-end: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-1);
+  }
+
+  .page-content {
+    padding-block: var(--hakille-space-48) var(--hakille-space-64);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-48);
+  }
+
+  .legal-layout {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: var(--hakille-space-48);
+    align-items: start;
+  }
+
+  @media (max-width: 920px) {
+    .legal-layout {
+      grid-template-columns: 1fr;
+      gap: var(--hakille-space-24);
+    }
+  }
+
+  .legal-toc {
+    position: sticky;
+    inset-block-start: 92px;
+    background: var(--hakille-surface-1);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-card);
+    padding: var(--hakille-space-16);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-8);
+  }
+
+  .legal-prose {
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-32);
+    max-width: 78ch;
+  }
+
+  .legal-article {
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-12);
+    padding-block-end: var(--hakille-space-24);
+    border-block-end: 1px solid var(--hakille-ligne);
+  }
+
+  .legal-article h2 {
+    font-size: var(--hakille-type-heading-size);
+    line-height: var(--hakille-type-heading-line);
+    font-weight: 600;
+    color: var(--hakille-texte-1);
+  }
+
+  .legal-article p,
+  .legal-article li {
+    color: var(--hakille-texte-2);
+    line-height: 1.7;
+  }
+
+  .summary-callout {
+    background: var(--hakille-surface-1);
+    border: 1px solid var(--hakille-texte-3);
+    border-radius: var(--hakille-radius-card);
+    padding: var(--hakille-space-24);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-12);
+  }
+
+  /* Data Tables */
+  .table-scroll {
+    width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-card);
+    background: var(--hakille-surface-1);
+  }
+
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    text-align: start;
+    font-size: var(--hakille-type-caption-size);
+  }
+
+  .data-table th,
+  .data-table td {
+    padding: var(--hakille-space-12) var(--hakille-space-16);
+    border-block-end: 1px solid var(--hakille-ligne);
+    vertical-align: top;
+  }
+
+  .data-table th {
+    background: var(--hakille-surface-2);
+    color: var(--hakille-texte-1);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .data-table td {
+    color: var(--hakille-texte-2);
+  }
+
+  .status-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-0);
+    color: var(--hakille-texte-1);
+    font-family: var(--hakille-font-mono);
+    font-size: 0.72rem;
+    white-space: nowrap;
+  }
+
+  .code-command-box {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--hakille-space-12);
+    padding: var(--hakille-space-12) var(--hakille-space-16);
+    border-radius: var(--hakille-radius-control);
+    border: 1px solid var(--hakille-ligne);
+    background: var(--hakille-surface-0);
+    overflow-x: auto;
+  }
+
+  .script-specimen-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--hakille-space-16);
+  }
+
+  .script-card {
+    background: var(--hakille-surface-1);
+    border: 1px solid var(--hakille-ligne);
+    border-radius: var(--hakille-radius-card);
+    padding: var(--hakille-space-24);
+    display: flex;
+    flex-direction: column;
+    gap: var(--hakille-space-8);
+  }
+
+  .script-sample-large {
+    font-size: 1.55rem;
+    line-height: 1.4;
+    color: var(--hakille-lueur);
+    font-weight: 600;
+  }
+
+  @media print {
+    .no-print,
+    .site-header,
+    .site-footer,
+    .legal-toc {
+      display: none !important;
+    }
+
+    body {
+      background: #ffffff !important;
+      color: #000000 !important;
+    }
+
+    .legal-layout {
+      grid-template-columns: 1fr !important;
+    }
+
+    .arch-card,
+    .summary-callout,
+    .crate-card,
+    .crate-item,
+    .sim-frame,
+    .sim-shell {
+      break-inside: avoid;
+      border-color: #cccccc !important;
+      background: #ffffff !important;
+      box-shadow: none !important;
+    }
+  }
+}

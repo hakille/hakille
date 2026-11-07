@@ -1,0 +1,10 @@
+# Hakille — Coordinated Vulnerability Disclosure (RFC 9116)
+# Canonical Security Policy: https://hakille.ai/securite
+
+Contact: mailto:security@hakille.ai
+Contact: https://github.com/hakille/hakille/security/advisories/new
+Expires: 2027-12-31T23:59:59.000Z
+Preferred-Languages: fr, en, es, de, ar, ja
+Canonical: https://hakille.ai/.well-known/security.txt
+Policy: https://hakille.ai/securite
+Acknowledgments: https://github.com/hakille/hakille/blob/main/SECURITY.md

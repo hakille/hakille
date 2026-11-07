@@ -19,3 +19,10 @@ models/*
 hakille-memory.json
 /target_audit
 target_audit/
+
+# Website (standalone showcase, interactive laboratories & legal trust center)
+website/node_modules/
+website/dist/
+website/.vite/
+website/public/brand/
+website/public/fonts/

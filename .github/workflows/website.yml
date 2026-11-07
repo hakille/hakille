@@ -1,0 +1,44 @@
+name: Website
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - "website/**"
+      - "tokens/**"
+      - "logo/**"
+      - ".github/workflows/website.yml"
+  pull_request:
+    paths:
+      - "website/**"
+      - "tokens/**"
+      - "logo/**"
+      - ".github/workflows/website.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-and-build:
+    name: Typecheck, Unit Tests, SSG & Sovereignty Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: website/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Token sync + strict TypeScript check
+        run: npm run typecheck
+      - name: Unit, acoustic, formant, Braise & 8-locale parity tests
+        run: npm test
+      - name: Full 11-route SSG build & sovereignty compliance gate
+        run: npm run build
