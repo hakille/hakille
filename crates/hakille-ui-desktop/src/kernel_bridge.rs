@@ -69,6 +69,11 @@ impl KernelStub for DenyAllKernel {
             UiToKernel::PerceptionControl { .. } => Err(BridgeError::DaemonRequired(
                 "noyau non branché — contrôle perceptuel requis".into(),
             )),
+            UiToKernel::NotificationAction { .. } | UiToKernel::NotificationDismiss { .. } => {
+                Err(BridgeError::DaemonRequired(
+                    "noyau non branché — notification en attente".into(),
+                ))
+            }
         }
     }
 }

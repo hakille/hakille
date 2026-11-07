@@ -3078,6 +3078,7 @@ dependencies = [
  "hakille-audit",
  "hakille-core",
  "hakille-memory",
+ "hakille-substrate",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

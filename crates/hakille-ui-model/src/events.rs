@@ -126,6 +126,12 @@ impl From<KernelToUi> for KernelEvent {
             KernelToUi::PrivacyGuardAlert(p) => Self::Toast {
                 text: format!("garde souveraineté : {}", p.description),
             },
+            KernelToUi::Notification(n) => Self::Toast {
+                text: format!("{}: {}", n.title, n.body),
+            },
+            KernelToUi::NotificationDismissed { id } => Self::Toast {
+                text: format!("notification {id} révoquée"),
+            },
         }
     }
 }

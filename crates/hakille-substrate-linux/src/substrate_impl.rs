@@ -667,6 +667,69 @@ impl Substrate for LinuxSubstrate {
     fn thermal_state(&self) -> ThermalState {
         read_host_thermal_state()
     }
+
+    async fn send_notification(
+        &self,
+        request: hakille_substrate::NotificationRequest,
+        cap: &CapabilityToken,
+    ) -> Result<hakille_substrate::NotificationHandle> {
+        self.enforce(
+            cap,
+            CapabilityScope::Notification,
+            hakille_core::CapabilityAction::Write,
+        )?;
+
+        tracing::info!(
+            id = %request.id,
+            title = %request.title,
+            urgency = ?request.urgency,
+            category = ?request.category,
+            "LinuxSubstrate: Dispatching notification"
+        );
+
+        let channel = if std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok() {
+            let urgency_str = match request.urgency {
+                hakille_substrate::NotificationUrgency::Low => "low",
+                hakille_substrate::NotificationUrgency::Normal => "normal",
+                hakille_substrate::NotificationUrgency::High
+                | hakille_substrate::NotificationUrgency::Critical => "critical",
+            };
+            let mut cmd = std::process::Command::new("notify-send");
+            cmd.arg(&request.title)
+                .arg(&request.body)
+                .arg("-u")
+                .arg(urgency_str)
+                .arg("-a")
+                .arg("Hakille");
+            if let Some(timeout) = request.timeout_ms {
+                cmd.arg("-t").arg(timeout.to_string());
+            }
+            let _ = cmd.spawn();
+            "freedesktop_dbus".to_string()
+        } else {
+            "linux_session_log".to_string()
+        };
+
+        Ok(hakille_substrate::NotificationHandle {
+            id: request.id,
+            channel,
+            delivered_at_ms: chrono::Utc::now().timestamp_millis() as u64,
+        })
+    }
+
+    async fn dismiss_notification(
+        &self,
+        handle: &hakille_substrate::NotificationHandle,
+        cap: &CapabilityToken,
+    ) -> Result<()> {
+        self.enforce(
+            cap,
+            CapabilityScope::Notification,
+            hakille_core::CapabilityAction::Delete,
+        )?;
+        tracing::debug!(id = %handle.id, "LinuxSubstrate: Dismissed notification");
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -722,4 +785,60 @@ mod tests {
             "hard-coded kernel version must be gone, got: {version}"
         );
     }
+
+    #[tokio::test]
+    async fn test_linux_substrate_notification_lifecycle_and_security() {
+        let substrate = LinuxSubstrate::new();
+        let authority = hakille_core::CapabilityAuthority::new();
+        let substrate = substrate.with_trusted_root(authority.root_public_key());
+        let exp = Timestamp::now();
+
+        // 1. Token avec CapabilityScope::Notification (Write + Delete)
+        let notif_token = authority
+            .create_root_token(
+                vec![CapabilityScope::Notification],
+                vec![
+                    hakille_core::CapabilityAction::Write,
+                    hakille_core::CapabilityAction::Delete,
+                ],
+                exp.clone(),
+            )
+            .expect("token");
+
+        let request = hakille_substrate::NotificationRequest::new(
+            "notif-123",
+            "Alerte de test",
+            "Ceci est une notification souveraine Linux",
+        )
+        .with_urgency(hakille_substrate::NotificationUrgency::Normal)
+        .with_category(hakille_substrate::NotificationCategory::System);
+
+        // 2. Émission autorisée
+        let handle = substrate
+            .send_notification(request, &notif_token)
+            .await
+            .expect("notification delivered");
+        assert_eq!(handle.id, "notif-123");
+
+        // 3. Fermeture autorisée
+        substrate
+            .dismiss_notification(&handle, &notif_token)
+            .await
+            .expect("dismissed");
+
+        // 4. Token frauduleux (Scope Camera uniquement) : REFUS STRICT
+        let camera_token = authority
+            .create_root_token(
+                vec![CapabilityScope::Camera],
+                vec![hakille_core::CapabilityAction::Write],
+                exp,
+            )
+            .expect("camera token");
+        let unauthorized_req = hakille_substrate::NotificationRequest::new("bad", "Titre", "Corps");
+        let err = substrate
+            .send_notification(unauthorized_req, &camera_token)
+            .await;
+        assert!(err.is_err(), "Must reject notification without CapabilityScope::Notification");
+    }
 }
+

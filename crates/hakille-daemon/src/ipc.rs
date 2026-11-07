@@ -1124,6 +1124,66 @@ async fn handle_client_request(
             };
             let _ = reply_tx.send(Frame::reply(id, reply)).await;
         }
+        FrameBody::Request {
+            message: UiToKernel::NotificationAction {
+                id: notif_id,
+                action_id,
+            },
+        } => {
+            let audit_res = audit_action_with_id(
+                audit_journal,
+                "NotificationActionTaken",
+                format!("Action '{action_id}' exécutée sur la notification '{notif_id}'"),
+                serde_json::json!({
+                    "notification_id": notif_id,
+                    "action_id": action_id,
+                    "session_id": session_id,
+                }),
+                true,
+            );
+            let audit_id = audit_res.unwrap_or_else(|_| "audit_offline".to_string());
+            println!(
+                "IPC [session {session_id}]: NotificationAction (id={id}, notif={notif_id}, action={action_id}) — audit [{audit_id}]"
+            );
+
+            // Diffusion de la fermeture de la notification à tous les clients UI
+            let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::NotificationDismissed {
+                id: notif_id.clone(),
+            }));
+
+            let reply = KernelToUi::Toast {
+                text: format!("Action '{action_id}' validée"),
+            };
+            let _ = reply_tx.send(Frame::reply(id, reply)).await;
+        }
+        FrameBody::Request {
+            message: UiToKernel::NotificationDismiss { id: notif_id },
+        } => {
+            let audit_res = audit_action_with_id(
+                audit_journal,
+                "NotificationDismissed",
+                format!("Notification '{notif_id}' acquittée manuellement"),
+                serde_json::json!({
+                    "notification_id": notif_id,
+                    "session_id": session_id,
+                }),
+                true,
+            );
+            let audit_id = audit_res.unwrap_or_else(|_| "audit_offline".to_string());
+            println!(
+                "IPC [session {session_id}]: NotificationDismiss (id={id}, notif={notif_id}) — audit [{audit_id}]"
+            );
+
+            // Diffusion de la révocation aux autres interfaces
+            let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::NotificationDismissed {
+                id: notif_id.clone(),
+            }));
+
+            let reply = KernelToUi::Toast {
+                text: "Notification masquée".into(),
+            };
+            let _ = reply_tx.send(Frame::reply(id, reply)).await;
+        }
         FrameBody::Request { .. } => {
             eprintln!("IPC [session {session_id}]: message non supporté (id={id}) — refus explicite");
             let _ = reply_tx

@@ -289,6 +289,7 @@ impl ConfidenceDecayEngine {
             CapabilityScope::Biometrics => 0.70,
             CapabilityScope::Spatial => 0.40,
             CapabilityScope::CognitiveInference => 0.70,
+            CapabilityScope::Notification => 0.50,
         }
     }
 

@@ -109,6 +109,9 @@ impl KernelStub for RealDaemonBridge {
                 UiToKernel::PerceptionControl { .. } => {
                     self.require_daemon("contrôle perceptuel requis")
                 }
+                UiToKernel::NotificationAction { .. } | UiToKernel::NotificationDismiss { .. } => {
+                    self.require_daemon("notification en attente")
+                }
             };
         }
         // LocalAuthorized : le noyau (simulé ici) revérifie puis journalise.
@@ -178,6 +181,12 @@ impl KernelStub for RealDaemonBridge {
             }
             UiToKernel::PerceptionControl { .. } => Ok(KernelToUi::Toast {
                 text: "contrôle de perception reçu (pont simulé)".into(),
+            }),
+            UiToKernel::NotificationAction { id, action_id } => Ok(KernelToUi::Toast {
+                text: format!("action {action_id} sur {id}"),
+            }),
+            UiToKernel::NotificationDismiss { id } => Ok(KernelToUi::Toast {
+                text: format!("notification {id} acquittée"),
             }),
         }
     }

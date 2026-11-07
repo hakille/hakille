@@ -34,6 +34,9 @@ pub trait DesktopHost {
     fn copy_text(&mut self, text: &str) -> Result<(), HostError>;
     fn paste_text(&self) -> Result<String, HostError>;
     fn window_hints(&self) -> &WindowHints;
+    fn show_notification(&mut self, _title: &str, _body: &str, _is_braise: bool) -> Result<(), HostError> {
+        Ok(())
+    }
 }
 
 /// Hôte nul — tests + CI sans OS.

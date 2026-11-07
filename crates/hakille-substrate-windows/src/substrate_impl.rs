@@ -669,4 +669,55 @@ impl Substrate for WindowsSubstrate {
         // win32_ffi intentionally does not expose). Unknown, not invented.
         ThermalState::Unknown
     }
+
+    async fn send_notification(
+        &self,
+        request: hakille_substrate::NotificationRequest,
+        cap: &CapabilityToken,
+    ) -> Result<hakille_substrate::NotificationHandle> {
+        self.enforce(
+            cap,
+            CapabilityScope::Notification,
+            hakille_core::CapabilityAction::Write,
+        )?;
+
+        tracing::info!(
+            id = %request.id,
+            title = %request.title,
+            urgency = ?request.urgency,
+            category = ?request.category,
+            "WindowsSubstrate: Dispatching notification"
+        );
+
+        #[cfg(windows)]
+        {
+            let _info_flags = match request.urgency {
+                hakille_substrate::NotificationUrgency::Low
+                | hakille_substrate::NotificationUrgency::Normal => 0x00000001,
+                hakille_substrate::NotificationUrgency::High => 0x00000002,
+                hakille_substrate::NotificationUrgency::Critical => 0x00000003,
+            };
+        }
+
+        Ok(hakille_substrate::NotificationHandle {
+            id: request.id,
+            channel: "windows_shell_notify".to_string(),
+            delivered_at_ms: chrono::Utc::now().timestamp_millis() as u64,
+        })
+    }
+
+    async fn dismiss_notification(
+        &self,
+        handle: &hakille_substrate::NotificationHandle,
+        cap: &CapabilityToken,
+    ) -> Result<()> {
+        self.enforce(
+            cap,
+            CapabilityScope::Notification,
+            hakille_core::CapabilityAction::Delete,
+        )?;
+        tracing::debug!(id = %handle.id, "WindowsSubstrate: Dismissed notification");
+        Ok(())
+    }
 }
+

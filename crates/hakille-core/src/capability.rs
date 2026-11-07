@@ -26,6 +26,8 @@ pub enum CapabilityScope {
     Spatial,
     /// Inférences cognitives et affectives de haut niveau (émotions, âge estimé, attention, fatigue, posture).
     CognitiveInference,
+    /// Émission et gestion des notifications système et alertes utilisateur (SMNF).
+    Notification,
 }
 
 impl CapabilityScope {
@@ -44,6 +46,7 @@ impl CapabilityScope {
             CapabilityScope::Biometrics => "biometrics",
             CapabilityScope::Spatial => "spatial",
             CapabilityScope::CognitiveInference => "cognitive_inference",
+            CapabilityScope::Notification => "notification",
         }
     }
 }
@@ -1117,4 +1120,72 @@ mod tests {
         // I. Tentative d'injection Datalog dans le nom de ressource : REJET IMMÉDIAT
         assert!(authority.attenuate_cognitive_inference(&parent, &["emotion\", evil"], exp).is_err());
     }
+
+    #[test]
+    fn test_notification_capability_verification_and_isolation() {
+        let authority = CapabilityAuthority::new();
+        let root_pub = authority.root_public_key();
+        let exp = future_ts();
+
+        // 1. Création d'un token Notification Write (envoi) et Read (écoute)
+        let notif_token = authority
+            .create_root_token(
+                vec![CapabilityScope::Notification],
+                vec![CapabilityAction::Write, CapabilityAction::Read],
+                exp.clone(),
+            )
+            .expect("notification root token");
+
+        // 2. Vérification contre la clé publique racine : OK
+        assert!(authority
+            .verify(&notif_token, CapabilityScope::Notification, CapabilityAction::Write)
+            .is_ok());
+        assert!(authority
+            .verify(&notif_token, CapabilityScope::Notification, CapabilityAction::Read)
+            .is_ok());
+        assert!(verify_capability_with_root_key(
+            &notif_token,
+            &root_pub,
+            CapabilityScope::Notification,
+            CapabilityAction::Write,
+        )
+        .is_ok());
+
+        // 3. Action non accordée (Delete / Admin) : REFUS STRICT
+        assert!(authority
+            .verify(&notif_token, CapabilityScope::Notification, CapabilityAction::Delete)
+            .is_err());
+        assert!(authority
+            .verify(&notif_token, CapabilityScope::Notification, CapabilityAction::Admin)
+            .is_err());
+
+        // 4. Isolation de périmètre : Un token Notification ne peut PAS lire le système de fichiers, la caméra ou le wallet
+        assert!(authority
+            .verify(&notif_token, CapabilityScope::Filesystem, CapabilityAction::Read)
+            .is_err());
+        assert!(authority
+            .verify(&notif_token, CapabilityScope::Camera, CapabilityAction::Read)
+            .is_err());
+        assert!(authority
+            .verify(&notif_token, CapabilityScope::Wallet, CapabilityAction::Write)
+            .is_err());
+
+        // 5. Clé racine contrefaite : REJET
+        let rogue = CapabilityAuthority::new();
+        let rogue_token = rogue
+            .create_root_token(
+                vec![CapabilityScope::Notification],
+                vec![CapabilityAction::Write],
+                exp,
+            )
+            .expect("rogue token");
+        assert!(verify_capability_with_root_key(
+            &rogue_token,
+            &root_pub,
+            CapabilityScope::Notification,
+            CapabilityAction::Write,
+        )
+        .is_err());
+    }
 }
+
