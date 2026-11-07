@@ -134,12 +134,12 @@ pub struct AgentDto {
 // ============================================================================
 
 /// Masques de canaux perceptuels pour `PerceptionControl`.
-pub const PERCEPTION_CHANNEL_VISION: u32 = 1 << 0;     // 0x01
-pub const PERCEPTION_CHANNEL_AUDIO: u32 = 1 << 1;      // 0x02
-pub const PERCEPTION_CHANNEL_EMOTION: u32 = 1 << 2;    // 0x04
-pub const PERCEPTION_CHANNEL_POSTURE: u32 = 1 << 3;    // 0x08
-pub const PERCEPTION_CHANNEL_FATIGUE: u32 = 1 << 4;    // 0x10
-pub const PERCEPTION_CHANNEL_GAZE: u32 = 1 << 5;       // 0x20
+pub const PERCEPTION_CHANNEL_VISION: u32 = 1 << 0; // 0x01
+pub const PERCEPTION_CHANNEL_AUDIO: u32 = 1 << 1; // 0x02
+pub const PERCEPTION_CHANNEL_EMOTION: u32 = 1 << 2; // 0x04
+pub const PERCEPTION_CHANNEL_POSTURE: u32 = 1 << 3; // 0x08
+pub const PERCEPTION_CHANNEL_FATIGUE: u32 = 1 << 4; // 0x10
+pub const PERCEPTION_CHANNEL_GAZE: u32 = 1 << 5; // 0x20
 pub const PERCEPTION_CHANNEL_ALL: u32 = 0x3F;
 
 /// État qualifié de la présence physique de l'utilisateur face au poste.
@@ -516,7 +516,9 @@ pub enum KernelToUi {
     /// Notification unifiée émise vers l'interface ou le toast HUD (SMNF).
     Notification(NotificationDto),
     /// Notification fermée ou révoquée (SMNF).
-    NotificationDismissed { id: String },
+    NotificationDismissed {
+        id: String,
+    },
 }
 
 /// Message UI → noyau versionné : champ `version` transporté sur le fil
@@ -1026,4 +1028,3 @@ mod tests {
         assert_eq!(d_back, u_dismiss);
     }
 }
-

@@ -121,4 +121,3 @@ pub trait Substrate: Send + Sync + 'static {
         Ok(())
     }
 }
-

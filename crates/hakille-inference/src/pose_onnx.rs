@@ -7,10 +7,12 @@
 //! Les métriques posturales (angle de cyphose cervicale / Tech-Neck, affaissement rachidien)
 //! sont automatiquement calculées sans allocation superflue.
 
-use crate::ort_env::shared_ort_env;
 use crate::ModelStatus;
+use crate::ort_env::shared_ort_env;
 use hakille_core::{HakilleError, Result};
-use hakille_spatial::{BodySkeleton3D, CocoJointId, Point3D, PostureKind, SkeletonJoint3D, Vector3D};
+use hakille_spatial::{
+    BodySkeleton3D, CocoJointId, Point3D, PostureKind, SkeletonJoint3D, Vector3D,
+};
 use ort::{session::Session, value::Tensor};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -123,7 +125,12 @@ impl PoseSession {
     }
 
     /// Extrait les 17 articulations à partir d'une image RGB.
-    pub fn infer(&self, rgb_data: &[u8], width: usize, height: usize) -> Result<PoseInferenceResult> {
+    pub fn infer(
+        &self,
+        rgb_data: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<PoseInferenceResult> {
         if rgb_data.is_empty() || width == 0 || height == 0 {
             return Err(HakilleError::InferenceError(
                 "PoseSession::infer: image vide ou dimensions nulles".into(),
@@ -131,12 +138,20 @@ impl PoseSession {
         }
 
         if let Some(session_mutex) = &self.session {
-            let tensor_data = preprocess_image_to_chw(rgb_data, width, height, POSE_INPUT_SIZE, POSE_INPUT_SIZE);
-            let input_tensor = Tensor::<f32>::from_array(([1usize, 3usize, POSE_INPUT_SIZE, POSE_INPUT_SIZE], tensor_data))
-                .map_err(|e| ort_err("input_tensor", e))?;
+            let tensor_data =
+                preprocess_image_to_chw(rgb_data, width, height, POSE_INPUT_SIZE, POSE_INPUT_SIZE);
+            let input_tensor = Tensor::<f32>::from_array((
+                [1usize, 3usize, POSE_INPUT_SIZE, POSE_INPUT_SIZE],
+                tensor_data,
+            ))
+            .map_err(|e| ort_err("input_tensor", e))?;
 
-            let mut session = session_mutex.lock().map_err(|_| ort_err("lock", "mutex empoisonné"))?;
-            let outputs = session.run(ort::inputs![input_tensor]).map_err(|e| ort_err("forward", e))?;
+            let mut session = session_mutex
+                .lock()
+                .map_err(|_| ort_err("lock", "mutex empoisonné"))?;
+            let outputs = session
+                .run(ort::inputs![input_tensor])
+                .map_err(|e| ort_err("forward", e))?;
 
             let (_shape, values) = outputs[0]
                 .try_extract_tensor::<f32>()
@@ -222,7 +237,9 @@ fn parse_pose_outputs(values: &[f32], width: f32, height: f32) -> Result<BodySke
             joints[i] = SkeletonJoint3D::new(i as u8, Point3D::new(x, y, 0.0), 0.85);
         }
     } else {
-        return Err(HakilleError::InferenceError("Pose: tenseur trop court".into()));
+        return Err(HakilleError::InferenceError(
+            "Pose: tenseur trop court".into(),
+        ));
     }
 
     let posture = classify_skeleton_posture(&joints);
@@ -291,31 +308,48 @@ pub fn generate_canonical_seated_skeleton(w: f32, h: f32) -> BodySkeleton3D {
     let cx = w * 0.5;
 
     // Tête
-    joints[CocoJointId::Nose as usize] = SkeletonJoint3D::new(0, Point3D::new(cx, h * 0.16, 0.6), 0.95);
-    joints[CocoJointId::LeftEye as usize] = SkeletonJoint3D::new(1, Point3D::new(cx - w * 0.04, h * 0.14, 0.6), 0.95);
-    joints[CocoJointId::RightEye as usize] = SkeletonJoint3D::new(2, Point3D::new(cx + w * 0.04, h * 0.14, 0.6), 0.95);
-    joints[CocoJointId::LeftEar as usize] = SkeletonJoint3D::new(3, Point3D::new(cx - w * 0.09, h * 0.15, 0.6), 0.90);
-    joints[CocoJointId::RightEar as usize] = SkeletonJoint3D::new(4, Point3D::new(cx + w * 0.09, h * 0.15, 0.6), 0.90);
+    joints[CocoJointId::Nose as usize] =
+        SkeletonJoint3D::new(0, Point3D::new(cx, h * 0.16, 0.6), 0.95);
+    joints[CocoJointId::LeftEye as usize] =
+        SkeletonJoint3D::new(1, Point3D::new(cx - w * 0.04, h * 0.14, 0.6), 0.95);
+    joints[CocoJointId::RightEye as usize] =
+        SkeletonJoint3D::new(2, Point3D::new(cx + w * 0.04, h * 0.14, 0.6), 0.95);
+    joints[CocoJointId::LeftEar as usize] =
+        SkeletonJoint3D::new(3, Point3D::new(cx - w * 0.09, h * 0.15, 0.6), 0.90);
+    joints[CocoJointId::RightEar as usize] =
+        SkeletonJoint3D::new(4, Point3D::new(cx + w * 0.09, h * 0.15, 0.6), 0.90);
 
     // Torse et épaules
-    joints[CocoJointId::LeftShoulder as usize] = SkeletonJoint3D::new(5, Point3D::new(cx - w * 0.18, h * 0.30, 0.6), 0.92);
-    joints[CocoJointId::RightShoulder as usize] = SkeletonJoint3D::new(6, Point3D::new(cx + w * 0.18, h * 0.30, 0.6), 0.92);
+    joints[CocoJointId::LeftShoulder as usize] =
+        SkeletonJoint3D::new(5, Point3D::new(cx - w * 0.18, h * 0.30, 0.6), 0.92);
+    joints[CocoJointId::RightShoulder as usize] =
+        SkeletonJoint3D::new(6, Point3D::new(cx + w * 0.18, h * 0.30, 0.6), 0.92);
 
     // Bras
-    joints[CocoJointId::LeftElbow as usize] = SkeletonJoint3D::new(7, Point3D::new(cx - w * 0.24, h * 0.50, 0.6), 0.85);
-    joints[CocoJointId::RightElbow as usize] = SkeletonJoint3D::new(8, Point3D::new(cx + w * 0.24, h * 0.50, 0.6), 0.85);
-    joints[CocoJointId::LeftWrist as usize] = SkeletonJoint3D::new(9, Point3D::new(cx - w * 0.20, h * 0.70, 0.6), 0.80);
-    joints[CocoJointId::RightWrist as usize] = SkeletonJoint3D::new(10, Point3D::new(cx + w * 0.20, h * 0.70, 0.6), 0.80);
+    joints[CocoJointId::LeftElbow as usize] =
+        SkeletonJoint3D::new(7, Point3D::new(cx - w * 0.24, h * 0.50, 0.6), 0.85);
+    joints[CocoJointId::RightElbow as usize] =
+        SkeletonJoint3D::new(8, Point3D::new(cx + w * 0.24, h * 0.50, 0.6), 0.85);
+    joints[CocoJointId::LeftWrist as usize] =
+        SkeletonJoint3D::new(9, Point3D::new(cx - w * 0.20, h * 0.70, 0.6), 0.80);
+    joints[CocoJointId::RightWrist as usize] =
+        SkeletonJoint3D::new(10, Point3D::new(cx + w * 0.20, h * 0.70, 0.6), 0.80);
 
     // Hanches
-    joints[CocoJointId::LeftHip as usize] = SkeletonJoint3D::new(11, Point3D::new(cx - w * 0.14, h * 0.82, 0.6), 0.90);
-    joints[CocoJointId::RightHip as usize] = SkeletonJoint3D::new(12, Point3D::new(cx + w * 0.14, h * 0.82, 0.6), 0.90);
+    joints[CocoJointId::LeftHip as usize] =
+        SkeletonJoint3D::new(11, Point3D::new(cx - w * 0.14, h * 0.82, 0.6), 0.90);
+    joints[CocoJointId::RightHip as usize] =
+        SkeletonJoint3D::new(12, Point3D::new(cx + w * 0.14, h * 0.82, 0.6), 0.90);
 
     // Membres inférieurs (position assise)
-    joints[CocoJointId::LeftKnee as usize] = SkeletonJoint3D::new(13, Point3D::new(cx - w * 0.15, h * 0.95, 0.6), 0.70);
-    joints[CocoJointId::RightKnee as usize] = SkeletonJoint3D::new(14, Point3D::new(cx + w * 0.15, h * 0.95, 0.6), 0.70);
-    joints[CocoJointId::LeftAnkle as usize] = SkeletonJoint3D::new(15, Point3D::new(cx - w * 0.15, h * 1.05, 0.6), 0.20);
-    joints[CocoJointId::RightAnkle as usize] = SkeletonJoint3D::new(16, Point3D::new(cx + w * 0.15, h * 1.05, 0.6), 0.20);
+    joints[CocoJointId::LeftKnee as usize] =
+        SkeletonJoint3D::new(13, Point3D::new(cx - w * 0.15, h * 0.95, 0.6), 0.70);
+    joints[CocoJointId::RightKnee as usize] =
+        SkeletonJoint3D::new(14, Point3D::new(cx + w * 0.15, h * 0.95, 0.6), 0.70);
+    joints[CocoJointId::LeftAnkle as usize] =
+        SkeletonJoint3D::new(15, Point3D::new(cx - w * 0.15, h * 1.05, 0.6), 0.20);
+    joints[CocoJointId::RightAnkle as usize] =
+        SkeletonJoint3D::new(16, Point3D::new(cx + w * 0.15, h * 1.05, 0.6), 0.20);
 
     BodySkeleton3D::new(joints, PostureKind::Seated)
 }
@@ -330,12 +364,18 @@ mod tests {
         assert_eq!(session.status(), ModelStatus::Simulated);
 
         let dummy_img = vec![128u8; 640 * 480 * 3];
-        let res = session.infer(&dummy_img, 640, 480).expect("inférence réussie");
+        let res = session
+            .infer(&dummy_img, 640, 480)
+            .expect("inférence réussie");
 
         assert_eq!(res.status, ModelStatus::Simulated);
         assert_eq!(res.posture, PostureKind::Seated);
         assert!(res.confidence > 0.75);
-        assert!(res.neck_angle_deg < 25.0, "Angle du cou nominal assis < 25° : {}", res.neck_angle_deg);
+        assert!(
+            res.neck_angle_deg < 25.0,
+            "Angle du cou nominal assis < 25° : {}",
+            res.neck_angle_deg
+        );
         assert_eq!(res.skeleton.joints.len(), 17);
     }
 }

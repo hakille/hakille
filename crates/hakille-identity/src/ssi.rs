@@ -312,10 +312,12 @@ impl VerifiableCredential {
         let issuer_pk = match self.issuer.method() {
             Some("key") => DidKey::extract_ed25519_bytes(&self.issuer)?,
             Some("jwk") => DidJwk::extract_ed25519_bytes(&self.issuer)?,
-            _ => return Err(HakilleError::CryptoError(format!(
-                "Unsupported or missing DID method for issuer: {}",
-                self.issuer
-            ))),
+            _ => {
+                return Err(HakilleError::CryptoError(format!(
+                    "Unsupported or missing DID method for issuer: {}",
+                    self.issuer
+                )));
+            }
         };
         let vk = VerifyingKey::from_bytes(&issuer_pk)
             .map_err(|e| HakilleError::CryptoError(format!("Invalid issuer verifying key: {e}")))?;
@@ -469,4 +471,3 @@ mod tests {
         );
     }
 }
-

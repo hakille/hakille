@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use hakille_substrate::{CameraConfig, CameraFacing, CameraFrame, ImageFormat};
 
 const INIT_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg(target_os = "linux")]
 const FIRST_FRAME_DEADLINE: Duration = Duration::from_secs(10);
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -50,7 +51,7 @@ pub const V4L2_CAP_DEVICE_CAPS: u32 = 0x80000000;
 // FourCC Pixel Formats
 pub const V4L2_PIX_FMT_RGB24: u32 = 0x33424752; // 'RGB3'
 pub const V4L2_PIX_FMT_BGR24: u32 = 0x33524742; // 'BGR3'
-pub const V4L2_PIX_FMT_YUYV: u32 = 0x56595559;  // 'YUYV'
+pub const V4L2_PIX_FMT_YUYV: u32 = 0x56595559; // 'YUYV'
 pub const V4L2_PIX_FMT_MJPEG: u32 = 0x47504a4d; // 'MJPG'
 
 #[repr(C)]
@@ -165,6 +166,7 @@ pub struct V4l2DeviceInfo {
 }
 
 /// Énumère tous les périphériques V4L2 réels capables de capture vidéo en streaming.
+#[cfg(target_os = "linux")]
 pub fn enumerate_devices() -> Vec<V4l2DeviceInfo> {
     let mut devices = Vec::new();
 
@@ -186,7 +188,7 @@ pub fn enumerate_devices() -> Vec<V4l2DeviceInfo> {
         }
 
         let mut cap: v4l2_capability = unsafe { std::mem::zeroed() };
-        let ret = unsafe { libc::ioctl(fd, VIDIOC_QUERYCAP, &mut cap) };
+        let ret = unsafe { libc::ioctl(fd, VIDIOC_QUERYCAP as libc::Ioctl, &mut cap) };
         unsafe { libc::close(fd) };
 
         if ret != 0 {
@@ -200,10 +202,18 @@ pub fn enumerate_devices() -> Vec<V4l2DeviceInfo> {
         };
 
         // Doit supporter la capture vidéo et le streaming mmap
-        if (effective_caps & V4L2_CAP_VIDEO_CAPTURE != 0) && (effective_caps & V4L2_CAP_STREAMING != 0) {
-            let card = String::from_utf8_lossy(&cap.card).trim_matches('\0').to_string();
-            let driver = String::from_utf8_lossy(&cap.driver).trim_matches('\0').to_string();
-            let bus_info = String::from_utf8_lossy(&cap.bus_info).trim_matches('\0').to_string();
+        if (effective_caps & V4L2_CAP_VIDEO_CAPTURE != 0)
+            && (effective_caps & V4L2_CAP_STREAMING != 0)
+        {
+            let card = String::from_utf8_lossy(&cap.card)
+                .trim_matches('\0')
+                .to_string();
+            let driver = String::from_utf8_lossy(&cap.driver)
+                .trim_matches('\0')
+                .to_string();
+            let bus_info = String::from_utf8_lossy(&cap.bus_info)
+                .trim_matches('\0')
+                .to_string();
 
             devices.push(V4l2DeviceInfo {
                 path,
@@ -215,6 +225,13 @@ pub fn enumerate_devices() -> Vec<V4l2DeviceInfo> {
     }
 
     devices
+}
+
+/// Hors Linux, le sous-système noyau V4L2 (`/dev/video*`) est absent :
+/// renvoie honnêtement une liste vide sans inventer de périphérique.
+#[cfg(not(target_os = "linux"))]
+pub fn enumerate_devices() -> Vec<V4l2DeviceInfo> {
+    Vec::new()
 }
 
 /// Sélectionne le périphérique le plus approprié selon le facing demandé.
@@ -242,7 +259,12 @@ pub fn select_device(devices: &[V4l2DeviceInfo], facing: CameraFacing) -> Option
 
 /// Convertit un buffer YUYV (YUV 4:2:2 uncompressed) en RGB888.
 /// Algorithme fixed-point BT.601 sans point flottant, ultra-rapide (< 0.2 ms pour 640x480).
-pub fn yuyv_to_rgb8(yuyv: &[u8], width: usize, height: usize, out: &mut [u8]) -> Result<(), String> {
+pub fn yuyv_to_rgb8(
+    yuyv: &[u8],
+    width: usize,
+    height: usize,
+    out: &mut [u8],
+) -> Result<(), String> {
     let expected_in = width * height * 2;
     let expected_out = width * height * 3;
     if yuyv.len() < expected_in || out.len() < expected_out {
@@ -301,11 +323,13 @@ pub fn bgr_to_rgb(bgr: &[u8], out: &mut [u8]) {
 // Capture V4L2 Mmap & Thread de Capture
 // ============================================================================
 
+#[cfg(target_os = "linux")]
 struct MmapBuffer {
     ptr: *mut libc::c_void,
     length: usize,
 }
 
+#[cfg(target_os = "linux")]
 struct ActiveCapture {
     fd: i32,
     buffers: Vec<MmapBuffer>,
@@ -314,11 +338,12 @@ struct ActiveCapture {
     pixelformat: u32,
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for ActiveCapture {
     fn drop(&mut self) {
         let type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         unsafe {
-            let _ = libc::ioctl(self.fd, VIDIOC_STREAMOFF, &type_);
+            let _ = libc::ioctl(self.fd, VIDIOC_STREAMOFF as libc::Ioctl, &type_);
             for buf in &self.buffers {
                 libc::munmap(buf.ptr, buf.length);
             }
@@ -327,6 +352,7 @@ impl Drop for ActiveCapture {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
     let devices = enumerate_devices();
     let device = select_device(&devices, config.facing).ok_or_else(|| {
@@ -351,7 +377,7 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
         let mut fmtdesc: v4l2_fmtdesc = unsafe { std::mem::zeroed() };
         fmtdesc.index = index;
         fmtdesc.type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        if unsafe { libc::ioctl(fd, VIDIOC_ENUM_FMT, &mut fmtdesc) } != 0 {
+        if unsafe { libc::ioctl(fd, VIDIOC_ENUM_FMT as libc::Ioctl, &mut fmtdesc) } != 0 {
             break;
         }
         supported_formats.push(fmtdesc.pixelformat);
@@ -391,7 +417,7 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
         xfer_func: 0,
     };
 
-    if unsafe { libc::ioctl(fd, VIDIOC_S_FMT, &mut fmt) } != 0 {
+    if unsafe { libc::ioctl(fd, VIDIOC_S_FMT as libc::Ioctl, &mut fmt) } != 0 {
         unsafe { libc::close(fd) };
         return Err(format!(
             "camera unavailable: négociation format V4L2 VIDIOC_S_FMT échouée ({})",
@@ -409,7 +435,7 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
     req.type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     req.memory = V4L2_MEMORY_MMAP;
 
-    if unsafe { libc::ioctl(fd, VIDIOC_REQBUFS, &mut req) } != 0 || req.count < 2 {
+    if unsafe { libc::ioctl(fd, VIDIOC_REQBUFS as libc::Ioctl, &mut req) } != 0 || req.count < 2 {
         unsafe { libc::close(fd) };
         return Err("camera unavailable: allocation buffers mmap V4L2 échouée".to_string());
     }
@@ -422,7 +448,7 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index = index;
 
-        if unsafe { libc::ioctl(fd, VIDIOC_QUERYBUF, &mut buf) } != 0 {
+        if unsafe { libc::ioctl(fd, VIDIOC_QUERYBUF as libc::Ioctl, &mut buf) } != 0 {
             unsafe { libc::close(fd) };
             return Err("camera unavailable: requête VIDIOC_QUERYBUF échouée".to_string());
         }
@@ -448,15 +474,17 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
             length: buf.length as usize,
         });
 
-        if unsafe { libc::ioctl(fd, VIDIOC_QBUF, &mut buf) } != 0 {
+        if unsafe { libc::ioctl(fd, VIDIOC_QBUF as libc::Ioctl, &mut buf) } != 0 {
             unsafe { libc::close(fd) };
-            return Err("camera unavailable: mise en file VIDIOC_QBUF initiale échouée".to_string());
+            return Err(
+                "camera unavailable: mise en file VIDIOC_QBUF initiale échouée".to_string(),
+            );
         }
     }
 
     // 6. Démarrage du streaming vidéo (STREAMON)
     let type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if unsafe { libc::ioctl(fd, VIDIOC_STREAMON, &type_) } != 0 {
+    if unsafe { libc::ioctl(fd, VIDIOC_STREAMON as libc::Ioctl, &type_) } != 0 {
         unsafe { libc::close(fd) };
         return Err("camera unavailable: démarrage VIDIOC_STREAMON échoué".to_string());
     }
@@ -471,6 +499,7 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
 }
 
 /// Boucle de capture V4L2 sur thread dédié.
+#[cfg(target_os = "linux")]
 fn capture_loop(
     config: CameraConfig,
     stop: Arc<AtomicBool>,
@@ -524,7 +553,7 @@ fn capture_loop(
         buf.type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         buf.memory = V4L2_MEMORY_MMAP;
 
-        if unsafe { libc::ioctl(capture.fd, VIDIOC_DQBUF, &mut buf) } != 0 {
+        if unsafe { libc::ioctl(capture.fd, VIDIOC_DQBUF as libc::Ioctl, &mut buf) } != 0 {
             break;
         }
 
@@ -584,7 +613,7 @@ fn capture_loop(
         };
 
         // Ré-enclenchement immédiat du buffer dans la file noyau (QBUF)
-        let _ = unsafe { libc::ioctl(capture.fd, VIDIOC_QBUF, &mut buf) };
+        let _ = unsafe { libc::ioctl(capture.fd, VIDIOC_QBUF as libc::Ioctl, &mut buf) };
 
         if let Some(frame) = frame_opt {
             if watch_tx.send(Some(frame)).is_err() {
@@ -601,10 +630,25 @@ fn capture_loop(
 
     if !initialized {
         let _ = init_tx.send(Err(
-            "camera unavailable: V4L2 produced no frame (device busy or permission denied)".to_string(),
+            "camera unavailable: V4L2 produced no frame (device busy or permission denied)"
+                .to_string(),
         ));
     }
 
+    let _ = exit_tx.send(());
+}
+
+#[cfg(not(target_os = "linux"))]
+fn capture_loop(
+    _config: CameraConfig,
+    _stop: Arc<AtomicBool>,
+    _watch_tx: tokio::sync::watch::Sender<Option<CameraFrame>>,
+    init_tx: mpsc::SyncSender<Result<(), String>>,
+    exit_tx: mpsc::Sender<()>,
+) {
+    let _ = init_tx.send(Err(
+        "camera unavailable: V4L2 requires a Linux host (/dev/video* unavailable)".to_string(),
+    ));
     let _ = exit_tx.send(());
 }
 
@@ -612,7 +656,13 @@ fn capture_loop(
 ///
 /// Le décodage MJPEG haute performance est pris en charge par `VideoFrameBridge`
 /// dans `hakille-perception` (qui intègre le décodeur `image`).
-fn decode_mjpeg_to_rgb8(_data: &[u8], _width: u32, _height: u32, _timestamp_ms: u64) -> Option<CameraFrame> {
+#[cfg(target_os = "linux")]
+fn decode_mjpeg_to_rgb8(
+    _data: &[u8],
+    _width: u32,
+    _height: u32,
+    _timestamp_ms: u64,
+) -> Option<CameraFrame> {
     None
 }
 
@@ -620,8 +670,15 @@ fn decode_mjpeg_to_rgb8(_data: &[u8], _width: u32, _height: u32, _timestamp_ms: 
 // Mode Émulation Headless / CI (Activé via HAKILLE_CAMERA_EMULATION=1)
 // ============================================================================
 
+/// Verrou de sérialisation pour les tests manipulant `HAKILLE_CAMERA_EMULATION`
+/// afin d'éviter toute condition de course entre tests exécutés en parallèle.
+#[doc(hidden)]
+pub static CAMERA_EMULATION_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn is_emulation_enabled() -> bool {
-    std::env::var("HAKILLE_CAMERA_EMULATION").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
+    std::env::var("HAKILLE_CAMERA_EMULATION")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 fn emulated_capture_loop(
@@ -632,7 +689,11 @@ fn emulated_capture_loop(
     exit_tx: mpsc::Sender<()>,
 ) {
     let width = if config.width == 0 { 640 } else { config.width };
-    let height = if config.height == 0 { 480 } else { config.height };
+    let height = if config.height == 0 {
+        480
+    } else {
+        config.height
+    };
     let fps = if config.fps == 0 { 30 } else { config.fps };
     let frame_interval = Duration::from_millis(1000 / fps as u64);
 
@@ -727,7 +788,9 @@ pub fn start(config: &CameraConfig) -> Result<CameraStream, String> {
     let use_emulation = devices.is_empty() && is_emulation_enabled();
 
     if devices.is_empty() && !use_emulation {
-        return Err("camera unavailable: V4L2 found no video capture device in /dev/video*".to_string());
+        return Err(
+            "camera unavailable: V4L2 found no video capture device in /dev/video*".to_string(),
+        );
     }
 
     let join = std::thread::Builder::new()
@@ -773,10 +836,15 @@ pub async fn next_frame(
         match tokio::time::timeout(timeout, receiver.changed()).await {
             Ok(Ok(())) => continue,
             Ok(Err(_)) => {
-                return Err("camera capture failed: V4L2 flux terminé (périphérique déconnecté)".to_string());
+                return Err(
+                    "camera capture failed: V4L2 flux terminé (périphérique déconnecté)"
+                        .to_string(),
+                );
             }
             Err(_) => {
-                return Err("camera capture failed: V4L2 aucune frame reçue avant le délai".to_string());
+                return Err(
+                    "camera capture failed: V4L2 aucune frame reçue avant le délai".to_string(),
+                );
             }
         }
     }
@@ -830,6 +898,7 @@ mod tests {
     #[tokio::test]
     async fn test_v4l2_emulation_lifecycle() {
         // Teste le cycle de vie complet de l'émulation (démarrage, réception frame, arrêt propre)
+        let _env_guard = CAMERA_EMULATION_ENV_LOCK.lock().await;
         unsafe { std::env::set_var("HAKILLE_CAMERA_EMULATION", "1") };
         let config = CameraConfig {
             width: 320,

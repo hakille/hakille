@@ -34,13 +34,12 @@ pub use llm_engine::*;
 pub use manager::*;
 pub use mel::*;
 pub use mimi_engine::MimiEngine;
-pub use models::{
-    AgeGroup, CanonicalPnPPoints, FaceMeshEngine, GenderKind, HsEmotionEngine,
-    LetterboxTransform, NormalizationMode, RtmPoseEngine, SsrNetEngine, VisionEngine,
-    decode_simcc_joints, synthetic_blank_rgb, synthetic_checkerboard_rgb,
-    synthetic_face_crop, synthetic_gradient_rgb,
-};
 pub use model_registry::*;
+pub use models::{
+    AgeGroup, CanonicalPnPPoints, FaceMeshEngine, GenderKind, HsEmotionEngine, LetterboxTransform,
+    NormalizationMode, RtmPoseEngine, SsrNetEngine, VisionEngine, decode_simcc_joints,
+    synthetic_blank_rgb, synthetic_checkerboard_rgb, synthetic_face_crop, synthetic_gradient_rgb,
+};
 pub use onnx_runtime::*;
 pub use ort_env::shared_ort_env;
 pub use ort_vad::*;

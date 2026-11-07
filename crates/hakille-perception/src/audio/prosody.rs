@@ -214,7 +214,10 @@ impl VocalProsodyAnalyzer {
 
         let f0_range_hz = if self.f0_history.len() >= 2 {
             let min_f0 = self.f0_history.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-            let max_f0 = self.f0_history.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+            let max_f0 = self
+                .f0_history
+                .iter()
+                .fold(f32::NEG_INFINITY, |a, &b| a.max(b));
             Some((min_f0, max_f0))
         } else {
             None
@@ -238,7 +241,12 @@ mod tests {
     use super::*;
     use std::f32::consts::PI;
 
-    fn generate_sine_wave(freq_hz: f32, sample_rate: u32, duration_secs: f32, amplitude: f32) -> Vec<f32> {
+    fn generate_sine_wave(
+        freq_hz: f32,
+        sample_rate: u32,
+        duration_secs: f32,
+        amplitude: f32,
+    ) -> Vec<f32> {
         let total_samples = (sample_rate as f32 * duration_secs) as usize;
         (0..total_samples)
             .map(|i| {

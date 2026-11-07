@@ -4,7 +4,7 @@
 
 use hakille_core::crypto::{AadBinding, XChaChaBlob, XChaChaCipher, compute_blind_index};
 use hakille_core::{HakilleError, Timestamp, UserId};
-use rand::{rngs::OsRng, RngCore};
+use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -226,8 +226,11 @@ impl ZkSessionStorage {
         storage_key: &[u8; 32],
         candidate_token: &[u8; 32],
     ) -> Result<AuthSession, HakilleError> {
-        if record.is_revoked || self.is_commitment_revoked(&record.token_commitment.commitment_hash) {
-            return Err(HakilleError::CapabilityDenied("Session token commitment has been revoked".to_string()));
+        if record.is_revoked || self.is_commitment_revoked(&record.token_commitment.commitment_hash)
+        {
+            return Err(HakilleError::CapabilityDenied(
+                "Session token commitment has been revoked".to_string(),
+            ));
         }
 
         if chrono::Utc::now() > record.expires_at.0 {
@@ -257,7 +260,10 @@ impl ZkSessionStorage {
     }
 
     /// Search sessions by blinded user index without knowing the plaintext user identity
-    pub fn find_by_blind_user_index(&self, blind_index: &[u8; 32]) -> Vec<&SessionPersistenceRecord> {
+    pub fn find_by_blind_user_index(
+        &self,
+        blind_index: &[u8; 32],
+    ) -> Vec<&SessionPersistenceRecord> {
         if let Some(ids) = self.blinded_user_index_map.get(blind_index) {
             ids.iter().filter_map(|id| self.sessions.get(id)).collect()
         } else {
@@ -266,7 +272,11 @@ impl ZkSessionStorage {
     }
 
     /// Search sessions for a known user by computing their blind index with the domain key
-    pub fn lookup_by_user(&self, user_id: &UserId, blind_key: &[u8; 32]) -> Vec<&SessionPersistenceRecord> {
+    pub fn lookup_by_user(
+        &self,
+        user_id: &UserId,
+        blind_key: &[u8; 32],
+    ) -> Vec<&SessionPersistenceRecord> {
         let blind_index = compute_blind_index(&user_id.0.to_string(), blind_key);
         self.find_by_blind_user_index(&blind_index)
     }
@@ -352,7 +362,9 @@ mod tests {
         assert_eq!(found[0].session_id, record.session_id);
 
         // Revocation blocks session
-        storage.revoke_commitment(record.token_commitment.commitment_hash).unwrap();
+        storage
+            .revoke_commitment(record.token_commitment.commitment_hash)
+            .unwrap();
         assert!(storage.is_commitment_revoked(&record.token_commitment.commitment_hash));
 
         // Purge cleans up revoked/expired
@@ -379,7 +391,10 @@ mod tests {
             .expect("restore should succeed");
         assert_eq!(restored.user_id, original_session.user_id);
         assert_eq!(restored.confidence_score, original_session.confidence_score);
-        assert_eq!(restored.is_fully_authenticated, original_session.is_fully_authenticated);
+        assert_eq!(
+            restored.is_fully_authenticated,
+            original_session.is_fully_authenticated
+        );
 
         // Invalid token rejected
         let bad_token = [0x00u8; 32];
@@ -393,5 +408,3 @@ mod tests {
         assert!(failed_decrypt.is_err());
     }
 }
-
-

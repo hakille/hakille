@@ -11,13 +11,12 @@
 //! Les repères sont directement projetés dans [`hakille_spatial::BodySkeleton3D`] avec classification
 //! automatique de la posture corporelle ([`hakille_spatial::PostureKind`]) et calcul de l'angle cervical.
 
-use crate::ort_env::shared_ort_env;
-use crate::models::preprocess::{resize_bilinear_rgb_nchw, NormalizationMode};
 use crate::ModelStatus;
+use crate::models::preprocess::{NormalizationMode, resize_bilinear_rgb_nchw};
+use crate::ort_env::shared_ort_env;
 use hakille_core::{HakilleError, Result};
 use hakille_spatial::{
-    BodySkeleton3D, CocoJointId, Point3D, PostureKind, SkeletonJoint3D,
-    COCO_KEYPOINTS_COUNT,
+    BodySkeleton3D, COCO_KEYPOINTS_COUNT, CocoJointId, Point3D, PostureKind, SkeletonJoint3D,
 };
 use ort::{session::Session, value::Tensor};
 use serde::{Deserialize, Serialize};
@@ -111,7 +110,12 @@ impl RtmPoseEngine {
     }
 
     /// Extrait le squelette corporel et la posture depuis une image RGB brute.
-    pub fn extract_pose(&self, rgb_bytes: &[u8], width: usize, height: usize) -> Result<PoseInferenceResult> {
+    pub fn extract_pose(
+        &self,
+        rgb_bytes: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<PoseInferenceResult> {
         if rgb_bytes.is_empty() || width == 0 || height == 0 {
             return Err(HakilleError::InferenceError("RTMPose: entrée vide".into()));
         }
@@ -216,7 +220,9 @@ pub fn decode_simcc_joints(
     let y_bins = simcc_y.len() / COCO_KEYPOINTS_COUNT;
 
     if x_bins == 0 || y_bins == 0 {
-        return Err(HakilleError::InferenceError("SimCC bins insuffisants".into()));
+        return Err(HakilleError::InferenceError(
+            "SimCC bins insuffisants".into(),
+        ));
     }
 
     let mut joints = [SkeletonJoint3D::default(); 17];
@@ -252,7 +258,11 @@ fn decode_generic_joints(values: &[f32]) -> Result<[SkeletonJoint3D; 17]> {
         if idx + stride <= values.len() {
             let x = values[idx].clamp(0.0, 1.0);
             let y = values[idx + 1].clamp(0.0, 1.0);
-            let conf = if stride == 3 { values[idx + 2].clamp(0.0, 1.0) } else { 0.8 };
+            let conf = if stride == 3 {
+                values[idx + 2].clamp(0.0, 1.0)
+            } else {
+                0.8
+            };
             joints[i] = SkeletonJoint3D::new(i as u8, Point3D::new(x, y, 0.0), conf);
         }
     }
@@ -365,7 +375,9 @@ mod tests {
         assert!(engine.is_mock());
 
         let crop = synthetic_face_crop(256, 256);
-        let result = engine.extract_pose(&crop, 256, 256).expect("extraction pose réussie");
+        let result = engine
+            .extract_pose(&crop, 256, 256)
+            .expect("extraction pose réussie");
 
         assert_eq!(result.status, ModelStatus::Simulated);
         assert_eq!(result.skeleton.joints.len(), 17);

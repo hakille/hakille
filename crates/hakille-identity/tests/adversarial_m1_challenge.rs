@@ -2,10 +2,10 @@
 //! Cryptographic Core & Zero-Knowledge Storage
 //! Targets: crypto.rs, storage.rs, ssi.rs
 
+use ed25519_dalek::SigningKey;
 use hakille_core::HakilleError;
 use hakille_core::UserId;
 use hakille_identity::*;
-use ed25519_dalek::SigningKey;
 use rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -23,10 +23,16 @@ fn test_adversarial_shamir_corrupted_share_data_fails() {
     // Adversarially mutate 1 byte in share 0
     shares[0].data[15] ^= 0xaa;
     let res = reconstruct_secret(&shares[0..3]);
-    assert!(res.is_err(), "Corrupted share data must fail commitment verification");
+    assert!(
+        res.is_err(),
+        "Corrupted share data must fail commitment verification"
+    );
     match res.unwrap_err() {
         HakilleError::CryptoError(msg) => {
-            assert!(msg.contains("failed commitment verification"), "Expected commitment error, got: {msg}");
+            assert!(
+                msg.contains("failed commitment verification"),
+                "Expected commitment error, got: {msg}"
+            );
         }
         other => panic!("Unexpected error type: {:?}", other),
     }
@@ -40,7 +46,10 @@ fn test_adversarial_shamir_corrupted_share_index_fails() {
     // Adversarially change share index from 1 to 9 (data untouched)
     shares[0].index = 9;
     let res = reconstruct_secret(&shares[0..3]);
-    assert!(res.is_err(), "Tampered share index must fail commitment verification");
+    assert!(
+        res.is_err(),
+        "Tampered share index must fail commitment verification"
+    );
 }
 
 #[test]
@@ -64,11 +73,17 @@ fn test_adversarial_shamir_insufficient_shares_cannot_recover_secret() {
 
     // 1 share (< k=3): must return Err (insufficient shares)
     let res_1 = reconstruct_secret(&shares[0..1]);
-    assert!(res_1.is_err(), "1 share must fail reconstruction with InsufficientShares");
+    assert!(
+        res_1.is_err(),
+        "1 share must fail reconstruction with InsufficientShares"
+    );
 
     // 2 shares (< k=3): must return Err (insufficient shares)
     let res_2 = reconstruct_secret(&shares[0..2]);
-    assert!(res_2.is_err(), "2 shares must fail reconstruction with InsufficientShares");
+    assert!(
+        res_2.is_err(),
+        "2 shares must fail reconstruction with InsufficientShares"
+    );
 
     // Statistical check: 50 trials with random secrets and k-1 shares
     for _trial in 0..50 {
@@ -77,7 +92,10 @@ fn test_adversarial_shamir_insufficient_shares_cannot_recover_secret() {
         let sh = split_secret(&sec, 4, 7).unwrap();
         // provide 3 shares (k=4 required)
         let res = reconstruct_secret(&sh[0..3]);
-        assert!(res.is_err(), "k-1 shares must fail reconstruction with InsufficientShares");
+        assert!(
+            res.is_err(),
+            "k-1 shares must fail reconstruction with InsufficientShares"
+        );
     }
 }
 
@@ -86,10 +104,30 @@ fn test_adversarial_shamir_out_of_order_permutations_recover_exact_secret() {
     let secret = [0xfe_u8; 32];
     let shares = split_secret(&secret, 4, 7).unwrap();
 
-    let p1 = vec![shares[0].clone(), shares[1].clone(), shares[2].clone(), shares[3].clone()];
-    let p2 = vec![shares[3].clone(), shares[2].clone(), shares[1].clone(), shares[0].clone()];
-    let p3 = vec![shares[1].clone(), shares[3].clone(), shares[0].clone(), shares[2].clone()];
-    let p4 = vec![shares[2].clone(), shares[0].clone(), shares[3].clone(), shares[1].clone()];
+    let p1 = vec![
+        shares[0].clone(),
+        shares[1].clone(),
+        shares[2].clone(),
+        shares[3].clone(),
+    ];
+    let p2 = vec![
+        shares[3].clone(),
+        shares[2].clone(),
+        shares[1].clone(),
+        shares[0].clone(),
+    ];
+    let p3 = vec![
+        shares[1].clone(),
+        shares[3].clone(),
+        shares[0].clone(),
+        shares[2].clone(),
+    ];
+    let p4 = vec![
+        shares[2].clone(),
+        shares[0].clone(),
+        shares[3].clone(),
+        shares[1].clone(),
+    ];
 
     assert_eq!(reconstruct_secret(&p1).unwrap(), secret);
     assert_eq!(reconstruct_secret(&p2).unwrap(), secret);
@@ -120,7 +158,10 @@ fn test_adversarial_shamir_duplicate_share_indices_rejected() {
     assert!(res.is_err());
     match res.unwrap_err() {
         HakilleError::CryptoError(msg) => {
-            assert!(msg.contains("Duplicate share index"), "Expected duplicate share error, got: {msg}");
+            assert!(
+                msg.contains("Duplicate share index"),
+                "Expected duplicate share error, got: {msg}"
+            );
         }
         other => panic!("Unexpected error: {:?}", other),
     }
@@ -174,7 +215,10 @@ fn test_adversarial_shamir_forged_share_local_commitment_bypasses_share_integrit
 
     let mixed = vec![forged_share, shares[1].clone(), shares[2].clone()];
     let res = reconstruct_secret(&mixed);
-    assert!(res.is_err(), "Byzantine / forged share must be rejected during verification");
+    assert!(
+        res.is_err(),
+        "Byzantine / forged share must be rejected during verification"
+    );
 }
 
 // =============================================================================
@@ -194,7 +238,10 @@ fn test_adversarial_xchacha_bit_flip_at_all_offsets() {
         let mut tampered = blob.clone();
         tampered.ciphertext[offset] ^= 0x01;
         let res = XChaChaCipher::decrypt(&tampered, &key, aad);
-        assert!(res.is_err(), "Bit flip at ciphertext offset {offset} must fail AEAD verification");
+        assert!(
+            res.is_err(),
+            "Bit flip at ciphertext offset {offset} must fail AEAD verification"
+        );
     }
 }
 
@@ -210,7 +257,10 @@ fn test_adversarial_xchacha_tampered_aad_fails_fingerprint() {
     assert!(res.is_err(), "Tampered AAD must fail");
     match res.unwrap_err() {
         HakilleError::CryptoError(msg) => {
-            assert!(msg.contains("AAD fingerprint mismatch"), "Expected fingerprint mismatch error, got: {msg}");
+            assert!(
+                msg.contains("AAD fingerprint mismatch"),
+                "Expected fingerprint mismatch error, got: {msg}"
+            );
         }
         other => panic!("Unexpected error: {:?}", other),
     }
@@ -233,10 +283,16 @@ fn test_adversarial_xchacha_tampered_aad_and_tampered_fingerprint_fails_poly1305
     blob.aad_fingerprint.copy_from_slice(&tampered_hash[..16]);
 
     let res = XChaChaCipher::decrypt(&blob, &key, tampered_aad);
-    assert!(res.is_err(), "Poly1305 MAC must reject tampered AAD even when fingerprint is updated");
+    assert!(
+        res.is_err(),
+        "Poly1305 MAC must reject tampered AAD even when fingerprint is updated"
+    );
     match res.unwrap_err() {
         HakilleError::CryptoError(msg) => {
-            assert!(msg.contains("XChaCha decryption failed"), "Expected AEAD decryption failure, got: {msg}");
+            assert!(
+                msg.contains("XChaCha decryption failed"),
+                "Expected AEAD decryption failure, got: {msg}"
+            );
         }
         other => panic!("Unexpected error: {:?}", other),
     }
@@ -332,11 +388,17 @@ fn test_adversarial_blind_index_10k_collision_resistance() {
     for i in 0..count {
         let term = format!("user_{:08x}_node", i);
         let exact = compute_blind_index(&term, &blind_key);
-        assert!(exact_set.insert(exact), "Collision detected in exact blind index at iteration {i}!");
+        assert!(
+            exact_set.insert(exact),
+            "Collision detected in exact blind index at iteration {i}!"
+        );
 
         let prefix_term = format!("{:04x}", i); // 10,000 unique 4-character prefixes
         let prefix = compute_prefix_blind_index(&prefix_term, 4, &blind_key);
-        assert!(prefix_set.insert(prefix), "Collision detected in prefix blind index at iteration {i}!");
+        assert!(
+            prefix_set.insert(prefix),
+            "Collision detected in prefix blind index at iteration {i}!"
+        );
     }
 
     assert_eq!(exact_set.len(), count);
@@ -359,8 +421,16 @@ fn test_adversarial_blind_index_normalization_stability() {
     let base_prefix = compute_prefix_blind_index(variants[0], 4, &blind_key);
 
     for &v in &variants[1..] {
-        assert_eq!(compute_blind_index(v, &blind_key), base_exact, "Exact index unstable for variant: {v}");
-        assert_eq!(compute_prefix_blind_index(v, 4, &blind_key), base_prefix, "Prefix index unstable for variant: {v}");
+        assert_eq!(
+            compute_blind_index(v, &blind_key),
+            base_exact,
+            "Exact index unstable for variant: {v}"
+        );
+        assert_eq!(
+            compute_prefix_blind_index(v, 4, &blind_key),
+            base_prefix,
+            "Prefix index unstable for variant: {v}"
+        );
     }
 }
 
@@ -388,7 +458,10 @@ fn test_adversarial_blind_index_unicode_case_folding() {
     // French accented characters
     let t_upper = "ÉLÉPHANT";
     let t_lower = "éléphant";
-    assert_eq!(compute_blind_index(t_upper, &blind_key), compute_blind_index(t_lower, &blind_key));
+    assert_eq!(
+        compute_blind_index(t_upper, &blind_key),
+        compute_blind_index(t_lower, &blind_key)
+    );
 }
 
 #[test]
@@ -444,7 +517,11 @@ fn test_adversarial_fuzzy_extractor_noise_tolerance_bounds() {
     for i in 0..16 {
         probe_16_dist[i] = -0.5;
     }
-    assert_eq!(fe.reproduce(&probe_16_dist, &helper, &commit).unwrap(), key, "Distributed noise within error-correction capacity must succeed");
+    assert_eq!(
+        fe.reproduce(&probe_16_dist, &helper, &commit).unwrap(),
+        key,
+        "Distributed noise within error-correction capacity must succeed"
+    );
 }
 
 #[test]
@@ -463,14 +540,17 @@ fn test_adversarial_fuzzy_extractor_failure_beyond_bound_concentrated() {
 
     let mut probe_concentrated = base_embedding.clone();
     // Flip 5 copies of seed bit 0 (at reps 0, 1, 2, 3, 4)
-    probe_concentrated[0] = -0.5;   // bit 0 (rep 0)
-    probe_concentrated[32] = -0.5;  // bit 32 (rep 1)
-    probe_concentrated[64] = -0.5;  // bit 64 (rep 2)
-    probe_concentrated[96] = -0.5;  // bit 96 (rep 3)
+    probe_concentrated[0] = -0.5; // bit 0 (rep 0)
+    probe_concentrated[32] = -0.5; // bit 32 (rep 1)
+    probe_concentrated[64] = -0.5; // bit 64 (rep 2)
+    probe_concentrated[96] = -0.5; // bit 96 (rep 3)
     probe_concentrated[128] = -0.5; // bit 128 (rep 4)
 
     let res = fe.reproduce(&probe_concentrated, &helper, &commit);
-    assert!(res.is_err(), "5 concentrated errors on a single seed bit MUST cause decoding failure!");
+    assert!(
+        res.is_err(),
+        "5 concentrated errors on a single seed bit MUST cause decoding failure!"
+    );
     match res.unwrap_err() {
         HakilleError::AuthenticationFailed => {}
         other => panic!("Expected AuthenticationFailed, got: {:?}", other),
@@ -511,7 +591,10 @@ fn test_adversarial_fuzzy_extractor_tampered_helper_data() {
     // Tampered salt
     let mut helper_corrupt_salt = helper.clone();
     helper_corrupt_salt.salt[0] ^= 0x01;
-    assert!(fe.reproduce(&sample, &helper_corrupt_salt, &commit).is_err());
+    assert!(
+        fe.reproduce(&sample, &helper_corrupt_salt, &commit)
+            .is_err()
+    );
 
     // Truncated syndrome
     let mut helper_truncated = helper.clone();
@@ -535,10 +618,16 @@ fn test_adversarial_fuzzy_extractor_delta_threshold_dead_code_behavior() {
         &FuzzyExtractor::quantize(&probe_12_errors),
     );
     assert_eq!(dist, 12);
-    assert!(dist > fe.delta_threshold, "Distance 12 is greater than configured delta_threshold 2");
+    assert!(
+        dist > fe.delta_threshold,
+        "Distance 12 is greater than configured delta_threshold 2"
+    );
 
     let res = fe.reproduce(&probe_12_errors, &helper, &commit);
-    assert!(res.is_err(), "Reproduction must fail when Hamming distance exceeds delta_threshold");
+    assert!(
+        res.is_err(),
+        "Reproduction must fail when Hamming distance exceeds delta_threshold"
+    );
 }
 
 // =============================================================================
@@ -571,7 +660,10 @@ fn test_adversarial_vc_claims_hash_concatenation_collision() {
 
     let h1 = vc1.compute_claims_hash();
     let h2 = vc2.compute_claims_hash();
-    assert_ne!(h1, h2, "Field framing prevents concatenation collisions in vc_type");
+    assert_ne!(
+        h1, h2,
+        "Field framing prevents concatenation collisions in vc_type"
+    );
 }
 
 #[test]
@@ -646,6 +738,8 @@ fn test_adversarial_storage_digital_twilight_lifecycle() {
     assert!(store.is_salt_shredded(&uid));
 
     // Verify user state is DigitalTwilightGrace
-    let rec = store.lookup_user_by_blind_username("bob@hakille.org", &blind_key).unwrap();
+    let rec = store
+        .lookup_user_by_blind_username("bob@hakille.org", &blind_key)
+        .unwrap();
     assert_eq!(rec.state, AccountStatus::DigitalTwilightGrace);
 }

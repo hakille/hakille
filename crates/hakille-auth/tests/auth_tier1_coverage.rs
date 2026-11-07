@@ -10,8 +10,8 @@ use hakille_auth::gdpr::*;
 use hakille_auth::guest::*;
 use hakille_auth::minor::*;
 use hakille_auth::multimodal::*;
-use hakille_core::capability::CapabilityScope;
 use hakille_core::UserId;
+use hakille_core::capability::CapabilityScope;
 use uuid::Uuid;
 
 // =============================================================================
@@ -23,7 +23,9 @@ fn test_f14_face_detection_happy_path() {
     let detector = ScrfdDetector::new(0.65);
     // 100x100 RGB image with normal lighting (brightness ~128)
     let rgb = vec![128u8; 100 * 100 * 3];
-    let detections = detector.detect_faces(&rgb, 100, 100).expect("detection succeeds");
+    let detections = detector
+        .detect_faces(&rgb, 100, 100)
+        .expect("detection succeeds");
     assert_eq!(detections.len(), 1);
     assert!(detections[0].confidence >= 0.65);
 }
@@ -37,9 +39,18 @@ fn test_f14_face_5_landmarks_localization() {
 
     let lm = &detections[0].landmarks;
     assert_eq!(lm.points.len(), 5);
-    assert!(lm.left_eye().0 < lm.right_eye().0, "Left eye must be to the left of right eye");
-    assert!(lm.nose_tip().1 > lm.left_eye().1, "Nose must be lower than eyes");
-    assert!(lm.left_mouth().1 > lm.nose_tip().1, "Mouth must be lower than nose");
+    assert!(
+        lm.left_eye().0 < lm.right_eye().0,
+        "Left eye must be to the left of right eye"
+    );
+    assert!(
+        lm.nose_tip().1 > lm.left_eye().1,
+        "Nose must be lower than eyes"
+    );
+    assert!(
+        lm.left_mouth().1 > lm.nose_tip().1,
+        "Mouth must be lower than nose"
+    );
 }
 
 #[test]
@@ -98,7 +109,11 @@ fn test_f15_face_embedding_l2_normalization() {
     let crop = vec![0.3f32; 112 * 112 * 3];
     let emb = EdgeFaceExtractor::extract_embedding(&crop).unwrap();
     let norm = emb.l2_norm();
-    assert!((norm - 1.0).abs() < 1e-4, "Embedding must be unit L2-normalized: {}", norm);
+    assert!(
+        (norm - 1.0).abs() < 1e-4,
+        "Embedding must be unit L2-normalized: {}",
+        norm
+    );
 }
 
 #[test]
@@ -107,7 +122,10 @@ fn test_f15_face_embedding_same_face_cosine_match() {
     let emb1 = EdgeFaceExtractor::extract_embedding(&crop).unwrap();
     let emb2 = EdgeFaceExtractor::extract_embedding(&crop).unwrap();
     let sim = EdgeFaceExtractor::cosine_similarity(&emb1, &emb2);
-    assert!((sim - 1.0).abs() < 1e-4, "Identical face must have cosine similarity ~1.0");
+    assert!(
+        (sim - 1.0).abs() < 1e-4,
+        "Identical face must have cosine similarity ~1.0"
+    );
     assert!(EdgeFaceExtractor::is_match(&emb1, &emb2, 0.25));
 }
 
@@ -222,7 +240,9 @@ fn test_f17_active_challenge_ear_blink_detection_success() {
 
     // Natural blink: eyes open (0.30) -> dip below 0.18 (0.12) -> recovery (0.28)
     let ear_series = vec![0.30, 0.28, 0.20, 0.12, 0.10, 0.15, 0.26, 0.29];
-    let res = engine.verify_blink_response(&token, &ear_series, now + 1).unwrap();
+    let res = engine
+        .verify_blink_response(&token, &ear_series, now + 1)
+        .unwrap();
     assert!(res);
 }
 
@@ -235,7 +255,9 @@ fn test_f17_active_challenge_gaze_pursuit_correlation_success() {
     let target = vec![(10.0, 10.0), (20.0, 20.0), (30.0, 30.0), (40.0, 40.0)];
     let pupil = vec![(10.2, 9.8), (20.1, 19.9), (29.8, 30.1), (40.0, 40.2)];
 
-    let res = engine.verify_gaze_response(&token, &pupil, &target, now + 1).unwrap();
+    let res = engine
+        .verify_gaze_response(&token, &pupil, &target, now + 1)
+        .unwrap();
     assert!(res, "Gaze correlated with target trajectory R^2 >= 0.85");
 }
 
@@ -246,7 +268,9 @@ fn test_f17_active_challenge_head_pose_rotation_success() {
     let token = engine.issue_challenge(ActiveChallengeType::HeadPoseRotation, now);
 
     let yaw_series = vec![(0.0, 0.0), (5.0, 0.0), (12.0, 0.0), (18.5, 0.0)];
-    let res = engine.verify_head_pose_response(&token, &yaw_series, 15.0, now + 1).unwrap();
+    let res = engine
+        .verify_head_pose_response(&token, &yaw_series, 15.0, now + 1)
+        .unwrap();
     assert!(res, "Head pose exceeded 15 degrees yaw");
 }
 
@@ -258,7 +282,10 @@ fn test_f17_active_challenge_expired_token_rejected() {
 
     // Verified after expiration (t = 1006 > 1004) -> must fail closed
     let res = engine.verify_blink_response(&token, &[0.3, 0.1, 0.3], now + 6);
-    assert!(matches!(res, Err(hakille_core::HakilleError::CapabilityExpired)));
+    assert!(matches!(
+        res,
+        Err(hakille_core::HakilleError::CapabilityExpired)
+    ));
 }
 
 // =============================================================================
@@ -286,7 +313,11 @@ fn test_f18_biohash_same_face_low_hamming_distance() {
     let d1 = engine.project_embedding(&emb1, &salt);
     let d2 = engine.project_embedding(&emb2, &salt);
     let dist = engine.hamming_distance(&d1, &d2);
-    assert!(dist <= 0.05, "Hamming distance must be very low for identical face: {}", dist);
+    assert!(
+        dist <= 0.05,
+        "Hamming distance must be very low for identical face: {}",
+        dist
+    );
     assert!(engine.verify_biohash(&d1, &d2, 0.18));
 }
 
@@ -302,7 +333,11 @@ fn test_f18_biohash_revocable_salt_generates_uncorrelated_template() {
 
     let dist = engine.hamming_distance(&d_orig, &d_rev);
     // Orthogonal random projections yield Hamming distance ~ 0.50 (uncorrelated)
-    assert!(dist >= 0.40 && dist <= 0.60, "Revoked salt must produce uncorrelated biohash: {}", dist);
+    assert!(
+        dist >= 0.40 && dist <= 0.60,
+        "Revoked salt must produce uncorrelated biohash: {}",
+        dist
+    );
     assert!(!engine.verify_biohash(&d_orig, &d_rev, 0.18));
 }
 
@@ -316,7 +351,11 @@ fn test_f18_biohash_distinct_faces_high_hamming_distance() {
     let d1 = engine.project_embedding(&emb1, &salt);
     let d2 = engine.project_embedding(&emb2, &salt);
     let dist = engine.hamming_distance(&d1, &d2);
-    assert!(dist > 0.35, "Distinct faces must have high Hamming distance: {}", dist);
+    assert!(
+        dist > 0.35,
+        "Distinct faces must have high Hamming distance: {}",
+        dist
+    );
 }
 
 #[test]
@@ -335,8 +374,12 @@ fn test_f19_gdpr_explicit_opt_in_consent_recorded() {
     let mut gdpr = GdprConsentEngine::new();
     let user = UserId(Uuid::new_v4());
 
-    gdpr.record_consent(user.clone(), ConsentPurpose::BiometricVerification1to1, true)
-        .expect("opt-in recorded");
+    gdpr.record_consent(
+        user.clone(),
+        ConsentPurpose::BiometricVerification1to1,
+        true,
+    )
+    .expect("opt-in recorded");
     assert!(gdpr.has_valid_consent(&user, &ConsentPurpose::BiometricVerification1to1));
 }
 
@@ -345,8 +388,15 @@ fn test_f19_gdpr_missing_opt_in_rejected() {
     let mut gdpr = GdprConsentEngine::new();
     let user = UserId(Uuid::new_v4());
 
-    let res = gdpr.record_consent(user.clone(), ConsentPurpose::BiometricVerification1to1, false);
-    assert!(res.is_err(), "Non-opt-in must be rejected under GDPR Art. 9");
+    let res = gdpr.record_consent(
+        user.clone(),
+        ConsentPurpose::BiometricVerification1to1,
+        false,
+    );
+    assert!(
+        res.is_err(),
+        "Non-opt-in must be rejected under GDPR Art. 9"
+    );
 }
 
 #[test]
@@ -354,10 +404,12 @@ fn test_f19_gdpr_withdrawal_of_consent() {
     let mut gdpr = GdprConsentEngine::new();
     let user = UserId(Uuid::new_v4());
 
-    gdpr.record_consent(user.clone(), ConsentPurpose::VoicePrintRecognition, true).unwrap();
+    gdpr.record_consent(user.clone(), ConsentPurpose::VoicePrintRecognition, true)
+        .unwrap();
     assert!(gdpr.has_valid_consent(&user, &ConsentPurpose::VoicePrintRecognition));
 
-    gdpr.withdraw_consent(&user, &ConsentPurpose::VoicePrintRecognition).unwrap();
+    gdpr.withdraw_consent(&user, &ConsentPurpose::VoicePrintRecognition)
+        .unwrap();
     assert!(!gdpr.has_valid_consent(&user, &ConsentPurpose::VoicePrintRecognition));
 }
 
@@ -366,7 +418,12 @@ fn test_f19_gdpr_crypto_shredding_renders_unusable() {
     let mut gdpr = GdprConsentEngine::new();
     let user = UserId(Uuid::new_v4());
 
-    gdpr.record_consent(user.clone(), ConsentPurpose::BiometricVerification1to1, true).unwrap();
+    gdpr.record_consent(
+        user.clone(),
+        ConsentPurpose::BiometricVerification1to1,
+        true,
+    )
+    .unwrap();
     gdpr.crypto_shred_user(&user);
 
     assert!(gdpr.is_shredded(&user));
@@ -387,7 +444,10 @@ fn test_f19_ai_act_1_to_1_verification_carveout_and_prohibitions() {
     assert!(gdpr.validate_ai_act_compliance(true, false, true).is_err());
 
     // Prohibited: 1:N non-verification biometric surveillance
-    assert!(gdpr.validate_ai_act_compliance(false, false, false).is_err());
+    assert!(
+        gdpr.validate_ai_act_compliance(false, false, false)
+            .is_err()
+    );
 }
 
 // =============================================================================
@@ -413,7 +473,10 @@ fn test_f20_multimodal_fusion_face_and_voice() {
     ];
 
     let fused = engine.fuse_signals(&signals);
-    assert!(fused > 0.70, "Strong face + voice signals must elevate confidence");
+    assert!(
+        fused > 0.70,
+        "Strong face + voice signals must elevate confidence"
+    );
 }
 
 #[test]
@@ -539,12 +602,16 @@ fn test_f23_minor_content_filter_levels() {
     let child_r = default_minor_restrictions(&AgeCategory::Child);
     let teen_r = default_minor_restrictions(&AgeCategory::Teenager);
 
-    assert!(child_r.contains(&hakille_auth::household::Restriction::ContentFilter(
-        hakille_auth::household::ContentFilterLevel::Strict
-    )));
-    assert!(teen_r.contains(&hakille_auth::household::Restriction::ContentFilter(
-        hakille_auth::household::ContentFilterLevel::Moderate
-    )));
+    assert!(
+        child_r.contains(&hakille_auth::household::Restriction::ContentFilter(
+            hakille_auth::household::ContentFilterLevel::Strict
+        ))
+    );
+    assert!(
+        teen_r.contains(&hakille_auth::household::Restriction::ContentFilter(
+            hakille_auth::household::ContentFilterLevel::Moderate
+        ))
+    );
 }
 
 #[test]
@@ -553,9 +620,21 @@ fn test_f23_guest_session_24h_duration_cap() {
     let host = UserId(Uuid::new_v4());
 
     // 1441 minutes (> 24 hours) is rejected
-    assert!(mgr.create_guest_session("g-long", host.clone(), vec![CapabilityScope::Audio], "test", 1441).is_err());
+    assert!(
+        mgr.create_guest_session(
+            "g-long",
+            host.clone(),
+            vec![CapabilityScope::Audio],
+            "test",
+            1441
+        )
+        .is_err()
+    );
     // 1440 minutes (<= 24 hours) is accepted
-    assert!(mgr.create_guest_session("g-ok", host, vec![CapabilityScope::Audio], "test", 1440).is_ok());
+    assert!(
+        mgr.create_guest_session("g-ok", host, vec![CapabilityScope::Audio], "test", 1440)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -571,7 +650,9 @@ fn test_f23_guest_wallet_capability_strictly_forbidden() {
 fn test_f23_guest_session_auto_expiry_purge() {
     let mut mgr = GuestSessionManager::new();
     let host = UserId(Uuid::new_v4());
-    let mut session = mgr.create_guest_session("g-purge", host, vec![CapabilityScope::Audio], "test", 10).unwrap();
+    let mut session = mgr
+        .create_guest_session("g-purge", host, vec![CapabilityScope::Audio], "test", 10)
+        .unwrap();
 
     // Expire artificially
     session.expires_at = hakille_core::Timestamp(chrono::Utc::now() - chrono::Duration::minutes(1));

@@ -156,7 +156,8 @@ impl MobileBridge {
     }
 
     pub fn battery_tier(&self, battery_percent: f32, charging: bool) -> String {
-        let engine = hakille_substrate_mobile::BatteryConservationEngine::new(battery_percent, charging);
+        let engine =
+            hakille_substrate_mobile::BatteryConservationEngine::new(battery_percent, charging);
         match engine.current_tier() {
             hakille_substrate_mobile::BatteryTier::Normal => "normal".into(),
             hakille_substrate_mobile::BatteryTier::Conserve => "conserve".into(),
@@ -166,13 +167,20 @@ impl MobileBridge {
         }
     }
 
-    pub fn should_offload_inference(&self, battery_percent: f32, charging: bool, network_available: bool) -> bool {
-        let engine = hakille_substrate_mobile::BatteryConservationEngine::new(battery_percent, charging);
+    pub fn should_offload_inference(
+        &self,
+        battery_percent: f32,
+        charging: bool,
+        network_available: bool,
+    ) -> bool {
+        let engine =
+            hakille_substrate_mobile::BatteryConservationEngine::new(battery_percent, charging);
         engine.should_offload_inference_with_network(network_available)
     }
 
     pub fn perception_fps_limit(&self, battery_percent: f32, charging: bool) -> u32 {
-        let engine = hakille_substrate_mobile::BatteryConservationEngine::new(battery_percent, charging);
+        let engine =
+            hakille_substrate_mobile::BatteryConservationEngine::new(battery_percent, charging);
         engine.perception_fps()
     }
 }
@@ -280,7 +288,9 @@ impl MobileShadowSyncBridge {
             hakille_substrate_mobile::ShadowState::SyncingState => "syncing_state".into(),
             hakille_substrate_mobile::ShadowState::ActiveStreaming => "active_streaming".into(),
             hakille_substrate_mobile::ShadowState::SuspendedDozing => "suspended_dozing".into(),
-            hakille_substrate_mobile::ShadowState::ReconnectingBackoff => "reconnecting_backoff".into(),
+            hakille_substrate_mobile::ShadowState::ReconnectingBackoff => {
+                "reconnecting_backoff".into()
+            }
         }
     }
 

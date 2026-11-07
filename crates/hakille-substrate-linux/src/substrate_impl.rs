@@ -14,8 +14,8 @@ use hakille_substrate::{
     ScreenCapture, Substrate, ThermalState,
 };
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct LinuxSubstrate {
     manifest: PlatformManifest,
@@ -32,9 +32,7 @@ pub struct LinuxSubstrate {
     trusted_capability_root: Option<biscuit_auth::PublicKey>,
     /// Active V4L2 camera streams (thread per stream, latest-only frames).
     camera_counter: AtomicU64,
-    camera_streams: Mutex<
-        std::collections::HashMap<u64, crate::camera_v4l2::CameraStream>,
-    >,
+    camera_streams: Mutex<std::collections::HashMap<u64, crate::camera_v4l2::CameraStream>>,
 }
 
 /// Pure parser for `os-release` style content: `PRETTY_NAME` wins, otherwise
@@ -317,9 +315,7 @@ impl LinuxSubstrate {
         )?;
         let stream = {
             let mut streams = self.camera_streams.lock().map_err(|_| {
-                hakille_core::HakilleError::SubstrateError(
-                    "camera stream registry poisoned".into(),
-                )
+                hakille_core::HakilleError::SubstrateError("camera stream registry poisoned".into())
             })?;
             streams.remove(&handle.0)
         };
@@ -523,9 +519,7 @@ impl Substrate for LinuxSubstrate {
         self.camera_streams
             .lock()
             .map_err(|_| {
-                hakille_core::HakilleError::SubstrateError(
-                    "camera stream registry poisoned".into(),
-                )
+                hakille_core::HakilleError::SubstrateError("camera stream registry poisoned".into())
             })?
             .insert(id, stream);
         Ok(CameraStreamHandle(id))
@@ -537,9 +531,7 @@ impl Substrate for LinuxSubstrate {
         );
         let stream = {
             let mut streams = self.camera_streams.lock().map_err(|_| {
-                hakille_core::HakilleError::SubstrateError(
-                    "camera stream registry poisoned".into(),
-                )
+                hakille_core::HakilleError::SubstrateError("camera stream registry poisoned".into())
             })?;
             streams.remove(&handle.0)
         };
@@ -564,9 +556,7 @@ impl Substrate for LinuxSubstrate {
         )?;
         let receiver = {
             let streams = self.camera_streams.lock().map_err(|_| {
-                hakille_core::HakilleError::SubstrateError(
-                    "camera stream registry poisoned".into(),
-                )
+                hakille_core::HakilleError::SubstrateError("camera stream registry poisoned".into())
             })?;
             streams
                 .get(&handle.0)
@@ -687,28 +677,29 @@ impl Substrate for LinuxSubstrate {
             "LinuxSubstrate: Dispatching notification"
         );
 
-        let channel = if std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok() {
-            let urgency_str = match request.urgency {
-                hakille_substrate::NotificationUrgency::Low => "low",
-                hakille_substrate::NotificationUrgency::Normal => "normal",
-                hakille_substrate::NotificationUrgency::High
-                | hakille_substrate::NotificationUrgency::Critical => "critical",
+        let channel =
+            if std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok() {
+                let urgency_str = match request.urgency {
+                    hakille_substrate::NotificationUrgency::Low => "low",
+                    hakille_substrate::NotificationUrgency::Normal => "normal",
+                    hakille_substrate::NotificationUrgency::High
+                    | hakille_substrate::NotificationUrgency::Critical => "critical",
+                };
+                let mut cmd = std::process::Command::new("notify-send");
+                cmd.arg(&request.title)
+                    .arg(&request.body)
+                    .arg("-u")
+                    .arg(urgency_str)
+                    .arg("-a")
+                    .arg("Hakille");
+                if let Some(timeout) = request.timeout_ms {
+                    cmd.arg("-t").arg(timeout.to_string());
+                }
+                let _ = cmd.spawn();
+                "freedesktop_dbus".to_string()
+            } else {
+                "linux_session_log".to_string()
             };
-            let mut cmd = std::process::Command::new("notify-send");
-            cmd.arg(&request.title)
-                .arg(&request.body)
-                .arg("-u")
-                .arg(urgency_str)
-                .arg("-a")
-                .arg("Hakille");
-            if let Some(timeout) = request.timeout_ms {
-                cmd.arg("-t").arg(timeout.to_string());
-            }
-            let _ = cmd.spawn();
-            "freedesktop_dbus".to_string()
-        } else {
-            "linux_session_log".to_string()
-        };
 
         Ok(hakille_substrate::NotificationHandle {
             id: request.id,
@@ -791,7 +782,7 @@ mod tests {
         let substrate = LinuxSubstrate::new();
         let authority = hakille_core::CapabilityAuthority::new();
         let substrate = substrate.with_trusted_root(authority.root_public_key());
-        let exp = Timestamp::now();
+        let exp = Timestamp(chrono::Utc::now() + chrono::Duration::hours(1));
 
         // 1. Token avec CapabilityScope::Notification (Write + Delete)
         let notif_token = authority
@@ -838,7 +829,9 @@ mod tests {
         let err = substrate
             .send_notification(unauthorized_req, &camera_token)
             .await;
-        assert!(err.is_err(), "Must reject notification without CapabilityScope::Notification");
+        assert!(
+            err.is_err(),
+            "Must reject notification without CapabilityScope::Notification"
+        );
     }
 }
-

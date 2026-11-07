@@ -167,11 +167,15 @@ impl FatigueDetector {
         let is_drowsy = perclos_score >= PERCLOS_DROWSY_THRESHOLD;
         let is_fatigued = perclos_score >= PERCLOS_FATIGUE_THRESHOLD;
 
-        let elapsed_secs = if let (Some(first), Some(last)) = (self.samples.front(), self.samples.back()) {
-            last.timestamp.duration_since(first.timestamp).as_secs_f32().max(1.0)
-        } else {
-            1.0
-        };
+        let elapsed_secs =
+            if let (Some(first), Some(last)) = (self.samples.front(), self.samples.back()) {
+                last.timestamp
+                    .duration_since(first.timestamp)
+                    .as_secs_f32()
+                    .max(1.0)
+            } else {
+                1.0
+            };
 
         let blink_rate_per_min = (self.total_blinks as f32) / (elapsed_secs / 60.0);
 
@@ -229,13 +233,24 @@ mod tests {
             detector.update(t, 0.30, 0.30, 0.12, true, (0.0, 0.0));
         }
 
-        let mut final_profile = detector.update(start + Duration::from_millis(80 * 33), 0.10, 0.10, 0.12, true, (0.0, 0.0));
+        let mut final_profile = detector.update(
+            start + Duration::from_millis(80 * 33),
+            0.10,
+            0.10,
+            0.12,
+            true,
+            (0.0, 0.0),
+        );
         for i in 81..105 {
             let t = start + Duration::from_millis(i * 33);
             final_profile = detector.update(t, 0.12, 0.12, 0.12, true, (0.0, 0.0));
         }
 
-        assert!(final_profile.perclos_score >= 0.15, "PERCLOS score : {}", final_profile.perclos_score);
+        assert!(
+            final_profile.perclos_score >= 0.15,
+            "PERCLOS score : {}",
+            final_profile.perclos_score
+        );
         assert!(final_profile.is_drowsy, "Alerte somnolence active");
         assert!(final_profile.is_fatigued, "Alerte fatigue active");
     }
@@ -254,6 +269,9 @@ mod tests {
         let end_t = start + Duration::from_millis(61 * 33);
         let profile = detector.update(end_t, 0.30, 0.30, 0.10, true, (0.0, 0.0));
 
-        assert_eq!(profile.recent_yawn_count, 1, "Un bâillement complet détecté");
+        assert_eq!(
+            profile.recent_yawn_count, 1,
+            "Un bâillement complet détecté"
+        );
     }
 }

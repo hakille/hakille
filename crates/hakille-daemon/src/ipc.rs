@@ -24,7 +24,9 @@ use hakille_ipc::{ErrorCode, Frame, FrameBody};
 use hakille_kernel::orchestrator::{ActionCardPreview, CognitiveOrchestrator};
 use hakille_metrics::{BoundedInitiativeTracker, ContinuityTracker, GeneralityTracker};
 use hakille_sync::{Outbox, OutboxEntry};
-use hakille_ui::{CostCounter, MemoryViewerPanel, PresenceIndicator, PresenceState as DaemonPresenceState};
+use hakille_ui::{
+    CostCounter, MemoryViewerPanel, PresenceIndicator, PresenceState as DaemonPresenceState,
+};
 use hakille_ui_protocol::{
     ActionCard, AgentDto, DataExit, JournalEntryDto, KernelToUi, MemoryRowDto, Money,
     PresenceState as ProtoPresenceState, PrivacyGuardEvent, PrivacyGuardTrigger, Provenance,
@@ -197,11 +199,7 @@ impl ActionCardManager {
     }
 
     #[allow(dead_code)]
-    pub fn insert_card(
-        &mut self,
-        card: ActionCard,
-        plan: hakille_kernel::planner::ExecutionPlan,
-    ) {
+    pub fn insert_card(&mut self, card: ActionCard, plan: hakille_kernel::planner::ExecutionPlan) {
         let id = card.id;
         self.pending.insert(id, PendingCard { card, plan });
         if id >= self.next_id {
@@ -562,7 +560,9 @@ async fn handle_client_request(
     memory_path: &Path,
     outbox: &mut Outbox,
     data_dir: &Path,
-    agent_runtime: Option<&std::sync::Arc<std::sync::Mutex<crate::agent_runtime::ReferenceAgentRuntime>>>,
+    agent_runtime: Option<
+        &std::sync::Arc<std::sync::Mutex<crate::agent_runtime::ReferenceAgentRuntime>>,
+    >,
     agent_registry: &hakille_agents::AgentRegistry,
     card_manager: &mut ActionCardManager,
     broadcast_tx: &broadcast::Sender<BroadcastEnvelope>,
@@ -578,7 +578,11 @@ async fn handle_client_request(
             if query.trim().is_empty() {
                 eprintln!("IPC [session {session_id}]: requête vide refusée (id={id})");
                 let _ = reply_tx
-                    .send(Frame::error(id, ErrorCode::BadFrame, "requête vide refusée"))
+                    .send(Frame::error(
+                        id,
+                        ErrorCode::BadFrame,
+                        "requête vide refusée",
+                    ))
                     .await;
                 return;
             }
@@ -683,29 +687,26 @@ async fn handle_client_request(
                                 eprintln!(
                                     "IPC: carte non présentée (id={id}) — audit indisponible: {e}"
                                 );
-                                let _ = broadcast_tx.send(BroadcastEnvelope::all(
-                                    KernelToUi::Toast {
+                                let _ =
+                                    broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::Toast {
                                         text: format!(
                                             "carte non présentée — audit indisponible: {e}"
                                         ),
-                                    },
-                                ));
+                                    }));
                             }
                         }
                     }
 
                     if !card_proposed {
                         presence.set_state(DaemonPresenceState::Idle);
-                        let _ = broadcast_tx.send(BroadcastEnvelope::all(
-                            KernelToUi::Presence(ProtoPresenceState::Idle),
-                        ));
+                        let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::Presence(
+                            ProtoPresenceState::Idle,
+                        )));
                     }
 
                     let response = if outcome.non_empty {
                         let validation = match &outcome.persistence_warning {
-                            Some(warning) => {
-                                Some((format!("⚠ {warning}"), outcome.cost_cents))
-                            }
+                            Some(warning) => Some((format!("⚠ {warning}"), outcome.cost_cents)),
                             None => (outcome.cost_cents > 0)
                                 .then(|| ("coût tour".into(), outcome.cost_cents)),
                         };
@@ -721,8 +722,7 @@ async fn handle_client_request(
                         Frame::reply(
                             id,
                             KernelToUi::Toast {
-                                text: "réponse vide (EOS immédiat) — aucun succès simulé"
-                                    .into(),
+                                text: "réponse vide (EOS immédiat) — aucun succès simulé".into(),
                             },
                         )
                     };
@@ -735,10 +735,12 @@ async fn handle_client_request(
                     };
                     eprintln!("IPC: tour échoué (id={id}) — {text}");
                     presence.set_state(DaemonPresenceState::Idle);
-                    let _ = broadcast_tx.send(BroadcastEnvelope::all(
-                        KernelToUi::Presence(ProtoPresenceState::Idle),
-                    ));
-                    let _ = reply_tx.send(Frame::reply(id, KernelToUi::Toast { text })).await;
+                    let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::Presence(
+                        ProtoPresenceState::Idle,
+                    )));
+                    let _ = reply_tx
+                        .send(Frame::reply(id, KernelToUi::Toast { text }))
+                        .await;
                 }
             }
         }
@@ -760,16 +762,17 @@ async fn handle_client_request(
                     // Unicast pour le client décideur avec son request.id
                     let _ = reply_tx.send(Frame::reply(id, reply.clone())).await;
                     // Broadcast pour les pairs (Desktop HUD, etc.) avec id = 0 pour refermer la carte
-                    let _ = broadcast_tx
-                        .send(BroadcastEnvelope::peer_only(session_id, reply));
+                    let _ = broadcast_tx.send(BroadcastEnvelope::peer_only(session_id, reply));
                     if card_manager.is_empty() {
-                        let _ = broadcast_tx.send(BroadcastEnvelope::all(
-                            KernelToUi::Presence(ProtoPresenceState::Idle),
-                        ));
+                        let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::Presence(
+                            ProtoPresenceState::Idle,
+                        )));
                     }
                 }
                 KernelToUi::Toast { text } => {
-                    eprintln!("IPC [session {session_id}]: approbation carte #{card_id} refusée — {text}");
+                    eprintln!(
+                        "IPC [session {session_id}]: approbation carte #{card_id} refusée — {text}"
+                    );
                     let _ = reply_tx.send(Frame::reply(id, reply)).await;
                 }
                 _ => {
@@ -792,16 +795,17 @@ async fn handle_client_request(
                     // Unicast pour le client émetteur
                     let _ = reply_tx.send(Frame::reply(id, reply.clone())).await;
                     // Broadcast pour les pairs pour refermer la carte
-                    let _ = broadcast_tx
-                        .send(BroadcastEnvelope::peer_only(session_id, reply));
+                    let _ = broadcast_tx.send(BroadcastEnvelope::peer_only(session_id, reply));
                     if card_manager.is_empty() {
-                        let _ = broadcast_tx.send(BroadcastEnvelope::all(
-                            KernelToUi::Presence(ProtoPresenceState::Idle),
-                        ));
+                        let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::Presence(
+                            ProtoPresenceState::Idle,
+                        )));
                     }
                 }
                 KernelToUi::Toast { text } => {
-                    eprintln!("IPC [session {session_id}]: refus carte #{card_id} non enregistré — {text}");
+                    eprintln!(
+                        "IPC [session {session_id}]: refus carte #{card_id} non enregistré — {text}"
+                    );
                     let _ = reply_tx.send(Frame::reply(id, reply)).await;
                 }
                 _ => {
@@ -836,7 +840,10 @@ async fn handle_client_request(
                         .take(limit.min(MAX_LIST_ROWS))
                         .map(journal_entry_dto)
                         .collect();
-                    println!("IPC [session {session_id}]: journal servi (id={id}, {} entrées)", listed.len());
+                    println!(
+                        "IPC [session {session_id}]: journal servi (id={id}, {} entrées)",
+                        listed.len()
+                    );
                     Frame::reply(id, KernelToUi::JournalReply { entries: listed })
                 }
                 Err(e) => {
@@ -861,12 +868,18 @@ async fn handle_client_request(
                 Some(q) => {
                     let recalled = orchestrator.recall(q.trim());
                     let rows = recall_rows(&orchestrator.memory_graph, &recalled, limit);
-                    println!("IPC [session {session_id}]: rappel servi (id={id}, {} lignes)", rows.len());
+                    println!(
+                        "IPC [session {session_id}]: rappel servi (id={id}, {} lignes)",
+                        rows.len()
+                    );
                     Frame::reply(id, KernelToUi::MemoryReply { rows })
                 }
                 None => {
                     let rows = memory_view_rows(&orchestrator.memory_graph, limit);
-                    println!("IPC [session {session_id}]: mémoire servie (id={id}, {} lignes)", rows.len());
+                    println!(
+                        "IPC [session {session_id}]: mémoire servie (id={id}, {} lignes)",
+                        rows.len()
+                    );
                     Frame::reply(id, KernelToUi::MemoryReply { rows })
                 }
             };
@@ -878,7 +891,11 @@ async fn handle_client_request(
             if text.trim().is_empty() {
                 eprintln!("IPC [session {session_id}]: mémoire vide refusée (id={id})");
                 let _ = reply_tx
-                    .send(Frame::error(id, ErrorCode::BadFrame, "mémoire vide refusée"))
+                    .send(Frame::error(
+                        id,
+                        ErrorCode::BadFrame,
+                        "mémoire vide refusée",
+                    ))
                     .await;
             } else {
                 let trimmed = text.trim().to_string();
@@ -888,7 +905,9 @@ async fn handle_client_request(
                     format!("Demande de mémorisation via HUD: '{trimmed}'"),
                     serde_json::json!({ "text": trimmed, "origin": "ipc" }),
                 ) {
-                    eprintln!("IPC [session {session_id}]: audit mémoire impossible (id={id}) — {e}");
+                    eprintln!(
+                        "IPC [session {session_id}]: audit mémoire impossible (id={id}) — {e}"
+                    );
                     let _ = reply_tx
                         .send(Frame::reply(
                             id,
@@ -900,27 +919,28 @@ async fn handle_client_request(
                 } else {
                     let (subject, predicate, object) = remember_parts(&trimmed);
                     let result = orchestrator.remember(subject, predicate, object);
-                    let ack =
-                        |triplet_id: &hakille_core::TripletId,
-                         persisted: &Result<(), String>| {
-                            let id_text = triplet_id.0.to_string();
-                            match persisted {
-                                Ok(()) => {
-                                    println!("IPC [session {session_id}]: mémoire enregistrée et persistée (id={id})");
-                                    KernelToUi::MemoryRememberAck { id: id_text }
-                                }
-                                Err(e) => {
-                                    eprintln!(
-                                        "IPC [session {session_id}]: mémoire en RAM non persistée (id={id}) — {e}"
-                                    );
-                                    KernelToUi::Toast {
-                                        text: format!(
-                                            "fait [{id_text}] en mémoire volatile, persistance échouée: {e}"
-                                        ),
-                                    }
+                    let ack = |triplet_id: &hakille_core::TripletId,
+                               persisted: &Result<(), String>| {
+                        let id_text = triplet_id.0.to_string();
+                        match persisted {
+                            Ok(()) => {
+                                println!(
+                                    "IPC [session {session_id}]: mémoire enregistrée et persistée (id={id})"
+                                );
+                                KernelToUi::MemoryRememberAck { id: id_text }
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "IPC [session {session_id}]: mémoire en RAM non persistée (id={id}) — {e}"
+                                );
+                                KernelToUi::Toast {
+                                    text: format!(
+                                        "fait [{id_text}] en mémoire volatile, persistance échouée: {e}"
+                                    ),
                                 }
                             }
-                        };
+                        }
+                    };
                     let response = match result {
                         hakille_memory::InsertResult::Inserted(triplet_id) => {
                             let persisted = persist_memory_to(orchestrator, memory_path);
@@ -968,7 +988,9 @@ async fn handle_client_request(
                 memory_count: orchestrator.memory_graph.len() as u64,
             };
             println!("IPC [session {session_id}]: statut servi (id={id})");
-            let _ = reply_tx.send(Frame::reply(id, KernelToUi::StatusReply { status })).await;
+            let _ = reply_tx
+                .send(Frame::reply(id, KernelToUi::StatusReply { status }))
+                .await;
         }
         FrameBody::Request {
             message: UiToKernel::AgentListRequest,
@@ -977,8 +999,13 @@ async fn handle_client_request(
                 let guard = agent_runtime.and_then(|r| r.lock().ok());
                 agent_dtos(guard.as_deref(), agent_registry)
             };
-            println!("IPC [session {session_id}]: agents listés (id={id}, {} agent(s))", agents.len());
-            let _ = reply_tx.send(Frame::reply(id, KernelToUi::AgentListReply { agents })).await;
+            println!(
+                "IPC [session {session_id}]: agents listés (id={id}, {} agent(s))",
+                agents.len()
+            );
+            let _ = reply_tx
+                .send(Frame::reply(id, KernelToUi::AgentListReply { agents }))
+                .await;
         }
         FrameBody::Request {
             message: UiToKernel::AgentRunRequest { name, input_json },
@@ -1042,13 +1069,17 @@ async fn handle_client_request(
                         }
                         Ok(Ok(other)) => other,
                         Ok(Err(e)) => {
-                            eprintln!("IPC [session {session_id}]: exécution d'agent échouée ({name}) — {e}");
+                            eprintln!(
+                                "IPC [session {session_id}]: exécution d'agent échouée ({name}) — {e}"
+                            );
                             KernelToUi::Toast {
                                 text: format!("agent {name} : {e}"),
                             }
                         }
                         Err(e) => {
-                            eprintln!("IPC [session {session_id}]: tâche d'exécution d'agent interrompue — {e}");
+                            eprintln!(
+                                "IPC [session {session_id}]: tâche d'exécution d'agent interrompue — {e}"
+                            );
                             KernelToUi::Toast {
                                 text: format!("exécution d'agent interrompue : {e}"),
                             }
@@ -1067,12 +1098,13 @@ async fn handle_client_request(
             let _ = reply_tx.send(Frame::reply(id, reply)).await;
         }
         FrameBody::Request {
-            message: UiToKernel::PerceptionControl {
-                hardware_camera_enabled,
-                hardware_mic_enabled,
-                cognitive_inference_enabled,
-                active_channels_mask,
-            },
+            message:
+                UiToKernel::PerceptionControl {
+                    hardware_camera_enabled,
+                    hardware_mic_enabled,
+                    cognitive_inference_enabled,
+                    active_channels_mask,
+                },
         } => {
             let audit_res = audit_action_with_id(
                 audit_journal,
@@ -1102,12 +1134,17 @@ async fn handle_client_request(
                     _ => "none".to_string(),
                 };
                 let guard_event = PrivacyGuardEvent {
-                    trigger: PrivacyGuardTrigger::HardwareKillSwitchActivated { device: device.clone() },
+                    trigger: PrivacyGuardTrigger::HardwareKillSwitchActivated {
+                        device: device.clone(),
+                    },
                     description: format!("Coupure matérielle activée pour : {device}"),
-                    recommended_action: "Capteurs désactivés physiquement (Règle 8 souveraineté)".to_string(),
+                    recommended_action: "Capteurs désactivés physiquement (Règle 8 souveraineté)"
+                        .to_string(),
                     timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
                 };
-                let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::PrivacyGuardAlert(guard_event)));
+                let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::PrivacyGuardAlert(
+                    guard_event,
+                )));
             }
 
             let audit_id = audit_res.unwrap_or_else(|_| "audit_offline".to_string());
@@ -1119,16 +1156,21 @@ async fn handle_client_request(
                     "Perception matérielle mise à jour (caméra: {}, micro: {}, inférence: {})",
                     if hardware_camera_enabled { "on" } else { "off" },
                     if hardware_mic_enabled { "on" } else { "off" },
-                    if cognitive_inference_enabled { "on" } else { "off" }
+                    if cognitive_inference_enabled {
+                        "on"
+                    } else {
+                        "off"
+                    }
                 ),
             };
             let _ = reply_tx.send(Frame::reply(id, reply)).await;
         }
         FrameBody::Request {
-            message: UiToKernel::NotificationAction {
-                id: notif_id,
-                action_id,
-            },
+            message:
+                UiToKernel::NotificationAction {
+                    id: notif_id,
+                    action_id,
+                },
         } => {
             let audit_res = audit_action_with_id(
                 audit_journal,
@@ -1185,7 +1227,9 @@ async fn handle_client_request(
             let _ = reply_tx.send(Frame::reply(id, reply)).await;
         }
         FrameBody::Request { .. } => {
-            eprintln!("IPC [session {session_id}]: message non supporté (id={id}) — refus explicite");
+            eprintln!(
+                "IPC [session {session_id}]: message non supporté (id={id}) — refus explicite"
+            );
             let _ = reply_tx
                 .send(Frame::reply(
                     id,
@@ -1807,9 +1851,23 @@ mod tests {
         let mut outbox = Outbox::new();
 
         let ack1 = mgr.decide(&journal, &mut outbox, &dir, 1, true);
-        assert!(matches!(ack1, KernelToUi::CardDecisionAck { card_id: 1, approved: true, .. }));
+        assert!(matches!(
+            ack1,
+            KernelToUi::CardDecisionAck {
+                card_id: 1,
+                approved: true,
+                ..
+            }
+        ));
         let ack2 = mgr.decide(&journal, &mut outbox, &dir, 2, false);
-        assert!(matches!(ack2, KernelToUi::CardDecisionAck { card_id: 2, approved: false, .. }));
+        assert!(matches!(
+            ack2,
+            KernelToUi::CardDecisionAck {
+                card_id: 2,
+                approved: false,
+                ..
+            }
+        ));
         assert!(mgr.is_empty());
         assert_eq!(mgr.pending_count(), 0);
     }
@@ -1827,7 +1885,8 @@ mod tests {
         let listener = transport::IpcListener::bind(&endpoint).await.unwrap();
 
         let user_id = hakille_core::UserId(uuid::Uuid::now_v7());
-        let fabric = hakille_kernel::CognitiveFabric::new(hakille_kernel::CognitiveManifest::default());
+        let fabric =
+            hakille_kernel::CognitiveFabric::new(hakille_kernel::CognitiveManifest::default());
         let constitution = hakille_constitution::Constitution::default_v1();
         let mut orchestrator = CognitiveOrchestrator::new(fabric, user_id, constitution);
         let mut presence = PresenceIndicator::new();
@@ -1875,74 +1934,162 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // 2. Client 1 (Desktop HUD) connecte et handshake
-        let mut desktop_stream = transport::connect(&endpoint).await.expect("connect desktop");
-        transport::client_handshake(&mut desktop_stream, &token).await.expect("handshake desktop");
+        let mut desktop_stream = transport::connect(&endpoint)
+            .await
+            .expect("connect desktop");
+        transport::client_handshake(&mut desktop_stream, &token)
+            .await
+            .expect("handshake desktop");
         let (desktop_reader, mut desktop_writer) = tokio::io::split(desktop_stream);
         let mut desktop_reader = BufReader::new(desktop_reader);
 
         // 3. Client 2 (Mobile Gateway) connecte simultanément et handshake sans blocage !
         let mut mobile_stream = transport::connect(&endpoint).await.expect("connect mobile");
-        transport::client_handshake(&mut mobile_stream, &token).await.expect("handshake mobile");
+        transport::client_handshake(&mut mobile_stream, &token)
+            .await
+            .expect("handshake mobile");
         let (mobile_reader, mut mobile_writer) = tokio::io::split(mobile_stream);
         let mut mobile_reader = BufReader::new(mobile_reader);
 
         // VÉRIFICATION 1 : Requêtes concurrentes StatusRequest simultanées
         let req_desktop = Frame::request(101, UiToKernel::StatusRequest);
-        transport::write_frame(&mut desktop_writer, &req_desktop).await.unwrap();
+        transport::write_frame(&mut desktop_writer, &req_desktop)
+            .await
+            .unwrap();
 
         let req_mobile = Frame::request(201, UiToKernel::StatusRequest);
-        transport::write_frame(&mut mobile_writer, &req_mobile).await.unwrap();
+        transport::write_frame(&mut mobile_writer, &req_mobile)
+            .await
+            .unwrap();
 
         // Desktop reçoit exactement son statut avec son request.id = 101
-        let resp_desktop = transport::read_frame(&mut desktop_reader).await.unwrap().expect("desktop frame");
+        let resp_desktop = transport::read_frame(&mut desktop_reader)
+            .await
+            .unwrap()
+            .expect("desktop frame");
         assert_eq!(resp_desktop.id, 101, "Desktop reçoit sa propre réponse");
-        assert!(matches!(resp_desktop.body, FrameBody::Reply { message: KernelToUi::StatusReply { .. } }));
+        assert!(matches!(
+            resp_desktop.body,
+            FrameBody::Reply {
+                message: KernelToUi::StatusReply { .. }
+            }
+        ));
 
         // Mobile reçoit exactement son statut avec son request.id = 201 (aucune fuite du paquet Desktop)
-        let resp_mobile = transport::read_frame(&mut mobile_reader).await.unwrap().expect("mobile frame");
-        assert_eq!(resp_mobile.id, 201, "Mobile reçoit sa propre réponse sans collision d'ID");
-        assert!(matches!(resp_mobile.body, FrameBody::Reply { message: KernelToUi::StatusReply { .. } }));
+        let resp_mobile = transport::read_frame(&mut mobile_reader)
+            .await
+            .unwrap()
+            .expect("mobile frame");
+        assert_eq!(
+            resp_mobile.id, 201,
+            "Mobile reçoit sa propre réponse sans collision d'ID"
+        );
+        assert!(matches!(
+            resp_mobile.body,
+            FrameBody::Reply {
+                message: KernelToUi::StatusReply { .. }
+            }
+        ));
 
         // VÉRIFICATION 2 : Proposition d'une Action Card via HudSubmit avec plan sec
-        let prompt_card = Frame::request(102, UiToKernel::HudSubmit { query: "payer 25 EUR à Awa".to_string() });
-        transport::write_frame(&mut desktop_writer, &prompt_card).await.unwrap();
+        let prompt_card = Frame::request(
+            102,
+            UiToKernel::HudSubmit {
+                query: "payer 25 EUR à Awa".to_string(),
+            },
+        );
+        transport::write_frame(&mut desktop_writer, &prompt_card)
+            .await
+            .unwrap();
 
         // Les deux clients observent l'événement de réflexion Acting diffusé sur le bus broadcast avec id = 0
         // Desktop reçoit sa réponse HudReply (id=102) et les événements broadcast (id=0)
         let mut desktop_frames = Vec::new();
         for _ in 0..4 {
-            let f = transport::read_frame(&mut desktop_reader).await.unwrap().expect("desktop frame");
+            let f = transport::read_frame(&mut desktop_reader)
+                .await
+                .unwrap()
+                .expect("desktop frame");
             desktop_frames.push(f);
         }
 
         // Vérification de la séparation stricte : exactement une réponse finale Unicast (id=102)
         let unicast_replies: Vec<&Frame> = desktop_frames.iter().filter(|f| f.id == 102).collect();
-        assert_eq!(unicast_replies.len(), 1, "Desktop reçoit sa réponse Unicast avec son id 102");
-        assert!(matches!(unicast_replies[0].body, FrameBody::Reply { message: KernelToUi::HudReply { .. } }));
+        assert_eq!(
+            unicast_replies.len(),
+            1,
+            "Desktop reçoit sa réponse Unicast avec son id 102"
+        );
+        assert!(matches!(
+            unicast_replies[0].body,
+            FrameBody::Reply {
+                message: KernelToUi::HudReply { .. }
+            }
+        ));
 
         // Vérification des événements broadcast reçus par Desktop (id=0)
         let broadcast_frames: Vec<&Frame> = desktop_frames.iter().filter(|f| f.id == 0).collect();
-        assert_eq!(broadcast_frames.len(), 3, "Desktop reçoit les 3 événements broadcast avec id 0");
-        assert!(broadcast_frames.iter().any(|f| matches!(&f.body, FrameBody::Reply { message: KernelToUi::Presence(ProtoPresenceState::Acting) })));
-        assert!(broadcast_frames.iter().any(|f| matches!(&f.body, FrameBody::Reply { message: KernelToUi::Presence(ProtoPresenceState::DecisionRequired) })));
-        let desktop_card_id = broadcast_frames.iter().find_map(|f| match &f.body {
-            FrameBody::Reply { message: KernelToUi::ShowCard(card) } => Some(card.id),
-            _ => None,
-        }).expect("Desktop a reçu ShowCard");
+        assert_eq!(
+            broadcast_frames.len(),
+            3,
+            "Desktop reçoit les 3 événements broadcast avec id 0"
+        );
+        assert!(broadcast_frames.iter().any(|f| matches!(
+            &f.body,
+            FrameBody::Reply {
+                message: KernelToUi::Presence(ProtoPresenceState::Acting)
+            }
+        )));
+        assert!(broadcast_frames.iter().any(|f| matches!(
+            &f.body,
+            FrameBody::Reply {
+                message: KernelToUi::Presence(ProtoPresenceState::DecisionRequired)
+            }
+        )));
+        let desktop_card_id = broadcast_frames
+            .iter()
+            .find_map(|f| match &f.body {
+                FrameBody::Reply {
+                    message: KernelToUi::ShowCard(card),
+                } => Some(card.id),
+                _ => None,
+            })
+            .expect("Desktop a reçu ShowCard");
 
         // Mobile (passerelle) ne reçoit STRICTEMENT QUE les 3 trames de broadcast avec id = 0 (zéro trame id 102)
-        let bcast_m_acting = transport::read_frame(&mut mobile_reader).await.unwrap().expect("mobile acting");
+        let bcast_m_acting = transport::read_frame(&mut mobile_reader)
+            .await
+            .unwrap()
+            .expect("mobile acting");
         assert_eq!(bcast_m_acting.id, 0);
-        assert!(matches!(bcast_m_acting.body, FrameBody::Reply { message: KernelToUi::Presence(ProtoPresenceState::Acting) }));
+        assert!(matches!(
+            bcast_m_acting.body,
+            FrameBody::Reply {
+                message: KernelToUi::Presence(ProtoPresenceState::Acting)
+            }
+        ));
 
-        let bcast_m_dec = transport::read_frame(&mut mobile_reader).await.unwrap().expect("mobile decision required");
+        let bcast_m_dec = transport::read_frame(&mut mobile_reader)
+            .await
+            .unwrap()
+            .expect("mobile decision required");
         assert_eq!(bcast_m_dec.id, 0);
-        assert!(matches!(bcast_m_dec.body, FrameBody::Reply { message: KernelToUi::Presence(ProtoPresenceState::DecisionRequired) }));
+        assert!(matches!(
+            bcast_m_dec.body,
+            FrameBody::Reply {
+                message: KernelToUi::Presence(ProtoPresenceState::DecisionRequired)
+            }
+        ));
 
-        let bcast_m_card = transport::read_frame(&mut mobile_reader).await.unwrap().expect("mobile show card");
+        let bcast_m_card = transport::read_frame(&mut mobile_reader)
+            .await
+            .unwrap()
+            .expect("mobile show card");
         assert_eq!(bcast_m_card.id, 0);
         let card_id = match bcast_m_card.body {
-            FrameBody::Reply { message: KernelToUi::ShowCard(card) } => {
+            FrameBody::Reply {
+                message: KernelToUi::ShowCard(card),
+            } => {
                 assert_eq!(card.verb, "Confirmer");
                 assert_eq!(card.id, desktop_card_id);
                 card.id
@@ -1952,26 +2099,60 @@ mod tests {
 
         // VÉRIFICATION 3 : Mobile approuve la carte -> Mobile reçoit Unicast avec son id 202, Desktop reçoit broadcast avec id 0
         let approve_req = Frame::request(202, UiToKernel::Approve { card_id });
-        transport::write_frame(&mut mobile_writer, &approve_req).await.unwrap();
+        transport::write_frame(&mut mobile_writer, &approve_req)
+            .await
+            .unwrap();
 
         // Mobile reçoit son accusé Unicast direct avec id = 202
-        let ack_mobile = transport::read_frame(&mut mobile_reader).await.unwrap().expect("mobile ack");
+        let ack_mobile = transport::read_frame(&mut mobile_reader)
+            .await
+            .unwrap()
+            .expect("mobile ack");
         assert_eq!(ack_mobile.id, 202);
-        assert!(matches!(ack_mobile.body, FrameBody::Reply { message: KernelToUi::CardDecisionAck { approved: true, .. } }));
+        assert!(matches!(
+            ack_mobile.body,
+            FrameBody::Reply {
+                message: KernelToUi::CardDecisionAck { approved: true, .. }
+            }
+        ));
 
         // Desktop reçoit l'accusé de résolution via le broadcast bus avec id = 0
-        let ack_desktop = transport::read_frame(&mut desktop_reader).await.unwrap().expect("desktop ack broadcast");
+        let ack_desktop = transport::read_frame(&mut desktop_reader)
+            .await
+            .unwrap()
+            .expect("desktop ack broadcast");
         assert_eq!(ack_desktop.id, 0);
-        assert!(matches!(ack_desktop.body, FrameBody::Reply { message: KernelToUi::CardDecisionAck { approved: true, .. } }));
+        assert!(matches!(
+            ack_desktop.body,
+            FrameBody::Reply {
+                message: KernelToUi::CardDecisionAck { approved: true, .. }
+            }
+        ));
 
         // Tous deux reçoivent Presence(Idle) avec id = 0
-        let idle_desktop = transport::read_frame(&mut desktop_reader).await.unwrap().expect("desktop idle");
+        let idle_desktop = transport::read_frame(&mut desktop_reader)
+            .await
+            .unwrap()
+            .expect("desktop idle");
         assert_eq!(idle_desktop.id, 0);
-        assert!(matches!(idle_desktop.body, FrameBody::Reply { message: KernelToUi::Presence(ProtoPresenceState::Idle) }));
+        assert!(matches!(
+            idle_desktop.body,
+            FrameBody::Reply {
+                message: KernelToUi::Presence(ProtoPresenceState::Idle)
+            }
+        ));
 
-        let idle_mobile = transport::read_frame(&mut mobile_reader).await.unwrap().expect("mobile idle");
+        let idle_mobile = transport::read_frame(&mut mobile_reader)
+            .await
+            .unwrap()
+            .expect("mobile idle");
         assert_eq!(idle_mobile.id, 0);
-        assert!(matches!(idle_mobile.body, FrameBody::Reply { message: KernelToUi::Presence(ProtoPresenceState::Idle) }));
+        assert!(matches!(
+            idle_mobile.body,
+            FrameBody::Reply {
+                message: KernelToUi::Presence(ProtoPresenceState::Idle)
+            }
+        ));
 
         // VÉRIFICATION 4 : Résilience à la déconnexion abrupte
         drop(mobile_reader);
@@ -1981,10 +2162,20 @@ mod tests {
 
         // Desktop continue à fonctionner normalement
         let ping = Frame::request(103, UiToKernel::StatusRequest);
-        transport::write_frame(&mut desktop_writer, &ping).await.unwrap();
-        let pong = transport::read_frame(&mut desktop_reader).await.unwrap().expect("desktop pong");
+        transport::write_frame(&mut desktop_writer, &ping)
+            .await
+            .unwrap();
+        let pong = transport::read_frame(&mut desktop_reader)
+            .await
+            .unwrap()
+            .expect("desktop pong");
         assert_eq!(pong.id, 103);
-        assert!(matches!(pong.body, FrameBody::Reply { message: KernelToUi::StatusReply { .. } }));
+        assert!(matches!(
+            pong.body,
+            FrameBody::Reply {
+                message: KernelToUi::StatusReply { .. }
+            }
+        ));
 
         // Arrêt propre du serveur
         let _ = shutdown_tx.send(());

@@ -1,9 +1,9 @@
 //! Tier 4: Real-World Complex Application Scenarios Test Suite
 //! 5 Realistic Sovereign Multi-Tenant Workloads.
 
+use hakille_core::UserId;
 use hakille_core::capability::{CapabilityAction, CapabilityScope};
 use hakille_core::types::Timestamp;
-use hakille_core::UserId;
 use hakille_identity::*;
 use uuid::Uuid;
 
@@ -32,26 +32,42 @@ fn test_tier4_scenario_01_enterprise_conglomerate_delegation() {
     firewall.register_tenant(team_telemetry, EntityTier::Team);
 
     // ReBAC hierarchy: ent -> org_avionics -> team_telemetry
-    rebac.add_tuple(RelationTuple::new("enterprise", ent_id.to_string(), "parent_of", "org", org_avionics.to_string()));
-    rebac.add_tuple(RelationTuple::new("org", org_avionics.to_string(), "parent_of", "team", team_telemetry.to_string()));
+    rebac.add_tuple(RelationTuple::new(
+        "enterprise",
+        ent_id.to_string(),
+        "parent_of",
+        "org",
+        org_avionics.to_string(),
+    ));
+    rebac.add_tuple(RelationTuple::new(
+        "org",
+        org_avionics.to_string(),
+        "parent_of",
+        "team",
+        team_telemetry.to_string(),
+    ));
 
     // 2. Enterprise root mints root token for telemetry project
     let exp = Timestamp(chrono::Utc::now() + chrono::Duration::hours(8));
-    let root_token = biscuit_mgr.mint_root_token(
-        vec![CapabilityScope::Filesystem, CapabilityScope::ModelInference],
-        vec![CapabilityAction::Read, CapabilityAction::Write],
-        exp.clone(),
-    ).unwrap();
+    let root_token = biscuit_mgr
+        .mint_root_token(
+            vec![CapabilityScope::Filesystem, CapabilityScope::ModelInference],
+            vec![CapabilityAction::Read, CapabilityAction::Write],
+            exp.clone(),
+        )
+        .unwrap();
 
     // 3. Attenuate token down to team telemetry (read-only filesystem)
-    let team_token = biscuit_mgr.attenuate_token(
-        &root_token,
-        &[CapabilityScope::Filesystem, CapabilityScope::ModelInference],
-        &[CapabilityAction::Read, CapabilityAction::Write],
-        &[CapabilityScope::Filesystem],
-        &[CapabilityAction::Read],
-        exp,
-    ).unwrap();
+    let team_token = biscuit_mgr
+        .attenuate_token(
+            &root_token,
+            &[CapabilityScope::Filesystem, CapabilityScope::ModelInference],
+            &[CapabilityAction::Read, CapabilityAction::Write],
+            &[CapabilityScope::Filesystem],
+            &[CapabilityAction::Read],
+            exp,
+        )
+        .unwrap();
 
     // 4. Team lead delegates to autonomous worker agent
     let (_, worker_did) = AgentFactory::spawn_agent();
@@ -64,18 +80,38 @@ fn test_tier4_scenario_01_enterprise_conglomerate_delegation() {
         100,
         team_token.to_vec().unwrap(),
         2,
-    ).unwrap();
+    )
+    .unwrap();
 
     assert_eq!(worker_passport.delegation_depth, 2);
 
     // 5. Worker verifies attenuated capability
-    assert!(biscuit_mgr.verify_token(&team_token, CapabilityScope::Filesystem, CapabilityAction::Read).is_ok());
+    assert!(
+        biscuit_mgr
+            .verify_token(
+                &team_token,
+                CapabilityScope::Filesystem,
+                CapabilityAction::Read
+            )
+            .is_ok()
+    );
     // Write attempt fails
-    assert!(biscuit_mgr.verify_token(&team_token, CapabilityScope::Filesystem, CapabilityAction::Write).is_err());
+    assert!(
+        biscuit_mgr
+            .verify_token(
+                &team_token,
+                CapabilityScope::Filesystem,
+                CapabilityAction::Write
+            )
+            .is_err()
+    );
 
     // 6. Worker attempts to cross into AeroCommercial subsidiary
     let leak_attempt = firewall.check_cross_tenant_access(&team_telemetry, &org_commercial);
-    assert!(leak_attempt.is_err(), "Cross-tenant firewall must prevent leakage into sibling subsidiary");
+    assert!(
+        leak_attempt.is_err(),
+        "Cross-tenant firewall must prevent leakage into sibling subsidiary"
+    );
 }
 
 /// Scenario 2: Domestic Family Ambient Login with Minor Wallet Guard
@@ -90,24 +126,53 @@ fn test_tier4_scenario_02_domestic_family_minor_guard_and_guest() {
     let guest_sam = Did::new("did:key:zSamGuest");
 
     // 1. Memberships
-    let alice_mem = TenantMembership::new(family_id, parent_alice.clone(), "Guardian", vec![CapabilityScope::FullSystem], 2);
-    let leo_mem = TenantMembership::new(family_id, child_leo.clone(), "MinorDependent", vec![CapabilityScope::Audio, CapabilityScope::ModelInference], 1);
-    let _guest_mem = TenantMembership::new(family_id, guest_sam.clone(), "Guest", vec![CapabilityScope::Audio], 0);
+    let alice_mem = TenantMembership::new(
+        family_id,
+        parent_alice.clone(),
+        "Guardian",
+        vec![CapabilityScope::FullSystem],
+        2,
+    );
+    let leo_mem = TenantMembership::new(
+        family_id,
+        child_leo.clone(),
+        "MinorDependent",
+        vec![CapabilityScope::Audio, CapabilityScope::ModelInference],
+        1,
+    );
+    let _guest_mem = TenantMembership::new(
+        family_id,
+        guest_sam.clone(),
+        "Guest",
+        vec![CapabilityScope::Audio],
+        0,
+    );
 
     assert_eq!(alice_mem.base_role, "Guardian");
     assert_eq!(leo_mem.base_role, "MinorDependent");
 
     // 2. Minor attempts Wallet operation -> Rule 7 constitutional hard block
-    let rule7_result = AgentFactory::enforce_minor_protection_invariant(true, &CapabilityScope::Wallet);
-    assert!(rule7_result.is_err(), "Constitutional Rule 7 must strictly deny wallet to minor");
+    let rule7_result =
+        AgentFactory::enforce_minor_protection_invariant(true, &CapabilityScope::Wallet);
+    assert!(
+        rule7_result.is_err(),
+        "Constitutional Rule 7 must strictly deny wallet to minor"
+    );
 
     // 3. Guardian Alice co-signs -> allowed
-    let guardian_result = AgentFactory::enforce_minor_protection_invariant(false, &CapabilityScope::Wallet);
+    let guardian_result =
+        AgentFactory::enforce_minor_protection_invariant(false, &CapabilityScope::Wallet);
     assert!(guardian_result.is_ok());
 
     // 4. Guest Sam bounded session invariants: Guest can never hold Wallet or FullSystem
     let mut engine = AccessEngine::new();
-    engine.rebac.add_tuple(RelationTuple::new("household", family_id.to_string(), "guest", "user", guest_sam.to_string()));
+    engine.rebac.add_tuple(RelationTuple::new(
+        "household",
+        family_id.to_string(),
+        "guest",
+        "user",
+        guest_sam.to_string(),
+    ));
 
     let guest_ctx = AuthContext {
         subject: guest_sam.to_string(),
@@ -119,8 +184,17 @@ fn test_tier4_scenario_02_domestic_family_minor_guard_and_guest() {
         action: CapabilityAction::Execute,
         resource: "payment".into(),
     };
-    let tuple = RelationTuple::new("household", family_id.to_string(), "guest", "user", guest_sam.to_string());
-    assert!(!engine.check_permission(&guest_ctx, &tuple).is_allowed(), "Guest cannot access Wallet");
+    let tuple = RelationTuple::new(
+        "household",
+        family_id.to_string(),
+        "guest",
+        "user",
+        guest_sam.to_string(),
+    );
+    assert!(
+        !engine.check_permission(&guest_ctx, &tuple).is_allowed(),
+        "Guest cannot access Wallet"
+    );
 }
 
 /// Scenario 3: Continuous High-Security Financial Action Step-up
@@ -134,7 +208,13 @@ fn test_tier4_scenario_03_continuous_high_security_financial_stepup() {
     let user_bob = "user:bob";
     let treasury_res = "treasury:main_vault";
 
-    engine.rebac.add_tuple(RelationTuple::new("treasury", "main_vault", "transactor", "user", user_bob));
+    engine.rebac.add_tuple(RelationTuple::new(
+        "treasury",
+        "main_vault",
+        "transactor",
+        "user",
+        user_bob,
+    ));
 
     // 1. Initial ambient state at tau = 0.50
     let mut ctx = AuthContext {
@@ -156,12 +236,18 @@ fn test_tier4_scenario_03_continuous_high_security_financial_stepup() {
     // 2. Step-up verification succeeds -> confidence escalates to 0.95
     ctx.confidence_score = 0.95;
     let dec2 = engine.check_permission(&ctx, &tuple);
-    assert!(dec2.is_allowed(), "Elevated confidence grants Wallet access");
+    assert!(
+        dec2.is_allowed(),
+        "Elevated confidence grants Wallet access"
+    );
 
     // 3. User becomes idle -> temporal decay drops score to 0.45
     ctx.confidence_score = 0.45;
     let dec3 = engine.check_permission(&ctx, &tuple);
-    assert!(!dec3.is_allowed(), "Decayed confidence automatically locks Wallet");
+    assert!(
+        !dec3.is_allowed(),
+        "Decayed confidence automatically locks Wallet"
+    );
 }
 
 /// Scenario 4: Autonomous Sovereign Agent Swarm Scoped Biscuit Execution
@@ -175,11 +261,13 @@ fn test_tier4_scenario_04_autonomous_agent_swarm_scoped_execution() {
     let biscuit_mgr = BiscuitCapabilityManager::new();
     let exp = Timestamp(chrono::Utc::now() + chrono::Duration::hours(2));
 
-    let root_token = biscuit_mgr.mint_root_token(
-        vec![CapabilityScope::ModelInference],
-        vec![CapabilityAction::Read, CapabilityAction::Execute],
-        exp,
-    ).unwrap();
+    let root_token = biscuit_mgr
+        .mint_root_token(
+            vec![CapabilityScope::ModelInference],
+            vec![CapabilityAction::Read, CapabilityAction::Execute],
+            exp,
+        )
+        .unwrap();
 
     // 1. Orchestrator (D = 1)
     let (_, orch_did) = AgentFactory::spawn_agent();
@@ -192,7 +280,8 @@ fn test_tier4_scenario_04_autonomous_agent_swarm_scoped_execution() {
         1000,
         root_token.to_vec().unwrap(),
         1,
-    ).unwrap();
+    )
+    .unwrap();
 
     // 2. Planner (D = 2)
     let (_, planner_did) = AgentFactory::spawn_agent();
@@ -202,7 +291,8 @@ fn test_tier4_scenario_04_autonomous_agent_swarm_scoped_execution() {
         root_token.to_vec().unwrap(),
         500_000,
         500,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(planner_passport.delegation_depth, 2);
 
     // 3. Worker (D = 3)
@@ -213,7 +303,8 @@ fn test_tier4_scenario_04_autonomous_agent_swarm_scoped_execution() {
         root_token.to_vec().unwrap(),
         100_000,
         100,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(worker_passport.delegation_depth, 3);
 
     // 4. Sub-Worker (D = 4)
@@ -224,7 +315,8 @@ fn test_tier4_scenario_04_autonomous_agent_swarm_scoped_execution() {
         root_token.to_vec().unwrap(),
         10_000,
         10,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(sub_worker_passport.delegation_depth, 4);
 
     // 5. Attempt 5th-level sub-agent delegation (D = 5) -> MUST FAIL
@@ -236,10 +328,21 @@ fn test_tier4_scenario_04_autonomous_agent_swarm_scoped_execution() {
         1000,
         1,
     );
-    assert!(d5_attempt.is_err(), "Delegation depth 5 must be rejected (D_max = 4)");
+    assert!(
+        d5_attempt.is_err(),
+        "Delegation depth 5 must be rejected (D_max = 4)"
+    );
 
     // 6. Sub-worker attempts Filesystem scope not in ModelInference token -> fails
-    assert!(biscuit_mgr.verify_token(&root_token, CapabilityScope::Filesystem, CapabilityAction::Read).is_err());
+    assert!(
+        biscuit_mgr
+            .verify_token(
+                &root_token,
+                CapabilityScope::Filesystem,
+                CapabilityAction::Read
+            )
+            .is_err()
+    );
 }
 
 /// Scenario 5: Post-Mortem Social Key Recovery & Digital Twilight Shredding
@@ -273,24 +376,29 @@ fn test_tier4_scenario_05_post_mortem_recovery_and_digital_twilight() {
     let blind_token = compute_blind_index("estate_bitcoin_vault", &blind_key);
     store.insert_blind_spo(blind_token, b"INHERITANCE_PASSPHRASE_RELEASED".to_vec());
 
-    store.insert_user(UserRecord {
-        user_id: clara_id.clone(),
-        primary_did: Did::new("did:key:zClara"),
-        blind_username_hash: [0x88u8; 32],
-        encrypted_profile_blob: XChaChaBlob {
-            nonce: [0u8; 24],
-            ciphertext: vec![],
-            tag: [0u8; 16],
-            aad_fingerprint: [0u8; 16],
-        },
-        state: AccountStatus::Active,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-    }).unwrap();
+    store
+        .insert_user(UserRecord {
+            user_id: clara_id.clone(),
+            primary_did: Did::new("did:key:zClara"),
+            blind_username_hash: [0x88u8; 32],
+            encrypted_profile_blob: XChaChaBlob {
+                nonce: [0u8; 24],
+                ciphertext: vec![],
+                tag: [0u8; 16],
+                aad_fingerprint: [0u8; 16],
+            },
+            state: AccountStatus::Active,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        })
+        .unwrap();
 
     // 3. Clara inactive for 180 days -> Digital Twilight triggered
     store.trigger_digital_twilight(&clara_id).unwrap();
-    assert!(store.is_salt_shredded(&clara_id), "Private diary keys must be crypto-shredded");
+    assert!(
+        store.is_salt_shredded(&clara_id),
+        "Private diary keys must be crypto-shredded"
+    );
 
     // 4. Beneficiaries present 2 shares (insufficient)
     let incomplete = vec![shares[0].clone(), shares[1].clone()];

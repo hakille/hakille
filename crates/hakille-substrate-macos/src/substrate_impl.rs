@@ -554,4 +554,3 @@ impl Substrate for MacosSubstrate {
         Ok(())
     }
 }
-

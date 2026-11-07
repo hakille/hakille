@@ -58,7 +58,10 @@ pub trait MobilePowerDriver: Send + Sync {
 /// Pilote natif de notification (Android NotificationManager / iOS UNUserNotificationCenter).
 #[async_trait]
 pub trait MobileNotificationDriver: Send + Sync {
-    async fn send(&self, request: hakille_substrate::NotificationRequest) -> Result<hakille_substrate::NotificationHandle>;
+    async fn send(
+        &self,
+        request: hakille_substrate::NotificationRequest,
+    ) -> Result<hakille_substrate::NotificationHandle>;
     async fn dismiss(&self, handle: &hakille_substrate::NotificationHandle) -> Result<()>;
 }
 
@@ -586,7 +589,6 @@ impl Substrate for MobileSubstrate {
         }
     }
 }
-
 
 #[cfg(test)]
 mod configured_mobile_tests {

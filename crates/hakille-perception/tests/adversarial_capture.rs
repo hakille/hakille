@@ -1,10 +1,10 @@
-use std::sync::Arc;
-use sha2::{Digest, Sha256};
 use hakille_perception::vision::capture::{
-    bgra_to_rgb24, decode_mjpeg_to_rgb24, rgba_to_rgb24, yuyv_to_rgb24,
-    FrameBufferPool, FrameFormat, VideoFrameBridge, VideoIngestionError,
+    FrameBufferPool, FrameFormat, VideoFrameBridge, VideoIngestionError, bgra_to_rgb24,
+    decode_mjpeg_to_rgb24, rgba_to_rgb24, yuyv_to_rgb24,
 };
 use hakille_substrate::{CameraFrame, ImageFormat};
+use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 #[test]
 fn test_adv_bridge_zero_dimensions_rejected_all_formats() {
@@ -32,7 +32,10 @@ fn test_adv_bridge_zero_dimensions_rejected_all_formats() {
             assert!(
                 matches!(res, Err(VideoIngestionError::EmptyFrame { .. })),
                 "Must return EmptyFrame for {}x{}, data_len={}, format={:?}",
-                w, h, data.len(), fmt
+                w,
+                h,
+                data.len(),
+                fmt
             );
         }
     }
@@ -47,7 +50,12 @@ fn test_adv_bridge_truncated_buffers_rejected_without_panic() {
     // Expected sizes: RGB=192, RGBA/BGRA=256, YUYV=128
 
     // Test with 1 byte, 10 bytes, and expected-1 bytes
-    for fmt in &[FrameFormat::Rgb8, FrameFormat::Rgba8, FrameFormat::Bgra8, FrameFormat::Yuyv] {
+    for fmt in &[
+        FrameFormat::Rgb8,
+        FrameFormat::Rgba8,
+        FrameFormat::Bgra8,
+        FrameFormat::Yuyv,
+    ] {
         let expected = match fmt {
             FrameFormat::Rgb8 => 64 * 3,
             FrameFormat::Rgba8 | FrameFormat::Bgra8 => 64 * 4,
@@ -59,12 +67,20 @@ fn test_adv_bridge_truncated_buffers_rejected_without_panic() {
             let truncated = vec![42u8; actual_len];
             let res = bridge.ingest_raw(&truncated, w, h, *fmt, 0);
             match res {
-                Err(VideoIngestionError::BufferUnderflow { expected: exp, actual: act, format, .. }) => {
+                Err(VideoIngestionError::BufferUnderflow {
+                    expected: exp,
+                    actual: act,
+                    format,
+                    ..
+                }) => {
                     assert_eq!(exp, expected);
                     assert_eq!(act, actual_len);
                     assert_eq!(format, *fmt);
                 }
-                Err(e) => panic!("Expected BufferUnderflow for {:?} with len {}, got {:?}", fmt, actual_len, e),
+                Err(e) => panic!(
+                    "Expected BufferUnderflow for {:?} with len {}, got {:?}",
+                    fmt, actual_len, e
+                ),
                 Ok(_) => panic!("Expected BufferUnderflow, but got Ok"),
             }
         }
@@ -78,18 +94,19 @@ fn test_adv_bridge_corrupted_jpeg_rejected_without_panic() {
 
     let corrupt_payloads: Vec<Vec<u8>> = vec![
         vec![0xFF],
-        vec![0xFF, 0xD8], // Only SOI header
+        vec![0xFF, 0xD8],                         // Only SOI header
         vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x02], // Truncated APP0
-        vec![0x00; 100], // All zeros
-        vec![0xAA; 256], // Random noise
-        vec![0x7F, 0x45, 0x4C, 0x46], // ELF magic
+        vec![0x00; 100],                          // All zeros
+        vec![0xAA; 256],                          // Random noise
+        vec![0x7F, 0x45, 0x4C, 0x46],             // ELF magic
     ];
 
     for (idx, payload) in corrupt_payloads.iter().enumerate() {
         let res = bridge.ingest_raw(payload, 64, 64, FrameFormat::Jpeg, 0);
         assert!(
             matches!(res, Err(VideoIngestionError::JpegDecodeError(_))),
-            "Corrupt payload #{} must return JpegDecodeError", idx
+            "Corrupt payload #{} must return JpegDecodeError",
+            idx
         );
     }
 }
@@ -103,14 +120,23 @@ fn test_adv_bridge_extreme_dimensions_overflow_behavior() {
 
     // 1. Rgb8 uses checked_mul(3) properly: returns EmptyFrame on u32::MAX without panic
     let res_rgb = bridge.ingest_raw(&dummy, u32::MAX, u32::MAX, FrameFormat::Rgb8, 0);
-    assert!(matches!(res_rgb, Err(VideoIngestionError::EmptyFrame { .. })));
+    assert!(matches!(
+        res_rgb,
+        Err(VideoIngestionError::EmptyFrame { .. })
+    ));
 
     // 2. Large bounded dimensions (100_000 x 100_000): num_px fits in usize, buffer is truncated
     let res_bounded_rgba = bridge.ingest_raw(&dummy, 100_000, 100_000, FrameFormat::Rgba8, 0);
-    assert!(matches!(res_bounded_rgba, Err(VideoIngestionError::BufferUnderflow { .. })));
+    assert!(matches!(
+        res_bounded_rgba,
+        Err(VideoIngestionError::BufferUnderflow { .. })
+    ));
 
     let res_bounded_yuyv = bridge.ingest_raw(&dummy, 100_000, 100_000, FrameFormat::Yuyv, 0);
-    assert!(matches!(res_bounded_yuyv, Err(VideoIngestionError::BufferUnderflow { .. })));
+    assert!(matches!(
+        res_bounded_yuyv,
+        Err(VideoIngestionError::BufferUnderflow { .. })
+    ));
 
     // 3. Documented Challenger Finding:
     // When width=u32::MAX and height=u32::MAX, (width * height) fits in usize on 64-bit,
@@ -121,7 +147,10 @@ fn test_adv_bridge_extreme_dimensions_overflow_behavior() {
         let mut bridge = VideoFrameBridge::with_pool(pool);
         let _ = bridge.ingest_raw(&dummy, u32::MAX, u32::MAX, FrameFormat::Rgba8, 0);
     }));
-    assert!(panic_res.is_err(), "Confirmed: u32::MAX x u32::MAX triggers arithmetic overflow panic on num_px * 4");
+    assert!(
+        panic_res.is_err(),
+        "Confirmed: u32::MAX x u32::MAX triggers arithmetic overflow panic on num_px * 4"
+    );
 }
 
 #[test]
@@ -165,7 +194,9 @@ fn test_adv_bridge_ingest_camera_frame_and_pool_recycling() {
             data: vec![i as u8; 4 * 4 * 3],
             timestamp_ms: i as u64,
         };
-        let pooled = bridge.ingest_camera_frame(&cf).expect("CameraFrame ingest ok");
+        let pooled = bridge
+            .ingest_camera_frame(&cf)
+            .expect("CameraFrame ingest ok");
         assert_eq!(pooled.width, 4);
         assert_eq!(pooled.height, 4);
         assert_eq!(pooled.data.len(), 48);
@@ -188,7 +219,9 @@ fn test_adv_bridge_sha256_attestation() {
     hasher.update(&raw);
     let expected: [u8; 32] = hasher.finalize().into();
 
-    let frame = bridge.ingest_raw(&raw, 2, 1, FrameFormat::Rgb8, 0).expect("ingest ok");
+    let frame = bridge
+        .ingest_raw(&raw, 2, 1, FrameFormat::Rgb8, 0)
+        .expect("ingest ok");
     assert_eq!(frame.attestation_hash(), &expected);
 }
 
@@ -203,7 +236,9 @@ fn test_adv_bridge_multithreaded_concurrent_stress() {
             let mut bridge = VideoFrameBridge::with_pool(p);
             for i in 0..100 {
                 let raw = vec![(t * 10 + i) as u8; 4 * 4 * 3];
-                let f = bridge.ingest_raw(&raw, 4, 4, FrameFormat::Rgb8, i as u64).unwrap();
+                let f = bridge
+                    .ingest_raw(&raw, 4, 4, FrameFormat::Rgb8, i as u64)
+                    .unwrap();
                 assert_eq!(f.data.len(), 48);
             }
         }));

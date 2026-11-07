@@ -46,9 +46,21 @@ fn test_adversarial_attenuated_token_cannot_leak_raw_sensors_or_biometrics() {
         .expect("Parent root token creation failed");
 
     // Vérification que le parent a bien accès aux données brutes
-    assert!(authority.verify(&parent, CapabilityScope::Camera, CapabilityAction::Read).is_ok());
-    assert!(authority.verify(&parent, CapabilityScope::Biometrics, CapabilityAction::Read).is_ok());
-    assert!(authority.verify(&parent, CapabilityScope::Spatial, CapabilityAction::Read).is_ok());
+    assert!(
+        authority
+            .verify(&parent, CapabilityScope::Camera, CapabilityAction::Read)
+            .is_ok()
+    );
+    assert!(
+        authority
+            .verify(&parent, CapabilityScope::Biometrics, CapabilityAction::Read)
+            .is_ok()
+    );
+    assert!(
+        authority
+            .verify(&parent, CapabilityScope::Spatial, CapabilityAction::Read)
+            .is_ok()
+    );
 
     // Atténuation stricte pour un module tiers (UI ou widget) autorisant uniquement "emotion" et "presence"
     let attenuated = authority
@@ -56,8 +68,16 @@ fn test_adversarial_attenuated_token_cannot_leak_raw_sensors_or_biometrics() {
         .expect("Attenuation should succeed");
 
     // A. L'accès aux ressources autorisées réussit
-    assert!(authority.verify_cognitive_inference(&attenuated, "emotion").is_ok());
-    assert!(authority.verify_cognitive_inference(&attenuated, "presence").is_ok());
+    assert!(
+        authority
+            .verify_cognitive_inference(&attenuated, "emotion")
+            .is_ok()
+    );
+    assert!(
+        authority
+            .verify_cognitive_inference(&attenuated, "presence")
+            .is_ok()
+    );
     assert!(verify_cognitive_inference_with_root_key(&attenuated, &root_pub, "emotion").is_ok());
 
     // B. Tentatives d'accès aux flux bruts avec le token atténué : TOUTES DOIVENT ÉCHOUER (Fail-Closed)
@@ -78,7 +98,12 @@ fn test_adversarial_attenuated_token_cannot_leak_raw_sensors_or_biometrics() {
             "Adversarial breach: attenuated token should NEVER be granted raw scope {:?}",
             scope
         );
-        let err_pinned = verify_capability_with_root_key(&attenuated, &root_pub, scope.clone(), CapabilityAction::Read);
+        let err_pinned = verify_capability_with_root_key(
+            &attenuated,
+            &root_pub,
+            scope.clone(),
+            CapabilityAction::Read,
+        );
         assert!(
             err_pinned.is_err(),
             "Adversarial breach: substrate pinned check should reject raw scope {:?}",
@@ -89,7 +114,11 @@ fn test_adversarial_attenuated_token_cannot_leak_raw_sensors_or_biometrics() {
     // C. Tentative d'écriture (Write) au lieu de lecture (Read) sur cognitive_inference
     assert!(
         authority
-            .verify(&attenuated, CapabilityScope::CognitiveInference, CapabilityAction::Write)
+            .verify(
+                &attenuated,
+                CapabilityScope::CognitiveInference,
+                CapabilityAction::Write
+            )
             .is_err(),
         "Adversarial breach: Write action should be forbidden by attenuation"
     );
@@ -305,7 +334,10 @@ fn test_adversarial_chained_multi_level_attenuation() {
     // Niveau 0 : Root (tous droits)
     let l0 = authority
         .create_root_token(
-            vec![CapabilityScope::CognitiveInference, CapabilityScope::Spatial],
+            vec![
+                CapabilityScope::CognitiveInference,
+                CapabilityScope::Spatial,
+            ],
             vec![CapabilityAction::Read],
             future_ts(30),
         )
@@ -326,7 +358,11 @@ fn test_adversarial_chained_multi_level_attenuation() {
     // "posture" ne doit PLUS être accessible par le petit-enfant
     assert!(verify_cognitive_inference_with_root_key(&l2, &root_pub, "posture").is_err());
     // "spatial" ne doit JAMAIS être accessible
-    assert!(authority.verify(&l2, CapabilityScope::Spatial, CapabilityAction::Read).is_err());
+    assert!(
+        authority
+            .verify(&l2, CapabilityScope::Spatial, CapabilityAction::Read)
+            .is_err()
+    );
 
     // Niveau 3 : Atténuation avec liste vide = Deny-all
     let l3 = authority

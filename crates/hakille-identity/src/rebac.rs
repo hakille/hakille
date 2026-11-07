@@ -44,8 +44,12 @@ impl RelationTuple {
         // e.g. "team:alpha#member@user:alice"
         let (entity_part, rest) = s.split_once('#').ok_or("Missing '#' separator")?;
         let (relation, subject_part) = rest.split_once('@').ok_or("Missing '@' separator")?;
-        let (e_type, e_id) = entity_part.split_once(':').ok_or("Missing entity ':' separator")?;
-        let (s_type, s_id) = subject_part.split_once(':').ok_or("Missing subject ':' separator")?;
+        let (e_type, e_id) = entity_part
+            .split_once(':')
+            .ok_or("Missing entity ':' separator")?;
+        let (s_type, s_id) = subject_part
+            .split_once(':')
+            .ok_or("Missing subject ':' separator")?;
 
         Ok(Self::new(e_type, e_id, relation, s_type, s_id))
     }
@@ -117,13 +121,7 @@ impl RebacEngine {
         subject_type: &str,
         subject_id: &str,
     ) -> bool {
-        let needle = RelationTuple::new(
-            entity_type,
-            entity_id,
-            relation,
-            subject_type,
-            subject_id,
-        );
+        let needle = RelationTuple::new(entity_type, entity_id, relation, subject_type, subject_id);
         self.tuples.contains(&needle)
     }
 
@@ -282,12 +280,20 @@ mod tests {
         let mut rebac = RebacEngine::new();
         // Chain of 5 nodes: 1 -> 2 -> 3 -> 4 -> 5 -> leaf
         for i in 1..5 {
-            rebac.add_tuple(RelationTuple::new("node", format!("n{}", i), "parent_of", "node", format!("n{}", i + 1)));
+            rebac.add_tuple(RelationTuple::new(
+                "node",
+                format!("n{}", i),
+                "parent_of",
+                "node",
+                format!("n{}", i + 1),
+            ));
         }
         rebac.add_tuple(RelationTuple::new("node", "n5", "viewer", "user", "leaf"));
 
         // With depth limit 3, cannot reach leaf from n1
-        assert!(!rebac.check_relation_transitive_bounded("node", "n1", "viewer", "user", "leaf", 3));
+        assert!(
+            !rebac.check_relation_transitive_bounded("node", "n1", "viewer", "user", "leaf", 3)
+        );
         // With depth limit 5, reaches leaf
         assert!(rebac.check_relation_transitive_bounded("node", "n1", "viewer", "user", "leaf", 5));
     }

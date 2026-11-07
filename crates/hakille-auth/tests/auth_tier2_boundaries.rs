@@ -10,8 +10,8 @@ use hakille_auth::gdpr::*;
 use hakille_auth::guest::*;
 use hakille_auth::minor::*;
 use hakille_auth::multimodal::*;
-use hakille_core::capability::CapabilityScope;
 use hakille_core::UserId;
+use hakille_core::capability::CapabilityScope;
 use uuid::Uuid;
 
 // =============================================================================
@@ -23,7 +23,10 @@ fn test_f14_boundary_pitch_black_frame_returns_empty() {
     let detector = ScrfdDetector::default();
     let black_frame = vec![0u8; 100 * 100 * 3];
     let detections = detector.detect_faces(&black_frame, 100, 100).unwrap();
-    assert!(detections.is_empty(), "Pitch black frame must return no face");
+    assert!(
+        detections.is_empty(),
+        "Pitch black frame must return no face"
+    );
 }
 
 #[test]
@@ -31,7 +34,10 @@ fn test_f14_boundary_saturated_white_frame_returns_empty() {
     let detector = ScrfdDetector::default();
     let white_frame = vec![255u8; 100 * 100 * 3];
     let detections = detector.detect_faces(&white_frame, 100, 100).unwrap();
-    assert!(detections.is_empty(), "Fully saturated white frame must return no face");
+    assert!(
+        detections.is_empty(),
+        "Fully saturated white frame must return no face"
+    );
 }
 
 #[test]
@@ -74,7 +80,10 @@ fn test_f15_boundary_distance_symmetry() {
     let emb2 = FaceEmbedding::new([-0.3f32; 512]);
     let d12 = EdgeFaceExtractor::cosine_distance(&emb1, &emb2);
     let d21 = EdgeFaceExtractor::cosine_distance(&emb2, &emb1);
-    assert!((d12 - d21).abs() < 1e-6, "Cosine distance must be strictly symmetric");
+    assert!(
+        (d12 - d21).abs() < 1e-6,
+        "Cosine distance must be strictly symmetric"
+    );
 }
 
 #[test]
@@ -176,7 +185,10 @@ fn test_f17_boundary_challenge_expired_by_one_second() {
     let now = 1000;
     let token = engine.issue_challenge(ActiveChallengeType::RandomBlink, now);
     let res = engine.verify_blink_response(&token, &[0.3, 0.1, 0.3], now + 5); // Expires at 1004
-    assert!(matches!(res, Err(hakille_core::HakilleError::CapabilityExpired)));
+    assert!(matches!(
+        res,
+        Err(hakille_core::HakilleError::CapabilityExpired)
+    ));
 }
 
 #[test]
@@ -185,7 +197,11 @@ fn test_f17_boundary_tampered_token_signature_rejected() {
     let now = 1000;
     let mut token = engine.issue_challenge(ActiveChallengeType::RandomBlink, now);
     token.signature[0] ^= 0xff; // Tamper signature
-    assert!(engine.verify_blink_response(&token, &[0.3, 0.1, 0.3], now + 1).is_err());
+    assert!(
+        engine
+            .verify_blink_response(&token, &[0.3, 0.1, 0.3], now + 1)
+            .is_err()
+    );
 }
 
 #[test]
@@ -208,12 +224,19 @@ fn test_f17_boundary_anti_correlated_gaze_fails() {
     // Pupil moving right while target moves left (anti-correlation)
     let target = vec![(10.0, 0.0), (20.0, 0.0), (30.0, 0.0), (40.0, 0.0)];
     let pupil = vec![(40.0, 0.0), (30.0, 0.0), (20.0, 0.0), (10.0, 0.0)];
-    let res = engine.verify_gaze_response(&token, &pupil, &target, now + 1).unwrap();
+    let res = engine
+        .verify_gaze_response(&token, &pupil, &target, now + 1)
+        .unwrap();
     // Negative correlation R ~ -1.0 means R^2 might be high, but trajectory direction is opposite
     // In our test fixture it correlates R^2 >= 0.85; let's test zero correlation
     let pupil_flat = vec![(10.0, 0.0), (10.0, 0.0), (10.0, 0.0), (10.0, 0.0)];
-    let res_flat = engine.verify_gaze_response(&token, &pupil_flat, &target, now + 1).unwrap();
-    assert!(!res_flat, "Flat pupil gaze trajectory must fail R^2 correlation");
+    let res_flat = engine
+        .verify_gaze_response(&token, &pupil_flat, &target, now + 1)
+        .unwrap();
+    assert!(
+        !res_flat,
+        "Flat pupil gaze trajectory must fail R^2 correlation"
+    );
 }
 
 #[test]
@@ -223,7 +246,9 @@ fn test_f17_boundary_insufficient_head_turn_fails() {
     let token = engine.issue_challenge(ActiveChallengeType::HeadPoseRotation, now);
     // User turned 5 degrees when 15 required
     let yaw = vec![(0.0, 0.0), (2.0, 0.0), (4.5, 0.0)];
-    let res = engine.verify_head_pose_response(&token, &yaw, 15.0, now + 1).unwrap();
+    let res = engine
+        .verify_head_pose_response(&token, &yaw, 15.0, now + 1)
+        .unwrap();
     assert!(!res);
 }
 
@@ -255,16 +280,24 @@ fn test_f18_boundary_empty_biohash_distance() {
 #[test]
 fn test_f18_boundary_all_ones_biohash_complement() {
     let engine = BiohashingEngine::default();
-    let d1 = BiohashDigest { bits: vec![0x00u8; 128] };
-    let d2 = BiohashDigest { bits: vec![0xffu8; 128] };
+    let d1 = BiohashDigest {
+        bits: vec![0x00u8; 128],
+    };
+    let d2 = BiohashDigest {
+        bits: vec![0xffu8; 128],
+    };
     assert_eq!(engine.hamming_distance(&d1, &d2), 1.0);
 }
 
 #[test]
 fn test_f18_boundary_verify_threshold_edge() {
     let engine = BiohashingEngine::default();
-    let d1 = BiohashDigest { bits: vec![0x00u8; 128] };
-    let mut d2 = BiohashDigest { bits: vec![0x00u8; 128] };
+    let d1 = BiohashDigest {
+        bits: vec![0x00u8; 128],
+    };
+    let mut d2 = BiohashDigest {
+        bits: vec![0x00u8; 128],
+    };
     // Exactly 18% diff bits: 184 bits / 1024 = 0.1796875 <= 0.18
     for i in 0..23 {
         d2.bits[i] = 0xff; // 23 * 8 = 184 bits
@@ -300,15 +333,24 @@ fn test_f19_boundary_user_with_no_consent_returns_false() {
 fn test_f19_boundary_withdraw_nonexistent_consent_fails() {
     let mut gdpr = GdprConsentEngine::new();
     let user = UserId(Uuid::new_v4());
-    assert!(gdpr.withdraw_consent(&user, &ConsentPurpose::BiometricVerification1to1).is_err());
+    assert!(
+        gdpr.withdraw_consent(&user, &ConsentPurpose::BiometricVerification1to1)
+            .is_err()
+    );
 }
 
 #[test]
 fn test_f19_boundary_crypto_shredding_blocks_all_purposes() {
     let mut gdpr = GdprConsentEngine::new();
     let user = UserId(Uuid::new_v4());
-    gdpr.record_consent(user.clone(), ConsentPurpose::BiometricVerification1to1, true).unwrap();
-    gdpr.record_consent(user.clone(), ConsentPurpose::VoicePrintRecognition, true).unwrap();
+    gdpr.record_consent(
+        user.clone(),
+        ConsentPurpose::BiometricVerification1to1,
+        true,
+    )
+    .unwrap();
+    gdpr.record_consent(user.clone(), ConsentPurpose::VoicePrintRecognition, true)
+        .unwrap();
 
     gdpr.crypto_shred_user(&user);
     assert!(!gdpr.has_valid_consent(&user, &ConsentPurpose::BiometricVerification1to1));
@@ -428,7 +470,10 @@ fn test_f21_boundary_899s_returns_non_zero() {
 
 #[test]
 fn test_f21_boundary_scope_sensor_allows_0_30() {
-    assert_eq!(ConfidenceDecayEngine::required_threshold_for_scope(&CapabilityScope::Sensor), 0.30);
+    assert_eq!(
+        ConfidenceDecayEngine::required_threshold_for_scope(&CapabilityScope::Sensor),
+        0.30
+    );
     let decay = ConfidenceDecayEngine::default();
     assert!(decay.gate_action(0.30, &CapabilityScope::Sensor).is_ok());
     assert!(decay.gate_action(0.29, &CapabilityScope::Sensor).is_err());
@@ -436,7 +481,10 @@ fn test_f21_boundary_scope_sensor_allows_0_30() {
 
 #[test]
 fn test_f21_boundary_scope_wallet_requires_0_90() {
-    assert_eq!(ConfidenceDecayEngine::required_threshold_for_scope(&CapabilityScope::Wallet), 0.90);
+    assert_eq!(
+        ConfidenceDecayEngine::required_threshold_for_scope(&CapabilityScope::Wallet),
+        0.90
+    );
     let decay = ConfidenceDecayEngine::default();
     assert!(decay.gate_action(0.90, &CapabilityScope::Wallet).is_ok());
     assert!(decay.gate_action(0.89, &CapabilityScope::Wallet).is_err());
@@ -450,29 +498,49 @@ fn test_f21_boundary_scope_wallet_requires_0_90() {
 fn test_f23_boundary_guest_duration_1441_rejected() {
     let mut mgr = GuestSessionManager::new();
     let host = UserId(Uuid::new_v4());
-    assert!(mgr.create_guest_session("g1", host, vec![CapabilityScope::Audio], "test", 1441).is_err());
+    assert!(
+        mgr.create_guest_session("g1", host, vec![CapabilityScope::Audio], "test", 1441)
+            .is_err()
+    );
 }
 
 #[test]
 fn test_f23_boundary_guest_duration_0_rejected() {
     let mut mgr = GuestSessionManager::new();
     let host = UserId(Uuid::new_v4());
-    assert!(mgr.create_guest_session("g2", host, vec![CapabilityScope::Audio], "test", 0).is_err());
+    assert!(
+        mgr.create_guest_session("g2", host, vec![CapabilityScope::Audio], "test", 0)
+            .is_err()
+    );
 }
 
 #[test]
 fn test_f23_boundary_guest_id_collision_rejected() {
     let mut mgr = GuestSessionManager::new();
     let host = UserId(Uuid::new_v4());
-    assert!(mgr.create_guest_session("g-dup", host.clone(), vec![CapabilityScope::Audio], "test", 60).is_ok());
-    assert!(mgr.create_guest_session("g-dup", host, vec![CapabilityScope::Audio], "test", 60).is_err());
+    assert!(
+        mgr.create_guest_session(
+            "g-dup",
+            host.clone(),
+            vec![CapabilityScope::Audio],
+            "test",
+            60
+        )
+        .is_ok()
+    );
+    assert!(
+        mgr.create_guest_session("g-dup", host, vec![CapabilityScope::Audio], "test", 60)
+            .is_err()
+    );
 }
 
 #[test]
 fn test_f23_boundary_guest_empty_id_generates_uuid() {
     let mut mgr = GuestSessionManager::new();
     let host = UserId(Uuid::new_v4());
-    let session = mgr.create_guest_session("", host, vec![CapabilityScope::Audio], "auto", 60).unwrap();
+    let session = mgr
+        .create_guest_session("", host, vec![CapabilityScope::Audio], "auto", 60)
+        .unwrap();
     assert!(session.guest_id.starts_with("guest-"));
 }
 
@@ -480,5 +548,14 @@ fn test_f23_boundary_guest_empty_id_generates_uuid() {
 fn test_f23_boundary_guest_fullsystem_strictly_denied() {
     let mut mgr = GuestSessionManager::new();
     let host = UserId(Uuid::new_v4());
-    assert!(mgr.create_guest_session("g-root", host, vec![CapabilityScope::FullSystem], "test", 60).is_err());
+    assert!(
+        mgr.create_guest_session(
+            "g-root",
+            host,
+            vec![CapabilityScope::FullSystem],
+            "test",
+            60
+        )
+        .is_err()
+    );
 }

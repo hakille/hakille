@@ -10,8 +10,8 @@ use hakille_auth::guest::*;
 use hakille_auth::household::*;
 use hakille_auth::minor::*;
 use hakille_auth::multimodal::*;
-use hakille_core::capability::CapabilityScope;
 use hakille_core::UserId;
+use hakille_core::capability::CapabilityScope;
 use uuid::Uuid;
 
 /// Scenario 1: Enterprise Conglomerate Biometric Verification & Scoped Delegation
@@ -90,7 +90,12 @@ fn test_auth_tier4_scenario_02_domestic_family_ambient_login_minor_guard() {
     };
 
     // Leo attempts Wallet purchase -> blocked by NoWallet restriction
-    assert!(leo_profile.member.restrictions.contains(&Restriction::NoWallet));
+    assert!(
+        leo_profile
+            .member
+            .restrictions
+            .contains(&Restriction::NoWallet)
+    );
 
     // 4. Guardian Alice co-signing unlocks transaction
     let mut household = Household::new(hakille_core::NodeId(Uuid::new_v4()));
@@ -106,17 +111,25 @@ fn test_auth_tier4_scenario_02_domestic_family_ambient_login_minor_guard() {
     assert!(household.is_owner(&alice_uid));
 
     // 5. Domestic guest Sam receives 24h capped guest session
-    let guest_session = guest_mgr.create_guest_session(
-        "guest-sam",
-        alice_uid,
-        vec![CapabilityScope::Audio],
-        "Weekend visitor",
-        1440,
-    ).unwrap();
+    let guest_session = guest_mgr
+        .create_guest_session(
+            "guest-sam",
+            alice_uid,
+            vec![CapabilityScope::Audio],
+            "Weekend visitor",
+            1440,
+        )
+        .unwrap();
 
     assert!(guest_session.allows_scope(&CapabilityScope::Audio));
-    assert!(!guest_session.allows_scope(&CapabilityScope::Wallet), "Guest cannot access Wallet");
-    assert!(!guest_session.allows_scope(&CapabilityScope::FullSystem), "Guest cannot access FullSystem");
+    assert!(
+        !guest_session.allows_scope(&CapabilityScope::Wallet),
+        "Guest cannot access Wallet"
+    );
+    assert!(
+        !guest_session.allows_scope(&CapabilityScope::FullSystem),
+        "Guest cannot access FullSystem"
+    );
 }
 
 /// Scenario 3: Continuous High-Security Financial Action Multimodal Step-up
@@ -132,7 +145,11 @@ fn test_auth_tier4_scenario_03_continuous_multimodal_stepup_and_decay() {
     let mut fusion = ContinuousMultimodalFusion::new(0.50);
 
     // Initial check: Wallet requires 0.90 -> rejected
-    assert!(decay_engine.gate_action(fusion.current_confidence, &CapabilityScope::Wallet).is_err());
+    assert!(
+        decay_engine
+            .gate_action(fusion.current_confidence, &CapabilityScope::Wallet)
+            .is_err()
+    );
 
     // 1. Passive presentation attack detection
     let mut high_freq_crop = Vec::with_capacity(100 * 100 * 3);
@@ -146,7 +163,9 @@ fn test_auth_tier4_scenario_03_continuous_multimodal_stepup_and_decay() {
     let now = 5000;
     let challenge = active_liveness.issue_challenge(ActiveChallengeType::RandomBlink, now);
     let blink_sequence = vec![0.30, 0.28, 0.12, 0.08, 0.15, 0.27, 0.31];
-    let active_verdict = active_liveness.verify_blink_response(&challenge, &blink_sequence, now + 1).unwrap();
+    let active_verdict = active_liveness
+        .verify_blink_response(&challenge, &blink_sequence, now + 1)
+        .unwrap();
     assert!(active_verdict);
 
     // 3. Step-up fuses live signals -> confidence escalates to >= 0.90
@@ -164,21 +183,27 @@ fn test_auth_tier4_scenario_03_continuous_multimodal_stepup_and_decay() {
             timestamp: now + 1,
         },
     ]);
-    fusion.fuse_signals(&[
-        MultimodalSignal {
-            modality: SignalModality::FaceRecognition,
-            score: 0.99,
-            weight: 1.0,
-            timestamp: now + 2,
-        },
-    ]);
+    fusion.fuse_signals(&[MultimodalSignal {
+        modality: SignalModality::FaceRecognition,
+        score: 0.99,
+        weight: 1.0,
+        timestamp: now + 2,
+    }]);
     assert!(fusion.current_confidence >= 0.90);
-    assert!(decay_engine.gate_action(fusion.current_confidence, &CapabilityScope::Wallet).is_ok());
+    assert!(
+        decay_engine
+            .gate_action(fusion.current_confidence, &CapabilityScope::Wallet)
+            .is_ok()
+    );
 
     // 4. Inactivity for 900 seconds (15 minutes) -> fail-closed timeout forces tau = 0.0
     let decayed_tau = decay_engine.apply_decay(fusion.current_confidence, 900);
     assert_eq!(decayed_tau, 0.0);
-    assert!(decay_engine.gate_action(decayed_tau, &CapabilityScope::Wallet).is_err());
+    assert!(
+        decay_engine
+            .gate_action(decayed_tau, &CapabilityScope::Wallet)
+            .is_err()
+    );
 }
 
 /// Scenario 4: Autonomous Sovereign Agent Swarm Scoped Execution
@@ -198,7 +223,11 @@ fn test_auth_tier4_scenario_04_agent_swarm_minor_wallet_guard() {
 
     // But ModelInference is permitted at confidence >= 0.70
     assert!(decay_engine.gate_action(0.85, &requested_inference).is_ok());
-    assert!(decay_engine.gate_action(0.50, &requested_inference).is_err());
+    assert!(
+        decay_engine
+            .gate_action(0.50, &requested_inference)
+            .is_err()
+    );
 }
 
 /// Scenario 5: Post-Mortem Social Key Recovery & Digital Twilight Shredding
@@ -212,7 +241,12 @@ fn test_auth_tier4_scenario_05_digital_twilight_biometric_crypto_shredding() {
     let mut clara_salt = [0x48u8; 32];
 
     // 1. Clara enrolled in biometric face auth
-    gdpr.record_consent(clara_id.clone(), ConsentPurpose::BiometricVerification1to1, true).unwrap();
+    gdpr.record_consent(
+        clara_id.clone(),
+        ConsentPurpose::BiometricVerification1to1,
+        true,
+    )
+    .unwrap();
     let emb = FaceEmbedding::new([0.15f32; 512]);
     let reference_template = bio_engine.project_embedding(&emb, &clara_salt);
 
@@ -226,6 +260,9 @@ fn test_auth_tier4_scenario_05_digital_twilight_biometric_crypto_shredding() {
     // 3. Verifying private biometric template is completely unrecoverable
     let probe_template = bio_engine.project_embedding(&emb, &clara_salt);
     let dist = bio_engine.hamming_distance(&probe_template, &reference_template);
-    assert!(dist > 0.35, "After crypto-shredding, probe matching must fail");
+    assert!(
+        dist > 0.35,
+        "After crypto-shredding, probe matching must fail"
+    );
     assert!(!gdpr.has_valid_consent(&clara_id, &ConsentPurpose::BiometricVerification1to1));
 }

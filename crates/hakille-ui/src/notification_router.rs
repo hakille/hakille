@@ -9,9 +9,7 @@ use crate::channel_selector::{
     UrgencyLevel,
 };
 use crate::silence_budget::{InitiativeOrigin, SilenceBudgetTracker};
-use hakille_substrate::{
-    NotificationCategory, NotificationRequest, NotificationUrgency,
-};
+use hakille_substrate::{NotificationCategory, NotificationRequest, NotificationUrgency};
 use serde::{Deserialize, Serialize};
 
 /// Style visuel de présentation dans l'interface éphémère.
@@ -220,18 +218,36 @@ mod tests {
         let cognitive = CognitiveState::default();
 
         let req1 = NotificationRequest::new("1", "Suggestion 1", "Corps");
-        let d1 = router.route(&req1, &cognitive, DeviceType::Desktop, InitiativeOrigin::SystemInferred, 0.90);
+        let d1 = router.route(
+            &req1,
+            &cognitive,
+            DeviceType::Desktop,
+            InitiativeOrigin::SystemInferred,
+            0.90,
+        );
         assert!(!d1.deferred);
         assert_eq!(d1.credit_cost, 1);
 
         let req2 = NotificationRequest::new("2", "Suggestion 2", "Corps");
-        let d2 = router.route(&req2, &cognitive, DeviceType::Desktop, InitiativeOrigin::SystemInferred, 0.90);
+        let d2 = router.route(
+            &req2,
+            &cognitive,
+            DeviceType::Desktop,
+            InitiativeOrigin::SystemInferred,
+            0.90,
+        );
         assert!(!d2.deferred);
         assert_eq!(d2.credit_cost, 1);
 
         // 3ème suggestion : quota épuisé -> DEFERRAL
         let req3 = NotificationRequest::new("3", "Suggestion 3", "Corps");
-        let d3 = router.route(&req3, &cognitive, DeviceType::Desktop, InitiativeOrigin::SystemInferred, 0.90);
+        let d3 = router.route(
+            &req3,
+            &cognitive,
+            DeviceType::Desktop,
+            InitiativeOrigin::SystemInferred,
+            0.90,
+        );
         assert!(d3.deferred);
         assert_eq!(d3.channel, OutputChannel::Defer);
         assert_eq!(router.deferral_queue().len(), 1);
@@ -255,7 +271,10 @@ mod tests {
             0.95,
         );
 
-        assert!(!decision.deferred, "Fatigue alert must not be suppressed by silence budget");
+        assert!(
+            !decision.deferred,
+            "Fatigue alert must not be suppressed by silence budget"
+        );
         assert_eq!(decision.channel, OutputChannel::EphemeralHud);
     }
 
@@ -279,7 +298,10 @@ mod tests {
 
         // En réunion avec tiers, même une alerte critique utilise le HUD pour éviter la fuite audio
         assert_eq!(decision.channel, OutputChannel::EphemeralHud);
-        assert_eq!(decision.visual_style, NotificationVisualStyle::BraiseActionRequired);
+        assert_eq!(
+            decision.visual_style,
+            NotificationVisualStyle::BraiseActionRequired
+        );
     }
 
     #[test]

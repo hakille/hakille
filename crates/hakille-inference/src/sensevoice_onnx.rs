@@ -998,17 +998,32 @@ mod tests {
         let (a_val, a_ar) = VocalEmotionKind::Angry.to_circumplex();
         assert!(a_val < 0.0 && a_ar > 0.5);
 
-        assert_eq!(VocalEmotionKind::from_tag("<|HAPPY|>"), VocalEmotionKind::Happy);
-        assert_eq!(VocalEmotionKind::from_tag("<|ANGRY|>"), VocalEmotionKind::Angry);
-        assert_eq!(VocalEmotionKind::from_tag("other"), VocalEmotionKind::Neutral);
+        assert_eq!(
+            VocalEmotionKind::from_tag("<|HAPPY|>"),
+            VocalEmotionKind::Happy
+        );
+        assert_eq!(
+            VocalEmotionKind::from_tag("<|ANGRY|>"),
+            VocalEmotionKind::Angry
+        );
+        assert_eq!(
+            VocalEmotionKind::from_tag("other"),
+            VocalEmotionKind::Neutral
+        );
     }
 
     #[test]
     fn test_acoustic_event_kinds() {
-        assert_eq!(AcousticEventKind::from_tag("<|LAUGHTER|>"), AcousticEventKind::Laughter);
+        assert_eq!(
+            AcousticEventKind::from_tag("<|LAUGHTER|>"),
+            AcousticEventKind::Laughter
+        );
         assert_eq!(AcousticEventKind::from_tag("Cry"), AcousticEventKind::Cry);
         assert_eq!(AcousticEventKind::from_tag("BGM"), AcousticEventKind::Music);
-        assert_eq!(AcousticEventKind::from_tag("Unknown"), AcousticEventKind::Other);
+        assert_eq!(
+            AcousticEventKind::from_tag("Unknown"),
+            AcousticEventKind::Other
+        );
     }
 
     #[test]
@@ -1026,6 +1041,9 @@ mod tests {
             frame_confidences: vec![0.8, 0.9, 1.0],
         };
         assert!((transcript.mean_frame_confidence() - 0.9).abs() < 1e-4);
-        assert_eq!(transcript.to_circumplex(), VocalEmotionKind::Happy.to_circumplex());
+        assert_eq!(
+            transcript.to_circumplex(),
+            VocalEmotionKind::Happy.to_circumplex()
+        );
     }
 }

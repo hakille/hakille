@@ -1466,7 +1466,10 @@ fn detached_in_flight_on_background_does_not_lock_recovery() {
     call(&bridge, json!({"type":"set_foreground","active":false}));
     let snap_bg = snapshot(&bridge);
     assert_eq!(snap_bg["foreground"], false);
-    assert_eq!(snap_bg["uncertain_operations"][0]["phase"], "in_flight_detached");
+    assert_eq!(
+        snap_bg["uncertain_operations"][0]["phase"],
+        "in_flight_detached"
+    );
     // CRITIQUE : l'application n'est PAS verrouillée avec recovery_required = true
     assert_eq!(snap_bg["recovery_required"], false);
 
@@ -1492,7 +1495,10 @@ fn detached_in_flight_on_background_does_not_lock_recovery() {
     assert_eq!(res["ok"], true);
     let snap_after = snapshot(&bridge);
     assert!(snap_after["pending"].is_null());
-    assert_eq!(snap_after["uncertain_operations"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        snap_after["uncertain_operations"].as_array().unwrap().len(),
+        0
+    );
     assert_eq!(snap_after["recovery_required"], false);
     assert_eq!(snap_after["chat"].as_array().unwrap().len(), 2);
 }
@@ -1518,10 +1524,14 @@ fn mobile_battery_and_shadow_sync_bindings() {
     assert_eq!(battery.record_energy("AgentMail".into(), 1200), Ok(()));
     assert_eq!(battery.get_energy("AgentMail".into()), 1200);
 
-    let shadow = MobileShadowSyncBridge::new("https://shadow.example.com".into(), "device-123".into());
+    let shadow =
+        MobileShadowSyncBridge::new("https://shadow.example.com".into(), "device-123".into());
     assert_eq!(shadow.state(), "disconnected");
     assert_eq!(shadow.pending_count(), 0);
-    assert_eq!(shadow.queue_delta("notes/test".into(), b"data".to_vec()), Ok(()));
+    assert_eq!(
+        shadow.queue_delta("notes/test".into(), b"data".to_vec()),
+        Ok(())
+    );
     assert_eq!(shadow.pending_count(), 1);
     shadow.enter_doze();
     assert_eq!(shadow.wake_and_resync(), 0);

@@ -1,10 +1,10 @@
 //! Biscuit v5 Capabilities and Offline Attenuation Engine (F11).
 
+use hakille_core::HakilleError;
 use hakille_core::capability::{
     CapabilityAction, CapabilityAuthority, CapabilityScope, CapabilityToken, PinnedRootPublicKey,
 };
 use hakille_core::types::Timestamp;
-use hakille_core::HakilleError;
 use std::collections::HashSet;
 
 pub struct BiscuitCapabilityManager {
@@ -184,7 +184,10 @@ mod tests {
             &[CapabilityAction::Read],
             exp,
         );
-        assert!(d5_res.is_err(), "5th attenuation must exceed max delegation depth");
+        assert!(
+            d5_res.is_err(),
+            "5th attenuation must exceed max delegation depth"
+        );
     }
 
     #[test]

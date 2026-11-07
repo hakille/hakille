@@ -69,7 +69,9 @@ impl GuestSessionManager {
         scopes: &[CapabilityScope],
         duration_minutes: u32,
     ) -> Result<(), HakilleError> {
-        if scopes.contains(&CapabilityScope::Wallet) || scopes.contains(&CapabilityScope::FullSystem) {
+        if scopes.contains(&CapabilityScope::Wallet)
+            || scopes.contains(&CapabilityScope::FullSystem)
+        {
             return Err(HakilleError::CapabilityDenied(
                 "Constitutional Guest Invariant: Guests are strictly barred from Wallet and FullSystem privileges (§30e).".to_string()
             ));
@@ -171,7 +173,10 @@ impl GuestSessionManager {
 
     /// Count of currently active (non-expired, non-revoked) guest sessions
     pub fn active_session_count(&self) -> usize {
-        self.sessions.iter().filter(|s| !s.is_expired() && s.is_active).count()
+        self.sessions
+            .iter()
+            .filter(|s| !s.is_expired() && s.is_active)
+            .count()
     }
 
     /// Cleanup expired sessions automatically.
@@ -189,18 +194,33 @@ mod tests {
 
     #[test]
     fn test_guest_strict_validation_helper() {
-        assert!(GuestSessionManager::validate_guest_constraints(&[CapabilityScope::Audio], 60).is_ok());
-        assert!(GuestSessionManager::validate_guest_constraints(&[CapabilityScope::Wallet], 60).is_err());
-        assert!(GuestSessionManager::validate_guest_constraints(&[CapabilityScope::FullSystem], 60).is_err());
-        assert!(GuestSessionManager::validate_guest_constraints(&[CapabilityScope::Audio], 0).is_err());
-        assert!(GuestSessionManager::validate_guest_constraints(&[CapabilityScope::Audio], 1441).is_err());
+        assert!(
+            GuestSessionManager::validate_guest_constraints(&[CapabilityScope::Audio], 60).is_ok()
+        );
+        assert!(
+            GuestSessionManager::validate_guest_constraints(&[CapabilityScope::Wallet], 60)
+                .is_err()
+        );
+        assert!(
+            GuestSessionManager::validate_guest_constraints(&[CapabilityScope::FullSystem], 60)
+                .is_err()
+        );
+        assert!(
+            GuestSessionManager::validate_guest_constraints(&[CapabilityScope::Audio], 0).is_err()
+        );
+        assert!(
+            GuestSessionManager::validate_guest_constraints(&[CapabilityScope::Audio], 1441)
+                .is_err()
+        );
     }
 
     #[test]
     fn test_guest_revocation_and_remaining_duration() {
         let mut mgr = GuestSessionManager::new();
         let host = UserId(Uuid::new_v4());
-        let session = mgr.create_guest_session("g-rev", host, vec![CapabilityScope::Audio], "test", 120).unwrap();
+        let session = mgr
+            .create_guest_session("g-rev", host, vec![CapabilityScope::Audio], "test", 120)
+            .unwrap();
 
         assert!(session.remaining_minutes() > 100);
         assert_eq!(mgr.active_session_count(), 1);
@@ -210,4 +230,3 @@ mod tests {
         assert_eq!(mgr.active_session_count(), 0);
     }
 }
-

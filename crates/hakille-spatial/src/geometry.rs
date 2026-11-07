@@ -14,7 +14,11 @@ pub struct Point3D {
 
 impl Point3D {
     /// Origine du repère cartésien (0, 0, 0).
-    pub const ORIGIN: Self = Self { x: 0.0, y: 0.0, z: 0.0 };
+    pub const ORIGIN: Self = Self {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
 
     /// Crée un nouveau point à partir des coordonnées x, y, z.
     pub const fn new(x: f32, y: f32, z: f32) -> Self {
@@ -156,13 +160,29 @@ pub struct Vector3D {
 
 impl Vector3D {
     /// Vecteur nul (0, 0, 0).
-    pub const ZERO: Self = Self { x: 0.0, y: 0.0, z: 0.0 };
+    pub const ZERO: Self = Self {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
     /// Vecteur unitaire axe X (1, 0, 0).
-    pub const UNIT_X: Self = Self { x: 1.0, y: 0.0, z: 0.0 };
+    pub const UNIT_X: Self = Self {
+        x: 1.0,
+        y: 0.0,
+        z: 0.0,
+    };
     /// Vecteur unitaire axe Y (0, 1, 0).
-    pub const UNIT_Y: Self = Self { x: 0.0, y: 1.0, z: 0.0 };
+    pub const UNIT_Y: Self = Self {
+        x: 0.0,
+        y: 1.0,
+        z: 0.0,
+    };
     /// Vecteur unitaire axe Z (0, 0, 1).
-    pub const UNIT_Z: Self = Self { x: 0.0, y: 0.0, z: 1.0 };
+    pub const UNIT_Z: Self = Self {
+        x: 0.0,
+        y: 0.0,
+        z: 1.0,
+    };
 
     /// Seuil numérique minimal pour éviter les divisions par zéro lors de la normalisation.
     pub const EPSILON: f32 = 1e-7;

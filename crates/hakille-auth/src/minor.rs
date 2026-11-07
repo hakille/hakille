@@ -159,7 +159,10 @@ mod tests {
     #[test]
     fn test_age_category_classification() {
         assert_eq!(AgeCategory::from_age_years(8).unwrap(), AgeCategory::Child);
-        assert_eq!(AgeCategory::from_age_years(15).unwrap(), AgeCategory::Teenager);
+        assert_eq!(
+            AgeCategory::from_age_years(15).unwrap(),
+            AgeCategory::Teenager
+        );
         assert!(AgeCategory::from_age_years(18).is_err());
         assert!(AgeCategory::from_age_years(25).is_err());
     }
@@ -193,10 +196,17 @@ mod tests {
         };
 
         // Authorized guardian succeeds
-        assert!(minor.validate_guardian_cosign(&parent, &valid_approval).is_ok());
+        assert!(
+            minor
+                .validate_guardian_cosign(&parent, &valid_approval)
+                .is_ok()
+        );
 
         // Unauthorized entity fails
-        assert!(minor.validate_guardian_cosign(&stranger, &valid_approval).is_err());
+        assert!(
+            minor
+                .validate_guardian_cosign(&stranger, &valid_approval)
+                .is_err()
+        );
     }
 }
-

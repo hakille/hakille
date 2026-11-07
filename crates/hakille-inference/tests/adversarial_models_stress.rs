@@ -2,11 +2,10 @@
 //! pour crates/hakille-inference/src/models/
 
 use hakille_inference::models::{
-    decode_simcc_joints, letterbox_rgb_nchw, resize_bilinear_rgb_nchw,
-    synthetic_blank_rgb, synthetic_checkerboard_rgb, synthetic_face_crop,
-    synthetic_gradient_rgb, AgeGroup, FaceMeshEngine, HsEmotionEngine,
-    LetterboxTransform, NormalizationMode, RtmPoseEngine, SsrNetEngine,
-    VisionEngine,
+    AgeGroup, FaceMeshEngine, HsEmotionEngine, LetterboxTransform, NormalizationMode,
+    RtmPoseEngine, SsrNetEngine, VisionEngine, decode_simcc_joints, letterbox_rgb_nchw,
+    resize_bilinear_rgb_nchw, synthetic_blank_rgb, synthetic_checkerboard_rgb, synthetic_face_crop,
+    synthetic_gradient_rgb,
 };
 use hakille_spatial::Point3D;
 
@@ -31,23 +30,31 @@ fn test_adversarial_image_dimensions_and_ratios() {
 
     // 3. Dimensions 1x1 (pixel unique RGB)
     let single_pixel = [128u8, 64u8, 200u8];
-    let fm_1x1 = facemesh.detect_landmarks(&single_pixel, 1, 1).expect("1x1 facemesh");
+    let fm_1x1 = facemesh
+        .detect_landmarks(&single_pixel, 1, 1)
+        .expect("1x1 facemesh");
     assert_eq!(fm_1x1.landmarks.len(), 478);
     assert!(fm_1x1.ipd_distance.is_finite());
     assert!(fm_1x1.left_ear.is_finite());
     assert!(fm_1x1.right_ear.is_finite());
     assert!(fm_1x1.mar.is_finite());
 
-    let hs_1x1 = hsemotion.infer_emotion(&single_pixel, 1, 1).expect("1x1 hsemotion");
+    let hs_1x1 = hsemotion
+        .infer_emotion(&single_pixel, 1, 1)
+        .expect("1x1 hsemotion");
     assert!(hs_1x1.confidence.is_finite());
     assert!(hs_1x1.valence.is_finite());
     assert!(hs_1x1.arousal.is_finite());
 
-    let ssr_1x1 = ssrnet.estimate_age(&single_pixel, 1, 1).expect("1x1 ssrnet");
+    let ssr_1x1 = ssrnet
+        .estimate_age(&single_pixel, 1, 1)
+        .expect("1x1 ssrnet");
     assert!(ssr_1x1.estimated_age.is_finite());
     assert!(ssr_1x1.minor_probability.is_finite());
 
-    let pose_1x1 = rtmpose.extract_pose(&single_pixel, 1, 1).expect("1x1 rtmpose");
+    let pose_1x1 = rtmpose
+        .extract_pose(&single_pixel, 1, 1)
+        .expect("1x1 rtmpose");
     assert_eq!(pose_1x1.skeleton.joints.len(), 17);
     assert!(pose_1x1.neck_angle_deg.is_finite());
 
@@ -80,13 +87,17 @@ fn test_adversarial_uniform_images_and_noise() {
 
     // 1. Noir total (0 lumens)
     let black = synthetic_blank_rgb(w, h, 0, 0, 0);
-    let fm_black = facemesh.detect_landmarks(&black, w, h).expect("black facemesh");
+    let fm_black = facemesh
+        .detect_landmarks(&black, w, h)
+        .expect("black facemesh");
     assert!(fm_black.ipd_distance > 0.0 && fm_black.ipd_distance.is_finite());
     assert!(fm_black.left_ear.is_finite() && !fm_black.left_ear.is_nan());
     assert!(fm_black.right_ear.is_finite() && !fm_black.right_ear.is_nan());
     assert!(fm_black.mar.is_finite() && !fm_black.mar.is_nan());
 
-    let hs_black = hsemotion.infer_emotion(&black, w, h).expect("black hsemotion");
+    let hs_black = hsemotion
+        .infer_emotion(&black, w, h)
+        .expect("black hsemotion");
     assert!(hs_black.confidence > 0.0 && hs_black.confidence.is_finite());
     assert!(hs_black.valence.is_finite() && hs_black.arousal.is_finite());
 
@@ -99,9 +110,13 @@ fn test_adversarial_uniform_images_and_noise() {
 
     // 2. Blanc total (saturation 255)
     let white = synthetic_blank_rgb(w, h, 255, 255, 255);
-    let fm_white = facemesh.detect_landmarks(&white, w, h).expect("white facemesh");
+    let fm_white = facemesh
+        .detect_landmarks(&white, w, h)
+        .expect("white facemesh");
     assert!(fm_white.ipd_distance.is_finite());
-    let hs_white = hsemotion.infer_emotion(&white, w, h).expect("white hsemotion");
+    let hs_white = hsemotion
+        .infer_emotion(&white, w, h)
+        .expect("white hsemotion");
     assert!(hs_white.confidence.is_finite());
     let ssr_white = ssrnet.estimate_age(&white, w, h).expect("white ssrnet");
     assert!(ssr_white.estimated_age.is_finite());
@@ -113,9 +128,13 @@ fn test_adversarial_uniform_images_and_noise() {
     for (i, byte) in rng_buf.iter_mut().enumerate() {
         *byte = ((i * 1664525 + 1013904223) >> 16) as u8;
     }
-    let fm_noise = facemesh.detect_landmarks(&rng_buf, w, h).expect("noise facemesh");
+    let fm_noise = facemesh
+        .detect_landmarks(&rng_buf, w, h)
+        .expect("noise facemesh");
     assert!(fm_noise.ipd_distance.is_finite());
-    let hs_noise = hsemotion.infer_emotion(&rng_buf, w, h).expect("noise hsemotion");
+    let hs_noise = hsemotion
+        .infer_emotion(&rng_buf, w, h)
+        .expect("noise hsemotion");
     assert!(hs_noise.confidence.is_finite());
     let ssr_noise = ssrnet.estimate_age(&rng_buf, w, h).expect("noise ssrnet");
     assert!(ssr_noise.estimated_age.is_finite());
@@ -207,7 +226,8 @@ fn test_adversarial_simcc_decoding_edge_cases() {
     }
 
     // 4. Split ratio extrême ou 0
-    let joints_sr0 = decode_simcc_joints(&flat_x, &flat_y, 0.0).expect("sr 0 should be guarded to max(1.0)");
+    let joints_sr0 =
+        decode_simcc_joints(&flat_x, &flat_y, 0.0).expect("sr 0 should be guarded to max(1.0)");
     for j in &joints_sr0 {
         assert!(j.position.x.is_finite() && !j.position.x.is_nan());
     }
@@ -226,7 +246,15 @@ fn test_adversarial_letterbox_extreme_aspect_ratios() {
     let dst_h = 192;
     let mut dst = vec![0.0f32; 3 * dst_w * dst_h];
 
-    let t = letterbox_rgb_nchw(&src, src_w, src_h, &mut dst, dst_w, dst_h, NormalizationMode::ZeroOne);
+    let t = letterbox_rgb_nchw(
+        &src,
+        src_w,
+        src_h,
+        &mut dst,
+        dst_w,
+        dst_h,
+        NormalizationMode::ZeroOne,
+    );
 
     // Vérifier l'absence de NaN ou Inf dans le tampon de destination
     for (i, &v) in dst.iter().enumerate() {
@@ -252,18 +280,7 @@ fn test_adversarial_rule_7_constitutional_minor_protection_probe() {
     // 0, 1, 5, 8, 10, 12, 14, 15, 16, 17, 17.5, 17.9 ans.
 
     let test_minor_ages = [
-        0.5f32,
-        2.0,
-        5.0,
-        8.0,
-        10.0,
-        12.0,
-        14.0,
-        15.0,
-        16.0,
-        17.0,
-        17.5,
-        17.9,
+        0.5f32, 2.0, 5.0, 8.0, 10.0, 12.0, 14.0, 15.0, 16.0, 17.0, 17.5, 17.9,
     ];
 
     let ssrnet = SsrNetEngine::mock_synthetic();
@@ -274,7 +291,12 @@ fn test_adversarial_rule_7_constitutional_minor_protection_probe() {
         if age < 12.0 {
             assert_eq!(group, AgeGroup::Child, "Âge {} doit être Child", age);
         } else {
-            assert_eq!(group, AgeGroup::Adolescent, "Âge {} doit être Adolescent", age);
+            assert_eq!(
+                group,
+                AgeGroup::Adolescent,
+                "Âge {} doit être Adolescent",
+                age
+            );
         }
     }
 
@@ -296,7 +318,10 @@ fn test_adversarial_repro_resize_0x0_underflow() {
 
     // En debug mode, (src_w - 1) avec src_w = 0 provoque 'attempt to subtract with overflow'
     if let Err(err) = res {
-        println!("[VULNERABILITÉ CONSTATÉE] resize_bilinear_rgb_nchw a paniqué sur 0x0 : {:?}", err);
+        println!(
+            "[VULNERABILITÉ CONSTATÉE] resize_bilinear_rgb_nchw a paniqué sur 0x0 : {:?}",
+            err
+        );
     }
 }
 
@@ -318,10 +343,16 @@ fn test_adversarial_repro_simcc_inf_nan_leak() {
     for (i, j) in joints.iter().enumerate() {
         if j.position.x.is_nan() || j.position.y.is_nan() {
             nan_count += 1;
-            println!("[VULNERABILITÉ CONSTATÉE] Joint {} possède des coordonnées NaN : ({}, {})", i, j.position.x, j.position.y);
+            println!(
+                "[VULNERABILITÉ CONSTATÉE] Joint {} possède des coordonnées NaN : ({}, {})",
+                i, j.position.x, j.position.y
+            );
         }
     }
-    println!("Total joints avec NaN lors de saturation SimCC: {}", nan_count);
+    println!(
+        "Total joints avec NaN lors de saturation SimCC: {}",
+        nan_count
+    );
 }
 
 #[test]
@@ -337,19 +368,32 @@ fn test_adversarial_repro_rule_7_gap_ssrnet() {
 
     // Pour un adolescent de 16 ans (qui est indéniablement mineur selon l'Article VI Règle 7) :
     let (is_minor_16, p_minor_16) = calculate_minor_flag_models(16.0);
-    println!("[VULNERABILITE CONSTATEE] Âge 16.0 ans dans models/ssrnet.rs: is_minor = {}, p_minor = {:.4} (ATTENDU: is_minor = true !)", is_minor_16, p_minor_16);
+    println!(
+        "[VULNERABILITE CONSTATEE] Âge 16.0 ans dans models/ssrnet.rs: is_minor = {}, p_minor = {:.4} (ATTENDU: is_minor = true !)",
+        is_minor_16, p_minor_16
+    );
 
     // Pour un adolescent de 17 ans :
     let (is_minor_17, p_minor_17) = calculate_minor_flag_models(17.0);
-    println!("[VULNERABILITE CONSTATEE] Âge 17.0 ans dans models/ssrnet.rs: is_minor = {}, p_minor = {:.4} (ATTENDU: is_minor = true !)", is_minor_17, p_minor_17);
+    println!(
+        "[VULNERABILITE CONSTATEE] Âge 17.0 ans dans models/ssrnet.rs: is_minor = {}, p_minor = {:.4} (ATTENDU: is_minor = true !)",
+        is_minor_17, p_minor_17
+    );
 
     // Pour un adolescent de 17.9 ans :
     let (is_minor_17_9, p_minor_17_9) = calculate_minor_flag_models(17.9);
-    println!("[VULNERABILITE CONSTATEE] Âge 17.9 ans dans models/ssrnet.rs: is_minor = {}, p_minor = {:.4} (ATTENDU: is_minor = true !)", is_minor_17_9, p_minor_17_9);
+    println!(
+        "[VULNERABILITE CONSTATEE] Âge 17.9 ans dans models/ssrnet.rs: is_minor = {}, p_minor = {:.4} (ATTENDU: is_minor = true !)",
+        is_minor_17_9, p_minor_17_9
+    );
 
     // Démontrer que is_minor est FALSE pour un mineur de 16 ans
-    assert_eq!(is_minor_16, false, "Preuve que le code actuel qualifie faussement un adolescent de 16 ans comme majeur");
-    assert_eq!(is_minor_17, false, "Preuve que le code actuel qualifie faussement un adolescent de 17 ans comme majeur");
+    assert_eq!(
+        is_minor_16, false,
+        "Preuve que le code actuel qualifie faussement un adolescent de 16 ans comme majeur"
+    );
+    assert_eq!(
+        is_minor_17, false,
+        "Preuve que le code actuel qualifie faussement un adolescent de 17 ans comme majeur"
+    );
 }
-
-

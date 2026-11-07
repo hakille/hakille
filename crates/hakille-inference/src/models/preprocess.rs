@@ -31,11 +31,7 @@ impl NormalizationMode {
                 let bf = (b as f32 / 255.0 - 0.406) / 0.225;
                 (rf, gf, bf)
             }
-            Self::ZeroOne => (
-                r as f32 / 255.0,
-                g as f32 / 255.0,
-                b as f32 / 255.0,
-            ),
+            Self::ZeroOne => (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0),
             Self::Centered => (
                 (r as f32 / 127.5) - 1.0,
                 (g as f32 / 127.5) - 1.0,
@@ -312,16 +308,21 @@ mod tests {
         let src_w = 2;
         let src_h = 2;
         // 2x2 image: Red, Green, Blue, White
-        let src = vec![
-            255, 0, 0,    0, 255, 0,
-            0, 0, 255,    255, 255, 255,
-        ];
+        let src = vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
 
         let dst_w = 4;
         let dst_h = 4;
         let mut dst = vec![0.0f32; 3 * dst_w * dst_h];
 
-        resize_bilinear_rgb_nchw(&src, src_w, src_h, &mut dst, dst_w, dst_h, NormalizationMode::ZeroOne);
+        resize_bilinear_rgb_nchw(
+            &src,
+            src_w,
+            src_h,
+            &mut dst,
+            dst_w,
+            dst_h,
+            NormalizationMode::ZeroOne,
+        );
         assert_eq!(dst.len(), 48);
 
         // Top-left pixel should be pure red (r=1.0, g=0.0, b=0.0)
@@ -339,7 +340,15 @@ mod tests {
         let src = vec![128u8; src_w * src_h * 3];
         let mut dst = vec![0.0f32; 3 * dst_w * dst_h];
 
-        let transform = letterbox_rgb_nchw(&src, src_w, src_h, &mut dst, dst_w, dst_h, NormalizationMode::Centered);
+        let transform = letterbox_rgb_nchw(
+            &src,
+            src_w,
+            src_h,
+            &mut dst,
+            dst_w,
+            dst_h,
+            NormalizationMode::Centered,
+        );
         assert!(transform.pad_y > 0.0);
         assert_eq!(transform.pad_x, 0.0);
 

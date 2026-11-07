@@ -77,10 +77,7 @@ impl RedbZkStore {
         Self::default()
     }
 
-    pub fn insert_user(
-        &mut self,
-        user: UserRecord,
-    ) -> Result<(), HakilleError> {
+    pub fn insert_user(&mut self, user: UserRecord) -> Result<(), HakilleError> {
         let uid = user.user_id.clone();
         let blind_hash = user.blind_username_hash;
 
@@ -153,7 +150,11 @@ impl RedbZkStore {
         self.shredded_salts.contains(user_id)
     }
 
-    pub fn insert_blind_spo(&mut self, subject_blind_token: [u8; 32], encrypted_predicate_object: Vec<u8>) {
+    pub fn insert_blind_spo(
+        &mut self,
+        subject_blind_token: [u8; 32],
+        encrypted_predicate_object: Vec<u8>,
+    ) {
         self.spo_blind_table
             .entry(subject_blind_token)
             .or_default()

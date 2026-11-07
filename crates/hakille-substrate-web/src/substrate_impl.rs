@@ -528,4 +528,3 @@ impl Substrate for WebSubstrate {
         Ok(())
     }
 }
-

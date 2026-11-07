@@ -198,7 +198,11 @@ impl ScrfdDetector {
 
         // Calculate average frame brightness / energy
         let total_pixels = (width * height) as usize;
-        let sum_energy: u64 = rgb_data.iter().take(total_pixels * 3).map(|&b| b as u64).sum();
+        let sum_energy: u64 = rgb_data
+            .iter()
+            .take(total_pixels * 3)
+            .map(|&b| b as u64)
+            .sum();
         let avg_brightness = sum_energy as f32 / (total_pixels * 3) as f32;
 
         // Pitch black or saturated white returns no valid face (fail-closed)
@@ -554,4 +558,3 @@ mod tests {
         assert!((emb.l2_norm() - 1.0).abs() < 1e-4);
     }
 }
-

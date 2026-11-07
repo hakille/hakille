@@ -557,7 +557,8 @@ pub fn attenuate_cognitive_inference_token(
 ) -> Result<CapabilityToken> {
     // 1. Monotonie : Le token parent DOIT détenir le droit CognitiveInference:Read (ou FullSystem:Admin)
     let parent_rights = effective_rights(parent_token)?;
-    let has_cog_read = parent_rights.contains(&("cognitive_inference".to_string(), "read".to_string()))
+    let has_cog_read = parent_rights
+        .contains(&("cognitive_inference".to_string(), "read".to_string()))
         || parent_rights.contains(&("cognitiveinference".to_string(), "read".to_string()))
         || parent_rights.contains(&("fullsystem".to_string(), "admin".to_string()));
     if !has_cog_read {
@@ -613,7 +614,9 @@ pub fn attenuate_cognitive_inference_token(
         .biscuit
         .append(block)
         .map_err(|_| HakilleError::AttenuationViolation)?;
-    Ok(CapabilityToken { biscuit: attenuated })
+    Ok(CapabilityToken {
+        biscuit: attenuated,
+    })
 }
 
 /// Vérifie l'accès à une inférence cognitive avec la seule clé publique racine épinglée.
@@ -623,7 +626,9 @@ pub fn verify_cognitive_inference_with_root_key(
     target_resource: &str,
 ) -> Result<()> {
     if target_resource.is_empty() || target_resource.len() > 256 {
-        return Err(HakilleError::CapabilityDenied("target_resource vide ou trop longue".to_string()));
+        return Err(HakilleError::CapabilityDenied(
+            "target_resource vide ou trop longue".to_string(),
+        ));
     }
     validate_binding_value(target_resource)?;
     if token.is_expired() {
@@ -1072,8 +1077,16 @@ mod tests {
             .unwrap();
 
         // Le parent peut lire les données brutes
-        assert!(authority.verify(&parent, CapabilityScope::Camera, CapabilityAction::Read).is_ok());
-        assert!(authority.verify(&parent, CapabilityScope::Biometrics, CapabilityAction::Read).is_ok());
+        assert!(
+            authority
+                .verify(&parent, CapabilityScope::Camera, CapabilityAction::Read)
+                .is_ok()
+        );
+        assert!(
+            authority
+                .verify(&parent, CapabilityScope::Biometrics, CapabilityAction::Read)
+                .is_ok()
+        );
 
         // 2. Atténuation stricte pour un agent tiers : autorise UNIQUEMENT "emotion" et "presence"
         let agent_token = authority
@@ -1081,44 +1094,104 @@ mod tests {
             .unwrap();
 
         // A. Accès autorisés : OK
-        assert!(authority.verify_cognitive_inference(&agent_token, "emotion").is_ok());
-        assert!(authority.verify_cognitive_inference(&agent_token, "presence").is_ok());
+        assert!(
+            authority
+                .verify_cognitive_inference(&agent_token, "emotion")
+                .is_ok()
+        );
+        assert!(
+            authority
+                .verify_cognitive_inference(&agent_token, "presence")
+                .is_ok()
+        );
         assert!(verify_cognitive_inference_with_root_key(&agent_token, &root, "emotion").is_ok());
 
         // B. Ressource cognitive non autorisée ("fatigue", "estimated_age") : REFUS STRICT (Fail-Closed)
-        assert!(authority.verify_cognitive_inference(&agent_token, "fatigue").is_err());
-        assert!(authority.verify_cognitive_inference(&agent_token, "estimated_age").is_err());
+        assert!(
+            authority
+                .verify_cognitive_inference(&agent_token, "fatigue")
+                .is_err()
+        );
+        assert!(
+            authority
+                .verify_cognitive_inference(&agent_token, "estimated_age")
+                .is_err()
+        );
 
         // C. Tentative d'accès aux flux caméra bruts : REFUS STRICT (Fail-Closed, anti-fuite)
-        assert!(authority.verify(&agent_token, CapabilityScope::Camera, CapabilityAction::Read).is_err());
+        assert!(
+            authority
+                .verify(
+                    &agent_token,
+                    CapabilityScope::Camera,
+                    CapabilityAction::Read
+                )
+                .is_err()
+        );
 
         // D. Tentative d'accès aux repères biométriques bruts : REFUS STRICT
-        assert!(authority.verify(&agent_token, CapabilityScope::Biometrics, CapabilityAction::Read).is_err());
+        assert!(
+            authority
+                .verify(
+                    &agent_token,
+                    CapabilityScope::Biometrics,
+                    CapabilityAction::Read
+                )
+                .is_err()
+        );
 
         // E. Tentative d'accès au squelette 3D spatial brut : REFUS STRICT
-        assert!(authority.verify(&agent_token, CapabilityScope::Spatial, CapabilityAction::Read).is_err());
+        assert!(
+            authority
+                .verify(
+                    &agent_token,
+                    CapabilityScope::Spatial,
+                    CapabilityAction::Read
+                )
+                .is_err()
+        );
 
         // F. Token forgé avec mauvaise clé racine : REFUS STRICT
         let rogue_authority = CapabilityAuthority::new();
         let rogue_token = rogue_authority
-            .create_root_token(vec![CapabilityScope::CognitiveInference], vec![CapabilityAction::Read], exp.clone())
+            .create_root_token(
+                vec![CapabilityScope::CognitiveInference],
+                vec![CapabilityAction::Read],
+                exp.clone(),
+            )
             .unwrap();
         assert!(verify_cognitive_inference_with_root_key(&rogue_token, &root, "emotion").is_err());
 
         // G. Atténuation sans droit parent : REJET
         let camera_only_parent = authority
-            .create_root_token(vec![CapabilityScope::Camera], vec![CapabilityAction::Read], exp.clone())
+            .create_root_token(
+                vec![CapabilityScope::Camera],
+                vec![CapabilityAction::Read],
+                exp.clone(),
+            )
             .unwrap();
-        assert!(authority.attenuate_cognitive_inference(&camera_only_parent, &["emotion"], exp.clone()).is_err());
+        assert!(
+            authority
+                .attenuate_cognitive_inference(&camera_only_parent, &["emotion"], exp.clone())
+                .is_err()
+        );
 
         // H. Atténuation avec liste vide : Deny-all (aucun accès)
         let deny_all = authority
             .attenuate_cognitive_inference(&parent, &[], exp.clone())
             .unwrap();
-        assert!(authority.verify_cognitive_inference(&deny_all, "emotion").is_err());
+        assert!(
+            authority
+                .verify_cognitive_inference(&deny_all, "emotion")
+                .is_err()
+        );
 
         // I. Tentative d'injection Datalog dans le nom de ressource : REJET IMMÉDIAT
-        assert!(authority.attenuate_cognitive_inference(&parent, &["emotion\", evil"], exp).is_err());
+        assert!(
+            authority
+                .attenuate_cognitive_inference(&parent, &["emotion\", evil"], exp)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1137,38 +1210,82 @@ mod tests {
             .expect("notification root token");
 
         // 2. Vérification contre la clé publique racine : OK
-        assert!(authority
-            .verify(&notif_token, CapabilityScope::Notification, CapabilityAction::Write)
-            .is_ok());
-        assert!(authority
-            .verify(&notif_token, CapabilityScope::Notification, CapabilityAction::Read)
-            .is_ok());
-        assert!(verify_capability_with_root_key(
-            &notif_token,
-            &root_pub,
-            CapabilityScope::Notification,
-            CapabilityAction::Write,
-        )
-        .is_ok());
+        assert!(
+            authority
+                .verify(
+                    &notif_token,
+                    CapabilityScope::Notification,
+                    CapabilityAction::Write
+                )
+                .is_ok()
+        );
+        assert!(
+            authority
+                .verify(
+                    &notif_token,
+                    CapabilityScope::Notification,
+                    CapabilityAction::Read
+                )
+                .is_ok()
+        );
+        assert!(
+            verify_capability_with_root_key(
+                &notif_token,
+                &root_pub,
+                CapabilityScope::Notification,
+                CapabilityAction::Write,
+            )
+            .is_ok()
+        );
 
         // 3. Action non accordée (Delete / Admin) : REFUS STRICT
-        assert!(authority
-            .verify(&notif_token, CapabilityScope::Notification, CapabilityAction::Delete)
-            .is_err());
-        assert!(authority
-            .verify(&notif_token, CapabilityScope::Notification, CapabilityAction::Admin)
-            .is_err());
+        assert!(
+            authority
+                .verify(
+                    &notif_token,
+                    CapabilityScope::Notification,
+                    CapabilityAction::Delete
+                )
+                .is_err()
+        );
+        assert!(
+            authority
+                .verify(
+                    &notif_token,
+                    CapabilityScope::Notification,
+                    CapabilityAction::Admin
+                )
+                .is_err()
+        );
 
         // 4. Isolation de périmètre : Un token Notification ne peut PAS lire le système de fichiers, la caméra ou le wallet
-        assert!(authority
-            .verify(&notif_token, CapabilityScope::Filesystem, CapabilityAction::Read)
-            .is_err());
-        assert!(authority
-            .verify(&notif_token, CapabilityScope::Camera, CapabilityAction::Read)
-            .is_err());
-        assert!(authority
-            .verify(&notif_token, CapabilityScope::Wallet, CapabilityAction::Write)
-            .is_err());
+        assert!(
+            authority
+                .verify(
+                    &notif_token,
+                    CapabilityScope::Filesystem,
+                    CapabilityAction::Read
+                )
+                .is_err()
+        );
+        assert!(
+            authority
+                .verify(
+                    &notif_token,
+                    CapabilityScope::Camera,
+                    CapabilityAction::Read
+                )
+                .is_err()
+        );
+        assert!(
+            authority
+                .verify(
+                    &notif_token,
+                    CapabilityScope::Wallet,
+                    CapabilityAction::Write
+                )
+                .is_err()
+        );
 
         // 5. Clé racine contrefaite : REJET
         let rogue = CapabilityAuthority::new();
@@ -1179,13 +1296,14 @@ mod tests {
                 exp,
             )
             .expect("rogue token");
-        assert!(verify_capability_with_root_key(
-            &rogue_token,
-            &root_pub,
-            CapabilityScope::Notification,
-            CapabilityAction::Write,
-        )
-        .is_err());
+        assert!(
+            verify_capability_with_root_key(
+                &rogue_token,
+                &root_pub,
+                CapabilityScope::Notification,
+                CapabilityAction::Write,
+            )
+            .is_err()
+        );
     }
 }
-

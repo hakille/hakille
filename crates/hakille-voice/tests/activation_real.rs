@@ -72,9 +72,12 @@ fn segment_with_real_silero(models_dir: &Path, pcm: &[f32], name: &str) -> Vec<f
             match event {
                 VoiceEvent::SpeechStart => starts += 1,
                 VoiceEvent::SpeechEnd => ends += 1,
+                VoiceEvent::ProsodyUpdate { .. } => {}
                 VoiceEvent::Error(error) => panic!("{name}: erreur du pipeline réel : {error}"),
                 VoiceEvent::Wake { .. } => panic!("le VAD seul ne doit pas détecter Hakille"),
-                VoiceEvent::Transcript { .. } => panic!("ASR du pipeline désactivé dans ce test"),
+                VoiceEvent::Transcript { .. } | VoiceEvent::Emotion { .. } => {
+                    panic!("ASR du pipeline désactivé dans ce test")
+                }
             }
         }
     }

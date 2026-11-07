@@ -178,13 +178,7 @@ mod tests {
     fn test_enroll_face_and_list() {
         let mut manager = EnrollmentManager::new();
         let user_id = UserId(Uuid::new_v4());
-        let face_prof = FaceProfile::new(
-            user_id.clone(),
-            vec![0x42; 128],
-            1,
-            None,
-            0.92,
-        );
+        let face_prof = FaceProfile::new(user_id.clone(), vec![0x42; 128], 1, None, 0.92);
 
         manager.enroll_face(face_prof).unwrap();
         assert!(manager.get_face_profile(&user_id).is_some());
@@ -200,7 +194,11 @@ mod tests {
         assert_eq!(compute_face_quality(&[]), 0.0);
         let valid_512 = vec![1.0 / (512.0f32).sqrt(); 512];
         let q = compute_face_quality(&valid_512);
-        assert!(q > 0.90, "Normalized 512-dim embedding should have high quality: {}", q);
+        assert!(
+            q > 0.90,
+            "Normalized 512-dim embedding should have high quality: {}",
+            q
+        );
     }
 
     #[test]

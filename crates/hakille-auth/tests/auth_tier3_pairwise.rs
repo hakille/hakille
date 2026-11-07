@@ -9,8 +9,8 @@ use hakille_auth::guest::*;
 use hakille_auth::household::*;
 use hakille_auth::minor::*;
 use hakille_auth::multimodal::*;
-use hakille_core::capability::CapabilityScope;
 use hakille_core::UserId;
+use hakille_core::capability::CapabilityScope;
 use uuid::Uuid;
 
 /// 1. Multi-Tenancy (Household/Minor) + Biometric Face Auth + Minor Protection:
@@ -49,8 +49,18 @@ fn test_auth_tier3_pairwise_01_household_biometric_face_minor_guard() {
         age_category: AgeCategory::Child,
     };
 
-    assert!(minor_prof.member.restrictions.contains(&Restriction::NoWallet));
-    assert!(minor_prof.member.restrictions.contains(&Restriction::ContentFilter(ContentFilterLevel::Strict)));
+    assert!(
+        minor_prof
+            .member
+            .restrictions
+            .contains(&Restriction::NoWallet)
+    );
+    assert!(
+        minor_prof
+            .member
+            .restrictions
+            .contains(&Restriction::ContentFilter(ContentFilterLevel::Strict))
+    );
 }
 
 /// 2. Passive Anti-Spoofing (F16) + Active Liveness (F17) + Step-Up Escalation (F21):
@@ -64,7 +74,11 @@ fn test_auth_tier3_pairwise_02_passive_active_liveness_stepup() {
     let mut fusion = ContinuousMultimodalFusion::new(0.50);
 
     // Initial state: Wallet gated
-    assert!(decay_engine.gate_action(fusion.current_confidence, &CapabilityScope::Wallet).is_err());
+    assert!(
+        decay_engine
+            .gate_action(fusion.current_confidence, &CapabilityScope::Wallet)
+            .is_err()
+    );
 
     // 1. Passive check on slightly noisy crop
     let mut crop = Vec::with_capacity(100 * 100 * 3);
@@ -80,31 +94,33 @@ fn test_auth_tier3_pairwise_02_passive_active_liveness_stepup() {
     // 2. User completes active gaze pursuit challenge
     let target = vec![(10.0, 10.0), (20.0, 20.0), (30.0, 30.0), (40.0, 40.0)];
     let pupil = vec![(10.1, 9.9), (20.2, 19.8), (29.9, 30.2), (40.0, 40.1)];
-    let active_ok = active_engine.verify_gaze_response(&challenge, &pupil, &target, now + 1).unwrap();
+    let active_ok = active_engine
+        .verify_gaze_response(&challenge, &pupil, &target, now + 1)
+        .unwrap();
     assert!(active_ok);
 
     // 3. Active challenge success elevates confidence to 0.95
-    fusion.fuse_signals(&[
-        MultimodalSignal {
-            modality: SignalModality::FaceRecognition,
-            score: 0.98,
-            weight: 0.90,
-            timestamp: now + 1,
-        },
-    ]);
+    fusion.fuse_signals(&[MultimodalSignal {
+        modality: SignalModality::FaceRecognition,
+        score: 0.98,
+        weight: 0.90,
+        timestamp: now + 1,
+    }]);
     assert!(fusion.current_confidence >= 0.75);
 
     // Re-verify after multi-signal step-up
-    fusion.fuse_signals(&[
-        MultimodalSignal {
-            modality: SignalModality::FaceRecognition,
-            score: 0.99,
-            weight: 1.0,
-            timestamp: now + 2,
-        },
-    ]);
+    fusion.fuse_signals(&[MultimodalSignal {
+        modality: SignalModality::FaceRecognition,
+        score: 0.99,
+        weight: 1.0,
+        timestamp: now + 2,
+    }]);
     assert!(fusion.current_confidence >= 0.90);
-    assert!(decay_engine.gate_action(fusion.current_confidence, &CapabilityScope::Wallet).is_ok());
+    assert!(
+        decay_engine
+            .gate_action(fusion.current_confidence, &CapabilityScope::Wallet)
+            .is_ok()
+    );
 }
 
 /// 3. Continuous Multimodal Fusion (F20) + Confidence Decay (F21) + Wallet Gating (F21):
@@ -116,12 +132,20 @@ fn test_auth_tier3_pairwise_03_continuous_fusion_decay_wallet_gating() {
     let decay_engine = ConfidenceDecayEngine::new(120.0); // 2 minute half-life
 
     // Wallet is authorized when active
-    assert!(decay_engine.gate_action(fusion.current_confidence, &CapabilityScope::Wallet).is_ok());
+    assert!(
+        decay_engine
+            .gate_action(fusion.current_confidence, &CapabilityScope::Wallet)
+            .is_ok()
+    );
 
     // After 600 seconds (10 minutes) of inactivity (no fresh signals)
     let decayed_tau = decay_engine.apply_decay(fusion.current_confidence, 600);
     assert!(decayed_tau < 0.90);
-    assert!(decay_engine.gate_action(decayed_tau, &CapabilityScope::Wallet).is_err());
+    assert!(
+        decay_engine
+            .gate_action(decayed_tau, &CapabilityScope::Wallet)
+            .is_err()
+    );
 }
 
 /// 4. Biometric Biohashing (F18) + GDPR Crypto-Shredding (F19) + Keystore:
@@ -135,7 +159,12 @@ fn test_auth_tier3_pairwise_04_biohash_gdpr_crypto_shredding() {
     let mut user_salt = [0x7au8; 32];
 
     // Enroll with consent
-    gdpr.record_consent(user_id.clone(), ConsentPurpose::BiometricVerification1to1, true).unwrap();
+    gdpr.record_consent(
+        user_id.clone(),
+        ConsentPurpose::BiometricVerification1to1,
+        true,
+    )
+    .unwrap();
     let emb = FaceEmbedding::new([0.08f32; 512]);
     let reference_template = bio_engine.project_embedding(&emb, &user_salt);
 
@@ -169,7 +198,9 @@ fn test_auth_tier3_pairwise_05_active_blink_voice_liveness_fusion() {
     let now = 3000;
     let token = active_face.issue_challenge(ActiveChallengeType::RandomBlink, now);
     let blink_series = vec![0.30, 0.14, 0.28];
-    let face_live = active_face.verify_blink_response(&token, &blink_series, now + 1).unwrap();
+    let face_live = active_face
+        .verify_blink_response(&token, &blink_series, now + 1)
+        .unwrap();
     assert!(face_live);
 
     // 2. Voice liveness verified
@@ -199,5 +230,8 @@ fn test_auth_tier3_pairwise_05_active_blink_voice_liveness_fusion() {
     ];
 
     let fused = fusion.fuse_signals(&signals);
-    assert!(fused >= 0.70, "Fused live face + live voice escalates confidence");
+    assert!(
+        fused >= 0.70,
+        "Fused live face + live voice escalates confidence"
+    );
 }

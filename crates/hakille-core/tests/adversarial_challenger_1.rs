@@ -1,6 +1,6 @@
 use hakille_core::crypto::{
-    AadBinding, Argon2Params, CryptoError, MasterKey, MasterKeyKdf, SubkeyDomain,
-    XChaChaCipher, derive_subkey,
+    AadBinding, Argon2Params, CryptoError, MasterKey, MasterKeyKdf, SubkeyDomain, XChaChaCipher,
+    derive_subkey,
 };
 use sha2::{Digest, Sha256};
 
@@ -9,7 +9,11 @@ use sha2::{Digest, Sha256};
 // =============================================================================
 
 fn hamming_distance(a: &[u8], b: &[u8]) -> u32 {
-    assert_eq!(a.len(), b.len(), "Slices must have equal length for Hamming distance");
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "Slices must have equal length for Hamming distance"
+    );
     a.iter()
         .zip(b.iter())
         .map(|(x, y)| (x ^ y).count_ones())
@@ -65,7 +69,11 @@ fn test_adversarial_argon2id_empty_passphrase() {
         .expect("Argon2id must be deterministic for empty passphrase");
 
     assert_eq!(key_empty1.as_bytes(), key_empty2.as_bytes());
-    assert_ne!(key_empty1.as_bytes(), &[0u8; 32], "Empty passphrase must not output zero key");
+    assert_ne!(
+        key_empty1.as_bytes(),
+        &[0u8; 32],
+        "Empty passphrase must not output zero key"
+    );
 
     // Must be strictly distinct from non-empty password
     let key_nonempty = MasterKeyKdf::derive_master_key_with_params(b" ", &salt, &params)
@@ -149,8 +157,9 @@ fn test_adversarial_argon2id_extreme_salts_and_diffusion() {
     // Single-bit salt flip avalanche
     let mut salt_bitflip = salt_zero;
     salt_bitflip[0] ^= 0x01; // flip 1 bit
-    let key_bitflip = MasterKeyKdf::derive_master_key_with_params(passphrase, &salt_bitflip, &params)
-        .expect("Bitflip salt should succeed");
+    let key_bitflip =
+        MasterKeyKdf::derive_master_key_with_params(passphrase, &salt_bitflip, &params)
+            .expect("Bitflip salt should succeed");
 
     let dist = hamming_distance(key_zero.as_bytes(), key_bitflip.as_bytes());
     // In a 256-bit output, optimal avalanche is 128 bits. We assert 90 <= dist <= 165
@@ -262,7 +271,8 @@ fn test_adversarial_hkdf_tenant_isolation_boundary() {
     // Subkeys for distinct tenants must never collide or correlate
     let k_org1 = derive_subkey(&master, &SubkeyDomain::Identity, Some("org_alpha")).unwrap();
     let k_org2 = derive_subkey(&master, &SubkeyDomain::Identity, Some("org_beta")).unwrap();
-    let k_org1_sub = derive_subkey(&master, &SubkeyDomain::Identity, Some("org_alpha_sub")).unwrap();
+    let k_org1_sub =
+        derive_subkey(&master, &SubkeyDomain::Identity, Some("org_alpha_sub")).unwrap();
 
     assert_ne!(k_org1, k_org2);
     assert_ne!(k_org1, k_org1_sub);
@@ -277,8 +287,18 @@ fn test_adversarial_hkdf_delimiter_collision_boundary_analysis() {
 
     // Probe: What happens if partition name and tenant_id contain ':'?
     // MemoryPartition("a:b") + tenant "c" vs MemoryPartition("a") + tenant "b:c"
-    let k1 = derive_subkey(&master, &SubkeyDomain::MemoryPartition("a:b".to_string()), Some("c")).unwrap();
-    let k2 = derive_subkey(&master, &SubkeyDomain::MemoryPartition("a".to_string()), Some("b:c")).unwrap();
+    let k1 = derive_subkey(
+        &master,
+        &SubkeyDomain::MemoryPartition("a:b".to_string()),
+        Some("c"),
+    )
+    .unwrap();
+    let k2 = derive_subkey(
+        &master,
+        &SubkeyDomain::MemoryPartition("a".to_string()),
+        Some("b:c"),
+    )
+    .unwrap();
 
     // Notice that without delimiter sanitization, info string is identical ("hakille:v1:memory-partition:a:b:c").
     // We document this boundary condition explicitly in our Challenger findings:
@@ -299,14 +319,18 @@ fn test_adversarial_xchacha20_empty_plaintext() {
     let aad = binding.to_bytes();
 
     // Encrypt empty message
-    let blob = XChaChaCipher::encrypt(b"", &key, &aad)
-        .expect("Encrypting empty plaintext must succeed");
+    let blob =
+        XChaChaCipher::encrypt(b"", &key, &aad).expect("Encrypting empty plaintext must succeed");
 
-    assert_eq!(blob.ciphertext.len(), 0, "Ciphertext for empty plaintext should be 0 bytes");
+    assert_eq!(
+        blob.ciphertext.len(),
+        0,
+        "Ciphertext for empty plaintext should be 0 bytes"
+    );
     assert_eq!(blob.tag.len(), 16, "Tag must still be 16 bytes");
 
-    let decrypted = XChaChaCipher::decrypt(&blob, &key, &aad)
-        .expect("Decrypting empty plaintext must succeed");
+    let decrypted =
+        XChaChaCipher::decrypt(&blob, &key, &aad).expect("Decrypting empty plaintext must succeed");
     assert_eq!(decrypted, Vec::<u8>::new());
 }
 
@@ -465,41 +489,82 @@ fn test_adversarial_xchacha20_cross_tenant_aad_splicing_comprehensive() {
     let key = [0x33; 32];
     let plaintext = b"Ultra-secure enterprise executive board resolution";
 
-    let valid_binding = AadBinding::new("enterprise-conglomerate", "user-ceo", "board_resolutions", "res-2026-001", 1);
+    let valid_binding = AadBinding::new(
+        "enterprise-conglomerate",
+        "user-ceo",
+        "board_resolutions",
+        "res-2026-001",
+        1,
+    );
     let valid_aad = valid_binding.to_bytes();
 
     let blob = XChaChaCipher::encrypt(plaintext, &key, &valid_aad).unwrap();
 
     // Attack Vector 1: Cross-tenant splicing
-    let spliced_tenant = AadBinding::new("enterprise-subsidiary", "user-ceo", "board_resolutions", "res-2026-001", 1).to_bytes();
+    let spliced_tenant = AadBinding::new(
+        "enterprise-subsidiary",
+        "user-ceo",
+        "board_resolutions",
+        "res-2026-001",
+        1,
+    )
+    .to_bytes();
     assert_eq!(
         XChaChaCipher::decrypt(&blob, &key, &spliced_tenant).unwrap_err(),
         CryptoError::AadMismatch
     );
 
     // Attack Vector 2: Cross-user splicing
-    let spliced_user = AadBinding::new("enterprise-conglomerate", "user-intern", "board_resolutions", "res-2026-001", 1).to_bytes();
+    let spliced_user = AadBinding::new(
+        "enterprise-conglomerate",
+        "user-intern",
+        "board_resolutions",
+        "res-2026-001",
+        1,
+    )
+    .to_bytes();
     assert_eq!(
         XChaChaCipher::decrypt(&blob, &key, &spliced_user).unwrap_err(),
         CryptoError::AadMismatch
     );
 
     // Attack Vector 3: Cross-table splicing
-    let spliced_table = AadBinding::new("enterprise-conglomerate", "user-ceo", "public_bulletin", "res-2026-001", 1).to_bytes();
+    let spliced_table = AadBinding::new(
+        "enterprise-conglomerate",
+        "user-ceo",
+        "public_bulletin",
+        "res-2026-001",
+        1,
+    )
+    .to_bytes();
     assert_eq!(
         XChaChaCipher::decrypt(&blob, &key, &spliced_table).unwrap_err(),
         CryptoError::AadMismatch
     );
 
     // Attack Vector 4: Cross-record UUID splicing
-    let spliced_record = AadBinding::new("enterprise-conglomerate", "user-ceo", "board_resolutions", "res-2026-999", 1).to_bytes();
+    let spliced_record = AadBinding::new(
+        "enterprise-conglomerate",
+        "user-ceo",
+        "board_resolutions",
+        "res-2026-999",
+        1,
+    )
+    .to_bytes();
     assert_eq!(
         XChaChaCipher::decrypt(&blob, &key, &spliced_record).unwrap_err(),
         CryptoError::AadMismatch
     );
 
     // Attack Vector 5: Schema version rollback / upgrade splicing
-    let spliced_schema = AadBinding::new("enterprise-conglomerate", "user-ceo", "board_resolutions", "res-2026-001", 2).to_bytes();
+    let spliced_schema = AadBinding::new(
+        "enterprise-conglomerate",
+        "user-ceo",
+        "board_resolutions",
+        "res-2026-001",
+        2,
+    )
+    .to_bytes();
     assert_eq!(
         XChaChaCipher::decrypt(&blob, &key, &spliced_schema).unwrap_err(),
         CryptoError::AadMismatch
@@ -511,7 +576,8 @@ fn test_adversarial_xchacha20_forged_aad_fingerprint_bypass() {
     let key = [0x77; 32];
     let plaintext = b"Attempt to bypass AAD fingerprint fast-fail check";
 
-    let legitimate_aad = AadBinding::new("tenant-genuine", "user-alice", "vault", "item-1", 1).to_bytes();
+    let legitimate_aad =
+        AadBinding::new("tenant-genuine", "user-alice", "vault", "item-1", 1).to_bytes();
     let adversary_aad = AadBinding::new("tenant-evil", "user-bob", "vault", "item-1", 1).to_bytes();
 
     let mut blob = XChaChaCipher::encrypt(plaintext, &key, &legitimate_aad).unwrap();

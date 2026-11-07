@@ -274,7 +274,10 @@ impl BodySkeleton3D {
 
         if hips_visible && knees_visible {
             let mid_h = self.mid_hips(min_conf).unwrap();
-            let mid_k = self.joint(CocoJointId::LeftKnee).position.midpoint(&self.joint(CocoJointId::RightKnee).position);
+            let mid_k = self
+                .joint(CocoJointId::LeftKnee)
+                .position
+                .midpoint(&self.joint(CocoJointId::RightKnee).position);
             let dy = (mid_k.y - mid_h.y).abs();
             let dz = (mid_k.z - mid_h.z).abs();
             // Debout : distance verticale significative et cuisse presque verticale
@@ -284,7 +287,9 @@ impl BodySkeleton3D {
         }
 
         // 2. Analyse de la colonne et du buste (assis ou buste seul face caméra)
-        if let (Some(shoulders), Some(hips)) = (self.mid_shoulders(min_conf), self.mid_hips(min_conf)) {
+        if let (Some(shoulders), Some(hips)) =
+            (self.mid_shoulders(min_conf), self.mid_hips(min_conf))
+        {
             let dz_spine = shoulders.z - hips.z; // Négatif = épaules plus proches de la caméra que les hanches
 
             if dz_spine < -0.10 {
@@ -350,7 +355,9 @@ mod tests {
         skel.joint_mut(CocoJointId::RightShoulder).position = Point3D::new(0.2, 0.3, 0.6);
         skel.joint_mut(CocoJointId::RightShoulder).confidence = 0.9;
 
-        let mid = skel.mid_shoulders(0.5).expect("Should compute mid shoulders");
+        let mid = skel
+            .mid_shoulders(0.5)
+            .expect("Should compute mid shoulders");
         assert!((mid.x).abs() < 1e-6);
         assert!((mid.y - 0.3).abs() < 1e-6);
         assert!((mid.z - 0.6).abs() < 1e-6);

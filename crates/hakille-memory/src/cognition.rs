@@ -191,10 +191,7 @@ pub fn create_fatigue_index_triplet(fatigue_index: f64, confidence: f64) -> Resu
 /// et purge physiquement (`graph.remove`) tout signal passant sous `cutoff_weight`.
 ///
 /// Aucun tombstone logique n'est créé pour les triplets cognitifs (`preserve_history = false`).
-pub fn prune_cognitive_signals(
-    graph: &mut KnowledgeGraph,
-    cutoff_weight: f64,
-) -> DecayReport {
+pub fn prune_cognitive_signals(graph: &mut KnowledgeGraph, cutoff_weight: f64) -> DecayReport {
     let now = chrono::Utc::now();
     let cutoff = cutoff_weight.max(0.0);
     let mut decayed_count: u64 = 0;

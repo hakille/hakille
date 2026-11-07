@@ -8,8 +8,8 @@
 //! résolveur géométrique canonique exact respectant l'anthropométrie faciale, rapportant honnêtement
 //! [`ModelStatus::Simulated`] sans fausse prétention, et [`ModelStatus::Real`] lors de l'exécution neurale ONNX.
 
-use crate::ort_env::shared_ort_env;
 use crate::ModelStatus;
+use crate::ort_env::shared_ort_env;
 use hakille_core::{HakilleError, Result};
 use hakille_spatial::Point3D;
 use ort::{session::Session, value::Tensor};
@@ -165,12 +165,25 @@ impl FaceMeshIrisSession {
 
         if let Some(session_mutex) = &self.session {
             // Forward réel ONNX
-            let tensor_data = preprocess_image_to_chw(rgb_data, width, height, FACEMESH_INPUT_WIDTH, FACEMESH_INPUT_HEIGHT);
-            let input_tensor = Tensor::<f32>::from_array(([1usize, 3usize, FACEMESH_INPUT_HEIGHT, FACEMESH_INPUT_WIDTH], tensor_data))
-                .map_err(|e| ort_err("input_tensor", e))?;
+            let tensor_data = preprocess_image_to_chw(
+                rgb_data,
+                width,
+                height,
+                FACEMESH_INPUT_WIDTH,
+                FACEMESH_INPUT_HEIGHT,
+            );
+            let input_tensor = Tensor::<f32>::from_array((
+                [1usize, 3usize, FACEMESH_INPUT_HEIGHT, FACEMESH_INPUT_WIDTH],
+                tensor_data,
+            ))
+            .map_err(|e| ort_err("input_tensor", e))?;
 
-            let mut session = session_mutex.lock().map_err(|_| ort_err("lock", "mutex empoisonné"))?;
-            let outputs = session.run(ort::inputs![input_tensor]).map_err(|e| ort_err("forward", e))?;
+            let mut session = session_mutex
+                .lock()
+                .map_err(|_| ort_err("lock", "mutex empoisonné"))?;
+            let outputs = session
+                .run(ort::inputs![input_tensor])
+                .map_err(|e| ort_err("forward", e))?;
 
             // Extrait les coordonnées des repères [1, 478, 3] ou [1, 1434]
             let (_shape, values) = outputs[0]
@@ -267,11 +280,7 @@ fn compute_facial_metrics(landmarks: Vec<Point3D>, status: ModelStatus) -> FaceM
 
         let v_dist = top.distance_to(&bottom);
         let h_dist = left.distance_to(&right);
-        if h_dist > 1e-4 {
-            v_dist / h_dist
-        } else {
-            0.0
-        }
+        if h_dist > 1e-4 { v_dist / h_dist } else { 0.0 }
     } else {
         0.15
     };
@@ -318,11 +327,7 @@ fn calculate_ear(points: &[Point3D], indices: &[usize; 6]) -> f32 {
     let v2 = p3.distance_to(&p5);
     let h = p1.distance_to(&p4);
 
-    if h > 1e-4 {
-        (v1 + v2) / (2.0 * h)
-    } else {
-        0.0
-    }
+    if h > 1e-4 { (v1 + v2) / (2.0 * h) } else { 0.0 }
 }
 
 fn average_points(points: &[Point3D]) -> Point3D {
@@ -392,7 +397,11 @@ pub fn generate_canonical_landmarks(w: f32, h: f32) -> Vec<Point3D> {
     for k in 468..=472 {
         let sub_angle = ((k - 468) as f32) / 5.0 * std::f32::consts::TAU;
         let r = w * 0.006;
-        pts[k] = Point3D::new(iris_l_x + r * sub_angle.cos(), iris_l_y + r * sub_angle.sin(), 0.02);
+        pts[k] = Point3D::new(
+            iris_l_x + r * sub_angle.cos(),
+            iris_l_y + r * sub_angle.sin(),
+            0.02,
+        );
     }
 
     // Iris droit (473..=477) centré sur x = cx + w * 0.0375, y = cy - h * 0.06
@@ -401,7 +410,11 @@ pub fn generate_canonical_landmarks(w: f32, h: f32) -> Vec<Point3D> {
     for k in 473..=477 {
         let sub_angle = ((k - 473) as f32) / 5.0 * std::f32::consts::TAU;
         let r = w * 0.006;
-        pts[k] = Point3D::new(iris_r_x + r * sub_angle.cos(), iris_r_y + r * sub_angle.sin(), 0.02);
+        pts[k] = Point3D::new(
+            iris_r_x + r * sub_angle.cos(),
+            iris_r_y + r * sub_angle.sin(),
+            0.02,
+        );
     }
 
     pts
@@ -417,14 +430,28 @@ mod tests {
         assert_eq!(session.status(), ModelStatus::Simulated);
 
         let dummy_rgb = vec![128u8; 640 * 480 * 3];
-        let output = session.infer(&dummy_rgb, 640, 480).expect("inférence valide");
+        let output = session
+            .infer(&dummy_rgb, 640, 480)
+            .expect("inférence valide");
 
         assert_eq!(output.landmarks.len(), 478);
         assert_eq!(output.status, ModelStatus::Simulated);
-        assert!(output.left_ear > 0.20, "EAR oeil ouvert nominal > 0.20 : {}", output.left_ear);
-        assert!(output.right_ear > 0.20, "EAR oeil ouvert nominal > 0.20 : {}", output.right_ear);
+        assert!(
+            output.left_ear > 0.20,
+            "EAR oeil ouvert nominal > 0.20 : {}",
+            output.left_ear
+        );
+        assert!(
+            output.right_ear > 0.20,
+            "EAR oeil ouvert nominal > 0.20 : {}",
+            output.right_ear
+        );
         assert!(output.mar > 0.10, "MAR bouche au repos : {}", output.mar);
-        assert!(output.ipd_distance > 40.0, "IPD pixels sur image 640x480 > 40px : {}", output.ipd_distance);
+        assert!(
+            output.ipd_distance > 40.0,
+            "IPD pixels sur image 640x480 > 40px : {}",
+            output.ipd_distance
+        );
     }
 
     #[test]

@@ -81,7 +81,10 @@ impl HeadPose6D {
 
     /// Détermine si la tête fait face à la caméra avec le seuil par défaut de ±20°.
     pub fn is_facing_camera_default(&self) -> bool {
-        self.is_facing_camera(Self::DEFAULT_FACING_THRESHOLD_DEG, Self::DEFAULT_FACING_THRESHOLD_DEG)
+        self.is_facing_camera(
+            Self::DEFAULT_FACING_THRESHOLD_DEG,
+            Self::DEFAULT_FACING_THRESHOLD_DEG,
+        )
     }
 
     /// Calcule le vecteur unitaire pointant droit devant le visage dans le repère caméra.
@@ -203,7 +206,8 @@ mod tests {
         let centered = HeadPose6D::from_degrees(0.0, 0.0, 0.0, Point3D::new(0.0, 0.0, 0.5));
         assert!(centered.is_facing_camera_default());
 
-        let slightly_turned = HeadPose6D::from_degrees(18.0, -10.0, 5.0, Point3D::new(0.0, 0.0, 0.5));
+        let slightly_turned =
+            HeadPose6D::from_degrees(18.0, -10.0, 5.0, Point3D::new(0.0, 0.0, 0.5));
         assert!(slightly_turned.is_facing_camera_default());
 
         let turned_away = HeadPose6D::from_degrees(25.0, 0.0, 0.0, Point3D::new(0.0, 0.0, 0.5));
@@ -228,11 +232,15 @@ mod tests {
         let cam = CameraIntrinsics::new(1000.0, 1000.0, 640.0, 360.0);
         let p3d = Point3D::new(0.1, 0.2, 1.0);
 
-        let (u, v) = cam.project(&p3d).expect("Projection should succeed for z > 0");
+        let (u, v) = cam
+            .project(&p3d)
+            .expect("Projection should succeed for z > 0");
         assert!((u - 740.0).abs() < 1e-5);
         assert!((v - 560.0).abs() < 1e-5);
 
-        let unprojected = cam.unproject(u, v, 1.0).expect("Unprojection should succeed");
+        let unprojected = cam
+            .unproject(u, v, 1.0)
+            .expect("Unprojection should succeed");
         assert!(unprojected.approx_eq(&p3d, 1e-5));
 
         // Negative depth should fail

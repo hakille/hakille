@@ -238,8 +238,7 @@ impl TenantEntityRecord {
             }
             (EntityTier::Family, Some(_)) => {
                 return Err(HakilleError::CapabilityDenied(
-                    "Family is a sovereign domestic sphere and cannot be a subsidiary"
-                        .to_string(),
+                    "Family is a sovereign domestic sphere and cannot be a subsidiary".to_string(),
                 ));
             }
             _ => {}
@@ -389,7 +388,10 @@ mod tests {
             1,
         );
         assert!(mem.is_minor());
-        assert!(!mem.has_scope(&CapabilityScope::Wallet), "Rule 7 must filter Wallet scope");
+        assert!(
+            !mem.has_scope(&CapabilityScope::Wallet),
+            "Rule 7 must filter Wallet scope"
+        );
         assert!(mem.has_scope(&CapabilityScope::Audio));
     }
 
@@ -403,7 +405,10 @@ mod tests {
             0,
         );
         assert!(mem.is_guest());
-        assert!(!mem.has_scope(&CapabilityScope::FullSystem), "Guest cannot have FullSystem");
+        assert!(
+            !mem.has_scope(&CapabilityScope::FullSystem),
+            "Guest cannot have FullSystem"
+        );
         assert!(mem.has_scope(&CapabilityScope::Audio));
     }
 
@@ -420,7 +425,8 @@ mod tests {
     fn test_tenant_state_helpers() {
         let did = Did::new("did:key:zOrg");
         let cfg = TierConfiguration::Organization(OrgConfig::default());
-        let mut rec = TenantEntityRecord::new(EntityTier::Organization, "Acme", did, cfg, None).unwrap();
+        let mut rec =
+            TenantEntityRecord::new(EntityTier::Organization, "Acme", did, cfg, None).unwrap();
         assert!(rec.is_active());
         assert!(!rec.is_dissolved());
 

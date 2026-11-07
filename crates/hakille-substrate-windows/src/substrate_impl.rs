@@ -720,4 +720,3 @@ impl Substrate for WindowsSubstrate {
         Ok(())
     }
 }
-

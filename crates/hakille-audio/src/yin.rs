@@ -88,7 +88,12 @@ pub struct YinPitchDetector {
 impl YinPitchDetector {
     /// Initialise un nouveau détecteur YIN configuré pour une fréquence d'échantillonnage donnée.
     pub fn new(sample_rate: u32) -> Self {
-        Self::with_bounds(sample_rate, DEFAULT_MIN_F0_HZ, DEFAULT_MAX_F0_HZ, DEFAULT_YIN_THRESHOLD)
+        Self::with_bounds(
+            sample_rate,
+            DEFAULT_MIN_F0_HZ,
+            DEFAULT_MAX_F0_HZ,
+            DEFAULT_YIN_THRESHOLD,
+        )
     }
 
     /// Initialise le détecteur avec des bornes de pitch et un seuil personnalisés.
@@ -305,7 +310,9 @@ impl YinPitchDetector {
         for tau in min_period..max_tau {
             if workspace.cmndf[tau] < threshold {
                 let mut best_tau = tau;
-                while best_tau + 1 < max_tau && workspace.cmndf[best_tau + 1] < workspace.cmndf[best_tau] {
+                while best_tau + 1 < max_tau
+                    && workspace.cmndf[best_tau + 1] < workspace.cmndf[best_tau]
+                {
                     best_tau += 1;
                 }
                 selected_tau = Some(best_tau);
@@ -388,7 +395,8 @@ impl YinPitchDetector {
             if let Some(prev_a) = prev_amplitude {
                 let mean_a = (prev_a + peak_amplitude) * 0.5;
                 if mean_a > 1e-4 {
-                    shimmer_local = Some(((peak_amplitude - prev_a).abs() / mean_a).clamp(0.0, 1.0));
+                    shimmer_local =
+                        Some(((peak_amplitude - prev_a).abs() / mean_a).clamp(0.0, 1.0));
                 }
             }
 
@@ -422,7 +430,12 @@ mod tests {
     use std::time::Instant;
 
     /// Générateur d'onde sinusoïdale pure.
-    fn generate_sine_wave(freq_hz: f32, sample_rate: u32, duration_secs: f32, amplitude: f32) -> Vec<f32> {
+    fn generate_sine_wave(
+        freq_hz: f32,
+        sample_rate: u32,
+        duration_secs: f32,
+        amplitude: f32,
+    ) -> Vec<f32> {
         let total_samples = (sample_rate as f32 * duration_secs) as usize;
         (0..total_samples)
             .map(|i| {
@@ -453,7 +466,10 @@ mod tests {
         let mut yin = YinPitchDetector::new(sample_rate);
 
         let features = yin.analyze(&sine_220);
-        assert!(features.is_voiced, "L'onde sinusoïdale pure doit être détectée comme voisée");
+        assert!(
+            features.is_voiced,
+            "L'onde sinusoïdale pure doit être détectée comme voisée"
+        );
         assert!(features.f0_hz.is_some(), "F0 doit être présent");
 
         let f0 = features.f0_hz.unwrap();
@@ -461,8 +477,14 @@ mod tests {
             (f0 - 220.0).abs() < 2.0,
             "Erreur d'estimation de F0 trop élevée: {f0} Hz attendu ~220 Hz"
         );
-        assert!(features.periodicity > 0.85, "Périodicité doit être très élevée (> 0.85)");
-        assert!(features.hnr_db > 10.0, "HNR doit être positif pour un son pur");
+        assert!(
+            features.periodicity > 0.85,
+            "Périodicité doit être très élevée (> 0.85)"
+        );
+        assert!(
+            features.hnr_db > 10.0,
+            "HNR doit être positif pour un son pur"
+        );
     }
 
     #[test]
@@ -511,7 +533,9 @@ mod tests {
         let mut yin = YinPitchDetector::new(sample_rate);
         let features = yin.analyze(&noisy_signal);
         assert!(features.is_voiced);
-        let f0 = features.f0_hz.expect("F0 doit être extrait même en présence de bruit modéré");
+        let f0 = features
+            .f0_hz
+            .expect("F0 doit être extrait même en présence de bruit modéré");
         assert!(
             (f0 - 250.0).abs() < 5.0,
             "F0 sous bruit modéré doit rester proche de 250 Hz (trouvé {f0})"
@@ -534,8 +558,14 @@ mod tests {
         let mut yin = YinPitchDetector::new(sample_rate);
         let features = yin.analyze(&noise);
 
-        assert!(!features.is_voiced, "Le bruit blanc pur ne doit pas être voisé");
-        assert!(features.periodicity < 0.5, "Périodicité du bruit doit être faible");
+        assert!(
+            !features.is_voiced,
+            "Le bruit blanc pur ne doit pas être voisé"
+        );
+        assert!(
+            features.periodicity < 0.5,
+            "Périodicité du bruit doit être faible"
+        );
     }
 
     #[test]
@@ -558,7 +588,10 @@ mod tests {
         // Trame 1 : 220 Hz amplitude 0.5
         let frame1 = generate_sine_wave(220.0, sample_rate, 0.1, 0.5);
         let f1 = yin.analyze(&frame1);
-        assert_eq!(f1.jitter_local, None, "Première trame : pas encore d'historique");
+        assert_eq!(
+            f1.jitter_local, None,
+            "Première trame : pas encore d'historique"
+        );
         assert_eq!(f1.shimmer_local, None);
 
         // Trame 2 : légère variation de fréquence (225 Hz) et d'amplitude (0.55)
@@ -566,12 +599,21 @@ mod tests {
         let f2 = yin.analyze(&frame2);
 
         assert!(f2.jitter_local.is_some(), "Deuxième trame : Jitter calculé");
-        assert!(f2.shimmer_local.is_some(), "Deuxième trame : Shimmer calculé");
+        assert!(
+            f2.shimmer_local.is_some(),
+            "Deuxième trame : Shimmer calculé"
+        );
 
         let jitter = f2.jitter_local.unwrap();
         let shimmer = f2.shimmer_local.unwrap();
-        assert!(jitter > 0.0 && jitter < 0.1, "Jitter doit être cohérent et faible: {jitter}");
-        assert!(shimmer > 0.0 && shimmer < 0.2, "Shimmer doit être cohérent et modéré: {shimmer}");
+        assert!(
+            jitter > 0.0 && jitter < 0.1,
+            "Jitter doit être cohérent et faible: {jitter}"
+        );
+        assert!(
+            shimmer > 0.0 && shimmer < 0.2,
+            "Shimmer doit être cohérent et modéré: {shimmer}"
+        );
     }
 
     #[test]

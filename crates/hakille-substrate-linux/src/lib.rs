@@ -322,6 +322,8 @@ SwapFree:        4194304 kB
 
     #[tokio::test]
     async fn test_linux_camera_v4l2_or_honest_refusal() {
+        let _env_guard = crate::camera_v4l2::CAMERA_EMULATION_ENV_LOCK.lock().await;
+        unsafe { std::env::remove_var("HAKILLE_CAMERA_EMULATION") };
         let substrate = LinuxSubstrate::new();
         let cap = hakille_core::CapabilityAuthority::new()
             .create_root_token(
@@ -355,16 +357,14 @@ SwapFree:        4194304 kB
                     msg.contains("camera unavailable") || msg.contains("camera not implemented"),
                     "error must name failure mode, got: {msg}"
                 );
-                assert!(
-                    msg.contains("V4L2"),
-                    "must name V4L2 backend, got: {msg}"
-                );
+                assert!(msg.contains("V4L2"), "must name V4L2 backend, got: {msg}");
             }
         }
     }
 
     #[tokio::test]
     async fn test_linux_camera_emulation_integration() {
+        let _env_guard = crate::camera_v4l2::CAMERA_EMULATION_ENV_LOCK.lock().await;
         unsafe { std::env::set_var("HAKILLE_CAMERA_EMULATION", "1") };
         let substrate = LinuxSubstrate::new();
         let cap = hakille_core::CapabilityAuthority::new()

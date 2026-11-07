@@ -543,4 +543,3 @@ impl Substrate for RedoxSubstrate {
         Ok(())
     }
 }
-

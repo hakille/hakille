@@ -105,7 +105,10 @@ impl MasterKeyKdf {
     }
 
     /// Derive master key using default RFC 9106 production parameters (64MB, t=3, p=4)
-    pub fn derive_master_key(passphrase: &[u8], salt: &[u8; 32]) -> Result<MasterKey, HakilleError> {
+    pub fn derive_master_key(
+        passphrase: &[u8],
+        salt: &[u8; 32],
+    ) -> Result<MasterKey, HakilleError> {
         Self::derive_master_key_with_params(passphrase, salt, &Argon2Params::default())
     }
 
@@ -234,11 +237,7 @@ impl HkdfSubkeyTree {
 
     /// Derive domain-separated subkey:
     /// context = "hakille:v1:" || Domain || TenantID
-    pub fn derive_subkey(
-        master: &MasterKey,
-        domain: &SubkeyDomain,
-        tenant_id: &str,
-    ) -> [u8; 32] {
+    pub fn derive_subkey(master: &MasterKey, domain: &SubkeyDomain, tenant_id: &str) -> [u8; 32] {
         let salt = b"hakille:v1:domain-salt";
         let prk = Self::extract(salt, master.as_bytes());
         let info = format!("hakille:v1:{}:{}", domain.as_str(), tenant_id);
@@ -293,7 +292,9 @@ impl XChaChaCipher {
             .map_err(|e| HakilleError::CryptoError(format!("XChaCha encryption failed: {e}")))?;
 
         if ct_with_tag.len() < 16 {
-            return Err(HakilleError::CryptoError("Ciphertext too short".to_string()));
+            return Err(HakilleError::CryptoError(
+                "Ciphertext too short".to_string(),
+            ));
         }
 
         let tag_offset = ct_with_tag.len() - 16;
@@ -542,7 +543,9 @@ pub fn reconstruct_secret(shares: &[SecretShare]) -> Result<[u8; 32], HakilleErr
     let mut seen_indices = std::collections::HashSet::new();
     for share in shares {
         if share.index == 0 {
-            return Err(HakilleError::CryptoError("Invalid share index 0".to_string()));
+            return Err(HakilleError::CryptoError(
+                "Invalid share index 0".to_string(),
+            ));
         }
         if !seen_indices.insert(share.index) {
             return Err(HakilleError::CryptoError(format!(
@@ -685,11 +688,7 @@ impl FuzzyExtractor {
         let mut commit = [0u8; 32];
         commit.copy_from_slice(&hasher.finalize());
 
-        Ok((
-            r,
-            HelperData { syndrome, salt },
-            CommitmentHash(commit),
-        ))
+        Ok((r, HelperData { syndrome, salt }, CommitmentHash(commit)))
     }
 
     /// Rep(B', HelperData) -> R'
@@ -856,4 +855,3 @@ mod tests {
         assert!(XChaChaCipher::decrypt(&payload, &key, b"wrong_aad").is_err());
     }
 }
-

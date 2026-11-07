@@ -449,7 +449,10 @@ impl ActionCard {
         Self {
             verb: "Pause".to_string(),
             object: "Vigilance & Repos".to_string(),
-            reason: format!("Fatigue détectée ({level}) — PERCLOS: {:.1}% ({recommended_action})", perclos_score * 100.0),
+            reason: format!(
+                "Fatigue détectée ({level}) — PERCLOS: {:.1}% ({recommended_action})",
+                perclos_score * 100.0
+            ),
             cost: "0.00 EUR".to_string(),
             data: "Biométrie locale éphémère (Règle 8)".to_string(),
             reversible: "Immédiat".to_string(),
@@ -764,4 +767,3 @@ mod tests {
         assert!(!scene.cmds.is_empty());
     }
 }
-

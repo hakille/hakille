@@ -70,7 +70,11 @@ fn test_gaze_ray_strictly_parallel_to_screen() {
     assert!(!quasi_parallel.is_looking_at_screen(&screen));
 
     let quasi_parallel_neg = GazeRay3D::new(eye, Point3D::new(1.0, 0.0, -5e-7), false);
-    assert!(quasi_parallel_neg.intersect_plane_z(screen.center.z).is_none());
+    assert!(
+        quasi_parallel_neg
+            .intersect_plane_z(screen.center.z)
+            .is_none()
+    );
     assert!(!quasi_parallel_neg.is_looking_at_screen(&screen));
 }
 
@@ -86,7 +90,8 @@ fn test_gaze_ray_opposite_direction_and_behind() {
 
     // Utilisateur déjà situé derrière l'écran (Z = -0.50) regardant vers l'avant (-Z)
     let eye_behind = Point3D::new(0.0, 0.15, -0.50);
-    let looking_forward_from_behind = GazeRay3D::new(eye_behind, Point3D::new(0.0, 0.0, -1.0), false);
+    let looking_forward_from_behind =
+        GazeRay3D::new(eye_behind, Point3D::new(0.0, 0.0, -1.0), false);
     // Le plan Z=0 est derrière le regard dans le sens de propagation (t = (0 - (-0.5)) / (-1.0) = -0.5 < 0)
     assert!(looking_forward_from_behind.intersect_plane_z(0.0).is_none());
     assert!(!looking_forward_from_behind.is_looking_at_screen(&screen));
@@ -99,29 +104,29 @@ fn test_gaze_ray_exact_screen_boundaries() {
     let z_eye = 0.50;
 
     // 4 coins exacts
-    let corners = [
-        (0.25, 0.15),
-        (-0.25, 0.15),
-        (0.25, -0.15),
-        (-0.25, -0.15),
-    ];
+    let corners = [(0.25, 0.15), (-0.25, 0.15), (0.25, -0.15), (-0.25, -0.15)];
     for (cx, cy) in corners {
         let eye = Point3D::new(cx, cy, z_eye);
         let ray = GazeRay3D::new(eye, Point3D::new(0.0, 0.0, -1.0), false);
-        assert!(ray.is_looking_at_screen(&screen), "Corner ({}, {}) should be within bounds", cx, cy);
+        assert!(
+            ray.is_looking_at_screen(&screen),
+            "Corner ({}, {}) should be within bounds",
+            cx,
+            cy
+        );
     }
 
     // Juste à l'extérieur des bords (+1 mm)
-    let outside = [
-        (0.251, 0.0),
-        (-0.251, 0.0),
-        (0.0, 0.151),
-        (0.0, -0.151),
-    ];
+    let outside = [(0.251, 0.0), (-0.251, 0.0), (0.0, 0.151), (0.0, -0.151)];
     for (ox, oy) in outside {
         let eye = Point3D::new(ox, oy, z_eye);
         let ray = GazeRay3D::new(eye, Point3D::new(0.0, 0.0, -1.0), false);
-        assert!(!ray.is_looking_at_screen(&screen), "Point ({}, {}) should be outside bounds", ox, oy);
+        assert!(
+            !ray.is_looking_at_screen(&screen),
+            "Point ({}, {}) should be outside bounds",
+            ox,
+            oy
+        );
     }
 }
 
@@ -137,7 +142,11 @@ fn test_collinear_vectors_dot_cross_and_angle() {
 
     // Angle de vecteurs co-linéaires de même sens : exactement 0.0 (protégé contre l'imprécision float > 1.0)
     let angle_same = v1.angle_between(&v2_same);
-    eprintln!("EXACT angle_same = {:e} rad ({:.6} deg)", angle_same, angle_same.to_degrees());
+    eprintln!(
+        "EXACT angle_same = {:e} rad ({:.6} deg)",
+        angle_same,
+        angle_same.to_degrees()
+    );
     assert!(angle_same < 1e-3, "angle_same was {}", angle_same);
     assert!(!angle_same.is_nan());
 
@@ -253,7 +262,12 @@ fn test_nan_and_infinite_coordinates_do_not_panic() {
     let hit = inf_gaze.intersect_plane_z(screen.center.z);
     eprintln!("inf_gaze hit = {:?}", hit);
     if let Some(h) = hit {
-        eprintln!("contains_point_2d({}, {}) = {}", h.x, h.y, screen.contains_point_2d(h.x, h.y));
+        eprintln!(
+            "contains_point_2d({}, {}) = {}",
+            h.x,
+            h.y,
+            screen.contains_point_2d(h.x, h.y)
+        );
     }
     // Empirically document the behavior of infinite direction:
     let is_looking = inf_gaze.is_looking_at_screen(&screen);
