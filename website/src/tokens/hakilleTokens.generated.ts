@@ -8,11 +8,23 @@ export const COLOR_TOKENS = {
     },
     "1": {
       "dark": "#121419",
-      "light": "#FFFFFF"
+      "light": "#FFFFFF",
+      "hover": {
+        "dark": "#181B22",
+        "light": "#F0ECE4"
+      },
+      "active": {
+        "dark": "#0E1014",
+        "light": "#E4DFD6"
+      }
     },
     "2": {
       "dark": "#1A1D24",
       "light": "#EDEAE4"
+    },
+    "disabled": {
+      "dark": "#14161A",
+      "light": "#ECE8E0"
     }
   },
   "ligne": {
@@ -31,6 +43,10 @@ export const COLOR_TOKENS = {
     "3": {
       "dark": "#82899A",
       "light": "#5C6679"
+    },
+    "disabled": {
+      "dark": "#4E5463",
+      "light": "#A0A5B2"
     }
   },
   "lueur": {
@@ -44,11 +60,37 @@ export const COLOR_TOKENS = {
       "validation",
       "hold-progress",
       "decision-ring"
-    ]
+    ],
+    "halo": {
+      "dark": "#FF7A2F47",
+      "light": "#C2410C33"
+    }
   },
   "sur-braise": {
     "dark": "#0B0C0F",
     "light": "#FFFFFF"
+  },
+  "erreur": {
+    "dark": "#FF5A5A",
+    "light": "#DC2626"
+  },
+  "succes": {
+    "dark": "#34D399",
+    "light": "#059669"
+  },
+  "avertissement": {
+    "dark": "#FBBF24",
+    "light": "#D97706"
+  },
+  "verre": {
+    "fond": {
+      "dark": "#121419D1",
+      "light": "#FFFFFFE0"
+    },
+    "reflet": {
+      "dark": "#ECEEF21F",
+      "light": "#FFFFFF99"
+    }
   }
 } as const;
 
@@ -179,7 +221,22 @@ export const TYPE_TOKENS = {
       "ios": 44,
       "android": 48,
       "pointer_min_px": 32
+    },
+    "hud": {
+      "width": 720,
+      "height": 64,
+      "radius": 12,
+      "top_offset": 120
+    },
+    "card": {
+      "width": 720,
+      "height": 360
     }
+  },
+  "blur": {
+    "hud_acrylic": 30,
+    "panel": 24,
+    "glow": 16
   }
 } as const;
 
