@@ -22,3 +22,4 @@ pub mod f17_quiescence_energy;
 pub mod f18_e2e_suite;
 pub mod f19_pass_verification;
 pub mod f20_adversarial;
+pub mod f21_sovereign_pillars;

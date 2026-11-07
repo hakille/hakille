@@ -2,11 +2,13 @@ pub mod consent_registry;
 pub mod entry;
 pub mod journal;
 pub mod query;
+pub mod zk_compliance;
 
 pub use consent_registry::*;
 pub use entry::*;
 pub use journal::*;
 pub use query::*;
+pub use zk_compliance::*;
 
 #[cfg(test)]
 mod tests {

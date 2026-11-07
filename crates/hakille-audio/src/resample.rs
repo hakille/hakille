@@ -49,6 +49,7 @@ pub fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> 
     out
 }
 
+#[cfg(any(feature = "cpal", test))]
 #[inline]
 fn lerp(a: f32, b: f32, frac: f32) -> f32 {
     a + (b - a) * frac
@@ -56,12 +57,14 @@ fn lerp(a: f32, b: f32, frac: f32) -> f32 {
 
 /// Rééchantillonneur linéaire streaming : conserve le dernier échantillon comme
 /// point d'ancrage pour interpoler entre deux blocs cpal consécutifs.
+#[cfg(any(feature = "cpal", test))]
 pub(crate) struct LinearStreamResampler {
     step: f64,
     buffer: Vec<f32>,
     position: f64,
 }
 
+#[cfg(any(feature = "cpal", test))]
 impl LinearStreamResampler {
     /// `from_rate` et `to_rate` doivent être non nuls (garanti par l'appelant).
     pub(crate) fn new(from_rate: u32, to_rate: u32) -> Self {

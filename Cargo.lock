@@ -2730,7 +2730,11 @@ dependencies = [
  "ab_glyph",
  "accesskit 0.24.1",
  "chrono",
+ "ed25519-dalek",
  "hakille-design",
+ "hakille-mesh",
+ "hakille-sdk",
+ "hakille-spatial",
  "hakille-ui",
  "hakille-ui-desktop",
  "hakille-ui-model",
@@ -2738,6 +2742,7 @@ dependencies = [
  "hakille-ui-protocol",
  "serde",
  "serde_json",
+ "tokio",
  "toml",
  "uuid",
 ]
@@ -2848,11 +2853,30 @@ dependencies = [
  "bincode",
  "bytes",
  "chrono",
+ "ed25519-dalek",
  "hakille-core",
  "instant-distance",
  "redb",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "hakille-mesh"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chacha20poly1305",
+ "ed25519-dalek",
+ "hakille-core",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -2924,6 +2948,23 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "hakille-sdk"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "ed25519-dalek",
+ "hakille-core",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "toml",
  "tracing",
  "uuid",
 ]

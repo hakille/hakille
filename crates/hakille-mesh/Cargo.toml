@@ -1,0 +1,23 @@
+[package]
+name = "hakille-mesh"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license.workspace = true
+description = "Réseau maillé souverain P2P local, transport Air-Gap et bus virtuel anti-fuite cloud"
+repository = "https://github.com/hakille/hakille"
+
+[dependencies]
+hakille-core = { path = "../hakille-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+chacha20poly1305 = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]

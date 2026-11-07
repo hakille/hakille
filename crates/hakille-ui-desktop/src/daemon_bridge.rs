@@ -112,6 +112,11 @@ impl KernelStub for RealDaemonBridge {
                 UiToKernel::NotificationAction { .. } | UiToKernel::NotificationDismiss { .. } => {
                     self.require_daemon("notification en attente")
                 }
+                UiToKernel::GhostActionAccept { .. }
+                | UiToKernel::GhostActionDismiss { .. }
+                | UiToKernel::SpatialGesture(_) => {
+                    self.require_daemon("ghost action / geste en attente")
+                }
             };
         }
         // LocalAuthorized : le noyau (simulé ici) revérifie puis journalise.
@@ -188,6 +193,16 @@ impl KernelStub for RealDaemonBridge {
             UiToKernel::NotificationDismiss { id } => Ok(KernelToUi::Toast {
                 text: format!("notification {id} acquittée"),
             }),
+            UiToKernel::GhostActionAccept { id } => {
+                let jid = self.commit(format!("ghost action acceptée #{id}"));
+                Ok(KernelToUi::JournalAppended { id: jid })
+            }
+            UiToKernel::GhostActionDismiss { id } => {
+                Ok(KernelToUi::GhostActionDismissed { id: id.clone() })
+            }
+            UiToKernel::SpatialGesture(gesture) => {
+                Ok(KernelToUi::MicroGestureRecognized(gesture.clone()))
+            }
         }
     }
 }

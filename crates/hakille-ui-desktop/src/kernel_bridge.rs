@@ -72,6 +72,11 @@ impl KernelStub for DenyAllKernel {
             UiToKernel::NotificationAction { .. } | UiToKernel::NotificationDismiss { .. } => Err(
                 BridgeError::DaemonRequired("noyau non branché — notification en attente".into()),
             ),
+            UiToKernel::GhostActionAccept { .. }
+            | UiToKernel::GhostActionDismiss { .. }
+            | UiToKernel::SpatialGesture(_) => Err(BridgeError::DaemonRequired(
+                "noyau non branché — ghost action / geste en attente".into(),
+            )),
         }
     }
 }

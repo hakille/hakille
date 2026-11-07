@@ -1,0 +1,23 @@
+[package]
+name = "hakille-sdk"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license.workspace = true
+description = "SDK officiel et format .hap (Hakille Agent Package) pour l'écosystème d'agents souverains"
+repository = "https://github.com/hakille/hakille"
+
+[dependencies]
+hakille-core = { path = "../hakille-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+toml = { workspace = true }
+semver = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]

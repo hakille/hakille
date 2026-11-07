@@ -3,6 +3,7 @@ pub mod barge_in;
 pub mod codec;
 pub mod input;
 pub mod moshi;
+pub mod prosody;
 pub mod tts;
 pub mod viseme;
 
@@ -10,6 +11,7 @@ pub use adaptive::*;
 pub use barge_in::*;
 pub use codec::*;
 pub use moshi::*;
+pub use prosody::*;
 pub use tts::*;
 pub use viseme::*;
 

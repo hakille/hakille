@@ -365,7 +365,42 @@ pub struct NotificationDto {
     pub created_at_ms: u64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+/// Suggestion d'action anticipée (Ghost Action) projetée au point focal du regard (§31).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct GhostActionDto {
+    pub id: String,
+    pub label: String,
+    pub confidence: f32,
+    pub focal_u: f32,
+    pub focal_v: f32,
+    pub hold_duration_ms: u32,
+    pub action: ActionCard,
+}
+
+/// Événement de micro-geste spatial détecté en local (§32).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum MicroGestureEvent {
+    /// Pincement index-pouce (Index-Thumb Pinch) pour valider une action ou une Ghost Action.
+    IndexThumbPinch {
+        hand: String,
+        pinch_distance_norm: f32,
+        duration_ms: u32,
+        confirmed: bool,
+    },
+    /// Balayage latéral rapide (Lateral Swipe) pour évaporer le panneau ou le HUD.
+    LateralSwipe {
+        hand: String,
+        direction: String,
+        velocity_norm_per_sec: f32,
+    },
+    /// Geste d'index vertical sur les lèvres (Silence Gesture) activant le silence budget.
+    SilenceGesture {
+        proximity_to_lips_norm: f32,
+        active: bool,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum UiToKernel {
     Approve {
         card_id: u64,
@@ -434,6 +469,16 @@ pub enum UiToKernel {
     NotificationDismiss {
         id: String,
     },
+    /// Validation d'une Ghost Action (après maintien 600ms ou micro-geste pincement).
+    GhostActionAccept {
+        id: String,
+    },
+    /// Rejet ou évaporation d'une Ghost Action.
+    GhostActionDismiss {
+        id: String,
+    },
+    /// Notification d'un micro-geste spatial détecté en local.
+    SpatialGesture(MicroGestureEvent),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -524,12 +569,20 @@ pub enum KernelToUi {
     },
     /// Diffusion en continu de l'Aura Ring pour le HUD réactif ambiant (Pilier 5).
     AuraRingUpdate(AuraRingUpdateDto),
+    /// Suggestion d'action anticipée (Ghost Action) projetée au point focal du regard.
+    GhostActionSuggest(GhostActionDto),
+    /// Confirmation d'évaporation ou d'annulation de Ghost Action.
+    GhostActionDismissed {
+        id: String,
+    },
+    /// Accusé de micro-geste spatial reconnu.
+    MicroGestureRecognized(MicroGestureEvent),
 }
 
 /// Message UI → noyau versionné : champ `version` transporté sur le fil
 /// (natif, UniFFI, WASM). Construire via `::new` (tamponne v1 courante) ;
 /// valider via `check` (rejet propre des versions incompatibles).
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct UiMessage {
     pub version: u16,
     pub inner: UiToKernel,

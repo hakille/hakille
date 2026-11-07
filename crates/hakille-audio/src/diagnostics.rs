@@ -117,16 +117,19 @@ impl CaptureHealth {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn callback_received(&self) {
         self.last_callback_us
             .store(self.elapsed_us().max(1), Ordering::Relaxed);
         self.callbacks.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[allow(dead_code)]
     pub(crate) fn block_delivered(&self) {
         self.blocks.fetch_add(1, Ordering::Relaxed);
     }
 
+    #[allow(dead_code)]
     pub(crate) fn record_error(&self, error: AudioError) {
         let mut pending = self.first_error.lock().unwrap_or_else(|e| e.into_inner());
         if pending.is_none() {
@@ -215,5 +218,79 @@ mod tests {
         let new_stream = CaptureHealth::new();
         assert!(!new_stream.status().failed);
         assert!(new_stream.take_error().is_none());
+    }
+
+    #[test]
+    fn concurrent_multithreaded_health_recording_stress() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let health = Arc::new(CaptureHealth::new());
+        let num_error_threads = 32;
+        let errors_per_thread = 200;
+        let num_producer_threads = 16;
+        let ops_per_producer = 500;
+        let num_observer_threads = 8;
+        let ops_per_observer = 200;
+
+        let mut handles = Vec::new();
+
+        // 1. Error recording threads hammering record_error concurrently
+        for t in 0..num_error_threads {
+            let h = Arc::clone(&health);
+            handles.push(thread::spawn(move || {
+                for i in 0..errors_per_thread {
+                    h.record_error(AudioError::StreamError(format!("err-t{t}-i{i}")));
+                }
+            }));
+        }
+
+        // 2. Producer threads calling callback_received & block_delivered concurrently
+        for _ in 0..num_producer_threads {
+            let h = Arc::clone(&health);
+            handles.push(thread::spawn(move || {
+                for _ in 0..ops_per_producer {
+                    h.callback_received();
+                    h.block_delivered();
+                }
+            }));
+        }
+
+        // 3. Observer threads concurrently calling status() and take_error()
+        for _ in 0..num_observer_threads {
+            let h = Arc::clone(&health);
+            handles.push(thread::spawn(move || {
+                for _ in 0..ops_per_observer {
+                    let st = h.status();
+                    assert!(st.errors_received <= (num_error_threads * errors_per_thread) as u64);
+                    // take_error is thread-safe and consumable
+                    let _ = h.take_error();
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle
+                .join()
+                .expect("Thread panicked under concurrent stress");
+        }
+
+        let final_status = health.status();
+        assert_eq!(
+            final_status.errors_received,
+            (num_error_threads * errors_per_thread) as u64,
+            "All concurrent errors must be accurately tallied"
+        );
+        assert_eq!(
+            final_status.callbacks_received,
+            (num_producer_threads * ops_per_producer) as u64,
+            "All concurrent callbacks must be accurately tallied"
+        );
+        assert_eq!(
+            final_status.blocks_delivered,
+            (num_producer_threads * ops_per_producer) as u64,
+            "All concurrent blocks delivered must be accurately tallied"
+        );
+        assert!(final_status.failed, "Failure flag must remain latched");
     }
 }
