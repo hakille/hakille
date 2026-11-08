@@ -5,7 +5,10 @@
 //! déclarative d'unités de service et de socket pour Systemd.
 
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
 use std::os::unix::io::RawFd;
+#[cfg(not(unix))]
+pub type RawFd = i32;
 use thiserror::Error;
 
 /// Descripteur de début pour les sockets passés par systemd (sd_listen_fds).
@@ -67,6 +70,7 @@ pub fn notify(state: &SystemdNotifyState<'_>) -> Result<bool, SystemdError> {
 }
 
 /// Envoie une notification à un chemin de socket datagram Unix ou abstrait spécifique.
+#[cfg(unix)]
 pub fn notify_to_socket(
     socket_path: &str,
     state: &SystemdNotifyState<'_>,
@@ -100,6 +104,16 @@ pub fn notify_to_socket(
         .map_err(|e| SystemdError::NotifyFailed(e.to_string()))?;
 
     Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn notify_to_socket(
+    _socket_path: &str,
+    _state: &SystemdNotifyState<'_>,
+) -> Result<(), SystemdError> {
+    Err(SystemdError::NotifyFailed(
+        "systemd notify n'est pas disponible sur les plateformes non-Unix".to_string(),
+    ))
 }
 
 /// Gestionnaire de pulsation Watchdog pour systemd (`WATCHDOG_USEC`).
@@ -170,6 +184,7 @@ impl ActivatedSocket {
     ///
     /// # Safety
     /// Prend possession du descripteur de fichier ; ne doit être appelé qu'une seule fois.
+    #[cfg(unix)]
     pub unsafe fn into_unix_listener(self) -> std::io::Result<std::os::unix::net::UnixListener> {
         use std::os::unix::io::FromRawFd;
         Ok(unsafe { std::os::unix::net::UnixListener::from_raw_fd(self.fd) })
@@ -179,6 +194,7 @@ impl ActivatedSocket {
     ///
     /// # Safety
     /// Prend possession du descripteur de fichier.
+    #[cfg(unix)]
     pub unsafe fn into_tokio_unix_listener(self) -> std::io::Result<tokio::net::UnixListener> {
         let std_listener = unsafe { self.into_unix_listener()? };
         std_listener.set_nonblocking(true)?;
@@ -580,6 +596,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_notify_to_socket_roundtrip() {
         use std::os::unix::net::UnixDatagram;
         let temp_dir = std::env::temp_dir();

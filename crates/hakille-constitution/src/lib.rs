@@ -1,10 +1,12 @@
 pub mod ethics;
 pub mod governance;
 pub mod rules;
+pub mod zk;
 
 pub use ethics::*;
 pub use governance::*;
 pub use rules::*;
+pub use zk::*;
 
 #[cfg(test)]
 mod tests {

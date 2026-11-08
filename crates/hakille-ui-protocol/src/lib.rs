@@ -6,6 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod aura;
+pub use aura::*;
+
 /// Version du protocole. Toute rupture incrémente et garde un test de compat.
 pub const PROTOCOL_VERSION: u16 = 1;
 
@@ -362,7 +365,42 @@ pub struct NotificationDto {
     pub created_at_ms: u64,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+/// Suggestion d'action anticipée (Ghost Action) projetée au point focal du regard (§31).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct GhostActionDto {
+    pub id: String,
+    pub label: String,
+    pub confidence: f32,
+    pub focal_u: f32,
+    pub focal_v: f32,
+    pub hold_duration_ms: u32,
+    pub action: ActionCard,
+}
+
+/// Événement de micro-geste spatial détecté en local (§32).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum MicroGestureEvent {
+    /// Pincement index-pouce (Index-Thumb Pinch) pour valider une action ou une Ghost Action.
+    IndexThumbPinch {
+        hand: String,
+        pinch_distance_norm: f32,
+        duration_ms: u32,
+        confirmed: bool,
+    },
+    /// Balayage latéral rapide (Lateral Swipe) pour évaporer le panneau ou le HUD.
+    LateralSwipe {
+        hand: String,
+        direction: String,
+        velocity_norm_per_sec: f32,
+    },
+    /// Geste d'index vertical sur les lèvres (Silence Gesture) activant le silence budget.
+    SilenceGesture {
+        proximity_to_lips_norm: f32,
+        active: bool,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum UiToKernel {
     Approve {
         card_id: u64,
@@ -431,6 +469,16 @@ pub enum UiToKernel {
     NotificationDismiss {
         id: String,
     },
+    /// Validation d'une Ghost Action (après maintien 600ms ou micro-geste pincement).
+    GhostActionAccept {
+        id: String,
+    },
+    /// Rejet ou évaporation d'une Ghost Action.
+    GhostActionDismiss {
+        id: String,
+    },
+    /// Notification d'un micro-geste spatial détecté en local.
+    SpatialGesture(MicroGestureEvent),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -519,12 +567,22 @@ pub enum KernelToUi {
     NotificationDismissed {
         id: String,
     },
+    /// Diffusion en continu de l'Aura Ring pour le HUD réactif ambiant (Pilier 5).
+    AuraRingUpdate(AuraRingUpdateDto),
+    /// Suggestion d'action anticipée (Ghost Action) projetée au point focal du regard.
+    GhostActionSuggest(GhostActionDto),
+    /// Confirmation d'évaporation ou d'annulation de Ghost Action.
+    GhostActionDismissed {
+        id: String,
+    },
+    /// Accusé de micro-geste spatial reconnu.
+    MicroGestureRecognized(MicroGestureEvent),
 }
 
 /// Message UI → noyau versionné : champ `version` transporté sur le fil
 /// (natif, UniFFI, WASM). Construire via `::new` (tamponne v1 courante) ;
 /// valider via `check` (rejet propre des versions incompatibles).
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct UiMessage {
     pub version: u16,
     pub inner: UiToKernel,
@@ -1026,5 +1084,82 @@ mod tests {
         let d_json = serde_json::to_string(&u_dismiss).unwrap();
         let d_back: UiMessage = serde_json::from_str(&d_json).unwrap();
         assert_eq!(d_back, u_dismiss);
+    }
+
+    #[test]
+    fn test_aura_ring_protocol_streaming_json_and_bincode_roundtrip() {
+        let updates = [
+            AuraRingUpdateDto::new(
+                0.95,
+                "EmeraldHighTrust",
+                "#10B981",
+                "#10B98173",
+                6000,
+                1.042,
+                1794078900000,
+            ),
+            AuraRingUpdateDto::new(
+                0.65,
+                "AmberAmbient",
+                "#F59E0B",
+                "#F59E0B4D",
+                3500,
+                0.985,
+                1794078901000,
+            ),
+            AuraRingUpdateDto::new(
+                0.72,
+                "VioletStepUp",
+                "#8B5CF6",
+                "#8B5CF699",
+                1000,
+                1.015,
+                1794078902000,
+            ),
+            AuraRingUpdateDto::new(
+                0.25,
+                "RedLocked",
+                "#EF4444",
+                "#EF4444B3",
+                800,
+                0.960,
+                1794078903000,
+            ),
+        ];
+
+        assert!(updates[0].is_high_trust());
+        assert!(updates[1].is_ambient());
+        assert!(updates[2].is_step_up());
+        assert!(updates[3].is_locked());
+
+        for dto in updates {
+            // 1. Serde JSON roundtrip DTO direct
+            let json = serde_json::to_string(&dto).expect("JSON serialization should succeed");
+            let back_dto: AuraRingUpdateDto =
+                serde_json::from_str(&json).expect("JSON deserialization should succeed");
+            assert_eq!(dto, back_dto);
+
+            // 2. Bincode roundtrip DTO direct
+            let bin = bincode::serialize(&dto).expect("Bincode serialization should succeed");
+            let back_bin: AuraRingUpdateDto =
+                bincode::deserialize(&bin).expect("Bincode deserialization should succeed");
+            assert_eq!(dto, back_bin);
+
+            // 3. KernelToUi variant wrapped in KernelMessage
+            let k_msg = KernelMessage::new(KernelToUi::AuraRingUpdate(dto.clone()));
+            assert!(k_msg.check().is_ok());
+
+            // 3a. KernelMessage JSON roundtrip
+            let k_json = serde_json::to_string(&k_msg).unwrap();
+            assert!(k_json.contains("\"AuraRingUpdate\""));
+            assert!(k_json.contains(&dto.state_name));
+            let k_back_json: KernelMessage = serde_json::from_str(&k_json).unwrap();
+            assert_eq!(k_msg, k_back_json);
+
+            // 3b. KernelMessage Bincode roundtrip
+            let k_bin = bincode::serialize(&k_msg).unwrap();
+            let k_back_bin: KernelMessage = bincode::deserialize(&k_bin).unwrap();
+            assert_eq!(k_msg, k_back_bin);
+        }
     }
 }

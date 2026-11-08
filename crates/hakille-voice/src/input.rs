@@ -83,14 +83,14 @@ impl Control {
     fn suspend(&self, value: bool) {
         let _ = self
             .state
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
                 Some((state.wrapping_add(4) & !SUSPENDED) | if value { SUSPENDED } else { 0 })
             });
     }
     fn stop(&self) {
         let _ = self
             .state
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
                 Some(state.wrapping_add(4) | STOPPED)
             });
     }

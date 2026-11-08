@@ -412,7 +412,10 @@ fn allowed(message: &UiToKernel) -> bool {
         UiToKernel::NotificationAction { id, action_id } => {
             !id.is_empty() && id.len() <= 256 && !action_id.is_empty() && action_id.len() <= 256
         }
-        UiToKernel::NotificationDismiss { id } => !id.is_empty() && id.len() <= 256,
+        UiToKernel::NotificationDismiss { id }
+        | UiToKernel::GhostActionAccept { id }
+        | UiToKernel::GhostActionDismiss { id } => !id.is_empty() && id.len() <= 256,
+        UiToKernel::SpatialGesture(_) => true,
         UiToKernel::Undo { .. }
         | UiToKernel::RevokeAll
         | UiToKernel::SettingsToggle { .. }

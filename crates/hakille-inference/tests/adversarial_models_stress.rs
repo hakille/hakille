@@ -2,12 +2,10 @@
 //! pour crates/hakille-inference/src/models/
 
 use hakille_inference::models::{
-    AgeGroup, FaceMeshEngine, HsEmotionEngine, LetterboxTransform, NormalizationMode,
-    RtmPoseEngine, SsrNetEngine, VisionEngine, decode_simcc_joints, letterbox_rgb_nchw,
-    resize_bilinear_rgb_nchw, synthetic_blank_rgb, synthetic_checkerboard_rgb, synthetic_face_crop,
-    synthetic_gradient_rgb,
+    AgeGroup, FaceMeshEngine, HsEmotionEngine, NormalizationMode, RtmPoseEngine, SsrNetEngine,
+    decode_simcc_joints, letterbox_rgb_nchw, resize_bilinear_rgb_nchw, synthetic_blank_rgb,
+    synthetic_checkerboard_rgb, synthetic_face_crop, synthetic_gradient_rgb,
 };
-use hakille_spatial::Point3D;
 
 #[test]
 fn test_adversarial_image_dimensions_and_ratios() {

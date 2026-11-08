@@ -1,3 +1,4 @@
+pub mod bicameral;
 pub mod capability;
 pub mod gui_agent;
 pub mod protocol;
@@ -7,6 +8,7 @@ pub mod runtime;
 pub mod sandbox;
 pub mod wasm_runner;
 
+pub use bicameral::*;
 pub use capability::*;
 pub use gui_agent::*;
 pub use protocol::*;

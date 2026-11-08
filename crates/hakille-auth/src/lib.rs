@@ -4,11 +4,14 @@ pub mod enrollment;
 pub mod face;
 pub mod face_liveness;
 pub mod gdpr;
+pub mod gesture_auth;
 pub mod guest;
 pub mod household;
 pub mod liveness;
 pub mod minor;
 pub mod multimodal;
+pub mod shoulder_surfing;
+pub mod silent_distress;
 pub mod wallet;
 
 pub use biohash::*;
@@ -17,11 +20,14 @@ pub use enrollment::*;
 pub use face::*;
 pub use face_liveness::*;
 pub use gdpr::*;
+pub use gesture_auth::*;
 pub use guest::*;
 pub use household::*;
 pub use liveness::*;
 pub use minor::*;
 pub use multimodal::*;
+pub use shoulder_surfing::*;
+pub use silent_distress::*;
 pub use wallet::*;
 
 #[cfg(test)]

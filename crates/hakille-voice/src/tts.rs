@@ -243,6 +243,25 @@ impl FormantTts {
         })
     }
 
+    /// Rend le texte en appliquant l'adaptation prosodique bayésienne dynamique
+    /// (vitesse, hauteur F0, souffle, et montée interrogative terminale selon le contexte).
+    pub fn render_pcm_with_prosody(
+        &self,
+        text: &str,
+        ctx: &crate::prosody::ProsodyContext,
+    ) -> std::result::Result<PcmChunk, TtsError> {
+        let engine = crate::prosody::AdaptiveProsodyEngine::new();
+        let adapted = engine.evaluate(&self.default_voice, ctx);
+        let samples = formant::synthesize_with_prosody(text, &adapted.voice, adapted.terminal_rise);
+        if samples.is_empty() {
+            return Err(TtsError::EmptyText);
+        }
+        Ok(PcmChunk {
+            samples,
+            sample_rate: FORMANT_SAMPLE_RATE,
+        })
+    }
+
     /// Rend le texte en plusieurs blocs PCM de `chunk_ms` millisecondes
     /// (80 ms par défaut si `chunk_ms == 0`), à consommer au fil de l'eau.
     ///
@@ -542,5 +561,24 @@ mod tests {
         // Erreurs honnêtes : vitesse invalide et texte vide.
         assert!(engine.render_pcm_stream(text, 0.5, 80).is_err());
         assert!(engine.render_pcm_stream("", 1.0, 80).is_err());
+    }
+
+    #[test]
+    fn test_render_pcm_with_prosody() {
+        let engine = FormantTts::new();
+        let ctx = crate::prosody::ProsodyContext::confident_neutral();
+        let pcm = engine
+            .render_pcm_with_prosody("bonjour", &ctx)
+            .expect("render with prosody");
+        assert!(!pcm.samples.is_empty());
+        assert_eq!(pcm.sample_rate, MIMI_SAMPLE_RATE);
+
+        let uncert_ctx = crate::prosody::ProsodyContext::uncertain();
+        let uncert_pcm = engine
+            .render_pcm_with_prosody("bonjour", &uncert_ctx)
+            .expect("render uncert");
+        assert!(!uncert_pcm.samples.is_empty());
+
+        assert!(engine.render_pcm_with_prosody("", &ctx).is_err());
     }
 }

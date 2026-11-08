@@ -30,7 +30,7 @@ impl TokenVerifier {
             .parent()
             .and_then(|p| p.parent())
             .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("/home/antigravity/hakille/hakille"));
+            .unwrap_or_else(|| PathBuf::from("."));
         Self { repo_root }
     }
 

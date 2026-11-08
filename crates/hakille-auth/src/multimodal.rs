@@ -230,6 +230,18 @@ impl ContinuousMultimodalFusion {
         self.current_confidence = self.kalman_tracker.step_and_fuse(signals, dt_seconds);
         self.current_confidence
     }
+
+    /// Enforce immediate confidence degradation when shoulder surfing is detected (Pillar 1).
+    /// Instantly clamps tau to min(tau, 0.40) and elevates Kalman error covariance to 0.35,
+    /// demanding an active re-authentication challenge before any privilege re-escalation.
+    pub fn enforce_shoulder_surfing_shield(&mut self) -> f32 {
+        if self.current_confidence > 0.40 {
+            self.current_confidence = 0.40;
+            self.kalman_tracker.estimate = 0.40;
+            self.kalman_tracker.error_covariance = 0.35;
+        }
+        self.current_confidence
+    }
 }
 
 // =============================================================================

@@ -2609,6 +2609,8 @@ dependencies = [
  "chacha20poly1305",
  "chrono",
  "hakille-core",
+ "hakille-identity",
+ "hakille-ui-protocol",
  "rand 0.8.8",
  "serde",
  "serde_json",
@@ -2655,9 +2657,11 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "hakille-core",
+ "rand 0.8.8",
  "semver",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "tracing",
 ]
@@ -2755,7 +2759,10 @@ dependencies = [
  "ab_glyph",
  "accesskit 0.24.1",
  "chrono",
+ "ed25519-dalek",
  "hakille-design",
+ "hakille-mesh",
+ "hakille-spatial",
  "hakille-ui",
  "hakille-ui-desktop",
  "hakille-ui-model",
@@ -2763,6 +2770,7 @@ dependencies = [
  "hakille-ui-protocol",
  "serde",
  "serde_json",
+ "tokio",
  "toml",
  "uuid",
 ]
@@ -2799,6 +2807,7 @@ dependencies = [
  "candle-core",
  "candle-nn",
  "candle-transformers",
+ "cc",
  "chrono",
  "futures-util",
  "hakille-constitution",
@@ -2872,11 +2881,30 @@ dependencies = [
  "bincode",
  "bytes",
  "chrono",
+ "ed25519-dalek",
  "hakille-core",
  "instant-distance",
  "redb",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "hakille-mesh"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chacha20poly1305",
+ "ed25519-dalek",
+ "hakille-core",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -2988,6 +3016,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3110,6 +3139,7 @@ dependencies = [
  "chrono",
  "hakille-core",
  "hakille-memory",
+ "hakille-substrate",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -3123,11 +3153,13 @@ name = "hakille-ui"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bincode",
  "chrono",
  "hakille-audit",
  "hakille-core",
  "hakille-memory",
  "hakille-substrate",
+ "hakille-ui-protocol",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -3191,6 +3223,7 @@ dependencies = [
 name = "hakille-ui-protocol"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "serde",
  "serde_json",
 ]

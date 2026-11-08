@@ -10,11 +10,16 @@
 
 pub mod gaze;
 pub mod geometry;
+pub mod gesture;
 pub mod head_pose;
 pub mod skeleton;
 
 pub use gaze::{GazeRay3D, ScreenBounds};
 pub use geometry::{Point3D, Vector3D};
+pub use gesture::{
+    DetectedMicroGesture, GestureDetectorConfig, HAND_KEYPOINTS_COUNT, HandJointId, HandKeypoint3D,
+    HandLandmarks3D, Handedness, MicroGestureDetector, SwipeDirection,
+};
 pub use head_pose::{CameraIntrinsics, HeadPose6D};
 pub use skeleton::{
     BodySkeleton3D, COCO_KEYPOINTS_COUNT, CocoJointId, PostureKind, SkeletonJoint3D,

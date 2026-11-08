@@ -5,6 +5,7 @@
 //! `Capture::new()` renvoie [`AudioError::NoInputDevice`] et `play_pcm()` renvoie [`AudioError::NoOutputDevice`].
 //! En mode test synthétique (`feature = "mock-audio"`), un pilote 16 kHz synthétique émet du silence.
 
+pub mod beamforming;
 pub mod capture;
 pub mod diagnostics;
 pub mod playback;
@@ -14,6 +15,10 @@ pub mod yin;
 #[cfg(feature = "cpal")]
 use cpal::traits::HostTrait;
 
+pub use beamforming::{
+    BeamformerMetrics, BinauralBeamformerConfig, BinauralSpeakerBeamformer, DEFAULT_MIC_SPACING_M,
+    DEFAULT_MIN_OFF_AXIS_ATTENUATION_DB, DEFAULT_STEERING_ANGLE_DEG, SPEED_OF_SOUND_M_S,
+};
 pub use capture::Capture;
 pub use diagnostics::{
     CaptureConfig, CaptureStatus, InputDeviceDiagnostic, input_device_diagnostics,
@@ -35,7 +40,7 @@ pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 pub const CAPTURE_BLOCK_SAMPLES: usize = 160;
 
 /// Erreurs audio explicites. Aucune variante ne représente un succès simulé.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AudioError {
     /// Aucun périphérique d'entrée n'est disponible sur le système.
     #[error("aucun périphérique d'entrée audio disponible (micro absent ou inaccessible)")]

@@ -36,7 +36,7 @@ const FORMANT_BW: [f32; 5] = [70.0, 90.0, 130.0, 180.0, 250.0];
 // ---------------------------------------------------------------------------
 
 /// Paramètres de voix (F0 en Hz, clampée 80–300).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FormantVoice {
     pub f0_base_hz: f32,
     pub rate: f32,
@@ -1938,8 +1938,12 @@ fn pause_ms(sym: &str) -> f32 {
     }
 }
 
-/// Construit la timeline (échantillons) + courbe F0 (déclinaison, accents).
-fn build_timeline(syms: &[&'static str], voice: &FormantVoice) -> Vec<TimedPh> {
+/// Construit la timeline (échantillons) + courbe F0 (déclinaison, accents, montée terminale optionnelle).
+fn build_timeline(
+    syms: &[&'static str],
+    voice: &FormantVoice,
+    force_terminal_rise: bool,
+) -> Vec<TimedPh> {
     let sr = FORMANT_SAMPLE_RATE as f32;
     // Découpe en phrases (reset déclinaison après .!?).
     let mut tl: Vec<TimedPh> = Vec::new();
@@ -2074,6 +2078,28 @@ fn build_timeline(syms: &[&'static str], voice: &FormantVoice) -> Vec<TimedPh> {
             p.f0_end *= decl;
         }
     }
+
+    if force_terminal_rise {
+        let rise_samples = (0.200 * FORMANT_SAMPLE_RATE as f32) as usize; // 4800 samples
+        let speech_end = tl
+            .iter()
+            .filter(|p| !is_pause_sym(p.sym))
+            .map(|p| p.start + p.len)
+            .max()
+            .unwrap_or(0);
+        let rise_start = speech_end.saturating_sub(rise_samples);
+        for p in tl.iter_mut() {
+            if !is_pause_sym(p.sym) && is_voiced_sym(p.sym) && p.start + p.len > rise_start {
+                let t_s = (p.start.saturating_sub(rise_start) as f32 / rise_samples as f32)
+                    .clamp(0.0, 1.0);
+                let t_e = ((p.start + p.len).saturating_sub(rise_start) as f32
+                    / rise_samples as f32)
+                    .clamp(0.0, 1.0);
+                p.f0_start = (p.f0_start + 40.0 * t_s).min(FORMANT_MAX_F0);
+                p.f0_end = (p.f0_end + 40.0 * t_e).min(FORMANT_MAX_F0);
+            }
+        }
+    }
     tl
 }
 
@@ -2156,9 +2182,13 @@ pub struct FormantStream {
 
 impl FormantStream {
     pub fn new(text: &str, voice: &FormantVoice) -> Self {
+        Self::new_with_prosody(text, voice, false)
+    }
+
+    pub fn new_with_prosody(text: &str, voice: &FormantVoice, terminal_rise: bool) -> Self {
         // Phonémisation interne : conserve le marqueur d'accentuation (R005).
         let syms = phonemize_with_prosody(text);
-        let tl = build_timeline(&syms, voice);
+        let tl = build_timeline(&syms, voice, terminal_rise);
         let total = tl.iter().map(|p| p.start + p.len).max().unwrap_or(0);
         Self {
             tl,
@@ -2304,10 +2334,19 @@ impl FormantStream {
     }
 }
 
+/// Synthèse one-shot avec prosodie adaptative (incluant montée interrogative optionnelle).
+pub fn synthesize_with_prosody(
+    text: &str,
+    voice: &FormantVoice,
+    force_terminal_rise: bool,
+) -> Vec<f32> {
+    let mut stream = FormantStream::new_with_prosody(text, voice, force_terminal_rise);
+    stream.next_chunk(stream.total_samples())
+}
+
 /// Synthèse one-shot : texte → 24 kHz `f32` (vide si aucun phonème).
 pub fn synthesize(text: &str, voice: &FormantVoice) -> Vec<f32> {
-    let mut stream = FormantStream::new(text, voice);
-    stream.next_chunk(stream.total_samples())
+    synthesize_with_prosody(text, voice, false)
 }
 
 /// Estime F0 par autocorrélation normalisée (diagnostic/preuve, 70–320 Hz).
@@ -2506,5 +2545,20 @@ mod tests {
         assert_eq!(phonemize("MADAME"), phonemize("madame"));
         // Déterminisme conservé avec accentuation.
         assert_eq!(synthesize("Bonjour.", &v), synthesize("Bonjour.", &v));
+    }
+
+    #[test]
+    fn test_synthesize_with_prosody_terminal_rise() {
+        let v = FormantVoice::default();
+        let normal = synthesize_with_prosody("bonjour", &v, false);
+        let rise = synthesize_with_prosody("bonjour", &v, true);
+        assert!(!normal.is_empty());
+        assert_eq!(normal.len(), rise.len());
+        let diff: f32 = normal
+            .iter()
+            .zip(rise.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(diff > 0.1, "Terminal rise should modify audio waveform");
     }
 }

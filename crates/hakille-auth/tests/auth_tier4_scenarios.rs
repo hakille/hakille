@@ -2,7 +2,6 @@
 //! 5 Realistic Sovereign Multi-Tenant Workloads.
 
 use hakille_auth::biohash::*;
-use hakille_auth::continuous::*;
 use hakille_auth::face::*;
 use hakille_auth::face_liveness::*;
 use hakille_auth::gdpr::*;
@@ -23,7 +22,8 @@ fn test_auth_tier4_scenario_01_enterprise_biometric_delegation() {
     let bio_engine = BiohashingEngine::default();
     let gdpr = GdprConsentEngine::new();
 
-    let exec_uid = UserId(Uuid::new_v4());
+    let _exec_uid = UserId(Uuid::new_v4());
+
     let exec_salt = [0x91u8; 32];
 
     // 1. Camera capture in RAM only

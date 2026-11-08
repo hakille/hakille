@@ -657,7 +657,11 @@ impl Core {
             | KernelToUi::UserContext(_)
             | KernelToUi::EmotionUpdate(_)
             | KernelToUi::FatigueAlert(_)
-            | KernelToUi::PrivacyGuardAlert(_) => {}
+            | KernelToUi::PrivacyGuardAlert(_)
+            | KernelToUi::AuraRingUpdate(_)
+            | KernelToUi::GhostActionSuggest(_)
+            | KernelToUi::GhostActionDismissed { .. }
+            | KernelToUi::MicroGestureRecognized(_) => {}
         }
         Ok(())
     }

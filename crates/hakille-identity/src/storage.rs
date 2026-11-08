@@ -70,6 +70,8 @@ pub struct RedbZkStore {
     recovery_shares: HashMap<Uuid, RecoveryShareRecord>,
     spo_blind_table: HashMap<[u8; 32], Vec<Vec<u8>>>,
     shredded_salts: std::collections::HashSet<UserId>,
+    vaults_table: HashMap<Uuid, crate::inheritance::InheritanceVaultRecord>,
+    shredded_vault_intimate_partitions: std::collections::HashSet<Uuid>,
 }
 
 impl RedbZkStore {
@@ -166,5 +168,56 @@ impl RedbZkStore {
             .get(subject_blind_token)
             .cloned()
             .unwrap_or_default()
+    }
+
+    pub fn insert_inheritance_vault(&mut self, vault: crate::inheritance::InheritanceVaultRecord) {
+        self.vaults_table.insert(vault.vault_id, vault);
+    }
+
+    pub fn get_inheritance_vault(
+        &self,
+        vault_id: &Uuid,
+    ) -> Option<&crate::inheritance::InheritanceVaultRecord> {
+        self.vaults_table.get(vault_id)
+    }
+
+    pub fn get_inheritance_vault_mut(
+        &mut self,
+        vault_id: &Uuid,
+    ) -> Option<&mut crate::inheritance::InheritanceVaultRecord> {
+        self.vaults_table.get_mut(vault_id)
+    }
+
+    pub fn list_inheritance_vaults_for_tenant(
+        &self,
+        tenant_id: &crate::hierarchy::TenantId,
+    ) -> Vec<crate::inheritance::InheritanceVaultRecord> {
+        self.vaults_table
+            .values()
+            .filter(|v| v.family_tenant_id == *tenant_id)
+            .cloned()
+            .collect()
+    }
+
+    /// Shreds intimate partition: purges intimate blind tokens and their SPO records from store
+    pub fn shred_vault_intimate_partition(&mut self, vault_id: &Uuid) -> Result<(), HakilleError> {
+        let vault = self
+            .vaults_table
+            .get_mut(vault_id)
+            .ok_or(HakilleError::CapabilityDenied(
+                "Vault not found in store".into(),
+            ))?;
+
+        // Purge intimate blind SPO records
+        for token in &vault.intimate_partition_blind_tokens {
+            self.spo_blind_table.remove(token);
+        }
+        vault.intimate_partition_blind_tokens.clear();
+        self.shredded_vault_intimate_partitions.insert(*vault_id);
+        Ok(())
+    }
+
+    pub fn is_vault_intimate_partition_shredded(&self, vault_id: &Uuid) -> bool {
+        self.shredded_vault_intimate_partitions.contains(vault_id)
     }
 }

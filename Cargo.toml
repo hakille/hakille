@@ -14,6 +14,7 @@ members = [
     "crates/hakille-agents",
     "crates/hakille-audit",
     "crates/hakille-sync",
+    "crates/hakille-mesh",
     "crates/hakille-auth",
     "crates/hakille-identity",
     "crates/hakille-constitution",

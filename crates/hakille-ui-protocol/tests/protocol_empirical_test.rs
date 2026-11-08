@@ -393,3 +393,47 @@ fn test_perception_control_mask_roundtrip_edge_cases() {
         }
     }
 }
+
+#[test]
+fn test_aura_ring_dto_adversarial_and_bincode_integrity() {
+    // 1. Missing mandatory field 'tau'
+    let missing_tau = r##"{
+        "state_name": "EmeraldHighTrust",
+        "primary_hex": "#10B981",
+        "glow_hex": "#10B98173",
+        "pulse_period_ms": 6000,
+        "scale_factor": 1.0,
+        "timestamp_ms": 1794078900000
+    }"##;
+    assert!(serde_json::from_str::<AuraRingUpdateDto>(missing_tau).is_err());
+
+    // 2. Corrupted type for 'pulse_period_ms' (string instead of u32)
+    let bad_period = r##"{
+        "tau": 0.95,
+        "state_name": "EmeraldHighTrust",
+        "primary_hex": "#10B981",
+        "glow_hex": "#10B98173",
+        "pulse_period_ms": "6000ms",
+        "scale_factor": 1.0,
+        "timestamp_ms": 1794078900000
+    }"##;
+    assert!(serde_json::from_str::<AuraRingUpdateDto>(bad_period).is_err());
+
+    // 3. Roundtrip bincode with corrupted byte stream
+    let valid_dto = AuraRingUpdateDto::new(
+        0.98,
+        "EmeraldHighTrust",
+        "#10B981",
+        "#10B98173",
+        6000,
+        1.05,
+        1794078900000,
+    );
+    let bytes = bincode::serialize(&valid_dto).unwrap();
+    let back: AuraRingUpdateDto = bincode::deserialize(&bytes).unwrap();
+    assert_eq!(valid_dto, back);
+
+    // Corrupt the bincode bytes (truncated)
+    let truncated = &bytes[..bytes.len() / 2];
+    assert!(bincode::deserialize::<AuraRingUpdateDto>(truncated).is_err());
+}

@@ -25,11 +25,9 @@ fn test_t1_f07_02_version_compatibility_check_function() {
 #[test]
 fn test_t1_f07_03_golden_schema_snapshot_parity_test() {
     // Assert schema snapshot file exists and is valid JSON
-    let path =
-        "/home/antigravity/hakille/hakille/crates/hakille-ui-protocol/src/schema_snapshot.json";
-    let content = std::fs::read_to_string(path).expect("schema_snapshot.json must exist");
+    let content = include_str!("../../../../crates/hakille-ui-protocol/src/schema_snapshot.json");
     let val: serde_json::Value =
-        serde_json::from_str(&content).expect("schema_snapshot.json must be valid JSON");
+        serde_json::from_str(content).expect("schema_snapshot.json must be valid JSON");
     assert!(val.is_object() || val.is_array());
 }
 

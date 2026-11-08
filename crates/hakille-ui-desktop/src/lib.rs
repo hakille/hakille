@@ -20,6 +20,7 @@ pub mod daemon_bridge;
 pub mod i18n;
 pub mod ipc_client;
 pub mod kernel_bridge;
+pub mod palace_renderer;
 pub mod renderer;
 pub mod runtime;
 pub mod scene;
@@ -33,6 +34,9 @@ pub use daemon_bridge::{AuthorityPolicy, DaemonKernel, RealDaemonBridge};
 pub use i18n::{Locale, Strings};
 pub use ipc_client::IpcClient;
 pub use kernel_bridge::{KernelBridge, KernelStub};
+pub use palace_renderer::{
+    PalaceCamera3D, PalaceRenderEdge, PalaceRenderNode, PalaceSceneRenderer,
+};
 pub use renderer::{GpuStatus, Renderer, SoftwareRenderer, WgpuRenderer};
 pub use runtime::{FrameBudget, HeadlessRuntime, RuntimeEvent};
 pub use scene::{Color, Rect, Scene, SceneRenderer};

@@ -1,4 +1,5 @@
 pub mod accessibility;
+pub mod aura_ring;
 pub mod channel_selector;
 pub mod cost_display;
 pub mod ephemeral_hud;
@@ -10,6 +11,7 @@ pub mod presence;
 pub mod silence_budget;
 
 pub use accessibility::*;
+pub use aura_ring::*;
 pub use channel_selector::*;
 pub use cost_display::*;
 pub use ephemeral_hud::*;
@@ -514,5 +516,190 @@ mod tests {
         let full = JournalView::full_reasoning(&entry);
         assert!(full.contains("step one") && full.contains("step two"));
         assert!(JournalView::graph_node_labels(&entry).is_empty());
+    }
+
+    #[test]
+    fn test_aura_ring_four_chromatic_state_transitions() {
+        let mut widget = AuraRingWidget::new(0.50);
+        assert_eq!(widget.visual_state(), AuraVisualState::AmberAmbient);
+
+        // 1. EmeraldHighTrust (tau >= 0.90)
+        widget.update_confidence(0.90);
+        assert_eq!(widget.visual_state(), AuraVisualState::EmeraldHighTrust);
+        widget.update_confidence(0.99);
+        assert_eq!(widget.visual_state(), AuraVisualState::EmeraldHighTrust);
+        widget.update_confidence(1.0);
+        assert_eq!(widget.visual_state(), AuraVisualState::EmeraldHighTrust);
+
+        // 2. AmberAmbient (0.40 <= tau < 0.90)
+        widget.update_confidence(0.8999);
+        assert_eq!(widget.visual_state(), AuraVisualState::AmberAmbient);
+        widget.update_confidence(0.50);
+        assert_eq!(widget.visual_state(), AuraVisualState::AmberAmbient);
+        widget.update_confidence(0.40);
+        assert_eq!(widget.visual_state(), AuraVisualState::AmberAmbient);
+
+        // 3. VioletStepUp (active challenge with tau >= 0.40)
+        widget.set_step_up_active(true);
+        assert_eq!(widget.visual_state(), AuraVisualState::VioletStepUp);
+        widget.update_confidence(0.95); // Even with high trust, step-up challenge displays Violet
+        assert_eq!(widget.visual_state(), AuraVisualState::VioletStepUp);
+        widget.set_step_up_active(false);
+        assert_eq!(widget.visual_state(), AuraVisualState::EmeraldHighTrust);
+
+        // 4. RedLocked (tau < 0.40, locked, distress, or revoked)
+        widget.update_confidence(0.399);
+        assert_eq!(widget.visual_state(), AuraVisualState::RedLocked);
+        widget.update_confidence(0.0);
+        assert_eq!(widget.visual_state(), AuraVisualState::RedLocked);
+
+        // Security precedence: lock overrides step-up and high trust
+        widget.update_confidence(0.95);
+        assert_eq!(widget.visual_state(), AuraVisualState::EmeraldHighTrust);
+        widget.set_locked(true);
+        assert_eq!(widget.visual_state(), AuraVisualState::RedLocked);
+        widget.set_step_up_active(true);
+        assert_eq!(widget.visual_state(), AuraVisualState::RedLocked); // lock has precedence over step-up
+        widget.set_locked(false);
+        assert_eq!(widget.visual_state(), AuraVisualState::VioletStepUp); // step-up now visible
+        widget.set_step_up_active(false);
+        assert_eq!(widget.visual_state(), AuraVisualState::EmeraldHighTrust);
+
+        // Distress overrides all
+        widget.set_distress(true);
+        assert_eq!(widget.visual_state(), AuraVisualState::RedLocked);
+        widget.set_distress(false);
+        assert_eq!(widget.visual_state(), AuraVisualState::EmeraldHighTrust);
+
+        // Revocation overrides all
+        widget.set_revoked(true);
+        assert_eq!(widget.visual_state(), AuraVisualState::RedLocked);
+        widget.set_revoked(false);
+        assert_eq!(widget.visual_state(), AuraVisualState::EmeraldHighTrust);
+    }
+
+    #[test]
+    fn test_aura_ring_exact_colors_alpha_and_pulse_periods() {
+        // Emerald 500 (#10B981, 6000ms, alpha 0.45)
+        let emerald = AuraVisualState::EmeraldHighTrust;
+        assert_eq!(emerald.primary_hex(), "#10B981");
+        assert_eq!(emerald.primary_color().r, 16);
+        assert_eq!(emerald.primary_color().g, 185);
+        assert_eq!(emerald.primary_color().b, 129);
+        assert_eq!(emerald.primary_color().a, 1.0);
+        assert_eq!(emerald.pulse_period_ms(), 6000);
+        assert_eq!(emerald.glow_alpha(), 0.45);
+        assert_eq!(emerald.glow_color().a, 0.45);
+        assert_eq!(emerald.glow_hex(), "#10B98173");
+
+        // Amber 500 (#F59E0B, 3500ms, alpha 0.30)
+        let amber = AuraVisualState::AmberAmbient;
+        assert_eq!(amber.primary_hex(), "#F59E0B");
+        assert_eq!(amber.primary_color().r, 245);
+        assert_eq!(amber.primary_color().g, 158);
+        assert_eq!(amber.primary_color().b, 11);
+        assert_eq!(amber.primary_color().a, 1.0);
+        assert_eq!(amber.pulse_period_ms(), 3500);
+        assert_eq!(amber.glow_alpha(), 0.30);
+        assert_eq!(amber.glow_color().a, 0.30);
+        assert_eq!(amber.glow_hex(), "#F59E0B4D");
+
+        // Violet 500 (#8B5CF6, 1000ms, alpha 0.60)
+        let violet = AuraVisualState::VioletStepUp;
+        assert_eq!(violet.primary_hex(), "#8B5CF6");
+        assert_eq!(violet.primary_color().r, 139);
+        assert_eq!(violet.primary_color().g, 92);
+        assert_eq!(violet.primary_color().b, 246);
+        assert_eq!(violet.primary_color().a, 1.0);
+        assert_eq!(violet.pulse_period_ms(), 1000);
+        assert_eq!(violet.glow_alpha(), 0.60);
+        assert_eq!(violet.glow_color().a, 0.60);
+        assert_eq!(violet.glow_hex(), "#8B5CF699");
+
+        // Red 500 (#EF4444, 800ms, alpha 0.70)
+        let red = AuraVisualState::RedLocked;
+        assert_eq!(red.primary_hex(), "#EF4444");
+        assert_eq!(red.primary_color().r, 239);
+        assert_eq!(red.primary_color().g, 68);
+        assert_eq!(red.primary_color().b, 68);
+        assert_eq!(red.primary_color().a, 1.0);
+        assert_eq!(red.pulse_period_ms(), 800);
+        assert_eq!(red.glow_alpha(), 0.70);
+        assert_eq!(red.glow_color().a, 0.70);
+        assert_eq!(red.glow_hex(), "#EF4444B3");
+    }
+
+    #[test]
+    fn test_aura_ring_animation_sine_wave_scale_oscillation() {
+        let widget = AuraRingWidget::new(0.95);
+        let period = widget.pulse_period_ms();
+        assert_eq!(period, 6000);
+
+        // Check periodic oscillation boundaries [0.95, 1.05]
+        for t in (0..=12000).step_by(50) {
+            let factor = widget.animation_factor(t);
+            assert!(
+                (0.9499..=1.0501).contains(&factor),
+                "Animation factor {factor} outside [0.95, 1.05] at t={t}"
+            );
+        }
+
+        // Exact phase points for sine wave 1.0 + 0.05 * sin(2*pi*t/T)
+        // t = 0 -> sin(0) = 0 -> scale = 1.0
+        assert!((widget.animation_factor(0) - 1.0).abs() < 1e-5);
+        // t = period / 4 -> sin(pi/2) = 1.0 -> scale = 1.05
+        assert!((widget.animation_factor(period as u64 / 4) - 1.05).abs() < 1e-4);
+        // t = period / 2 -> sin(pi) = 0 -> scale = 1.0
+        assert!((widget.animation_factor(period as u64 / 2) - 1.0).abs() < 1e-4);
+        // t = 3 * period / 4 -> sin(3pi/2) = -1.0 -> scale = 0.95
+        assert!((widget.animation_factor(3 * period as u64 / 4) - 0.95).abs() < 1e-4);
+        // t = period -> sin(2pi) = 0 -> scale = 1.0
+        assert!((widget.animation_factor(period as u64) - 1.0).abs() < 1e-5);
+
+        // Strict periodicity: f(t) == f(t + period)
+        for t in [123u64, 456, 789, 1500, 2750, 4200] {
+            let f1 = widget.animation_factor(t);
+            let f2 = widget.animation_factor(t + period as u64);
+            assert!((f1 - f2).abs() < 1e-5, "Periodicity failed at t={t}");
+        }
+    }
+
+    #[test]
+    fn test_aura_ring_widget_dto_and_serde_bincode_roundtrip() {
+        let widget = AuraRingWidget::new(0.92);
+        assert_eq!(widget.visual_state(), AuraVisualState::EmeraldHighTrust);
+
+        let timestamp_ms = 1794078900000;
+        let dto = widget.to_update_dto(timestamp_ms);
+        assert_eq!(dto.tau, 0.92);
+        assert_eq!(dto.state_name, "EmeraldHighTrust");
+        assert_eq!(dto.primary_hex, "#10B981");
+        assert_eq!(dto.glow_hex, "#10B98173");
+        assert_eq!(dto.pulse_period_ms, 6000);
+        assert_eq!(dto.timestamp_ms, timestamp_ms);
+        assert!(dto.scale_factor >= 0.95 && dto.scale_factor <= 1.05);
+
+        // JSON roundtrip
+        let json = serde_json::to_string(&dto).unwrap();
+        let from_json: hakille_ui_protocol::AuraRingUpdateDto =
+            serde_json::from_str(&json).unwrap();
+        assert_eq!(dto, from_json);
+
+        // Bincode roundtrip
+        let bin = bincode::serialize(&dto).unwrap();
+        let from_bin: hakille_ui_protocol::AuraRingUpdateDto = bincode::deserialize(&bin).unwrap();
+        assert_eq!(dto, from_bin);
+
+        // Widget serde roundtrip
+        let w_json = serde_json::to_string(&widget).unwrap();
+        let w_from_json: AuraRingWidget = serde_json::from_str(&w_json).unwrap();
+        assert_eq!(widget.tau, w_from_json.tau);
+        assert_eq!(widget.visual_state, w_from_json.visual_state);
+
+        // Clamping check
+        let mut clamped = AuraRingWidget::new(-0.5);
+        assert_eq!(clamped.tau(), 0.0);
+        clamped.update_confidence(1.5);
+        assert_eq!(clamped.tau(), 1.0);
     }
 }

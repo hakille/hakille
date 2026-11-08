@@ -552,4 +552,87 @@ mod tests {
         assert!(a.tombstone_time(&id).is_none());
         assert!(a.active_triplets().is_empty() && b.active_triplets().is_empty());
     }
+
+    #[test]
+    fn test_consent_crdt_delta_revocation_wins_policy() {
+        let grant =
+            ConsentCrdtDelta::new_grant("c-001", "agent-calendar", "calendar", "read", 1000);
+        assert!(!grant.revoked);
+
+        let mut revoked = grant.clone();
+        revoked.revoke(1500);
+        assert!(revoked.revoked);
+
+        // Merge grant with revoked in both directions -> Revocation-Wins
+        let merged_a = grant.merge(&revoked);
+        let merged_b = revoked.merge(&grant);
+        assert!(merged_a.revoked);
+        assert!(merged_b.revoked);
+        assert_eq!(merged_a.revocation_timestamp_ms, Some(1500));
+        assert_eq!(merged_b.revocation_timestamp_ms, Some(1500));
+    }
+}
+
+/// Delta CRDT de consentement avec politique stricte de supériorité de révocation (Revocation-Wins) (§35).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsentCrdtDelta {
+    pub consent_id: String,
+    pub subject: String,
+    pub scope: String,
+    pub action: String,
+    pub revoked: bool,
+    pub grant_timestamp_ms: u64,
+    pub revocation_timestamp_ms: Option<u64>,
+}
+
+impl ConsentCrdtDelta {
+    pub fn new_grant(
+        consent_id: impl Into<String>,
+        subject: impl Into<String>,
+        scope: impl Into<String>,
+        action: impl Into<String>,
+        grant_timestamp_ms: u64,
+    ) -> Self {
+        Self {
+            consent_id: consent_id.into(),
+            subject: subject.into(),
+            scope: scope.into(),
+            action: action.into(),
+            revoked: false,
+            grant_timestamp_ms,
+            revocation_timestamp_ms: None,
+        }
+    }
+
+    pub fn revoke(&mut self, revocation_timestamp_ms: u64) {
+        self.revoked = true;
+        self.revocation_timestamp_ms = Some(
+            self.revocation_timestamp_ms
+                .map_or(revocation_timestamp_ms, |prev| {
+                    prev.max(revocation_timestamp_ms)
+                }),
+        );
+    }
+
+    /// Fusion avec politique d'inviolabilité : Revocation-Wins.
+    /// Si l'un des deux réplicas a révoqué le consentement, le résultat est RÉVOQUÉ.
+    pub fn merge(&self, other: &ConsentCrdtDelta) -> Self {
+        let is_revoked = self.revoked || other.revoked;
+        let rev_time = match (self.revocation_timestamp_ms, other.revocation_timestamp_ms) {
+            (Some(t1), Some(t2)) => Some(t1.max(t2)),
+            (Some(t1), None) => Some(t1),
+            (None, Some(t2)) => Some(t2),
+            (None, None) => None,
+        };
+
+        Self {
+            consent_id: self.consent_id.clone(),
+            subject: self.subject.clone(),
+            scope: self.scope.clone(),
+            action: self.action.clone(),
+            revoked: is_revoked,
+            grant_timestamp_ms: self.grant_timestamp_ms.min(other.grant_timestamp_ms),
+            revocation_timestamp_ms: rev_time,
+        }
+    }
 }

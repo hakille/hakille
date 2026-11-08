@@ -138,6 +138,22 @@ impl From<KernelToUi> for KernelEvent {
             KernelToUi::NotificationDismissed { id } => Self::Toast {
                 text: format!("notification {id} révoquée"),
             },
+            KernelToUi::AuraRingUpdate(a) => Self::Toast {
+                text: format!("aura: {} (tau={:.2})", a.state_name, a.tau),
+            },
+            KernelToUi::GhostActionSuggest(g) => Self::Toast {
+                text: format!(
+                    "action suggérée : {} ({:.0}%)",
+                    g.label,
+                    g.confidence * 100.0
+                ),
+            },
+            KernelToUi::GhostActionDismissed { id } => Self::Toast {
+                text: format!("suggestion {id} ignorée"),
+            },
+            KernelToUi::MicroGestureRecognized(m) => Self::Toast {
+                text: format!("micro-geste reconnu : {:?}", m),
+            },
         }
     }
 }

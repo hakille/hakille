@@ -39,10 +39,13 @@ fn test_t2_f04_04_unbounded_key_length() {
 /// `T2_F04_05`: Partial Write Interruption Recovery
 #[test]
 fn test_t2_f04_05_partial_write_interruption_recovery() {
-    let target = "/tmp/hakille_test_atomic_write.rs";
-    let tmp = format!("{target}.tmp");
+    let temp_dir = std::env::temp_dir();
+    let target = temp_dir.join("hakille_test_atomic_write.rs");
+    let tmp = temp_dir.join("hakille_test_atomic_write.rs.tmp");
+    let _ = std::fs::remove_file(&target);
+    let _ = std::fs::remove_file(&tmp);
     std::fs::write(&tmp, "pub const TEST: u32 = 1;").unwrap();
-    std::fs::rename(&tmp, target).unwrap();
-    assert!(std::path::Path::new(target).exists());
-    let _ = std::fs::remove_file(target);
+    std::fs::rename(&tmp, &target).unwrap();
+    assert!(target.exists());
+    let _ = std::fs::remove_file(&target);
 }

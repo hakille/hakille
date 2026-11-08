@@ -670,6 +670,113 @@ impl NotificationToast {
     }
 }
 
+/// Overlay de Ghost Action (§31) : projection au point focal du regard avec halo Braise,
+/// reflet spéculaire 1px, et jauge de maintien circulaire de 600ms.
+#[derive(Debug, Clone)]
+pub struct GhostActionOverlay {
+    pub id: String,
+    pub label: String,
+    pub confidence: f32,
+    pub focal_x: f32,
+    pub focal_y: f32,
+    pub hold_progress: f32,
+    pub rect: Rect,
+}
+
+impl GhostActionOverlay {
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        confidence: f32,
+        focal_x: f32,
+        focal_y: f32,
+        hold_progress: f32,
+    ) -> Self {
+        let w = 320.0;
+        let h = 56.0;
+        let rect = Rect::new(focal_x - w / 2.0, focal_y - h - 16.0, w, h);
+        Self {
+            id: id.into(),
+            label: label.into(),
+            confidence,
+            focal_x,
+            focal_y,
+            hold_progress: hold_progress.clamp(0.0, 1.0),
+            rect,
+        }
+    }
+
+    pub fn draw(&self, scene: &mut Scene, ctx: &PrimitiveCtx) {
+        // Halo Braise ambiant (#FF7A2F)
+        scene.shadow(
+            self.rect,
+            16.0,
+            Color::from_hex(ctx.theme.braise).with_alpha(90),
+        );
+
+        // Fond sombre acrylique arrondi
+        scene.fill(
+            self.rect.rounded(10.0),
+            Color::from_hex(ctx.theme.surface1).with_alpha(240),
+        );
+
+        // Reflet spéculaire 1px sur le sommet
+        scene.fill(
+            Rect::new(
+                self.rect.x + 8.0,
+                self.rect.y + 1.0,
+                self.rect.w - 16.0,
+                1.0,
+            ),
+            Color::rgb(255, 255, 255).with_alpha(45),
+        );
+
+        // Bordure subtile
+        scene.fill(
+            Rect::new(self.rect.x, self.rect.y, self.rect.w, 1.0),
+            Color::from_hex(ctx.theme.line),
+        );
+
+        // Libellé de l'action
+        Text {
+            content: self.label.clone(),
+            size: ty::TYPE_BODY_SIZE as f32,
+            mono: false,
+        }
+        .draw(scene, ctx, self.rect.x + 16.0, self.rect.y + 22.0);
+
+        // Indication de confiance et méthode d'interaction
+        let pct = (self.confidence * 100.0).clamp(0.0, 100.0) as u32;
+        let hint = format!("{}% • Maintien 600ms ou Pincement", pct);
+        Text {
+            content: hint,
+            size: ty::TYPE_CAPTION_SIZE as f32,
+            mono: false,
+        }
+        .draw(scene, ctx, self.rect.x + 16.0, self.rect.y + 40.0);
+
+        // Jauge de maintien circulaire 600ms
+        let ring_cx = self.rect.x + self.rect.w - 24.0;
+        let ring_cy = self.rect.y + self.rect.h / 2.0;
+        scene.ring(
+            ring_cx,
+            ring_cy,
+            12.0,
+            2.0,
+            Color::from_hex(ctx.theme.surface1),
+        );
+        if self.hold_progress > 0.0 {
+            scene.ring(
+                ring_cx,
+                ring_cy,
+                12.0,
+                2.5,
+                Color::from_hex(ctx.theme.braise),
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -816,5 +923,31 @@ mod tests {
         );
         toast.draw(&mut scene, &ctx);
         assert!(!scene.cmds.is_empty());
+    }
+    #[test]
+    fn test_ghost_action_overlay_render_and_halo() {
+        let ctx = PrimitiveCtx::new(Theme::dark());
+        let mut scene = Scene::new(1280, 720, true);
+        let ghost = GhostActionOverlay::new(
+            "ghost-42",
+            "Archiver la note chiffrée",
+            0.94,
+            640.0,
+            360.0,
+            0.5,
+        );
+        ghost.draw(&mut scene, &ctx);
+        assert!(!scene.cmds.is_empty());
+        // Verify Braise shadow and progress ring are recorded
+        let has_shadow = scene
+            .cmds
+            .iter()
+            .any(|cmd| matches!(cmd, crate::scene::DrawCmd::Shadow { .. }));
+        let has_ring = scene
+            .cmds
+            .iter()
+            .any(|cmd| matches!(cmd, crate::scene::DrawCmd::Ring { .. }));
+        assert!(has_shadow);
+        assert!(has_ring);
     }
 }

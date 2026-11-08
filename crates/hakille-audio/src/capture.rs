@@ -30,6 +30,7 @@ pub struct Capture {
     running: std::sync::Arc<std::sync::atomic::AtomicBool>,
     #[cfg(all(not(feature = "cpal"), feature = "mock-audio"))]
     stop_tx: Option<std::sync::mpsc::Sender<()>>,
+    /// Observable diagnostic health and failure latches across capture streams.
     health: std::sync::Arc<crate::diagnostics::CaptureHealth>,
 }
 
@@ -121,6 +122,19 @@ impl Capture {
         })
     }
 
+    /// Récupère et consomme la première erreur survenue depuis le dernier démarrage, le cas échéant.
+    ///
+    /// Cette méthode consomme l'erreur latente mais laisse `status().failed` à `true`
+    /// jusqu'au prochain appel à `start()`.
+    pub fn take_error(&self) -> Option<AudioError> {
+        self.health.take_error()
+    }
+
+    /// Renvoie l'état observable de santé de la capture depuis le dernier démarrage.
+    pub fn status(&self) -> crate::diagnostics::CaptureStatus {
+        self.health.status()
+    }
+
     /// Nom du périphérique ouvert.
     pub fn device_name(&self) -> &str {
         &self.device_name
@@ -168,6 +182,7 @@ impl Capture {
         F: FnMut(&[f32]) + Send + 'static,
     {
         self.stop()?;
+        self.health = std::sync::Arc::new(crate::diagnostics::CaptureHealth::new());
         #[cfg(feature = "cpal")]
         {
             let stream = match self.format {
@@ -202,6 +217,7 @@ impl Capture {
                 let (tx, rx) = std::sync::mpsc::channel();
                 self.stop_tx = Some(tx);
                 let mut cb = callback;
+                let health = std::sync::Arc::clone(&self.health);
                 std::thread::spawn(move || {
                     let silence = vec![0.0f32; CAPTURE_BLOCK_SAMPLES];
                     while running.load(std::sync::atomic::Ordering::SeqCst) {
@@ -219,19 +235,11 @@ impl Capture {
             #[cfg(not(feature = "mock-audio"))]
             {
                 let _ = callback;
-                Err(AudioError::NoInputDevice)
+                let err = AudioError::NoInputDevice;
+                self.health.record_error(err.clone());
+                Err(err)
             }
         }
-    }
-
-    /// Récupère et efface l'erreur survenue lors de la capture, le cas échéant.
-    pub fn take_error(&self) -> Option<AudioError> {
-        self.health.take_error()
-    }
-
-    /// État de santé de la capture depuis son démarrage.
-    pub fn status(&self) -> crate::diagnostics::CaptureStatus {
-        self.health.status()
     }
 
     /// Arrête la capture. Idempotent : renvoie `Ok(())` si rien n'est actif.
@@ -306,21 +314,26 @@ impl Capture {
                         device = %error_device_name,
                         "erreur du flux de capture audio"
                     );
+                    error_health.record_error(AudioError::StreamError(err.to_string()));
                 },
                 None,
             )
             .map_err(|e| {
-                AudioError::StreamError(format!(
+                let err = AudioError::StreamError(format!(
                     "construction du flux d'entrée « {} » : {e}",
                     self.device_name
-                ))
+                ));
+                self.health.record_error(err.clone());
+                err
             })?;
         if let Err(e) = stream.play() {
             drop(stream);
-            return Err(AudioError::StreamError(format!(
+            let err = AudioError::StreamError(format!(
                 "démarrage de la capture « {} » : {e}",
                 self.device_name
-            )));
+            ));
+            self.health.record_error(err.clone());
+            return Err(err);
         }
         tracing::info!(
             device = %self.device_name,
@@ -446,5 +459,49 @@ mod tests {
             cap.stop().expect("stop mock capture");
             assert!(!cap.is_running());
         }
+    }
+
+    #[test]
+    #[cfg(feature = "mock-audio")]
+    fn capture_diagnostics_mock_delivery_and_stop_retention() {
+        let mut cap = Capture::new().expect("mock capture creation");
+        let initial_status = cap.status();
+        assert_eq!(initial_status.callbacks_received, 0);
+        assert_eq!(initial_status.blocks_delivered, 0);
+        assert!(!initial_status.failed);
+        assert!(cap.take_error().is_none());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        cap.start(move |block| {
+            let _ = tx.send(block.to_vec());
+        })
+        .expect("start mock capture");
+
+        for _ in 0..3 {
+            let _ = rx
+                .recv_timeout(std::time::Duration::from_millis(500))
+                .expect("receive block");
+        }
+
+        let running_status = cap.status();
+        assert!(running_status.callbacks_received >= 3);
+        assert!(running_status.blocks_delivered >= 3);
+        assert!(!running_status.failed);
+
+        cap.stop().expect("stop capture");
+        // Verify that stop() DID NOT reset health
+        let stopped_status = cap.status();
+        assert!(stopped_status.blocks_delivered >= 3);
+        assert_eq!(
+            stopped_status.blocks_delivered,
+            running_status.blocks_delivered
+        );
+    }
+
+    #[test]
+    #[cfg(all(not(feature = "cpal"), not(feature = "mock-audio")))]
+    fn capture_headless_error_recording() {
+        let err = Capture::new().expect_err("new should fail in pure headless");
+        assert_eq!(err, AudioError::NoInputDevice);
     }
 }

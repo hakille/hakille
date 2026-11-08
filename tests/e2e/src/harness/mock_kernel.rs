@@ -90,7 +90,10 @@ impl MockKernel {
                 | UiToKernel::AgentRunRequest { .. }
                 | UiToKernel::PerceptionControl { .. }
                 | UiToKernel::NotificationAction { .. }
-                | UiToKernel::NotificationDismiss { .. } => {
+                | UiToKernel::NotificationDismiss { .. }
+                | UiToKernel::GhostActionAccept { .. }
+                | UiToKernel::GhostActionDismiss { .. }
+                | UiToKernel::SpatialGesture(_) => {
                     return Err(
                         "daemon requis: opération refusée en mode détaché (fail-closed)".into(),
                     );
@@ -247,6 +250,17 @@ impl MockKernel {
             UiToKernel::NotificationDismiss { id } => Ok(Some(KernelToUi::Toast {
                 text: format!("Notification {id} masquée"),
             })),
+            UiToKernel::GhostActionAccept { id } => {
+                let audit_id = self.next_audit_id;
+                self.next_audit_id += 1;
+                Ok(Some(KernelToUi::JournalAppended { id: audit_id }))
+            }
+            UiToKernel::GhostActionDismiss { id } => {
+                Ok(Some(KernelToUi::GhostActionDismissed { id }))
+            }
+            UiToKernel::SpatialGesture(gesture) => {
+                Ok(Some(KernelToUi::MicroGestureRecognized(gesture)))
+            }
         }
     }
 
