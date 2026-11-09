@@ -235,9 +235,14 @@ pub fn knowledge_graph_to_crdt(graph: &KnowledgeGraph, node_id: &str) -> Result<
     Ok(state)
 }
 
-/// Rejoue seulement les triplets actifs. Les suppressions ne sont pas propagées
-/// au graphe par ce pont ; un conflit métier conserve l'existant sans l'écraser.
+/// Applique les suppressions avant les présences. Le nombre rendu conserve
+/// son sens historique : présences appliquées, suppressions non comprises.
+/// Un conflit métier conserve l'existant sans l'écraser. Le transport appelant
+/// doit avoir authentifié le pair et autorisé sa partition avant ce pont.
 pub fn apply_crdt_to_graph(graph: &mut KnowledgeGraph, crdt: &CrdtSync) -> usize {
+    for id in &crdt.tombstones {
+        graph.remove(id);
+    }
     let mut applied = 0;
     for triplet in crdt.active_triplets() {
         if !matches!(
@@ -300,6 +305,36 @@ mod tests {
             },
             node_type: None,
         }
+    }
+
+    #[test]
+    fn graph_bridge_applies_deletions_without_resurrecting_offline_facts() {
+        let deleted = make_test_triplet("oublié");
+        let preserved = make_test_triplet("local privé");
+        let mut graph = KnowledgeGraph::new();
+        graph.insert(deleted.clone());
+        graph.insert(preserved.clone());
+        let mut online = CrdtSync::new();
+        online.insert_triplet(deleted.clone(), "online").unwrap();
+        let offline = online.clone();
+        online.remove_triplet(deleted.id.clone(), "online").unwrap();
+        online.merge(&offline).unwrap();
+        assert_eq!(apply_crdt_to_graph(&mut graph, &online), 0);
+        assert!(!graph.contains(&deleted.id));
+        assert!(graph.contains(&preserved.id));
+        assert!(
+            graph
+                .query(&hakille_memory::TriplePattern {
+                    subject: Some(deleted.subject.clone()),
+                    predicate: None,
+                    object: None,
+                })
+                .is_empty()
+        );
+        // Rejouer un état fusionné reste idempotent ; le contenu local hors
+        // de la synchronisation n'est jamais supprimé par simple absence.
+        assert_eq!(apply_crdt_to_graph(&mut graph, &online), 0);
+        assert_eq!(graph.len(), 1);
     }
 
     #[test]

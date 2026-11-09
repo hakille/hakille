@@ -387,6 +387,35 @@ mod provider_gate_tests {
     use hakille_core::{CapabilityAction, CapabilityScope};
 
     #[tokio::test]
+    async fn optional_token_path_never_creates_network_authority() {
+        let mut engine = System2Engine::new("test", 2);
+        engine.with_provider(ProviderId::Cloud(CloudProvider::OpenAI));
+        let authority = CapabilityAuthority::new();
+        let error = engine
+            .reason_with_network_capability_or_short(
+                "test",
+                &[],
+                &TrustLevel::User,
+                &authority,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("explicit Network capability"));
+    }
+
+    #[tokio::test]
+    async fn ollama_selection_never_silently_uses_gguf() {
+        let mut engine = System2Engine::new("test", 0);
+        engine.with_provider(ProviderId::LocalOllama);
+        let error = engine
+            .reason("test", &[], &TrustLevel::User)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("non implémenté"));
+    }
+
+    #[tokio::test]
     #[ignore = "slow: décodage Qwen CPU réel (minutes en debug) ; gate lente `-- --ignored`"]
     async fn test_system2_local_only_passes() {
         // Timeout aligné sur le décodage Qwen CPU réel (debug) : le défaut

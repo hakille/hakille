@@ -85,8 +85,10 @@ Le transport hôte doit authentifier et autoriser le pair, vérifier ces liens
 et définir le niveau de confiance permis aux données importées avant la fusion.
 
 Le pont `knowledge_graph_to_crdt` retourne maintenant `Result<CrdtSync>`.
-`apply_crdt_to_graph` rejoue les seuls triplets actifs : il ne propage pas les
-suppressions vers le graphe et conserve les conflits métier existants.
+`apply_crdt_to_graph` applique les tombstones avant les triplets actifs et
+conserve les conflits métier existants. Une absence sans tombstone ne supprime
+jamais un fait local. Le transport doit authentifier le pair et autoriser sa
+partition avant ce pont. Le nombre retourné compte les présences, comme auparavant.
 
 Validation ciblée :
 
