@@ -46,7 +46,7 @@ final class ActionCardTests: XCTestCase {
         let filtered = ActionCardHelper.filterSingleDecision(allCards)
 
         XCTAssertEqual(filtered.count, 1, "Single decision constraint must return at most 1 card")
-        XCTAssertEqual(filtered.first?["id"].int, 1)
+        XCTAssertEqual(filtered.first?["id"].id, UInt64(1))
 
         let emptyFiltered = ActionCardHelper.filterSingleDecision([])
         XCTAssertTrue(emptyFiltered.isEmpty)

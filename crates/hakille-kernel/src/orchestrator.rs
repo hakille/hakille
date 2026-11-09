@@ -18,7 +18,6 @@ use hakille_core::{
     ConfidenceDecision, Domain, HakilleError, Result, TrustLevel, UserId,
 };
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +57,14 @@ pub struct CognitiveOrchestrator {
     pub priority_engine: PriorityEngine,
     pub constitution: Constitution,
     pub memory_graph: hakille_memory::KnowledgeGraph,
-    pub embedding_engine: Option<hakille_inference::MiniLmOnnx>,
+    pub memory_journal: Option<hakille_memory::MemoryJournal>,
+    pub recall_policy: hakille_memory::retrieval::RecallPolicy,
+    pub last_recall: hakille_memory::retrieval::RecallReport,
+    pub last_episode: Option<hakille_memory::MemoryEpisode>,
+    pub memory_revisions: Vec<hakille_memory::FactRevision>,
+    pub(crate) active_episode: Option<hakille_memory::MemoryEpisode>,
+    pub(crate) retriever: std::sync::Mutex<hakille_memory::retrieval::HybridRetriever>,
+    pub(crate) embedding_engine: Option<hakille_inference::MiniLmOnnx>,
     pub budget_config: PipelineBudgetConfig,
     /// Mémoire de travail éphémère (scratchpad, §28a) — jamais persistée telle
     /// quelle, distillée vers le graphe souverain via `distill_and_clear`.
@@ -70,6 +76,9 @@ pub struct CognitiveOrchestrator {
     pub curiosity_scanner: GraphCuriosityScanner,
     /// Dernière réflexion Plan-Execute-Reflect (après S2), pour audit.
     pub last_reflection: Option<PlanReflection>,
+    pub research_backend: Option<std::sync::Arc<dyn crate::research::ResearchBackend>>,
+    pub research_policy: crate::research::ResearchPolicy,
+    pub last_research: Option<crate::research::ResearchReport>,
     /// Dernière simulation dry-run avant action irréversible, pour audit.
     pub last_simulation: Option<DryRunReport>,
     /// Dernière analyse de contradiction interne (zone limite), pour audit.
@@ -111,11 +120,21 @@ impl CognitiveOrchestrator {
             constitution,
             memory_graph: hakille_memory::KnowledgeGraph::new(),
             embedding_engine: None,
+            memory_journal: None,
+            recall_policy: Default::default(),
+            last_recall: Default::default(),
+            last_episode: None,
+            memory_revisions: Vec::new(),
+            active_episode: None,
+            retriever: Default::default(),
             budget_config: PipelineBudgetConfig::default(),
             working_memory: WorkingMemory::new(wm_task),
             self_model: SelfModel::new(),
             curiosity_scanner: GraphCuriosityScanner::new(),
             last_reflection: None,
+            research_backend: None,
+            research_policy: Default::default(),
+            last_research: None,
             last_simulation: None,
             last_contradiction: None,
             pending_resolutions: Vec::new(),
@@ -538,7 +557,12 @@ impl CognitiveOrchestrator {
     /// le démon ne saurait plus QUOI exécuter. Cette variante expose le plan
     /// pour qu'il puisse être conservé, audité et mis en file.
     pub fn action_card_with_plan(prompt: &str) -> Option<(ActionCardPreview, ExecutionPlan)> {
-        if !Self::is_irreversible_prompt(prompt) {
+        if crate::research::ResearchRequest::parse(prompt)
+            .ok()
+            .flatten()
+            .is_some()
+            || !Self::is_irreversible_prompt(prompt)
+        {
             return None;
         }
         let (plan, report, _) = Self::build_plan_card("card-preview", prompt);
@@ -586,25 +610,12 @@ impl CognitiveOrchestrator {
         }
     }
 
-    /// Journalise le tour en file de distillation (sujet unique par tour :
-    /// jamais de conflit S/P avec l'existant, auto-nettoyé par le decay).
-    fn queue_turn_journal(&mut self, task_id: &str, prompt: &str) {
-        let short_id: String = task_id.chars().take(8).collect();
-        let object: String = prompt.chars().take(140).collect();
-        self.working_memory.queue_for_distillation(
-            format!("Tour {}", short_id),
-            "résumé",
-            object,
-            0.6,
-        );
-    }
-
     /// Distillation explicite `Vec<DistilledFact>` → `remember()` (enveloppe
     /// Sense→Reflect) : mappe chaque fait distillé vers le graphe souverain.
     fn distill_to_graph(&mut self) {
         let facts = self.working_memory.distill_and_clear();
-        for f in &facts {
-            let _ = self.remember(&f.subject, &f.predicate, &f.object);
+        for fact in facts {
+            self.remember_inferred(fact);
         }
     }
 
@@ -730,6 +741,7 @@ impl CognitiveOrchestrator {
     /// jamais de repli hashé silencieux.
     pub fn set_embedding_engine(&mut self, engine: hakille_inference::MiniLmOnnx) {
         self.embedding_engine = Some(engine);
+        self.retriever = Default::default();
     }
 
     pub fn set_budget_config(&mut self, config: PipelineBudgetConfig) {
@@ -758,11 +770,13 @@ impl CognitiveOrchestrator {
         let subject_id = self.memory_graph.resolve_subject(subject);
         let predicate_id = self.memory_graph.resolve_predicate(predicate);
         let object_value = hakille_memory::NodeValue::Text(object.to_string());
-        let triplet_id = hakille_memory::KnowledgeGraph::deterministic_triplet_id(
-            &subject_id,
-            &predicate_id,
-            &object_value,
-        );
+        let triplet_id = hakille_core::TripletId(hakille_memory::KnowledgeGraph::exact_uuid(
+            "hakille-scoped-fact",
+            &format!(
+                "{:?}|{:?}|{:?}|{:?}",
+                subject_id, predicate_id, object_value, self.recall_policy.partition
+            ),
+        ));
         let triplet = hakille_memory::Triplet {
             id: triplet_id,
             subject: subject_id,
@@ -775,172 +789,32 @@ impl CognitiveOrchestrator {
                 last_activated: hakille_core::Timestamp::now(),
                 source: hakille_memory::TripletSource::User,
                 confidence: 1.0,
-                context: hakille_memory::ContextPartition::Personal,
+                context: self.recall_policy.partition.clone(),
                 trust_level: hakille_core::TrustLevel::User,
                 decay_rate: 0.01,
             },
         };
-        // Pré-contrôle exigé par la mission : jamais d'écrasement silencieux.
-        for existing in self.memory_graph.all_triplets() {
-            if existing.subject != triplet.subject || existing.predicate != triplet.predicate {
-                continue;
-            }
-            if hakille_memory::detect_contradiction(existing, &triplet).is_some() {
-                match hakille_memory::resolve(existing, &triplet) {
-                    hakille_memory::Resolution::AskUser { .. } => {
-                        tracing::warn!(
-                            "remember: contradiction exige l'utilisateur — rien écrasé, mis en attente (sujet={:?} prédicat={:?})",
-                            triplet.subject,
-                            triplet.predicate
-                        );
-                        self.pending_resolutions
-                            .push((existing.clone(), triplet.clone()));
-                        return hakille_memory::InsertResult::NeedsUserResolution {
-                            existing: existing.clone(),
-                            incoming: triplet,
-                        };
-                    }
-                    // Remplacement : on laisse `insert` l'exécuter (traçabilité
-                    // ContradictionResolved) au lieu de le faire ici.
-                    hakille_memory::Resolution::ReplaceWithNew => break,
-                    hakille_memory::Resolution::KeepExisting => {}
-                }
-            }
-        }
-        self.memory_graph.insert(triplet)
+        self.insert_memory_triplet(triplet)
     }
 
-    fn object_to_string(object: &hakille_memory::NodeValue) -> String {
-        match object {
-            hakille_memory::NodeValue::Text(s) => s.clone(),
-            other => format!("{:?}", other),
-        }
-    }
-
-    fn push_unique(results: &mut Vec<String>, value: String) {
-        if !results.contains(&value) {
-            results.push(value);
-        }
-    }
-
-    /// Rappel en 3 étages (mission 3) :
-    /// 1. `GraphQuery` déclarative (query_lang) avec filtre texte, triée par
-    ///    poids puis confiance décroissants ;
-    /// 2. registre SPO : si la requête (ou un mot ≥ 3 lettres) nomme un sujet
-    ///    ou prédicat connu, on ramène les objets liés — c'est ce qui rend un
-    ///    fait SPO réel retrouvable (« nom » ⇒ « Amadou ») sans concaténation ;
-    /// 3. fallback substring brut (`search_text`) si les étages typés sont vides.
-    ///
-    /// Dernier recours documenté : similarité cosinus artisanale à seuil 0.40
-    /// sur l'embedder MiniLM de secours (projection n-grammes, PAS le vrai
-    /// modèle All-MiniLM-L6-v2 — le seuil 0.40 est conservé pour compatibilité
-    /// et doit être recalibré quand le vrai modèle sera branché).
+    /// API historique d'affichage : objets uniques issus du rappel hybride.
+    /// La génération utilise `recall_evidence` pour conserver la provenance.
     pub fn recall(&self, query: &str) -> Vec<String> {
-        let mut results = Vec::new();
-        let mut ranked: Vec<&hakille_memory::Triplet> = hakille_memory::GraphQuery::new()
-            .with_text_filter(query.to_string())
-            .with_limit(100)
-            .execute(&self.memory_graph);
-        ranked.sort_by(|a, b| {
-            b.metadata
-                .weight
-                .partial_cmp(&a.metadata.weight)
-                .unwrap_or(Ordering::Equal)
-                .then(
-                    b.metadata
-                        .confidence
-                        .partial_cmp(&a.metadata.confidence)
-                        .unwrap_or(Ordering::Equal),
-                )
-        });
-        for t in ranked {
-            Self::push_unique(&mut results, Self::object_to_string(&t.object));
-        }
-
-        // Étage registre SPO : requête entière + mots significatifs.
-        let mut names: Vec<String> = vec![query.to_string()];
-        for word in query.split_whitespace() {
-            let clean: String = word.chars().filter(|c| c.is_alphanumeric()).collect();
-            if clean.len() >= 3 {
-                names.push(clean);
-            }
-        }
-        let mut spo_hits: Vec<&hakille_memory::Triplet> = Vec::new();
-        for name in &names {
-            if let Some(sid) = self.memory_graph.lookup_subject(name) {
-                for t in self.memory_graph.all_triplets() {
-                    if t.subject == sid && !spo_hits.iter().any(|h| h.id == t.id) {
-                        spo_hits.push(t);
+        match self.recall_evidence(query) {
+            Ok(report) => {
+                let mut values = Vec::new();
+                for hit in report.hits {
+                    if !values.contains(&hit.object) {
+                        values.push(hit.object);
                     }
                 }
+                values
             }
-            if let Some(pid) = self.memory_graph.lookup_predicate(name) {
-                for t in self.memory_graph.all_triplets() {
-                    if t.predicate == pid && !spo_hits.iter().any(|h| h.id == t.id) {
-                        spo_hits.push(t);
-                    }
-                }
+            Err(error) => {
+                tracing::error!("rappel mémoire impossible : {error}");
+                Vec::new()
             }
         }
-        spo_hits.sort_by(|a, b| {
-            b.metadata
-                .weight
-                .partial_cmp(&a.metadata.weight)
-                .unwrap_or(Ordering::Equal)
-                .then(
-                    b.metadata
-                        .confidence
-                        .partial_cmp(&a.metadata.confidence)
-                        .unwrap_or(Ordering::Equal),
-                )
-        });
-        for t in spo_hits {
-            Self::push_unique(&mut results, Self::object_to_string(&t.object));
-        }
-
-        // Fallback substring brut.
-        if results.is_empty() {
-            for t in self.memory_graph.search_text(query) {
-                Self::push_unique(&mut results, Self::object_to_string(&t.object));
-            }
-        }
-        // Dernier recours : similarité sémantique RÉELLE (MiniLM via `ort`,
-        // WordPiece officiel, mean-pooling + L2). En cas d'échec d'embedding
-        // (texte vide, séquence trop longue), le triplet est ignoré avec un
-        // `warn!` — jamais de similarité hashée de secours.
-        if let Some(ref embedder) = self.embedding_engine {
-            match embedder.embed(query) {
-                Ok(q_emb) => {
-                    for t in self.memory_graph.all_triplets() {
-                        if let hakille_memory::NodeValue::Text(ref text) = t.object
-                            && !results.contains(text)
-                        {
-                            match embedder.embed(text) {
-                                Ok(t_emb) => {
-                                    let sim = hakille_inference::cosine_sim(&q_emb, &t_emb);
-                                    if sim >= 0.40 {
-                                        results.push(text.clone());
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "recall: embedding réel en échec, triplet ignoré"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "recall: embedding réel de la requête en échec — rappel SPO/substring seul"
-                    );
-                }
-            }
-        }
-        results
     }
 
     pub async fn process_user_turn(
@@ -995,6 +869,30 @@ impl CognitiveOrchestrator {
             }
             ctx.authorize(token, authority, Self::EXPECTED_AUDIENCE)?;
         }
+        self.last_reflection = None;
+        self.last_simulation = None;
+        self.last_contradiction = None;
+        self.last_research = None;
+        self.begin_memory_turn(prompt, trust_level)?;
+        let result = self.process_user_turn_body(prompt, trust_level, auth).await;
+        if let Err(error) = &result {
+            self.self_model
+                .enter_hesitation(500, format!("Tour interrompu : {error}"));
+        }
+        self.finish_memory_turn(&result)?;
+        result
+    }
+
+    async fn process_user_turn_body(
+        &mut self,
+        prompt: &str,
+        trust_level: &TrustLevel,
+        auth: Option<(
+            &AuthorizationContext,
+            &CapabilityToken,
+            &CapabilityAuthority,
+        )>,
+    ) -> Result<OrchestratorResult> {
         // Budget pipeline : chaque étape est chronométrée via `record_stage`,
         // vérifiée per-stage via `check_stage` (max_* dédié) ET globalement via
         // `is_within_budget()`. Abort dès dépassement, jamais silencieux.
@@ -1080,8 +978,19 @@ impl CognitiveOrchestrator {
                     403,
                     "Contenu non fiable (Untrusted) : refus d'exécution, stockage seul",
                 );
-                self.context
-                    .record_interaction("User", prompt, vec!["user_query".to_string()]);
+                self.context.record_interaction(
+                    "User",
+                    prompt,
+                    vec![
+                        "user_query".to_string(),
+                        match trust_level {
+                            TrustLevel::Untrusted => "untrusted",
+                            TrustLevel::Guest => "guest",
+                            _ => "user",
+                        }
+                        .to_string(),
+                    ],
+                );
                 let refusal = "Refus explicite : contenu non fiable — stocké sans exécution, jamais promu en instruction.".to_string();
                 self.context.record_interaction(
                     "Hakille",
@@ -1123,8 +1032,19 @@ impl CognitiveOrchestrator {
                 403,
                 "Refus constitutionnel : action bloquée par la Constitution",
             );
-            self.context
-                .record_interaction("User", prompt, vec!["user_query".to_string()]);
+            self.context.record_interaction(
+                "User",
+                prompt,
+                vec![
+                    "user_query".to_string(),
+                    match trust_level {
+                        TrustLevel::Untrusted => "untrusted",
+                        TrustLevel::Guest => "guest",
+                        _ => "user",
+                    }
+                    .to_string(),
+                ],
+            );
             let refusal = format!("Refus constitutionnel (rule) : {}", e);
             self.context.record_interaction(
                 "Hakille",
@@ -1146,90 +1066,10 @@ impl CognitiveOrchestrator {
             });
         }
 
-        // 0. Automatic memory extraction from statements
-        // Insensible à la casse (comparaison sur `lower`, découpe du `prompt`
-        // original par offsets ASCII) + trim ponctuation (.,!?;:). Les
-        // contradictions `NeedsUserResolution` sont déjà logguées (warn) +
-        // stockées (`pending_resolutions`) dans `remember` — ici on accuse
-        // réception explicite au lieu de `let _ =` silencieux.
-        let lower = prompt.to_lowercase();
-        // Recherche ASCII insensible à la casse (marqueurs ASCII ⇒ balayage
-        // par octets sûr même avec UTF-8 autour). Rend l'offset d'octet.
-        let find_ascii_ci = |hay: &str, needle: &str| -> Option<usize> {
-            let h = hay.as_bytes();
-            let n = needle.as_bytes();
-            if n.is_empty() || h.len() < n.len() {
-                return None;
-            }
-            (0..=h.len() - n.len()).find(|&i| {
-                h[i..i + n.len()]
-                    .iter()
-                    .zip(n.iter())
-                    .all(|(a, b)| a.to_ascii_lowercase() == *b)
-            })
-        };
-        let trim_punct = |s: &str| -> String {
-            s.trim()
-                .trim_matches(|c: char| matches!(c, '.' | ',' | '!' | '?' | ';' | ':'))
-                .trim()
-                .to_string()
-        };
-        // Accuse réception : `remember` a déjà warn + stocké si conflit.
-        let handle_auto = |res: hakille_memory::InsertResult| {
-            if matches!(
-                res,
-                hakille_memory::InsertResult::NeedsUserResolution { .. }
-            ) {
-                tracing::debug!(
-                    "extraction auto: contradiction mise en attente (voir pending_resolutions)"
-                );
-            }
-        };
-        if !lower.contains('?') {
-            if let Some(idx) = find_ascii_ci(prompt, "m'appelle") {
-                let raw = prompt.get(idx + "m'appelle".len()..).unwrap_or("");
-                // Garde-fou : "m'appelles"/"m'appeller…" (conjugués) ≠ marqueur.
-                if !matches!(raw.chars().next(), Some(c) if c.is_alphabetic()) {
-                    let name = trim_punct(raw);
-                    if !name.is_empty() {
-                        handle_auto(self.remember("Utilisateur", "nom", &name));
-                    }
-                }
-            } else if let Some(idx) = find_ascii_ci(prompt, "mon nom est") {
-                let name = prompt
-                    .get(idx + "mon nom est".len()..)
-                    .map(trim_punct)
-                    .unwrap_or_default();
-                if !name.is_empty() {
-                    handle_auto(self.remember("Utilisateur", "nom", &name));
-                }
-            } else if let Some(idx) = find_ascii_ci(prompt, "s'appelle") {
-                let raw_after = prompt.get(idx + "s'appelle".len()..).unwrap_or("");
-                if !matches!(raw_after.chars().next(), Some(c) if c.is_alphabetic()) {
-                    let subj = prompt.get(..idx).map(trim_punct).unwrap_or_default();
-                    let obj = trim_punct(raw_after);
-                    if !subj.is_empty() && !obj.is_empty() {
-                        handle_auto(self.remember(&subj, "s'appelle", &obj));
-                    }
-                }
-            } else {
-                let prefix_len = if lower.starts_with("retiens que ") {
-                    Some("retiens que ".len())
-                } else if lower.starts_with("enregistre que ") {
-                    Some("enregistre que ".len())
-                } else {
-                    None
-                };
-                if let Some(n) = prefix_len {
-                    // Préfixe ASCII ⇒ même longueur d'octets ; `get` évite
-                    // tout panic sur boundary UTF-8.
-                    let fact = prompt.get(n..).map(trim_punct).unwrap_or_default();
-                    if !fact.is_empty() {
-                        handle_auto(self.remember("Fait", "mémorisé", &fact));
-                    }
-                }
-            }
-        }
+        // Les déclarations explicites conservent l'autorité de leur source.
+        self.extract_user_facts(prompt, trust_level);
+        // Les faits et conflits sont durables avant une inférence longue.
+        self.checkpoint_memory()?;
         {
             let d = stage_start.elapsed();
             record_and_check(&mut tracker, "memory_extract", d)?;
@@ -1237,17 +1077,29 @@ impl CognitiveOrchestrator {
 
         // 1. Search relevant memory facts from KnowledgeGraph (dense semantic + keyword)
         stage_start = Instant::now();
-        let mut relevant_facts = self.recall(prompt);
-        for word in prompt.split_whitespace() {
-            let clean = word.trim_matches(|c: char| !c.is_alphanumeric());
-            if clean.len() >= 3 {
-                for fact in self.recall(clean) {
-                    if !relevant_facts.contains(&fact) {
-                        relevant_facts.push(fact);
-                    }
-                }
-            }
-        }
+        self.last_recall = if *trust_level == TrustLevel::Guest {
+            Default::default()
+        } else {
+            self.recall_evidence(prompt)?
+        };
+        let relevant_facts: Vec<String> = self
+            .last_recall
+            .hits
+            .iter()
+            .filter(|hit| {
+                !self
+                    .pending_resolutions
+                    .iter()
+                    .any(|(old, _)| old.id == hit.id)
+            })
+            .map(|h| h.text.clone())
+            .collect();
+        let inference_context = if *trust_level == TrustLevel::Guest {
+            // Un invité n'hérite jamais de la mémoire personnelle du propriétaire.
+            Vec::new()
+        } else {
+            self.memory_context(prompt, &self.last_recall)?
+        };
         {
             let d = stage_start.elapsed();
             record_and_check(&mut tracker, "recall", d)?;
@@ -1267,11 +1119,32 @@ impl CognitiveOrchestrator {
 
         // 2. Record interaction in continuous context
         stage_start = Instant::now();
-        self.context
-            .record_interaction("User", prompt, vec!["user_query".to_string()]);
+        self.context.record_interaction(
+            "User",
+            prompt,
+            vec![
+                "user_query".to_string(),
+                match trust_level {
+                    TrustLevel::Untrusted => "untrusted",
+                    TrustLevel::Guest => "guest",
+                    _ => "user",
+                }
+                .to_string(),
+            ],
+        );
         {
             let d = stage_start.elapsed();
             record_and_check(&mut tracker, "context_record", d)?;
+        }
+
+        // Les commandes explicites de recherche sont des lectures. Le texte
+        // recherché n'est pas requalifié en intention de payer ou supprimer.
+        if let Some(request) = crate::research::ResearchRequest::parse(prompt)? {
+            let result = self
+                .research_turn(request, &inference_context, trust_level, auth)
+                .await?;
+            self.record_turn_metrics(&task_id, prompt, &result.confidence_decision);
+            return Ok(result);
         }
 
         // --- Porte dry-run : verbe irréversible → plan + carte, ZÉRO exécution ---
@@ -1298,22 +1171,9 @@ impl CognitiveOrchestrator {
                     }
                 }
                 None => {
-                    // Sans token fourni, la vérification doit refuser le plan
-                    // (Network+Execute, 5 min) sur authority éphémère — jamais
-                    // de root longue durée. Le court ne couvre pas
-                    // Wallet/Filesystem : `verify` échoue (tracé) mais la carte
-                    // reste le verrou (confirmation humaine requise).
-                    let (plan0, report0, card0) = Self::build_plan_card(&task_id, prompt);
-                    let eph = CapabilityAuthority::new();
-                    match plan0.verify_capabilities_or_short_token(None, &eph) {
-                        Ok(()) => tracing::debug!(
-                            "plan card: verification unexpectedly accepted without authority"
-                        ),
-                        Err(msg) => {
-                            tracing::debug!("plan card: missing authority correctly refused: {msg}")
-                        }
-                    }
-                    (plan0, report0, card0)
+                    // Une carte est une proposition locale sans effet ; aucun
+                    // jeton n'est créé pour prétendre l'avoir autorisée.
+                    Self::build_plan_card(&task_id, prompt)
                 }
             };
             let total = plan.steps.len();
@@ -1337,7 +1197,6 @@ impl CognitiveOrchestrator {
                 let d = stage_start.elapsed();
                 record_and_check(&mut tracker, "simulation", d)?;
             }
-            self.queue_turn_journal(&task_id, prompt);
             {
                 let dist_start = Instant::now();
                 self.distill_to_graph();
@@ -1383,25 +1242,28 @@ impl CognitiveOrchestrator {
         let mut s2_confidence_opt: Option<f64> = None;
         let (base_response, routing_str, cost_opt) = match decision {
             RoutingDecision::System1 => {
-                let s1_res = self.system1.process(prompt, trust_level).await?;
+                let s1_res = self
+                    .system1
+                    .process_with_context(prompt, &inference_context, trust_level)
+                    .await?;
                 (
                     s1_res.text_response,
-                    "System 1 (Local sub-100ms)".to_string(),
+                    "System 1 (Qwen local)".to_string(),
                     None,
                 )
             }
             RoutingDecision::System2 {
-                estimated_cost,
+                estimated_cost: _,
                 reason: _,
             } => {
-                // Sans autorisation transmise par l'hôte, `reason` refuse le
-                // réseau. Aucune autorité éphémère ne remplace un consentement.
+                // Un provider réseau exige le contexte explicite de l'appelant.
+                // Aucun jeton éphémère fabriqué par le raisonneur.
                 let s2_res = match auth {
                     Some((ctx, token, authority)) => {
                         self.system2
                             .reason_with_authorization(
                                 prompt,
-                                &relevant_facts,
+                                &inference_context,
                                 trust_level,
                                 ctx,
                                 authority,
@@ -1412,19 +1274,16 @@ impl CognitiveOrchestrator {
                     }
                     None => {
                         self.system2
-                            .reason(prompt, &relevant_facts, trust_level)
+                            .reason(prompt, &inference_context, trust_level)
                             .await?
                     }
                 };
                 s2_confidence_opt = Some(s2_res.confidence_score);
-                // Plan-Execute-Reflect (§28b) : après S2 on construit un plan
-                // exécutable honnête (1 étape lecture/inférence par segment S2,
-                // réversibles) et on évalue la réflexion immédiatement.
-                // Heuristique : tous les segments S2 sont considérés réussis
-                // (pas d'exécution réelle ici) — la réflexion sert l'audit.
+                // Les étapes proposées par S2 n'ont pas de reçus d'exécution.
+                // La réflexion ne peut donc pas les déclarer réussies.
                 let reflect_start = Instant::now();
                 let mut plan = ExecutionPlan::new(
-                    format!("s2-{}", prompt.len() % 10000),
+                    format!("s2-{}", task_id),
                     prompt.chars().take(120).collect::<String>(),
                 );
                 for step in &s2_res.proposed_steps {
@@ -1435,8 +1294,7 @@ impl CognitiveOrchestrator {
                         false,
                     );
                 }
-                let total = plan.steps.len();
-                let reflection = DeliberatePlanner::evaluate_reflection(&plan, total, total);
+                let reflection = DeliberatePlanner::reflect_receipts(&plan, &[])?;
                 tracing::debug!(
                     plan_id = %reflection.plan_id,
                     summary = %reflection.summary,
@@ -1456,26 +1314,13 @@ impl CognitiveOrchestrator {
                 }
                 (
                     s2_res.synthesized_answer,
-                    "System 2 (Distant deep reasoning)".to_string(),
-                    Some(estimated_cost.amount_cents),
+                    "System 2 (raisonnement délibéré)".to_string(),
+                    Some(s2_res.cost_incurred.amount_cents),
                 )
             }
         };
 
-        let response = if !relevant_facts.is_empty()
-            && (prompt.contains('?')
-                || lower.contains("comment")
-                || lower.contains("quel")
-                || lower.contains("qui"))
-        {
-            format!(
-                "D'après votre graphe de mémoire souverain : {}\n({})",
-                relevant_facts.join(" | "),
-                base_response
-            )
-        } else {
-            base_response
-        };
+        let response = base_response;
 
         // Inference stage (S1/S2 ci-dessus).
         {
@@ -1571,11 +1416,20 @@ impl CognitiveOrchestrator {
                         );
                         (wait, ConfidenceDecision::InternalContradiction)
                     }
-                    _ => {
-                        // Autocritique propre (ou critique en échec, infaillible
-                        // en pratique) : on procède, décision redressée.
+                    Some(_) => {
+                        // Une critique effectivement terminée sans contradiction.
                         self.self_model.update_confidence(conf_level.combined);
                         (response, ConfidenceDecision::AutoExecute)
+                    }
+                    None => {
+                        self.self_model
+                            .enter_hesitation(503, "Vérification interne indisponible");
+                        (
+                            format!(
+                                "Vérification interne indisponible ; réponse non validée :\n{response}"
+                            ),
+                            ConfidenceDecision::ProposeAndWait,
+                        )
                     }
                 }
             }
@@ -1650,7 +1504,6 @@ impl CognitiveOrchestrator {
         self.self_model.record_action_outcome(true);
 
         // Distillation systématique AVANT Ok : file → `remember()` (graphe).
-        self.queue_turn_journal(&task_id, prompt);
         {
             let dist_start = Instant::now();
             self.distill_to_graph();

@@ -1,8 +1,11 @@
+mod web_research;
 use hakille_agents::{AgentManifest, AgentRegistry, sha256_hex};
 use hakille_audit::journal::AuditJournal;
 use hakille_audit::{ActionRecord, AuditEntry, ReasoningStep, ReasoningTrace};
 use hakille_constitution::rules::Constitution;
-use hakille_core::{ActorId, CapabilityScope, EntryId, Timestamp, TrustLevel, UserId};
+use hakille_core::{
+    ActorId, CapabilityAuthority, CapabilityScope, EntryId, Timestamp, TrustLevel, UserId,
+};
 use hakille_inference::{ModelCatalog, ModelProvisioner, ModelTier};
 use hakille_kernel::{
     budget::PipelineBudgetConfig, fabric::CognitiveFabric, orchestrator::CognitiveOrchestrator,
@@ -12,7 +15,7 @@ use hakille_metrics::{
 };
 use hakille_perception::{CameraPipeline, WorldModel};
 use hakille_substrate::{CameraConfig, CameraFacing, CameraStreamHandle, Compute, Substrate};
-use hakille_sync::{CrdtSync, HandoffCoordinator, Outbox, OutboxEntry};
+use hakille_sync::{CrdtSync, HandoffCoordinator, OutboxEntry};
 use hakille_ui::{
     AccessibilityManager, AcrylicOverlayWindowSpec, ChannelSelector, CostCounter, DeviceType,
     EphemeralHud, InitiativeOrigin, InteractionContext, MemoryViewerPanel, OnboardingManager,
@@ -543,6 +546,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n[6/6] Linking Cognitive Fabric & Orchestrator...");
     let mut orchestrator =
         CognitiveOrchestrator::new(fabric, user_id.clone(), constitution.clone());
+    orchestrator.research_backend = Some(std::sync::Arc::new(
+        web_research::WebResearch::from_env()
+            .map_err(|e| format!("configuration recherche : {e}"))?,
+    ));
+    println!(
+        "  Recherche : :research <requête> / :read-web <URL> ; sorties réseau uniquement sur commande explicite"
+    );
+    if let Some(backend) = &orchestrator.research_backend {
+        println!(
+            "  Recherche configurée : {} ; {}",
+            backend.name(),
+            backend.transport_description()
+        );
+    }
     if let Some(engine) = qwen_engine_opt {
         orchestrator.set_inference_engine(engine);
         println!(
@@ -560,58 +577,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         llm_timeout_ms.saturating_add(30_000),
         llm_timeout_ms.saturating_add(60_000)
     );
-    // Mémoire bout-en-bout : snapshot principal sous data_dir, repli legacy
-    // ./hakille-memory.json (jamais supprimé). Un snapshot existant mais
-    // illisible refuse le démarrage : démarrer vide puis réécrire écraserait
-    // silencieusement les faits de l'utilisateur.
+    // redb est la source de vérité ; les JSON historiques sont importés une
+    // seule fois, sans écraser ni supprimer l'original.
     let memory_snapshot = data_dir.join("memory.json");
     let legacy_memory_snapshot = PathBuf::from("./hakille-memory.json");
-    let memory_source = if memory_snapshot.exists() {
-        Some((memory_snapshot.clone(), false))
+    let legacy = if memory_snapshot.exists() {
+        Some(memory_snapshot.as_path())
     } else if legacy_memory_snapshot.exists() {
-        Some((legacy_memory_snapshot.clone(), true))
+        Some(legacy_memory_snapshot.as_path())
     } else {
         None
     };
-    match memory_source {
-        Some((path, legacy)) => match hakille_memory::KnowledgeGraph::load_from_file(&path) {
-            Ok(restored) => {
-                let n = restored.len();
-                orchestrator.memory_graph = restored;
-                println!(
-                    "  Memory: graphe restauré depuis {} ({} triplet(s)){}",
-                    path.display(),
-                    n,
-                    if legacy { " [repli legacy]" } else { "" }
-                );
-                if legacy {
-                    match orchestrator.memory_graph.save_to_file(&memory_snapshot) {
-                        Ok(()) => println!(
-                            "  Memory: migré vers {} (legacy conservé intact)",
-                            memory_snapshot.display()
-                        ),
-                        Err(e) => eprintln!(
-                            "  ⚠ Memory: migration vers {} impossible — {e} (legacy toujours lisible)",
-                            memory_snapshot.display()
-                        ),
-                    }
-                }
+    let memory_database = data_dir.join("memory.redb");
+    orchestrator.open_memory(&memory_database, legacy)?;
+    println!(
+        "  Mémoire durable : {} ({} faits, {} conflits en attente ; journal épisodique actif)",
+        memory_database.display(),
+        orchestrator.memory_graph.len(),
+        orchestrator.pending_resolutions.len()
+    );
+    match hakille_inference::MiniLmOnnx::default_model_path() {
+        Some(_) => match hakille_inference::MiniLmOnnx::open_default() {
+            Ok(engine) => {
+                orchestrator.set_embedding_engine(engine);
+                println!("  Rappel : BM25 + MiniLM ONNX réel + HNSW (cache incrémental).");
             }
-            Err(e) => {
-                return Err(format!(
-                    "snapshot mémoire illisible ({}) — démarrage refusé pour ne pas écraser les faits: {e}",
-                    path.display()
-                )
-                .into());
-            }
+            Err(error) => eprintln!("  Rappel lexical seul : MiniLM indisponible — {error}"),
         },
-        None => {
-            println!(
-                "  Memory: aucun snapshot ({}) — graphe vide (premier démarrage)",
-                memory_snapshot.display()
-            );
-        }
+        None => println!(
+            "  Rappel lexical BM25 : MiniLM absent (models download --model all-minilm-l6-v2 pour l'activer)."
+        ),
     }
+    // Le rappel inclut de vrais forwards ONNX et des commits disque.
+    // Le budget fast-path de bibliothèque reste inchangé ; le démon expose
+    // son budget opérationnel plutôt que d'imposer 60 ms à ces opérations.
+    orchestrator.budget_config.max_perception_ms = std::env::var("HAKILLE_MEMORY_BUDGET_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(5_000);
+    println!(
+        "  Budget mémoire : {} ms par étape.",
+        orchestrator.budget_config.max_perception_ms
+    );
     let mut presence = PresenceIndicator::new();
     let mut cost_counter = CostCounter::new(daily_budget_cents, "EUR");
     let mut onboarding = OnboardingManager::new();
@@ -653,7 +661,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    println!("  Providers: {}", provider_registry.data_exit(0).badge());
+    println!(
+        "  Providers d’inférence : {}",
+        provider_registry.data_exit(0).badge()
+    );
     let platform_adapter = PlatformAdapter::auto_detect();
 
     let mut continuity_tracker = ContinuityTracker::new();
@@ -693,6 +704,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut bounded_initiative,
             &mut generality_tracker,
             &audit_journal,
+            &authority,
             &memory_snapshot,
             false,
             speak_enabled,
@@ -702,7 +714,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(non_empty) => {
                 if non_empty {
                     println!(
-                        "Headless evaluation completed. Cost: {}",
+                        "Headless evaluation completed. Coût d’inférence comptabilisé : {}",
                         cost_counter.formatted_total()
                     );
                 } else {
@@ -736,6 +748,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut bounded_initiative,
             &mut generality_tracker,
             &mut audit_journal,
+            &authority,
             &memory_snapshot,
             &mut outbox,
             &data_dir,
@@ -786,6 +799,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &mut bounded_initiative,
                         &mut generality_tracker,
                         &audit_journal,
+                        &authority,
                         &memory_snapshot,
                         true,
                         speak_enabled,
@@ -882,6 +896,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &mut bounded_initiative,
                     &mut generality_tracker,
                     &audit_journal,
+                    &authority,
                     &memory_snapshot,
                     true,
                     speak_enabled,
@@ -1029,7 +1044,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "  :remember         Add a fact to knowledge graph (e.g. :remember Alice aime Rust)"
                 );
-                println!("  :recall           Search memory graph by keyword (e.g. :recall Rust)");
+                println!(
+                    "  :research <texte> Recherche web explicite (Brave/SearXNG configuré), puis lecture et sources"
+                );
+                println!(
+                    "  :read-web <URL>   Lecture HTTPS publique ; aucun souvenir privé envoyé au site"
+                );
+                println!("  :recall           Rappel hybride des faits (ex. :recall Rust)");
+                println!("  :episodes [texte] Échanges complets, récents ou recherchés");
+                println!("  :memory-scope [personal|professional|shared|default] Partition active");
+                println!("  :memory-history Historique des corrections de faits");
+                println!("  :forget-episode ID Oublier un échange archivé");
+                println!("  :resolve ID existing|incoming Résoudre un conflit persistant");
                 println!(
                     "  :gui-action <cmd> Plan and execute native Windows GUI desktop actions via UI-TARS"
                 );
@@ -1344,24 +1370,117 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 println!("  Contradictions : {}", screen.contra_label);
             }
-            ":contradictions" => {
-                let triplets: Vec<_> = orchestrator
-                    .memory_graph
-                    .all_triplets()
-                    .into_iter()
-                    .cloned()
-                    .collect();
-                let hits = hakille_memory::scan_contradictions(&triplets);
-                if hits.is_empty() {
-                    println!("Boîte « contradictions » vide — rien ne se contredit.");
-                } else {
-                    println!("Boîte « contradictions » ({} paire(s)) :", hits.len());
-                    for (a, b, kind) in hits.iter().take(20) {
-                        println!("  - entrée #{a} vs entrée #{b} : {kind}");
+            s if s == ":memory-scope" || s.starts_with(":memory-scope ") => {
+                let scope = s.strip_prefix(":memory-scope").unwrap_or_default().trim();
+                let partition = match scope {
+                    "personal" => Some(hakille_memory::ContextPartition::Personal),
+                    "professional" => Some(hakille_memory::ContextPartition::Professional),
+                    "shared" => Some(hakille_memory::ContextPartition::Shared),
+                    "default" => Some(hakille_memory::ContextPartition::Default),
+                    _ => None,
+                };
+                if let Some(partition) = partition {
+                    if let Err(error) = orchestrator.set_memory_partition(partition) {
+                        eprintln!("Changement refusé : {error}");
                     }
+                } else if !scope.is_empty() {
+                    eprintln!("Usage : :memory-scope personal|professional|shared|default");
+                }
+                println!(
+                    "Partition active : {:?}",
+                    orchestrator.recall_policy.partition
+                );
+            }
+            ":memory-history" => {
+                for revision in &orchestrator.memory_revisions {
                     println!(
-                        "  Garder A, garder B, ou garder les deux avec leur contexte (:forget <id> pour oublier)."
+                        "{} : {:?} → {:?} ; entrant accepté={}",
+                        revision.resolved_at.0,
+                        revision.existing.object,
+                        revision.incoming.object,
+                        revision.accepted_incoming
                     );
+                }
+            }
+            ":contradictions" => {
+                if orchestrator.pending_resolutions.is_empty() {
+                    println!("Aucun conflit en attente.");
+                }
+                for (existing, incoming) in &orchestrator.pending_resolutions {
+                    println!(
+                        "  [{}] existant : {:?} ; entrant : {:?}",
+                        incoming.id.0, existing.object, incoming.object
+                    );
+                }
+                println!("Décision : :resolve <uuid-entrant> existing|incoming");
+            }
+            s if s.starts_with(":resolve ") => {
+                let parts: Vec<_> = s.split_whitespace().collect();
+                if parts.len() != 3 || !matches!(parts[2], "existing" | "incoming") {
+                    eprintln!("Usage : :resolve <uuid-entrant> existing|incoming");
+                } else if let Ok(id) = uuid::Uuid::parse_str(parts[1]) {
+                    match audit_memory_event(
+                        &audit_journal,
+                        "MemoryResolve",
+                        "Résolution explicite d'un conflit".into(),
+                        serde_json::json!({"incoming_id": id.to_string(), "choice": parts[2]}),
+                    ) {
+                        Err(error) => eprintln!("Résolution refusée : {error}"),
+                        Ok(_) => match orchestrator.resolve_memory_conflict(
+                            &hakille_core::TripletId(id),
+                            parts[2] == "incoming",
+                        ) {
+                            Ok(()) => println!("Décision mémorisée durablement."),
+                            Err(error) => eprintln!("Résolution impossible : {error}"),
+                        },
+                    }
+                } else {
+                    eprintln!("UUID de conflit invalide.");
+                }
+            }
+            s if s == ":episodes" || s.starts_with(":episodes ") => {
+                let query = s.strip_prefix(":episodes").unwrap_or_default().trim();
+                if let Some(journal) = &orchestrator.memory_journal {
+                    match journal.recall_episodes(
+                        query,
+                        20,
+                        &orchestrator.recall_policy.partition,
+                        None,
+                    ) {
+                        Ok(episodes) => {
+                            for episode in episodes {
+                                println!(
+                                    "[{}] {:?} — {}",
+                                    episode.id, episode.status, episode.prompt
+                                );
+                                if let Some(response) = episode.response {
+                                    println!("  Hakille : {response}");
+                                }
+                                if let Some(error) = episode.error {
+                                    println!("  Échec : {error}");
+                                }
+                            }
+                        }
+                        Err(error) => eprintln!("Lecture des épisodes impossible : {error}"),
+                    }
+                } else {
+                    eprintln!("Journal épisodique non ouvert.");
+                }
+            }
+            s if s.starts_with(":forget-episode ") => {
+                let id = s.trim_start_matches(":forget-episode ").trim();
+                match audit_memory_event(
+                    &audit_journal,
+                    "MemoryEpisodeForget",
+                    "Oubli explicite d'un épisode".into(),
+                    serde_json::json!({"episode_id": id}),
+                ) {
+                    Err(error) => eprintln!("Oubli refusé : {error}"),
+                    Ok(_) => match orchestrator.forget_episode(id) {
+                        Ok(true) => println!("Épisode retiré de la mémoire active et durable."),
+                        Ok(false) => eprintln!("Épisode introuvable."),
+                        Err(error) => eprintln!("Oubli impossible : {error}"),
+                    },
                 }
             }
             s if s.starts_with(":forget ") => {
@@ -1415,28 +1534,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ) {
                             eprintln!("✗ Révocation refusée — audit indisponible : {e}");
                         } else {
-                            match MemoryViewerPanel::revoke_triplet_consent(
-                                &mut orchestrator.memory_graph,
-                                &triplet_id,
-                                "User explicit consent revocation ('Droit à l'oubli')",
-                            ) {
-                                Some(receipt) => {
-                                    println!("✓ Droit à l'oubli appliqué avec succès !");
-                                    println!("  • ID Révoqué:           {}", receipt.revoked_id);
-                                    println!("  • Horodatage:           {}", receipt.timestamp_str);
-                                    println!("  • Motif:                {}", receipt.reason);
-                                    println!(
-                                        "  • Jeton de Révocation:  {}",
-                                        receipt.verification_token
-                                    );
-                                    persist_memory(&orchestrator, &memory_snapshot, true);
-                                }
-                                None => {
-                                    eprintln!(
-                                        "✗ Triplet avec ID '{}' introuvable dans le graphe de mémoire (voir :memory).",
-                                        id_str
-                                    );
-                                }
+                            match orchestrator.forget_fact(&triplet_id) {
+                                Ok(true) => println!(
+                                    "Fait, conflits et références textuelles associés retirés durablement [{}].",
+                                    triplet_id.0
+                                ),
+                                Ok(false) => eprintln!("Triplet introuvable [{}].", triplet_id.0),
+                                Err(error) => eprintln!("Oubli non appliqué : {error}"),
                             }
                         }
                     }
@@ -1748,23 +1852,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         };
-                        if parts.len() == 3 {
-                            report(
-                                orchestrator.remember(parts[0], parts[1], parts[2]),
-                                parts[0],
-                                parts[1],
-                                parts[2],
-                            );
+                        let (subject, predicate, object) = if parts.len() == 3 {
+                            (parts[0].to_string(), parts[1], parts[2])
                         } else {
-                            report(
-                                orchestrator.remember("Fait", "est", text),
-                                "Fait",
-                                "est",
+                            (
+                                format!(
+                                    "Note {}",
+                                    hakille_memory::KnowledgeGraph::exact_uuid(
+                                        "hakille-note",
+                                        text
+                                    )
+                                ),
+                                "contenu",
                                 text,
-                            );
+                            )
+                        };
+                        let result = orchestrator.remember(&subject, predicate, object);
+                        match persist_memory_to(&orchestrator, &memory_snapshot) {
+                            Ok(()) => report(result, &subject, predicate, object),
+                            Err(error) => {
+                                eprintln!("Fait seulement en RAM, sauvegarde échouée : {error}")
+                            }
                         }
-                        persist_memory(&orchestrator, &memory_snapshot, true);
                     }
+                }
+            }
+            s if s == ":research-trace" || s.starts_with(":research-trace ") => {
+                let id = s.strip_prefix(":research-trace").unwrap_or("").trim();
+                let trace = if id.is_empty() {
+                    orchestrator
+                        .last_research
+                        .as_ref()
+                        .and_then(|r| serde_json::to_value(r).ok())
+                } else {
+                    orchestrator
+                        .memory_journal
+                        .as_ref()
+                        .and_then(|j| match j.episode(id) {
+                            Ok(Some(e)) => e.tool_trace,
+                            Ok(None) => None,
+                            Err(e) => {
+                                eprintln!("Lecture de trace impossible : {e}");
+                                None
+                            }
+                        })
+                };
+                match trace {
+                    Some(value) => println!("{}", serde_json::to_string_pretty(&value)?),
+                    None => println!(
+                        "Aucune trace disponible ; préciser un UUID obtenu avec :episodes."
+                    ),
                 }
             }
             s if s.starts_with(":recall ") => {
@@ -2221,14 +2358,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Err(e) => eprintln!("✗ Écriture de '{rest}' impossible : {e}"),
                             }
                         }
-                        // Sauvegarde auto du snapshot RAM (miroir :exit) après export.
-                        match orchestrator.memory_graph.save_to_file(&memory_snapshot) {
-                            Ok(()) => println!(
-                                "  (snapshot RAM sauvegardé vers {})",
-                                memory_snapshot.display()
-                            ),
-                            Err(e) => eprintln!("  (snapshot RAM non sauvegardé : {e})"),
-                        }
+                        persist_memory(&orchestrator, &memory_snapshot, true);
                     }
                     Err(e) => eprintln!("✗ Export impossible : {e}"),
                 }
@@ -2249,14 +2379,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ) {
                                     eprintln!("✗ Import refusé — audit indisponible : {e}");
                                 } else {
-                                    let n =
-                                        import_into_graph(&mut orchestrator.memory_graph, &export);
-                                    println!(
-                                        "Graphe importé depuis '{path}' : {} triplet(s) fusionné(s) (total : {}).",
-                                        n,
-                                        orchestrator.memory_graph.len()
-                                    );
-                                    persist_memory(&orchestrator, &memory_snapshot, true);
+                                    match orchestrator.import_memory_export(&export) {
+                                        Ok(report) => println!(
+                                            "Import durable : {} fait(s) accepté(s), {} conflit(s) conservé(s).",
+                                            report.inserted, report.refused
+                                        ),
+                                        Err(error) => eprintln!("Import non appliqué : {error}"),
+                                    }
                                 }
                             }
                             Err(e) => eprintln!(
@@ -2672,7 +2801,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            s if s.starts_with(':') => {
+            s if s.starts_with(':')
+                && !s.starts_with(":research ")
+                && !s.starts_with(":read-web ") =>
+            {
                 println!("✗ Commande inconnue : {input}");
                 if let Some(suggestion) = suggest_command(s) {
                     println!("  → Commande proche : {suggestion}");
@@ -2691,6 +2823,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     &mut bounded_initiative,
                     &mut generality_tracker,
                     &audit_journal,
+                    &authority,
                     &memory_snapshot,
                     true,
                     speak_enabled,
@@ -2746,6 +2879,7 @@ async fn run_turn_core(
     bounded_initiative: &mut BoundedInitiativeTracker,
     generality_tracker: &mut GeneralityTracker,
     audit_journal: &AuditJournal,
+    authority: &CapabilityAuthority,
     memory_path: &std::path::Path,
     prompt: &str,
 ) -> Result<TurnOutcome, Box<dyn std::error::Error>> {
@@ -2765,14 +2899,70 @@ async fn run_turn_core(
 
     presence.set_state(PresenceState::Acting);
 
-    let result = match orchestrator
-        .process_user_turn(prompt, &TrustLevel::User)
-        .await
-    {
+    let turn_result: Result<_, Box<dyn std::error::Error>> = async {
+        let output = if let Some(request) = hakille_kernel::research::ResearchRequest::parse(prompt)? {
+            // Cette commande explicite est le consentement réseau de l'utilisateur
+            // du REPL ou de l'IPC authentifié. Pas de token créé à partir d'une page.
+            // Réutilise la racine chargée au boot, y compris via le trousseau OS.
+            audit_readonly_action(audit_journal, "ResearchRequested",
+                "Recherche externe explicitement demandée".into(),
+                serde_json::json!({"request_sha256": format!("{:x}", sha2::Sha256::digest(prompt.as_bytes())), "resource": request.resource()}))?;
+            // Une synthèse provisoire ne doit pas précéder le contrôle des citations.
+            hakille_inference::clear_token_stream_callback();
+            let expiry = Timestamp(chrono::Utc::now() + chrono::Duration::minutes(2));
+            let nonce = uuid::Uuid::now_v7().to_string();
+            let resource = request.resource();
+            let audience = CognitiveOrchestrator::EXPECTED_AUDIENCE;
+            let token = authority.create_root_token_with_binding(
+                vec![CapabilityScope::Network],
+                vec![hakille_core::CapabilityAction::Execute],
+                expiry.clone(),
+                Some(&resource),
+                Some(&nonce),
+                Some(audience),
+            )?;
+            let ctx = hakille_core::AuthorizationContext::new(
+                "hakille-daemon",
+                audience,
+                expiry,
+                CapabilityScope::Network,
+                hakille_core::CapabilityAction::Execute,
+                &resource,
+                Some(hakille_core::Quota::new(
+                    orchestrator.research_policy.max_calls as u64,
+                )),
+                nonce,
+                vec![],
+            )?;
+            orchestrator
+                .process_user_turn_with_authorization(
+                    prompt,
+                    &TrustLevel::User,
+                    &ctx,
+                    &token,
+                    authority,
+                )
+                .await
+        } else {
+            orchestrator
+                .process_user_turn(prompt, &TrustLevel::User)
+                .await
+        };
+        output.map_err(Into::into)
+    }.await;
+    let result = match turn_result {
         Ok(result) => result,
         Err(e) => {
             presence.set_state(PresenceState::Idle);
-            return Err(e.into());
+            if orchestrator.last_research.is_some() {
+                audit_readonly_action(
+                    audit_journal,
+                    "ResearchFailed",
+                    "Recherche interrompue ; trace conservée dans l'épisode".into(),
+                    serde_json::json!({"episode": orchestrator.last_episode.as_ref().map(|e| &e.id), "error": e.to_string()}),
+                )?;
+            }
+            return Err(e);
         }
     };
 
@@ -2784,8 +2974,16 @@ async fn run_turn_core(
         None => 0,
     };
 
-    continuity_tracker.record_task(uuid::Uuid::now_v7().to_string(), false, 1);
-    bounded_initiative.record_proposal(uuid::Uuid::now_v7().to_string(), true, true);
+    continuity_tracker.record_task(
+        orchestrator.working_memory.task_id.clone(),
+        result.confidence_decision != hakille_core::ConfidenceDecision::AutoExecute,
+        1,
+    );
+    // Aucun succès d'initiative inventé pour un tour demandé par l'utilisateur.
+    // Seules les propositions réellement émises sont comptées, sans acceptation présumée.
+    for proposal in orchestrator.after_turn_proactivity() {
+        bounded_initiative.record_proposal(proposal.proposal_id, proposal.within_bounds, false);
+    }
 
     // Record in tamper-evident signed audit log
     let entry = AuditEntry {
@@ -2795,7 +2993,18 @@ async fn run_turn_core(
         action: ActionRecord {
             action_type: "CognitiveTurn".to_string(),
             description: format!("Processed prompt: '{}'", prompt),
-            parameters: serde_json::json!({ "routing": result.routing_used }),
+            parameters: serde_json::json!({
+                "routing": result.routing_used,
+                "memory_episode": orchestrator.last_episode.as_ref().map(|e| &e.id),
+                "semantic_recall": orchestrator.last_recall.semantic_used,
+                "recall_warning": orchestrator.last_recall.warning,
+                "research": orchestrator.last_research.as_ref().map(|r| serde_json::json!({
+                    "provider": r.provider, "transport": r.transport, "status": r.status,
+                    "calls": r.attempts.len(), "synthesis_citations_verified": r.citations_verified,
+                    "sources": r.sources.iter().map(|s| serde_json::json!({"id": s.id, "sha256": s.page.content_sha256, "retrieved_at": s.page.retrieved_at})).collect::<Vec<_>>()
+                })),
+                "confidence_kind": "heuristique du modèle introspectif, non calibrée"
+            }),
             reversible: false,
             reversed: false,
         },
@@ -2803,14 +3012,24 @@ async fn run_turn_core(
         reasoning_trace: ReasoningTrace {
             steps: vec![ReasoningStep {
                 description: format!("Resolved via {}", result.routing_used),
-                confidence: 0.9,
-                evidence: vec![],
+                confidence: orchestrator.self_model.rolling_confidence,
+                evidence: orchestrator
+                    .last_recall
+                    .hits
+                    .iter()
+                    .map(|h| h.id.clone())
+                    .collect(),
             }],
             model_used: None,
             duration_ms: result.latency_ms,
         },
-        graph_nodes_used: vec![],
-        confidence: 0.9,
+        graph_nodes_used: orchestrator
+            .last_recall
+            .hits
+            .iter()
+            .map(|h| h.id.clone())
+            .collect(),
+        confidence: orchestrator.self_model.rolling_confidence,
         cost: result.estimated_cost_cents.map(|c| hakille_core::Cost {
             amount_cents: c,
             currency: "EUR".to_string(),
@@ -2867,6 +3086,7 @@ async fn process_prompt(
     bounded_initiative: &mut BoundedInitiativeTracker,
     generality_tracker: &mut GeneralityTracker,
     audit_journal: &AuditJournal,
+    authority: &CapabilityAuthority,
     memory_path: &std::path::Path,
     live_stream_ui: bool,
     speak_enabled: bool,
@@ -2882,6 +3102,7 @@ async fn process_prompt(
         bounded_initiative,
         generality_tracker,
         audit_journal,
+        authority,
         memory_path,
         prompt,
     );
@@ -2926,7 +3147,7 @@ async fn process_prompt(
                     } else {
                         elapsed_secs += 1;
                         print!(
-                            "\r  ⏳ Hakille réfléchit… {elapsed_secs}s (Qwen 0.5B CPU, 1er tour = chargement du modèle)      "
+                            "\r  ⏳ Traitement de la demande… {elapsed_secs}s      "
                         );
                         let _ = io::stdout().flush();
                     }
@@ -2934,7 +3155,7 @@ async fn process_prompt(
             }
         }
     } else {
-        println!("  ⏳ Génération Qwen en cours (CPU ; le 1er tour charge le modèle)…");
+        println!("  ⏳ Traitement de la demande en cours…");
         let _ = io::stdout().flush();
         turn.await
     };
@@ -3024,39 +3245,6 @@ fn hex_fmt(bytes: &[u8]) -> String {
 // (TPM/DPAPI tracked work) — but stable across reboots (no silent rotation).
 // Outbox lives in `<data_dir>/outbox.json` (pretty JSON array of entries).
 
-/// Fusionne un export JSON (`hakille_memory::import_graph`, produit par
-/// `:export`) dans le graphe RAM : restaure d'abord les registres nom→ID via
-/// les labels exportés (IDs déterministes — `resolve_*` redonne le même UUID,
-/// rendant les faits importés requêtable via `:recall`), puis réinsère chaque
-/// triplet via `KnowledgeGraph::insert` (routage contradiction : un
-/// `NeedsUserResolution` est loggué en warn, jamais écrasé). Rend le nombre
-/// de triplets traités.
-fn import_into_graph(
-    graph: &mut hakille_memory::KnowledgeGraph,
-    export: &hakille_memory::GraphExport,
-) -> usize {
-    for label in export.labels.subjects.values() {
-        graph.resolve_subject(label);
-    }
-    for label in export.labels.predicates.values() {
-        graph.resolve_predicate(label);
-    }
-    let mut n = 0;
-    for t in &export.triplets {
-        n += 1;
-        if let hakille_memory::InsertResult::NeedsUserResolution { existing, incoming } =
-            graph.insert(t.clone())
-        {
-            tracing::warn!(
-                "import: contradiction en attente (existant=[{}] entrant=[{}]) — rien écrasé",
-                existing.id.0,
-                incoming.id.0
-            );
-        }
-    }
-    n
-}
-
 /// Usage des commandes nues qui exigent un argument : afficher le message
 /// d'usage au lieu d'envoyer la commande au modèle (vocabulaire identique aux
 /// branches du match REPL).
@@ -3067,7 +3255,13 @@ fn bare_command_usage(input: &str) -> Option<&'static str> {
         ":remember" => {
             Some("Usage : :remember <sujet> <prédicat> <objet> (ex. :remember Marie aime le jazz)")
         }
+        ":research" => {
+            Some("Usage : :research <requête> (la requête est envoyée au fournisseur configuré)")
+        }
+        ":read-web" => Some("Usage : :read-web <URL HTTPS publique>"),
         ":recall" => Some("Usage : :recall <mot-clé> (ex. :recall jazz)"),
+        ":resolve" => Some("Usage : :resolve <uuid-entrant> existing|incoming"),
+        ":forget-episode" => Some("Usage : :forget-episode <uuid>"),
         ":forget" => Some("Usage : :forget <préfixe-8-caractères | uuid-complet> (voir :memory)"),
         ":download" => Some("Usage : :download <id> (ex. :download silero-vad-v5)"),
         ":asr-test" => Some("Usage : :asr-test <texte>"),
@@ -3099,6 +3293,11 @@ const KNOWN_COMMANDS: &[&str] = &[
     ":memory-view",
     ":mem2",
     ":contradictions",
+    ":resolve",
+    ":episodes",
+    ":memory-scope",
+    ":memory-history",
+    ":forget-episode",
     ":forget",
     ":audit-view",
     ":journal-search",
@@ -3107,6 +3306,9 @@ const KNOWN_COMMANDS: &[&str] = &[
     ":gui-action",
     ":remember",
     ":recall",
+    ":research",
+    ":read-web",
+    ":research-trace",
     ":status",
     ":constitution",
     ":metrics",
@@ -3298,9 +3500,13 @@ fn persist_memory(orchestrator: &CognitiveOrchestrator, path: &std::path::Path, 
         Ok(()) => {
             if !quiet {
                 println!(
-                    "Mémoire sauvegardée ({} triplet(s)) vers {}.",
+                    "Mémoire sauvegardée ({} triplet(s), stockage {}).",
                     orchestrator.memory_graph.len(),
-                    path.display()
+                    if orchestrator.memory_journal.is_some() {
+                        "redb transactionnel"
+                    } else {
+                        "snapshot JSON"
+                    }
                 );
             }
         }
@@ -3314,10 +3520,14 @@ fn persist_memory_to(
     orchestrator: &CognitiveOrchestrator,
     path: &std::path::Path,
 ) -> Result<(), String> {
-    orchestrator
-        .memory_graph
-        .save_to_file(path)
-        .map_err(|e| e.to_string())
+    if orchestrator.memory_journal.is_some() {
+        orchestrator.checkpoint_memory().map_err(|e| e.to_string())
+    } else {
+        orchestrator
+            .memory_graph
+            .save_to_file(path)
+            .map_err(|e| e.to_string())
+    }
 }
 
 #[cfg(test)]

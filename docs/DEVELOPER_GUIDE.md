@@ -2,7 +2,7 @@
 
 > *"De la compilation à la conformité formelle : bâtir et étendre un système d'exploitation cognitif en Rust pur."*
 
-Ce document constitue le guide de référence complet pour les développeurs, contributeurs et intégrateurs d'Hakille. Il détaille la configuration de l'environnement de développement, la compilation du monorepo, la suite de tests formelle (78 tests : 66 fast verts + 12 slow ignorés en gate hebdo — 7 dans `conformance`, 5 dans `hakille-kernel` — voir [CI](../.github/workflows/ci.yml)), l'utilisation approfondie du CLI interactif (`hakille-daemon`), l'état réel des agents de référence et du runtime WASM (2 agents de référence exécutés, 5 manifests métier déclaratifs), et l'implémentation de nouveaux backends `Substrate`.
+Ce document constitue le guide de référence complet pour les développeurs, contributeurs et intégrateurs d'Hakille. Il détaille la configuration de l'environnement de développement, la compilation du monorepo, la suite de tests formelle (66 tests fast de conformité et 10 slow ignorés en gate hebdo — 7 dans `conformance`, 3 dans `hakille-kernel` — voir [CI](../.github/workflows/ci.yml)), l'utilisation approfondie du CLI interactif (`hakille-daemon`), l'état réel des agents de référence et du runtime WASM (2 agents de référence exécutés, 5 manifests métier déclaratifs), et l'implémentation de nouveaux backends `Substrate`.
 
 ---
 
@@ -84,7 +84,7 @@ cargo xtask conformance
 # ou directement :
 cargo test -p conformance
 ```
-La suite `conformance` exécute **66 tests fast verts en CI** ; le gate hebdo `cargo xtask conformance-slow` ajoute **12 tests ignorés** (7 dans `conformance`, 5 dans `hakille-kernel` : décodage Qwen CPU réel). L'ensemble couvre les 6 couches :
+La suite `conformance` exécute **66 tests fast verts en CI** ; le gate hebdo `cargo xtask conformance-slow` ajoute **10 tests ignorés** (7 dans `conformance`, 3 dans `hakille-kernel` : décodage Qwen CPU réel). L'ensemble couvre les 6 couches :
 1. `test_conformance_anti_spoofing_and_guest_manager` : Validation de l'heuristique de vivacité vocale (non certifiée) et expiration des invités.
 2. `test_conformance_consent_registry_and_quota_enforcement` : Vérification du registre de consentement et auto-révocation des quotas.
 3. `test_conformance_self_model_and_simulator` : Introspection du Self-Model et simulation d'action à blanc.
@@ -165,7 +165,7 @@ Au démarrage, le démon affiche les six étapes d'initialisation du système :
 
 Au boot, le démon dimensionne le budget pipeline sur le **timeout LLM effectif** (`HAKILLE_QWEN_TIMEOUT_MS`, défaut `600000` ms — `crates/hakille-kernel/src/system1.rs:27`) via `PipelineBudgetConfig::aligned_with_llm_timeout` (`crates/hakille-kernel/src/budget.rs:42`) : `max_inference_ms = timeout + 30 s` (marge pour le chargement lazy du GGUF) et `max_total_ms = timeout + 60 s` ; les autres étages restent aux valeurs par défaut (perception 60 ms, routing 20 ms, action 40 ms). Le fast-path 100 ms de `docs/COGNITION.md` reste l'invariant produit et n'est pas modifié par défaut : sans cette config, un prompt réel échouait avec `Stage budget exceeded for 'inference' (elapsed ... > max 100 ms)`.
 
-Le REPL est **résilient** : un tour raté affiche `✗ Tour échoué : ...` + suggestion actionnable (`→ ...`) et la session continue ; une commande inconnue n'est jamais envoyée au LLM (`✗ Commande inconnue` + suggestion par distance d'édition). La mémoire (`./hakille-memory.json`) est auto-sauvegardée après chaque tour (réussi ou raté), à `:exit` et à la sortie EOF ; Ctrl+C affiche `⚠ Interruption (Ctrl+C) — arrêt. La mémoire a été auto-sauvegardée après le dernier tour.` (exit 130).
+Le REPL est **résilient** : un tour raté affiche `✗ Tour échoué : ...` + suggestion actionnable (`→ ...`) et la session continue ; une commande inconnue n'est jamais envoyée au LLM (`✗ Commande inconnue` + suggestion par distance d'édition). La mémoire (`<data_dir>/memory.redb`) conserve faits, conflits, corrections et épisodes complets par commits transactionnels, avant inférence et après chaque tour (réussi ou raté), à `:exit` et à la sortie EOF ; Ctrl+C affiche `⚠ Interruption (Ctrl+C) — arrêt. La mémoire a été auto-sauvegardée après le dernier tour.` (exit 130).
 
 ### 4.2. Commandes de l'Invite Interactive REPL (`hakille>`)
 
@@ -356,3 +356,22 @@ System 2 ne dispose actuellement que de l'adaptateur GGUF branché : sélectionn
 un fournisseur Cloud ou Ollama produit une erreur explicite, même avec les
 permissions adéquates, jusqu'à l'intégration d'un véritable adaptateur.
 Les tests de ces refus sont rapides et ne nécessitent aucun modèle.
+
+### Mémoire continue
+
+Le démon migre les anciens JSON vers redb sans les supprimer. Voir
+[MEMORY_END_TO_END.md](MEMORY_END_TO_END.md) pour les nouvelles commandes,
+la séparation faits/épisodes, le budget `HAKILLE_MEMORY_BUDGET_MS`, les limites
+du cache vectoriel et le contrat d’oubli logique.
+
+## Harness et recherche web
+
+Le noyau partage ses instructions système entre S1/S2, transmet une échéance
+au décodeur et distingue les étapes proposées des opérations vérifiées.
+`:research <requête>` (Brave ou SearXNG configuré) et `:read-web <URL>`
+déclenchent une collecte bornée avec autorisation réseau, sources horodatées,
+contrôle des références et traces conservées dans la mémoire.
+Les erreurs et résultats partiels restent explicites ; aucun fournisseur
+réseau n'est activé à partir du contenu d'une page.
+
+Voir [le fonctionnement et la configuration](HARNESS_END_TO_END.md).
