@@ -67,12 +67,19 @@ fn memory_row_dto(triplet: &hakille_memory::Triplet) -> MemoryRowDto {
 
 /// Parse honnête du texte libre de `remember` (même règle que le REPL) :
 /// « sujet prédicat objet » si 3 parties, sinon fait générique.
-fn remember_parts(text: &str) -> (&str, &str, &str) {
+fn remember_parts(text: &str) -> (String, &str, &str) {
     let parts: Vec<&str> = text.splitn(3, ' ').collect();
     if parts.len() == 3 {
-        (parts[0], parts[1], parts[2])
+        (parts[0].to_owned(), parts[1], parts[2])
     } else {
-        ("Fait", "est", text)
+        (
+            format!(
+                "Note {}",
+                hakille_memory::KnowledgeGraph::exact_uuid("hakille-note", text)
+            ),
+            "contenu",
+            text,
+        )
     }
 }
 
@@ -96,6 +103,7 @@ fn memory_view_rows(graph: &hakille_memory::KnowledgeGraph, limit: usize) -> Vec
 /// Recall : les chaînes réelles de `orchestrator.recall` sont re-mappées vers
 /// leurs triplets d'origine (id/tags/source réels). Chaîne introuvable =
 /// ligne signalée avec id vide — jamais d'identifiant inventé.
+#[cfg(test)]
 fn recall_rows(
     graph: &hakille_memory::KnowledgeGraph,
     recalled: &[String],
@@ -557,6 +565,7 @@ async fn handle_client_request(
     bounded_initiative: &mut BoundedInitiativeTracker,
     generality_tracker: &mut GeneralityTracker,
     audit_journal: &mut AuditJournal,
+    authority: &hakille_core::CapabilityAuthority,
     memory_path: &Path,
     outbox: &mut Outbox,
     data_dir: &Path,
@@ -614,6 +623,7 @@ async fn handle_client_request(
                         bounded_initiative,
                         generality_tracker,
                         audit_journal,
+                        authority,
                         memory_path,
                         &query,
                     )
@@ -621,11 +631,12 @@ async fn handle_client_request(
                     .map_err(|e| e.to_string())
                 };
                 tokio::pin!(turn);
+                let mut delta_open = true;
                 loop {
                     tokio::select! {
                         result = &mut turn => break result,
-                        maybe_delta = delta_rx.recv() => {
-                            let Some(delta) = maybe_delta else { continue };
+                        maybe_delta = delta_rx.recv(), if delta_open => {
+                            let Some(delta) = maybe_delta else { delta_open = false; continue };
                             // STREAMING : Unicast EXCLUSIVEMENT au client émetteur avec id = 0
                             let frame = Frame::reply(0, KernelToUi::TokenDelta { text: delta });
                             if session_reply_tx.send(frame).await.is_err() {
@@ -865,15 +876,24 @@ async fn handle_client_request(
                     eprintln!("IPC [session {session_id}]: rappel vide refusé (id={id})");
                     Frame::error(id, ErrorCode::BadFrame, "rappel vide refusé")
                 }
-                Some(q) => {
-                    let recalled = orchestrator.recall(q.trim());
-                    let rows = recall_rows(&orchestrator.memory_graph, &recalled, limit);
-                    println!(
-                        "IPC [session {session_id}]: rappel servi (id={id}, {} lignes)",
-                        rows.len()
-                    );
-                    Frame::reply(id, KernelToUi::MemoryReply { rows })
-                }
+                Some(q) => match orchestrator.recall_evidence(q.trim()) {
+                    Ok(report) => {
+                        let rows = report
+                            .hits
+                            .iter()
+                            .take(limit.min(MAX_LIST_ROWS))
+                            .filter_map(|hit| orchestrator.memory_graph.get(&hit.id))
+                            .map(memory_row_dto)
+                            .collect();
+                        Frame::reply(id, KernelToUi::MemoryReply { rows })
+                    }
+                    Err(error) => Frame::reply(
+                        id,
+                        KernelToUi::Toast {
+                            text: format!("Rappel impossible : {error}"),
+                        },
+                    ),
+                },
                 None => {
                     let rows = memory_view_rows(&orchestrator.memory_graph, limit);
                     println!(
@@ -918,7 +938,7 @@ async fn handle_client_request(
                         .await;
                 } else {
                     let (subject, predicate, object) = remember_parts(&trimmed);
-                    let result = orchestrator.remember(subject, predicate, object);
+                    let result = orchestrator.remember(&subject, predicate, object);
                     let ack = |triplet_id: &hakille_core::TripletId,
                                persisted: &Result<(), String>| {
                         let id_text = triplet_id.0.to_string();
@@ -957,6 +977,7 @@ async fn handle_client_request(
                             existing,
                             incoming,
                         } => {
+                            let persistence = persist_memory_to(orchestrator, memory_path);
                             eprintln!(
                                 "IPC [session {session_id}]: contradiction — décision utilisateur requise (id={id})"
                             );
@@ -964,8 +985,13 @@ async fn handle_client_request(
                                 id,
                                 KernelToUi::Toast {
                                     text: format!(
-                                        "contradiction — décision requise : existant [{}] vs entrant [{}] ; rien écrasé",
-                                        existing.id.0, incoming.id.0
+                                        "contradiction — décision requise : existant [{}] vs entrant [{}] ; rien écrasé{}",
+                                        existing.id.0,
+                                        incoming.id.0,
+                                        persistence
+                                            .err()
+                                            .map(|e| format!(" ; sauvegarde échouée : {e}"))
+                                            .unwrap_or_default()
                                     ),
                                 },
                             )
@@ -1269,6 +1295,7 @@ pub async fn run_serve_on_listener(
     bounded_initiative: &mut BoundedInitiativeTracker,
     generality_tracker: &mut GeneralityTracker,
     audit_journal: &mut AuditJournal,
+    authority: &hakille_core::CapabilityAuthority,
     memory_path: &Path,
     outbox: &mut Outbox,
     data_dir: &Path,
@@ -1333,6 +1360,7 @@ pub async fn run_serve_on_listener(
                         bounded_initiative,
                         generality_tracker,
                         audit_journal,
+                        authority,
                         memory_path,
                         outbox,
                         data_dir,
@@ -1356,6 +1384,7 @@ pub async fn run_serve_on_listener(
                         bounded_initiative,
                         generality_tracker,
                         audit_journal,
+                        authority,
                         memory_path,
                         outbox,
                         data_dir,
@@ -1386,6 +1415,7 @@ pub async fn run_serve(
     bounded_initiative: &mut BoundedInitiativeTracker,
     generality_tracker: &mut GeneralityTracker,
     audit_journal: &mut AuditJournal,
+    authority: &hakille_core::CapabilityAuthority,
     memory_path: &std::path::Path,
     outbox: &mut Outbox,
     data_dir: &std::path::Path,
@@ -1424,6 +1454,7 @@ pub async fn run_serve(
         bounded_initiative,
         generality_tracker,
         audit_journal,
+        authority,
         memory_path,
         outbox,
         data_dir,
@@ -1471,12 +1502,16 @@ mod tests {
     fn remember_parts_matches_repl_rules() {
         assert_eq!(
             remember_parts("Marie aime le jazz"),
-            ("Marie", "aime", "le jazz")
+            ("Marie".into(), "aime", "le jazz")
         );
-        assert_eq!(remember_parts("jazz"), ("Fait", "est", "jazz"));
+        let note = remember_parts("jazz");
+        assert_eq!(note.1, "contenu");
+        assert_eq!(note.2, "jazz");
+        assert_eq!(note.0, remember_parts("jazz").0);
+        assert_ne!(note.0, remember_parts("café").0);
         assert_eq!(
             remember_parts("Réunion lundi 10h salle B"),
-            ("Réunion", "lundi", "10h salle B")
+            ("Réunion".into(), "lundi", "10h salle B")
         );
     }
 
@@ -1937,6 +1972,7 @@ mod tests {
                 &mut initiative,
                 &mut generality,
                 &mut audit_journal,
+                &hakille_core::CapabilityAuthority::new(),
                 &memory_path,
                 &mut outbox,
                 &server_dir,

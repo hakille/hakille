@@ -295,6 +295,37 @@ impl Default for HnswVectorStore {
 }
 
 impl HnswVectorStore {
+    /// Construit un index dérivé en un seul rebuild, sans WAL redondant.
+    /// Utilisé par le cache de rappel lors d'un lot de changements.
+    pub fn from_embeddings(items: Vec<(TripletId, Vec<f32>)>) -> hakille_core::Result<Self> {
+        let mut store = Self::new();
+        for (id, vector) in items {
+            if vector.len() != EMBEDDING_DIM || vector.iter().any(|v| !v.is_finite()) {
+                return Err(hakille_core::HakilleError::Internal(
+                    "embedding HNSW invalide".into(),
+                ));
+            }
+            if store
+                .embeddings
+                .insert(id.clone(), vector.clone())
+                .is_some()
+            {
+                return Err(hakille_core::HakilleError::Internal(
+                    "identifiant HNSW dupliqué".into(),
+                ));
+            }
+            store.ids.push(id);
+            store.points.push(EmbeddingPoint(vector));
+        }
+        if !store.embeddings.is_empty() {
+            store.expected_dim = Some(EMBEDDING_DIM);
+        }
+        if store.embeddings.len() >= HNSW_BRUTE_FORCE_THRESHOLD {
+            store.rebuild();
+        }
+        Ok(store)
+    }
+
     pub fn new() -> Self {
         Self {
             embeddings: HashMap::new(),

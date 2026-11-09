@@ -61,7 +61,10 @@ impl ContradictionPolicy {
     ///
     /// En deçà des seuils : pas de contradiction (bruit, doublon, incertain).
     pub fn detect(&self, existing: &Triplet, incoming: &Triplet) -> Option<ContradictionType> {
-        if existing.subject != incoming.subject || existing.predicate != incoming.predicate {
+        if existing.subject != incoming.subject
+            || existing.predicate != incoming.predicate
+            || existing.metadata.context != incoming.metadata.context
+        {
             return None;
         }
         if existing.object != incoming.object {

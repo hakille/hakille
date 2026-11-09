@@ -65,7 +65,7 @@ async fn start_daemon_server() -> DaemonHarness {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    let child = cmd.spawn().expect("failed to spawn hakille-daemon binary");
+    let mut child = cmd.spawn().expect("failed to spawn hakille-daemon binary");
 
     let mut token = String::new();
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
@@ -87,6 +87,8 @@ async fn start_daemon_server() -> DaemonHarness {
     }
 
     if token.is_empty() {
+        // Le diagnostic d'un boot bloqué ne doit pas attendre indéfiniment.
+        let _ = child.start_kill();
         let output = child.wait_with_output().await.expect("wait failed");
         panic!(
             "le serveur daemon n'a pas écrit le jeton IPC à temps.\nSTDOUT:\n{}\nSTDERR:\n{}",
@@ -334,6 +336,75 @@ async fn test_concurrent_clients_and_mutual_card_resolution() {
     assert_eq!(pong.id, 103);
     assert!(matches!(
         pong.body,
+        FrameBody::Reply {
+            message: KernelToUi::StatusReply { .. }
+        }
+    ));
+
+    // 7. Le refus réseau termine le tour sans publier de synthèse non validée.
+    // Le canal de deltas est fermé par le harness : il ne doit pas affamer la boucle IPC.
+    transport::write_frame(
+        &mut desktop_writer,
+        &Frame::request(
+            104,
+            UiToKernel::HudSubmit {
+                query: ":read-web https://127.0.0.1/".into(),
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    let refusal = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let frame = transport::read_frame(&mut desktop_reader)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                !matches!(
+                    frame.body,
+                    FrameBody::Reply {
+                        message: KernelToUi::TokenDelta { .. }
+                    }
+                ),
+                "aucune synthèse provisoire pendant une recherche"
+            );
+            if frame.id == 104 {
+                break frame;
+            }
+        }
+    })
+    .await
+    .expect("le refus réseau doit terminer sans bloquer l'IPC");
+    match refusal.body {
+        FrameBody::Reply {
+            message: KernelToUi::Toast { text },
+        } => {
+            assert!(text.contains("non publique"), "refus réel attendu : {text}");
+        }
+        other => panic!("refus explicite attendu, reçu : {other:?}"),
+    }
+    transport::write_frame(
+        &mut desktop_writer,
+        &Frame::request(105, UiToKernel::StatusRequest),
+    )
+    .await
+    .unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let frame = transport::read_frame(&mut desktop_reader)
+                .await
+                .unwrap()
+                .unwrap();
+            if frame.id == 105 {
+                break frame;
+            }
+        }
+    })
+    .await
+    .expect("le serveur reste réactif après refus");
+    assert!(matches!(
+        reply.body,
         FrameBody::Reply {
             message: KernelToUi::StatusReply { .. }
         }
