@@ -10,32 +10,32 @@ public enum HakilleTypography {
 
 public enum HakillePalette {
     public static func surface0(for scheme: ColorScheme) -> Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorSurface0Dark : HakilleTokens.colorSurface0Light)
+        scheme == .dark ? HakilleTokens.colorSurface0Dark : HakilleTokens.colorSurface0Light
     }
     public static func surface1(for scheme: ColorScheme) -> Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light)
+        scheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light
     }
     public static func surface2(for scheme: ColorScheme) -> Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorSurface2Dark : HakilleTokens.colorSurface2Light)
+        scheme == .dark ? HakilleTokens.colorSurface2Dark : HakilleTokens.colorSurface2Light
     }
     public static func ligne(for scheme: ColorScheme) -> Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight)
+        scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight
     }
     public static func lueur(for scheme: ColorScheme) -> Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorLueurDark : HakilleTokens.colorLueurLight)
+        scheme == .dark ? HakilleTokens.colorLueurDark : HakilleTokens.colorLueurLight
     }
     public static func texte1(for scheme: ColorScheme) -> Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorTexte1Dark : HakilleTokens.colorTexte1Light)
+        scheme == .dark ? HakilleTokens.colorTexte1Dark : HakilleTokens.colorTexte1Light
     }
     public static func texte2(for scheme: ColorScheme) -> Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light)
+        scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light
     }
     /// Strictly reserved for validation, 600ms hold-progress, and decision-ring
     public static func braise(for scheme: ColorScheme) -> Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorBraiseDark : HakilleTokens.colorBraiseLight)
+        scheme == .dark ? HakilleTokens.colorBraiseDark : HakilleTokens.colorBraiseLight
     }
     public static func braiseHalo(for scheme: ColorScheme) -> Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorBraiseHaloDark : HakilleTokens.colorBraiseHaloLight)
+        scheme == .dark ? HakilleTokens.colorBraiseHaloDark : HakilleTokens.colorBraiseHaloLight
     }
 }
 

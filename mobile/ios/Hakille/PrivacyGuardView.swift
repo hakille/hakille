@@ -60,15 +60,15 @@ public struct PrivacyGuardBannerView: View {
     }
 
     private var textColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorTexte1Dark : HakilleTokens.colorTexte1Light)
+        scheme == .dark ? HakilleTokens.colorTexte1Dark : HakilleTokens.colorTexte1Light
     }
 
     private var secondaryText: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light)
+        scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light
     }
 
     private var outlineColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight)
+        scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight
     }
 
     public var body: some View {
@@ -117,23 +117,23 @@ public struct PrivacyGuardVeilView: View {
 
     // Strict Obsidian palette — zero Braise (#FF7A2F) in privacy veil
     private var backgroundColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorSurface0Dark : HakilleTokens.colorSurface0Light)
+        scheme == .dark ? HakilleTokens.colorSurface0Dark : HakilleTokens.colorSurface0Light
     }
 
     private var containerColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light)
+        scheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light
     }
 
     private var outlineColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight)
+        scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight
     }
 
     private var textColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorTexte1Dark : HakilleTokens.colorTexte1Light)
+        scheme == .dark ? HakilleTokens.colorTexte1Dark : HakilleTokens.colorTexte1Light
     }
 
     private var secondaryText: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light)
+        scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light
     }
 
     public var body: some View {

@@ -53,19 +53,19 @@ public struct GuestPassView: View {
     }
 
     private var textColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorTexte1Dark : HakilleTokens.colorTexte1Light)
+        scheme == .dark ? HakilleTokens.colorTexte1Dark : HakilleTokens.colorTexte1Light
     }
 
     private var secondaryText: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light)
+        scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light
     }
 
     private var outlineColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight)
+        scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight
     }
 
     private var lueurColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorLueurDark : HakilleTokens.colorLueurLight)
+        scheme == .dark ? HakilleTokens.colorLueurDark : HakilleTokens.colorLueurLight
     }
 
     private var isActive: Bool {

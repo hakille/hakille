@@ -1,5 +1,8 @@
 [toolchain]
-channel = "stable"
+channel = "1.95"
 profile = "default"
-# Utilise stable (1.99.1 préinstallé ≥ 1.88) : évite le téléchargement rustup sur FS read-only.
-
+# Épinglé 1.95 (2026-10) : le lockfile (icu/encoding_rs/ort/uuid) exige
+# rustc ≥ 1.88 ; 1.85 ne résout plus. CI alignée (.github/workflows/ci.yml
+# et mobile.yml installent 1.95 avec leurs cibles). Un canal « stable » ici
+# fait ignorer la toolchain 1.95 de la CI : les cibles Android/iOS installées
+# par la CI deviennent alors invisibles (« cible Rust absente »).

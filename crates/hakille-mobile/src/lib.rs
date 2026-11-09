@@ -21,13 +21,13 @@ uniffi::setup_scaffolding!();
 #[cfg_attr(feature = "ffi", derive(uniffi::Error))]
 #[derive(thiserror::Error, Debug, PartialEq, Eq)]
 pub enum MobileError {
-    #[error("{message}")]
-    OperationFailed { message: String },
+    #[error("{detail}")]
+    OperationFailed { detail: String },
 }
 
 impl From<String> for MobileError {
-    fn from(message: String) -> Self {
-        Self::OperationFailed { message }
+    fn from(detail: String) -> Self {
+        Self::OperationFailed { detail }
     }
 }
 

@@ -45,8 +45,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.auto(
-                lightScrim = android.graphics.Color.parseColor(HakilleTokens.colorSurface1Light),
-                darkScrim = android.graphics.Color.parseColor(HakilleTokens.colorSurface1Dark),
+                lightScrim = android.graphics.Color.parseColor(HakilleTokens.colorSurface1LightHex),
+                darkScrim = android.graphics.Color.parseColor(HakilleTokens.colorSurface1DarkHex),
                 detectDarkMode = { true },
             ),
         )
@@ -63,8 +63,8 @@ class MainActivity : ComponentActivity() {
                             else SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
                         // AUTO conserve la protection de contraste de la navigation à trois boutons.
                         navigationBarStyle = SystemBarStyle.auto(
-                            lightScrim = android.graphics.Color.parseColor(HakilleTokens.colorSurface1Light),
-                            darkScrim = android.graphics.Color.parseColor(HakilleTokens.colorSurface1Dark),
+                            lightScrim = android.graphics.Color.parseColor(HakilleTokens.colorSurface1LightHex),
+                            darkScrim = android.graphics.Color.parseColor(HakilleTokens.colorSurface1DarkHex),
                             detectDarkMode = { dark },
                         ),
                     )

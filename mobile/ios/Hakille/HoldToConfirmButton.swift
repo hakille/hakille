@@ -45,15 +45,15 @@ public struct HoldToConfirmButton: View {
     }
 
     private var braiseColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorBraiseDark : HakilleTokens.colorBraiseLight)
+        scheme == .dark ? HakilleTokens.colorBraiseDark : HakilleTokens.colorBraiseLight
     }
 
     private var braiseHalo: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorBraiseHaloDark : HakilleTokens.colorBraiseHaloLight)
+        scheme == .dark ? HakilleTokens.colorBraiseHaloDark : HakilleTokens.colorBraiseHaloLight
     }
 
     private var lineColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight)
+        scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight
     }
 
     private func cancelHold() {

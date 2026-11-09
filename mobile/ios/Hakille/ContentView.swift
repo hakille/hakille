@@ -28,12 +28,12 @@ extension Color {
     private var requestBusy: Bool { !model.snapshot["pending"].isNull }
     private var busy: Bool { requestBusy || model.dictationStatus.isBusy || !model.persistenceReady }
     private var hub: Bool { !model.snapshot["hub_id"].isNull }
-    private var foreground: Color { Color(hakille: colorScheme == .dark ? HakilleTokens.colorTexte1Dark : HakilleTokens.colorTexte1Light) }
-    private var secondary: Color { Color(hakille: colorScheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light) }
-    private var surface: Color { Color(hakille: colorScheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light) }
-    private var light: Color { Color(hakille: colorScheme == .dark ? HakilleTokens.colorLueurDark : HakilleTokens.colorLueurLight) }
+    private var foreground: Color { colorScheme == .dark ? HakilleTokens.colorTexte1Dark : HakilleTokens.colorTexte1Light }
+    private var secondary: Color { colorScheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light }
+    private var surface: Color { colorScheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light }
+    private var light: Color { colorScheme == .dark ? HakilleTokens.colorLueurDark : HakilleTokens.colorLueurLight }
     private var localeIdentifier: String { dictationLanguage == "system" ? Locale.current.identifier : dictationLanguage }
-    private var background: Color { Color(hakille: colorScheme == .dark ? HakilleTokens.colorSurface0Dark : HakilleTokens.colorSurface0Light) }
+    private var background: Color { colorScheme == .dark ? HakilleTokens.colorSurface0Dark : HakilleTokens.colorSurface0Light }
 
     var body: some View {
         TabView(selection: $selection) {
@@ -186,7 +186,7 @@ extension Color {
                 content()
             }.listStyle(.insetGrouped).scrollContentBackground(.hidden).background(background)
                 .onTapGesture { model.stopSpokenReply() }
-                .listRowSeparatorTint(Color(hakille: colorScheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight))
+                .listRowSeparatorTint(colorScheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight)
                 .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {

@@ -42,8 +42,8 @@ import UniformTypeIdentifiers
 @MainActor struct PhoneCapabilitiesView: View {
     @ObservedObject var phone: PhoneCapabilities
     @Environment(\.colorScheme) private var scheme
-    private var surface: Color { Color(hakille: scheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light) }
-    private var secondary: Color { Color(hakille: scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light) }
+    private var surface: Color { scheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light }
+    private var secondary: Color { scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light }
     @State private var external: ExternalDestination?
     var body: some View {
         Section("On this phone") {

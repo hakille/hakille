@@ -49,18 +49,85 @@ async fn test_t2_f09_01_missing_or_mismatched_session_returns_409() {
 
 /// `T2_F09_02`: Oversized frame payload exceeding limit.
 ///
-/// Frame payload exceeding 1 MiB is rejected with HTTP 413 too_large.
+/// Frame payload exceeding 1 MiB is rejected with HTTP 413 before IPC forwarding:
+/// - `Content-Length > 1 MiB` is rejected immediately on headers (`too_large`, tested with
+///   `Expect: 100-continue` so Windows loopback does not race body upload against socket close
+///   with `WSAECONNABORTED` 10053).
+/// - Streaming `Transfer-Encoding: chunked` > 1 MiB without `Content-Length` is rejected by
+///   the bounded reader (`invalid_body`).
 #[tokio::test]
 async fn test_t2_f09_02_oversized_payload_rejected_with_413() {
-    let (rig, _daemon) = MobileTestRig::setup().await;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-    // Send oversized frame with query > 1 MiB
-    let huge_query = "x".repeat(1024 * 1024 + 100);
-    let frame = Frame::request(1, UiToKernel::HudSubmit { query: huge_query });
+    let (rig, daemon) = MobileTestRig::setup().await;
 
-    let (status, resp) = rig.post_frame(&frame, None).await;
-    assert_eq!(status, 413, "Oversized frame must return HTTP 413");
-    assert!(resp["error"]["code"] == "too_large" || resp["error"]["code"] == "invalid_body");
+    // 1. Content-Length > 1 MiB rejected before reading body (`too_large`)
+    let mut socket = tokio::net::TcpStream::connect(rig.address)
+        .await
+        .expect("connect to gateway");
+    let headers = format!(
+        "POST /v1/request HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nExpect: 100-continue\r\n\r\n",
+        rig.address,
+        rig.mobile_bearer,
+        (1usize << 20) + 100
+    );
+    socket
+        .write_all(headers.as_bytes())
+        .await
+        .expect("write headers");
+    let mut raw_resp = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        socket.read_to_string(&mut raw_resp),
+    )
+    .await
+    .expect("413 header response timeout")
+    .expect("read 413 header response");
+    assert!(
+        raw_resp.starts_with("HTTP/1.1 413"),
+        "Oversized Content-Length must return HTTP 413, got: {raw_resp}"
+    );
+    let (_, body_str) = raw_resp
+        .split_once("\r\n\r\n")
+        .expect("HTTP headers/body delimiter");
+    let resp: serde_json::Value = serde_json::from_str(body_str).expect("parse 413 json");
+    assert_eq!(resp["error"]["code"], "too_large");
+    assert_eq!(resp["error"]["issue_unknown"], false);
+
+    // 2. Chunked body > 1 MiB without Content-Length rejected with HTTP 413
+    let mut chunked_sock = tokio::net::TcpStream::connect(rig.address)
+        .await
+        .expect("connect to gateway for chunked test");
+    let mut chunked_req = format!(
+        "POST /v1/request HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n100001\r\n",
+        rig.address, rig.mobile_bearer
+    )
+    .into_bytes();
+    chunked_req.extend(std::iter::repeat_n(b'x', (1usize << 20) + 1));
+    chunked_req.extend_from_slice(b"\r\n0\r\n\r\n");
+    // On Windows loopback the server may close right after reading > 1 MiB, aborting the tail write;
+    // reading the status line still yields the valid HTTP/1.1 413 response.
+    let _ = chunked_sock.write_all(&chunked_req).await;
+    let mut status_line = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        BufReader::new(chunked_sock).read_line(&mut status_line),
+    )
+    .await
+    .expect("413 chunked response timeout")
+    .expect("read 413 chunked status line");
+    assert!(
+        status_line.starts_with("HTTP/1.1 413"),
+        "Oversized chunked body must return HTTP 413, got: {status_line}"
+    );
+
+    // Confirm neither oversized payload ever reached the IPC daemon
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), daemon.accept())
+            .await
+            .is_err(),
+        "Oversized HTTP requests must never open an IPC connection to the daemon"
+    );
 }
 
 /// `T2_F09_03`: Reject on already approved card.

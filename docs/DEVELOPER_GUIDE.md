@@ -223,7 +223,10 @@ cargo run -p hakille-daemon -- models download sensevoice-small
 cargo run -p hakille-daemon -- models download --model sensevoice-small-int8
 
 # Vérifier l'intégrité cryptographique SHA-256 des fichiers de modèles locaux
+# (sans sélecteur : tout le catalogue, échec si un modèle est absent)
 cargo run -p hakille-daemon -- models verify
+# ou uniquement un modèle téléchargé :
+cargo run -p hakille-daemon -- models verify --model qwen2.5-0.5b-instruct-q4km
 
 # Évaluer une requête en mode headless sans interface (mode script)
 cargo run -p hakille-daemon -- --prompt "Planifier une réunion demain matin à 10h"

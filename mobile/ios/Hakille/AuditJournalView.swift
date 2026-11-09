@@ -27,15 +27,15 @@ public struct AuditJournalView: View {
     }
 
     private var surface1: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light)
+        scheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light
     }
 
     private var surface2: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorSurface2Dark : HakilleTokens.colorSurface2Light)
+        scheme == .dark ? HakilleTokens.colorSurface2Dark : HakilleTokens.colorSurface2Light
     }
 
     private var outline: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight)
+        scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight
     }
 
     public var body: some View {

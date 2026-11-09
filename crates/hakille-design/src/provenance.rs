@@ -55,11 +55,11 @@ pub fn sanitize_skill_text(input: &str) -> String {
                     i += end_idx + "</script>".len();
                     continue;
                 }
-            } else if rest_lower.starts_with("<style") {
-                if let Some(end_idx) = rest_lower.find("</style>") {
-                    i += end_idx + "</style>".len();
-                    continue;
-                }
+            } else if rest_lower.starts_with("<style")
+                && let Some(end_idx) = rest_lower.find("</style>")
+            {
+                i += end_idx + "</style>".len();
+                continue;
             }
             while i < len && bytes[i] != b'>' {
                 i += 1;

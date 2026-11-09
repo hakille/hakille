@@ -70,15 +70,15 @@ public struct ActionCardComponent: View {
     }
 
     private var surfaceColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light)
+        scheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light
     }
 
     private var surface2Color: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorSurface2Dark : HakilleTokens.colorSurface2Light)
+        scheme == .dark ? HakilleTokens.colorSurface2Dark : HakilleTokens.colorSurface2Light
     }
 
     private var outlineColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight)
+        scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight
     }
 
     public var body: some View {
@@ -102,7 +102,7 @@ public struct ActionCardComponent: View {
             if !reason.isEmpty {
                 Text(reason)
                     .font(HakilleTypography.body)
-                    .foregroundStyle(Color(hex: scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light))
+                    .foregroundStyle(scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light)
             }
 
             // 4. Three Mandatory Badges in Strict Order

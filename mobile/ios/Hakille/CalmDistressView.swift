@@ -17,27 +17,27 @@ public struct CalmDistressView: View {
     }
 
     private var backgroundColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorSurface0Dark : HakilleTokens.colorSurface0Light)
+        scheme == .dark ? HakilleTokens.colorSurface0Dark : HakilleTokens.colorSurface0Light
     }
 
     private var containerColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light)
+        scheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light
     }
 
     private var surface2Color: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorSurface2Dark : HakilleTokens.colorSurface2Light)
+        scheme == .dark ? HakilleTokens.colorSurface2Dark : HakilleTokens.colorSurface2Light
     }
 
     private var outlineColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight)
+        scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight
     }
 
     private var textColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorTexte1Dark : HakilleTokens.colorTexte1Light)
+        scheme == .dark ? HakilleTokens.colorTexte1Dark : HakilleTokens.colorTexte1Light
     }
 
     private var secondaryText: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light)
+        scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light
     }
 
     private func dial(number: String) {

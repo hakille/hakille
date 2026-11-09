@@ -79,7 +79,7 @@ public struct SecurityProvenanceBanner: View {
     }
 
     private var lateralRuleColor: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight)
+        scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight
     }
 
     public var body: some View {
@@ -90,16 +90,16 @@ public struct SecurityProvenanceBanner: View {
                 .padding(.vertical, 2)
                 .background(
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(isExternal ? lateralRuleColor.opacity(0.4) : Color(hex: scheme == .dark ? HakilleTokens.colorSurface2Dark : HakilleTokens.colorSurface2Light))
+                        .fill(isExternal ? lateralRuleColor.opacity(0.4) : (scheme == .dark ? HakilleTokens.colorSurface2Dark : HakilleTokens.colorSurface2Light))
                 )
-                .foregroundStyle(isExternal ? Color(hex: scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light) : (scheme == .dark ? Color.white : Color.black))
+                .foregroundStyle(isExternal ? (scheme == .dark ? HakilleTokens.colorTexte2Dark : HakilleTokens.colorTexte2Light) : (scheme == .dark ? Color.white : Color.black))
 
             Spacer()
 
             if let warning = warning {
                 Text(warning)
                     .font(HakilleTypography.caption)
-                    .foregroundStyle(Color(hex: scheme == .dark ? HakilleTokens.colorAvertissementDark : HakilleTokens.colorAvertissementLight))
+                    .foregroundStyle(scheme == .dark ? HakilleTokens.colorAvertissementDark : HakilleTokens.colorAvertissementLight)
             }
         }
         .padding(.leading, isExternal ? 8 : 0)

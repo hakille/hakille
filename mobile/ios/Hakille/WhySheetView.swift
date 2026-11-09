@@ -76,15 +76,15 @@ public struct WhySheetView: View {
     }
 
     private var surface1: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light)
+        scheme == .dark ? HakilleTokens.colorSurface1Dark : HakilleTokens.colorSurface1Light
     }
 
     private var surface2: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorSurface2Dark : HakilleTokens.colorSurface2Light)
+        scheme == .dark ? HakilleTokens.colorSurface2Dark : HakilleTokens.colorSurface2Light
     }
 
     private var outline: Color {
-        Color(hex: scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight)
+        scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight
     }
 
     public var body: some View {
@@ -228,7 +228,7 @@ public struct WhySheetView: View {
                 }
                 .padding(20)
             }
-            .background(Color(hex: HakilleTokens.colorSurface0Dark))
+            .background(HakilleTokens.colorSurface0Dark)
             .navigationTitle("Pourquoi cette action ?")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

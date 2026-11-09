@@ -84,14 +84,14 @@ public struct LivingPresenceAuraView: View {
         }
         switch state {
         case .idle, .listening, .speaking:
-            return Color(hex: scheme == .dark ? HakilleTokens.colorLueurDark : HakilleTokens.colorLueurLight)
+            return scheme == .dark ? HakilleTokens.colorLueurDark : HakilleTokens.colorLueurLight
         case .acting:
-            return Color(hex: scheme == .dark ? HakilleTokens.colorSuccesDark : HakilleTokens.colorSuccesLight)
+            return scheme == .dark ? HakilleTokens.colorSuccesDark : HakilleTokens.colorSuccesLight
         case .decisionRequired:
             // Braise is strictly authorized for decision-ring attention indicator
-            return Color(hex: scheme == .dark ? HakilleTokens.colorBraiseDark : HakilleTokens.colorBraiseLight)
+            return scheme == .dark ? HakilleTokens.colorBraiseDark : HakilleTokens.colorBraiseLight
         case .urgent:
-            return Color(hex: scheme == .dark ? HakilleTokens.colorErreurDark : HakilleTokens.colorErreurLight)
+            return scheme == .dark ? HakilleTokens.colorErreurDark : HakilleTokens.colorErreurLight
         }
     }
 
@@ -109,7 +109,7 @@ public struct LivingPresenceAuraView: View {
         case .speaking:
             return ringColor.opacity(0.35)
         case .decisionRequired:
-            return Color(hex: scheme == .dark ? HakilleTokens.colorBraiseHaloDark : HakilleTokens.colorBraiseHaloLight)
+            return scheme == .dark ? HakilleTokens.colorBraiseHaloDark : HakilleTokens.colorBraiseHaloLight
         case .urgent:
             return ringColor.opacity(0.35)
         }
@@ -136,7 +136,7 @@ public struct LivingPresenceAuraView: View {
                 if !isCompact {
                     let innerRadius = activeRadius - 10
                     let innerRect = CGRect(x: center.x - innerRadius, y: center.y - innerRadius, width: innerRadius * 2, height: innerRadius * 2)
-                    let lineColor = Color(hex: scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight).opacity(0.6)
+                    let lineColor = (scheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight).opacity(0.6)
                     context.stroke(Path(ellipseIn: innerRect), with: .color(lineColor), lineWidth: 1)
                 }
 
