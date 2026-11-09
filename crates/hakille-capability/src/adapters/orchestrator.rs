@@ -148,25 +148,41 @@ impl IntelligentToolOrchestrator {
             _ => RiskTier::Tier0ReadOnly,
         };
 
-        // 4. Biscuit verification if required and token/key present
-        if let (Some(root_key), Some(token)) = (&self.root_public_key, &req.caller_token) {
-            let required_scope = descriptor
-                .scopes_required
-                .first()
-                .cloned()
-                .unwrap_or(CapabilityScope::Filesystem);
-
+        // 4. Biscuit verification if required and root key present
+        if let Some(root_key) = &self.root_public_key {
             let action = match risk_tier {
                 RiskTier::Tier0ReadOnly => CapabilityAction::Read,
                 RiskTier::Tier1StateMutating => CapabilityAction::Write,
                 _ => CapabilityAction::Execute,
             };
 
-            BiscuitVerifier::verify_token(token, root_key, &required_scope, action).map_err(
-                |e| CapabilityError::SecurityViolation {
-                    reason: format!("Security authorization rejected: {e}"),
-                },
-            )?;
+            let scopes_to_check = if descriptor.scopes_required.is_empty() {
+                if risk_tier > RiskTier::Tier0ReadOnly {
+                    vec![CapabilityScope::Filesystem]
+                } else {
+                    Vec::new()
+                }
+            } else {
+                descriptor.scopes_required.clone()
+            };
+
+            if !scopes_to_check.is_empty() {
+                let token = req.caller_token.as_ref().ok_or_else(|| {
+                    CapabilityError::SecurityViolation {
+                        reason: "Missing caller token for secured capability".to_string(),
+                    }
+                })?;
+
+                for scope in &scopes_to_check {
+                    BiscuitVerifier::verify_token(token, root_key, scope, action.clone()).map_err(
+                        |e| CapabilityError::SecurityViolation {
+                            reason: format!(
+                                "Security authorization rejected for scope {scope:?}: {e}"
+                            ),
+                        },
+                    )?;
+                }
+            }
         }
 
         // 5. Check Tier 3 Physical Confirmation Gate
@@ -213,7 +229,7 @@ impl IntelligentToolOrchestrator {
             let required_scope = descriptor.scopes_required.first().cloned();
             let actor_id = ActorId::Agent(uuid::Uuid::now_v7().to_string());
 
-            if let Ok(entry_id) = audit
+            let entry_id = audit
                 .log_invocation(
                     &call,
                     &tool_result,
@@ -221,11 +237,9 @@ impl IntelligentToolOrchestrator {
                     required_scope,
                     actor_id,
                 )
-                .await
-            {
-                audit_tx_id = Some(entry_id.clone());
-                tool_result.metadata.audit_record_id = Some(entry_id);
-            }
+                .await?;
+            audit_tx_id = Some(entry_id.clone());
+            tool_result.metadata.audit_record_id = Some(entry_id);
         }
 
         Ok(OrchestrationResult {

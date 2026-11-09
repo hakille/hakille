@@ -118,7 +118,12 @@ impl SkillParser {
                         "wallet" => scopes.push(CapabilityScope::Wallet),
                         "audio" => scopes.push(CapabilityScope::Audio),
                         "camera" => scopes.push(CapabilityScope::Camera),
-                        _ => scopes.push(CapabilityScope::FullSystem),
+                        "fullsystem" | "full_system" => scopes.push(CapabilityScope::FullSystem),
+                        unknown => {
+                            return Err(CapabilityError::Custom(format!(
+                                "Unknown capability scope '{unknown}' in SKILL.md"
+                            )));
+                        }
                     },
                     _ => {}
                 }
@@ -135,8 +140,9 @@ impl SkillParser {
             display_name = name.clone();
         }
 
-        let version =
-            semver::Version::parse(&version_str).unwrap_or_else(|_| semver::Version::new(1, 0, 0));
+        let version = semver::Version::parse(&version_str).map_err(|e| {
+            CapabilityError::Custom(format!("Invalid version '{version_str}' in SKILL.md: {e}"))
+        })?;
 
         let default_parameters = json!({
             "type": "object",
@@ -251,7 +257,11 @@ impl ProgressiveSkillsLoader {
         skill_name: &str,
         resource_path: &str,
     ) -> Result<Vec<u8>, CapabilityError> {
-        if resource_path.contains("..") || resource_path.starts_with('/') {
+        if resource_path.contains("..")
+            || resource_path.starts_with('/')
+            || resource_path.starts_with('\\')
+            || resource_path.contains('\\')
+        {
             return Err(CapabilityError::SecurityViolation {
                 reason: format!("Path traversal in resource fetch: '{resource_path}'"),
             });

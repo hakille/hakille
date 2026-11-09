@@ -11,7 +11,7 @@
 The **Hakille Universal Capability Architecture** allows third-party developers, system engineers, and AI researchers to extend Hakille without modifying the kernel core.
 
 Every capability in Hakille conforms to a single, vendor-neutral Canonical Contract:
-- **Zero Python Dependency**: All extensions execute in pure Rust, WebAssembly (Wasmtime 48 / WASI Preview 2), or via external JSON-RPC 2.0 subprocesses/HTTP (Model Context Protocol).
+- **Zero Python Dependency**: All extensions execute in pure Rust, WebAssembly (sandboxed via `hakille-agents`), or via external JSON-RPC 2.0 subprocesses/HTTP (Model Context Protocol).
 - **Least-Privilege by Design**: Capabilities possess zero ambient authority. Privileges are cryptographically granted via Biscuit v5 Datalog tokens.
 - **Graduated Risk Governance (4 Tiers)**:
   - **Tier 0 (ReadOnly)**: Pure informational queries. Auto-granted silently.

@@ -113,6 +113,8 @@ class Gateway {
                 }
             }
         })
+    }
+
     suspend fun sendStream(
         credentials: HubCredentials,
         frame: String,

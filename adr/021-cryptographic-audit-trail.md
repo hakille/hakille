@@ -1,4 +1,4 @@
-# ADR-007: Cryptographically Bound Audit Trail in redb with SHA-256 Merkle Chaining & Token Binding
+# ADR 021: Cryptographically Bound Audit Trail in redb with SHA-256 Merkle Chaining & Token Binding
 
 - **Status**: Ratified
 - **Date**: 2026-11-07

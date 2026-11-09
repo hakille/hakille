@@ -1,4 +1,4 @@
-# ADR-004: Defense-in-Depth with Biscuit v5 Datalog Attenuation & 4-Tier Risk Classification
+# ADR 018: Defense-in-Depth with Biscuit v5 Datalog Attenuation & 4-Tier Risk Classification
 
 - **Status**: Ratified
 - **Date**: 2026-11-07

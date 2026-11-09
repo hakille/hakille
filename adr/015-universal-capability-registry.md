@@ -1,4 +1,4 @@
-# ADR-001: Universal Capability Registry & Canonical Tool Contract
+# ADR 015: Universal Capability Registry & Canonical Tool Contract
 
 - **Status**: Ratified
 - **Date**: 2026-11-07

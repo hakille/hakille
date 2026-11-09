@@ -379,7 +379,7 @@ impl DefaultAgentMicroMarketEngine {
         actions: &[CapabilityAction],
         deadline_seconds: u64,
     ) -> Result<Vec<u8>, HakilleError> {
-        let expiry =
+        let mut expiry =
             Timestamp(chrono::Utc::now() + chrono::Duration::seconds(deadline_seconds as i64));
 
         if parent_token_bytes.is_empty() {
@@ -395,6 +395,13 @@ impl DefaultAgentMicroMarketEngine {
                 &self.biscuit_manager.root_public_key(),
             ) {
                 Ok(parent_tok) => {
+                    if let Some(parent_exp) = parent_tok.min_expiry_timestamp() {
+                        if expiry.0.timestamp() > parent_exp {
+                            expiry = Timestamp(
+                                chrono::DateTime::from_timestamp(parent_exp, 0).unwrap_or(expiry.0),
+                            );
+                        }
+                    }
                     let child_tok = self.biscuit_manager.attenuate_token(
                         &parent_tok,
                         scopes,

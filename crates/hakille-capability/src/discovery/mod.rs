@@ -212,10 +212,36 @@ impl CapabilityDiscoveryEngine {
             });
         } else {
             // Lexical fallback when query embeddings are omitted
-            for (cap_id, tool, risk) in candidates {
-                scored_candidates.push((1.0, cap_id, tool, risk));
+            let query_words: Vec<String> = query
+                .query_text
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_ascii_lowercase())
+                .collect();
+
+            if query_words.is_empty() {
+                for (cap_id, tool, risk) in candidates {
+                    scored_candidates.push((1.0, cap_id, tool, risk));
+                }
+                scored_candidates.sort_by(|a, b| a.2.name.cmp(&b.2.name));
+            } else {
+                for (cap_id, tool, risk) in candidates {
+                    let text = format!("{} {}", tool.name, tool.description).to_ascii_lowercase();
+                    let matches = query_words
+                        .iter()
+                        .filter(|w| text.contains(w.as_str()))
+                        .count();
+                    let score = (matches as f32) / (query_words.len() as f32);
+                    if score >= query.min_similarity {
+                        scored_candidates.push((score, cap_id, tool, risk));
+                    }
+                }
+                scored_candidates.sort_by(|a, b| {
+                    b.0.partial_cmp(&a.0)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.2.name.cmp(&b.2.name))
+                });
             }
-            scored_candidates.sort_by(|a, b| a.2.name.cmp(&b.2.name));
         }
 
         // Dynamic Prompt Budget Optimizer (Greedy Packing)

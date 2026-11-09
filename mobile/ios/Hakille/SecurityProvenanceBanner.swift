@@ -59,7 +59,7 @@ public func copySensitiveToClipboard(text: String, label: String = "Sensitive") 
     let expiration = Date().addingTimeInterval(CLIPBOARD_SENSITIVE_TTL_SECS)
     let pasteboard = UIPasteboard.general
     pasteboard.setItems(
-        [[UIPasteboard.typeListString[0] as String: text]],
+        [[UIPasteboard.typeListString[0] as! String: text]],
         options: [.expirationDate: expiration]
     )
 }

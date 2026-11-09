@@ -11,9 +11,10 @@ struct GhostActionView: View {
     @State private var offset: CGFloat = 0
 
     var body: some View {
-        guard let id = ghost["id"].string, !id.isEmpty else { return AnyView(EmptyView()) }
+        let id = ghost["id"].text
+        guard !id.isEmpty else { return AnyView(EmptyView()) }
         let label = ghost["label"].text
-        let confidence = Int(((ghost["confidence"].double ?? 0.9) * 100).clamped(to: 0...100))
+        let confidence = Int(((ghost["confidence"].doubleValue ?? 0.9) * 100).clamped(to: 0...100))
 
         return AnyView(
             VStack(alignment: .leading, spacing: 8) {

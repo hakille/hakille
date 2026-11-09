@@ -291,8 +291,8 @@ class MainActivity : ComponentActivity() {
                     }
                     AppDestination.HUB -> {
                         item { SectionHeading(stringResource(R.string.ui_hub), stringResource(R.string.ui_hub_hint)) }
-                        val hubTabs = listOf(stringResource(R.string.status), stringResource(R.string.connection), stringResource(R.string.ui_device), "Autonomie")
                         item { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            val hubTabs = listOf(stringResource(R.string.status), stringResource(R.string.connection), stringResource(R.string.ui_device), "Autonomie")
                             hubTabs.forEachIndexed { index, label ->
                                 FilterChip(selected = hubSection == index, onClick = { hubSection = index }, label = { Text(label) }, modifier = Modifier.testTag(when(index) { 1 -> "destination_connection"; 2 -> "destination_capabilities"; 3 -> "destination_autonomy"; else -> "destination_status" }))
                             }

@@ -46,8 +46,7 @@ public struct WhySheetView: View {
     }
 
     private var confidenceValue: Double {
-        if case .floating(let val) = whySheet["confidence_value"] { return val }
-        return 0.0
+        whySheet["confidence_value"].doubleValue ?? 0.0
     }
 
     private var modelLine: String {

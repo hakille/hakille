@@ -1,4 +1,4 @@
-# ADR-002: Sovereign Tokio-Based MCP Client/Server Implementation
+# ADR 016: Sovereign Tokio-Based MCP Client/Server Implementation
 
 - **Status**: Ratified
 - **Date**: 2026-11-07
