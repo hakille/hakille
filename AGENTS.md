@@ -19,7 +19,7 @@ cargo deny check bans sources advisories    # cargo-deny à installer
 ```
 
 - `cargo xtask conformance-slow` : gate hebdo (**12 tests `--ignored`** — 7 dans `conformance`, 5 dans `hakille-kernel` — décodage Qwen CPU réel, dizaines de minutes en debug). Ne pas le lancer en local en debug. Ces tests **ne SKIP pas** sans modèle : ils échouent (c'est voulu).
-- Provisionner le modèle pour ce gate : `cargo run -p hakille-daemon -- models download --model qwen2.5-0.5b-instruct-q4km` (~475 Mo) puis `models verify` (les deux commandes **échouent** si le téléchargement ou le SHA-256 échoue).
+- Provisionner le modèle pour ce gate : `cargo run -p hakille-daemon -- models download --model qwen2.5-0.5b-instruct-q4km` (~475 Mo) puis `models verify --model qwen2.5-0.5b-instruct-q4km` (les deux commandes **échouent** si le téléchargement ou le SHA-256 échoue ; `models verify` sans sélecteur vérifie tout le catalogue et échoue si un modèle manque).
 - Test ciblé : les tests unitaires vivent **dans les crates** (`#[cfg(test)] mod tests`) ; les crates d'agents `agents/*` ont en plus `tests/integration.rs`. Filtres utiles : `cargo test -p hakille-ui-desktop card_`, `cargo test -p hakille-daemon card_`, `cargo test -p hakille-kernel action_card_preview_tests`.
 - Le job CI `ui-desktop-quality` ne lance que des **filtres par nom** (`a11y`, `renderer`, `wgpu_fallback`, `s2`, `desktop_shell`) : un nouveau test n'y passe que si son nom contient le filtre.
 - `cargo clippy` en CI **n'a pas** `-D warnings` (choix assumé, ~60 lints préexistants) et il n'y a **pas** de `[workspace.lints]` : ne pas en ajouter un, corriger les lints dans le crate touché.

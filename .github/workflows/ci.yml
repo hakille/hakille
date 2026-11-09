@@ -124,7 +124,10 @@ jobs:
       - name: provision Qwen (GGUF + tokenizer, ~475 Mo)
         run: cargo run -p hakille-daemon -- models download --model qwen2.5-0.5b-instruct-q4km
       - name: vérification d'intégrité des artefacts
-        run: cargo run -p hakille-daemon -- models verify
+        # Seul Qwen est provisionné ici : `models verify` sans sélecteur
+        # vérifie TOUT le catalogue et échoue (à juste titre) sur les
+        # modèles non téléchargés. On vérifie donc exactement ce qui est requis.
+        run: cargo run -p hakille-daemon -- models verify --model qwen2.5-0.5b-instruct-q4km
       - name: conformance slow (ignored real-inference)
         run: cargo run -p xtask -- conformance-slow
 
