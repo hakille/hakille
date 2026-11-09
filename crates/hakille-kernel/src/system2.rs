@@ -272,7 +272,7 @@ impl System2Engine {
 
         if !context_triplets.is_empty() {
             trace.push(format!(
-                "Injected {} knowledge graph facts as grounded context",
+                "Contexte : {} éléments cités (faits, épisodes ou sources)",
                 context_triplets.len()
             ));
         }
@@ -312,29 +312,27 @@ impl System2Engine {
         // CPU, ChatML réel, sampling multinomial T=0.7/top_p=0.9). AUCUN gabarit :
         // moteur indisponible → Err HONNÊTE, jamais de phrase de secours.
         // `cfg!(test)` : 8 tokens (rapide, toujours réel) ; prod : 256.
-        let deep_prompt = if context_triplets.is_empty() {
-            prompt.to_string()
-        } else {
-            format!(
-                "Contexte mémorisé : {}\nQuestion/Tâche : {}",
-                context_triplets.join(" ; "),
-                prompt
-            )
-        };
-        let max_tokens = if cfg!(test) { 8 } else { 256 };
+        let deep_prompt = crate::memory::grounded_prompt(prompt, context_triplets);
+        let max_tokens = crate::system1::resolve_max_tokens();
         let timeout_ms = self.llm_timeout_ms();
         let prompt_owned = deep_prompt.clone();
+        let deadline =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms));
+        let system = crate::instructions::system_instructions(
+            crate::instructions::ReasoningMode::Deliberate,
+        );
         let handle = tokio::task::spawn_blocking(move || {
             let mut engine = hakille_inference::global_qwen_engine()?;
-            engine.generate_with_system(
+            engine.generate_with_system_deadline(
                 &prompt_owned,
-                Some("System 2 Deliberate Reasoner"),
+                &system,
                 max_tokens,
-                0.7,
-                0.9,
+                0.0,
+                1.0,
+                deadline,
             )
         });
-        let gen_out = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), handle)
+        let gen_out = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms.saturating_add(30_000)), handle)
             .await
             .map_err(|_| {
                 HakilleError::InferenceError(format!(
@@ -354,28 +352,17 @@ impl System2Engine {
 
         let infer_latency = infer_start.elapsed();
 
-        // Confiance combinée selon COGNITION.md §3 (mission 6) :
-        // `0.6 · modèle + 0.4 · graphe`. Nota honnête : `ConfidenceLevel::compute`
-        // dans hakille-core (hors périmètre) utilise les poids inverses
-        // (0.4/0.6) — historique à réconcilier ; System 2 suit la spec.
-        // - modèle = 0.75 fixe, documenté comme heuristique : le moteur GGUF
-        //   local n'expose pas de logits, à remplacer par log-probabilités.
-        // - graphe = 0.5 sans fait (neutre), +~0.17 par fait corroborant,
-        //   plafonné à 1.0 pour 3+ faits.
-        let model_confidence = 0.75;
-        let graph_corroboration = if context_triplets.is_empty() {
-            0.5
-        } else {
-            ((context_triplets.len().min(3) as f64 / 3.0) * 0.5 + 0.5).clamp(0.0, 1.0)
-        };
-        let confidence_score = (0.6 * model_confidence + 0.4 * graph_corroboration).clamp(0.0, 1.0);
-
-        // Coût RÉEL (REAL-04) : tokens BPE réels (`gen_out.prompt_tokens` +
-        // `gen_out.tokens_generated`, remplace l'approximation `len/4`) ;
-        // coût = tokens · tarif(`cost_per_1k_tokens_cents`) / 1000, min 1c.
-        // La latence murale mesurée est rapportée dans la description pour
-        // audit. Recalibrer le tarif sur la facture BYOM dès qu'elle existe.
-        let cost_cents = ((total_tokens as u64 * self.cost_per_1k_tokens_cents) / 1000).max(1);
+        // Heuristique non calibrée du modèle uniquement. Le noyau combine
+        // les faits une seule fois ; un nombre de citations ne prouve rien.
+        let confidence_score = 0.75;
+        // Aucun fournisseur payant n'est appelé par ce chemin local.
+        let cost_cents = 0;
+        let _configured_remote_rate = self.cost_per_1k_tokens_cents;
+        trace.push(format!(
+            "Qwen local : {} tokens mesurés, {} ms ; étapes proposées non exécutées",
+            total_tokens,
+            infer_latency.as_millis()
+        ));
 
         Ok(System2Plan {
             reasoning_trace: trace,

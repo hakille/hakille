@@ -215,8 +215,8 @@ fn test_conformance_spo_query_dsl_weight_confidence_sorting() {
 #[tokio::test]
 #[ignore = "slow: reason() avec décodage Qwen CPU réel (~11 min en debug) ; gate lente `-- --ignored`"]
 async fn test_conformance_system2_confidence_formula_and_naive_trace() {
-    // Verrouille mission 6 : confiance 0.6·modèle+0.4·graphe (COGNITION.md §3),
-    // coût depuis tokens réels, trace à vraies étapes (split phrases, ≤5+1).
+    // S2 expose l'heuristique du modèle uniquement ; la mémoire est combinée
+    // une fois par le noyau. Tokens réels, coût API local nul, étapes proposées.
     use hakille_kernel::system2::System2Engine;
     // Timeout LLM aligné sur le décodage Qwen CPU réel (deux reason() en debug,
     // machine partagée) : le défaut 600 s est trop court pour un tour sain.
@@ -231,9 +231,9 @@ async fn test_conformance_system2_confidence_formula_and_naive_trace() {
         .reason(prompt, &facts, &hakille_core::TrustLevel::User)
         .await
         .expect("System2 reason");
-    // 0.6·0.75 + 0.4·1.0 = 0.85 avec 3 faits.
+    // La confiance modèle est une heuristique ; le noyau combine la mémoire une seule fois.
     assert!(
-        (plan.confidence_score - 0.85).abs() < 1e-9,
+        (plan.confidence_score - 0.75).abs() < 1e-9,
         "Confiance COGNITION.md, obtenue : {}",
         plan.confidence_score
     );
@@ -242,10 +242,13 @@ async fn test_conformance_system2_confidence_formula_and_naive_trace() {
         .await
         .expect("System2 bare");
     assert!(
-        bare.confidence_score < plan.confidence_score,
-        "Sans faits ⇒ confiance moindre"
+        bare.confidence_score == plan.confidence_score,
+        "S2 ne compte pas les faits comme une certitude du modèle"
     );
-    assert!(plan.cost_incurred.amount_cents >= 1, "Coût réel ≥ 1c");
+    assert_eq!(
+        plan.cost_incurred.amount_cents, 0,
+        "Qwen local : aucun appel API facturé"
+    );
     assert!(
         plan.cost_incurred.description.contains("tokens"),
         "Coût documenté en tokens : {}",

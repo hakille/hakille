@@ -1,5 +1,9 @@
 # Le Noyau Cognitif et la Mémoire Distribuée d'Hakille
 
+> Référence du chemin actuel : [HARNESS_END_TO_END.md](HARNESS_END_TO_END.md) et
+> [MEMORY_END_TO_END.md](MEMORY_END_TO_END.md). Les sections historiques ci-dessous
+> comprennent des objectifs conceptuels ; elles ne prouvent pas une capacité exécutée.
+
 > *"Penser en continu, planifier avant d'agir, et retenir ce qui compte sans jamais encombrer le graphe."*
 
 Ce document constitue la référence exhaustive de la couche cognitive d'Hakille : le **Noyau Cognitif** ([`crates/hakille-kernel`](../crates/hakille-kernel)) et la **Mémoire Distribuée** ([`crates/hakille-memory`](../crates/hakille-memory)). Il détaille la dynamique bicamérale Système 1 / Système 2, l'abstraction du Fabric cognitif, la mémoire de travail éphémère, la planification délibérée, le modèle introspectif de soi, le scanner de curiosité, ainsi que l'architecture du triple store symbolique et vectoriel.
@@ -54,7 +58,7 @@ Pour préserver la fluidité de la conversation sans introduire de silences dér
 | **2. Mot d'Activation** | openWakeWord | **< 20 ms** | 30 ms |
 | **3. Transcription (ASR)** | SenseVoice-Small | **< 50 ms** | 80 ms |
 | **4. Diarisation & Biométrie** | Nemotron-3 + CAM++ | **< 25 ms** | 40 ms |
-| **5. Résolution Mémorielle** | redb SPO + recherche brute-force (HNSW non branché, `vector/edge.rs:22-34`) | **< 15 ms** | 30 ms |
+| **5. Résolution Mémorielle** | redb + rappel hybride (ces chiffres sont des cibles ; budget démon configurable) | **< 15 ms** | 30 ms |
 | **6. Raisonnement Système 1** | Qwen 2.5 0.5B Q4 / Candle (7B = cible) | **< 100 ms (cible)** | 150 ms |
 | **7. Raisonnement Système 2** | Modèle Distant / BYOM | **< 1200 ms** | 2000 ms |
 | **8. Synthèse Vocale (TTS)** | Moshi (Mimi) / CosyVoice2 | **< 80-150 ms** | 200 ms |
@@ -218,3 +222,13 @@ let results: Vec<&Triplet> = query.execute(&graph);
 Le modèle intègre la gestion de fin de vie des données :
 - Destruction cryptographique certifiée des clés de déchiffrement.
 - Mode héritage : désignation explicite des partitions transmissibles à des proches.
+
+## Chemin mémoire intégré (2026-11)
+
+Le démon conserve les épisodes complets séparément des faits et restaure les
+conflits, corrections et le contexte court. La distillation garde sa confiance
+et son origine `Inferred` ; elle ne devient pas une déclaration utilisateur.
+Le rappel BM25 + MiniLM optionnel utilise HNSW au-delà de 1 000 vecteurs. S1 et
+S2 reçoivent les preuves et épisodes avant génération. Voir
+[MEMORY_END_TO_END.md](MEMORY_END_TO_END.md), référence du fonctionnement actuel
+qui remplace les descriptions historiques de rappel ci-dessus.

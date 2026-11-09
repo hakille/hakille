@@ -46,6 +46,8 @@ async-trait = { workspace = true }
 tempfile = "3"
 sha2 = { workspace = true }
 hound = "3.5.1"
+reqwest = { workspace = true }
+scraper = { version = "0.29", default-features = false }
 
 [features]
 default = []

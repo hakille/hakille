@@ -4,7 +4,7 @@
 //! - prompt irréversible (FR/EN) : carte `CARTE REQUISE`, zéro exécution ;
 //! - contradiction FR (`supprime` vs `conserve`) : pénalité appliquée ;
 //! - budget abort conservé (budget nul ⇒ erreur explicite) ;
-//! - enveloppe WorkingMemory : journal distillé vers le graphe ;
+//! - enveloppe WorkingMemory : épisodes distincts des faits ;
 //! - curiosité `using_graph_orphans` + `plan_preview` (daemon `:plan`).
 
 use hakille_constitution::rules::Constitution;
@@ -178,16 +178,12 @@ async fn test_deliberate_loop_working_memory_distilled_to_graph() {
         .process_user_turn("Bonjour", &TrustLevel::User)
         .await
         .expect("journal turn failed");
-    // L'enveloppe Sense→Reflect a persisté le journal du tour (sujet unique).
-    assert_eq!(
-        orch.memory_graph.len(),
-        1,
-        "1 fait journal distillé vers le graphe"
-    );
-    assert!(
-        orch.recall("Bonjour").contains(&"Bonjour".to_string()),
-        "journal retrouvable"
-    );
+    // Une conversation n'est plus promue en fait utilisateur certain.
+    assert!(orch.memory_graph.is_empty());
+    let episode = orch.last_episode.as_ref().expect("épisode du tour");
+    assert_eq!(episode.prompt, "Bonjour");
+    assert_eq!(episode.status, hakille_memory::EpisodeStatus::Completed);
+    assert!(episode.response.is_some());
 }
 
 #[test]
