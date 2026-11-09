@@ -61,7 +61,7 @@ class DeviceCapabilitiesController(private val app: Application, private val sco
     }
     fun acceptPhoto(ticket: Long, photo: Bitmap?) {
         if (!consumeExternal(ticket)) return
-        val valid = photo?.takeIf { it.width > 0 && it.height > 0 && it.width.toLong() * it.height <= 4_000_000 }
+        val valid = photo?.let(::downscaleCameraBitmap)
         _state.value = DeviceCapabilitiesState(photo = valid, message = message(if (valid != null) R.string.device_photo_ready else R.string.device_cancelled))
     }
     fun acceptDocument(ticket: Long, uri: Uri?) {
@@ -80,7 +80,7 @@ class DeviceCapabilitiesController(private val app: Application, private val sco
                     resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null, cancellation)?.use { cursor ->
                         if (cursor.moveToFirst()) {
                             val size = cursor.getColumnIndex(OpenableColumns.SIZE)
-                            if (size >= 0 && !cursor.isNull(size) && cursor.getLong(size) > 1024 * 1024) throw java.io.IOException("Document supérieur à 1 Mio")
+                            if (size >= 0 && !cursor.isNull(size) && cursor.getLong(size) > MAX_DOCUMENT_BYTES) throw java.io.IOException("Document supérieur à 8 Mio")
                             val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                             if (index >= 0) name = cursor.getString(index).orEmpty().take(512)
                         }
@@ -90,12 +90,14 @@ class DeviceCapabilitiesController(private val app: Application, private val sco
                         activeDescriptor.set(file)
                         try {
                             cancellation.throwIfCanceled()
-                            readLocalDocument(PollingDocumentInputStream(file, cancellation, deadline))
+                            readLocalDocument(PollingDocumentInputStream(file, cancellation, deadline), MAX_DOCUMENT_BYTES)
                         } finally { activeDescriptor.compareAndSet(file, null) }
                     } ?: throw java.io.IOException("Document illisible")
                     val hash = MessageDigest.getInstance("SHA-256").digest(data).joinToString("") { "%02x".format(it) }
                     val preview = if (mime.startsWith("text/") || mime == "application/json") {
-                        data.take(4096).toByteArray().toString(Charsets.UTF_8).filter { !it.isISOControl() || it == '\n' || it == '\t' }
+                        data.toString(Charsets.UTF_8)
+                            .filter { !it.isISOControl() || it == '\n' || it == '\t' }
+                            .take(MAX_PREVIEW_CHARS)
                     } else null
                     LocalDocument(name, mime, data.size, hash, preview)
                 } }
@@ -136,10 +138,9 @@ class DeviceCapabilitiesController(private val app: Application, private val sco
                 override fun onLocationChanged(location: Location) {
                     if (ticket != generation) return
                     val elapsed = SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos
-                    if (elapsed < 0) return
                     val age = elapsed / 1_000_000
-                    if (!location.hasAccuracy() || !validDeviceLocation(location.latitude, location.longitude, location.accuracy, age)) return
                     @Suppress("DEPRECATION") val mocked = location.isFromMockProvider
+                    if (!location.hasAccuracy() || !validDeviceLocation(location.latitude, location.longitude, location.accuracy, age, mocked)) return
                     generation++; finishWork()
                     _state.value = DeviceCapabilitiesState(position = DevicePosition(location.latitude, location.longitude, location.accuracy,
                         location.elapsedRealtimeNanos, mocked), message = message(R.string.device_location_ready))

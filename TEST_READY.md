@@ -1,18 +1,15 @@
 # Hakille E2E Test Suite Verification Report (TEST_READY.md)
 
 ## Summary
-- **Test Crate:** `tests/e2e` (`hakille-e2e`)
-- **Total Tests:** 230 tests
-- **Passing Tests:** 230 / 230 (100% PASS)
+- **Desktop & Core UI E2E Crate:** `tests/e2e` (`hakille-e2e`) — **230 / 230 PASS** (`cargo test -p hakille-e2e --locked`)
+- **Mobile E2E Crate:** `tests/e2e/mobile` (`hakille-e2e-mobile`) — **376 / 376 PASS** (`cargo test -p hakille-e2e-mobile --locked`, voir `tests/e2e/mobile/TEST_READY.md`)
 - **Failing Tests:** 0
-- **Execution Time:** ~0.04s in headless in-process mode
-- **Execution Command:** `RUSTUP_TOOLCHAIN=stable cargo test -p hakille-e2e`
 
 ---
 
-## Architecture & Coverage Tiers
+## Desktop & Sovereign OS Suite (`hakille-e2e` — 230 tests)
 
-The test suite exercises all 20 target features across the entire Hakille UI and Sovereign OS stack:
+The test suite exercises all 20 target features across the Hakille UI and Sovereign OS stack:
 
 ### Tier 1: Functional Features (100 tests)
 - `f01_token_tooling`: Decoupled token tooling, autonomous execution, hex formatting.
@@ -56,5 +53,15 @@ The test suite exercises all 20 target features across the entire Hakille UI and
 
 ---
 
+## Mobile Suite (`hakille-e2e-mobile` — 376 tests)
+
+Covers all 30 mobile features across 4 tiers + ephemeral HTTP/IPC harness (`tests/e2e/mobile/TEST_READY.md`):
+- **Tier 1 (150 tests):** Functional isolation for all 30 mobile features.
+- **Tier 2 (150 tests):** Boundary, HTTP payload limits (`413`), and fail-closed fault injection.
+- **Tier 3 (41 tests):** Cross-feature pairwise integration (presence, governance, checkpoint v2, memory, sandbox).
+- **Tier 4 (6 tests) + Harness (29 tests):** Multi-step mobile workloads, fsync checkpoint recovery, and Ed25519 audit verification.
+
+---
+
 ## Result
-All 230 tests pass cleanly without errors or warnings.
+All 606 E2E tests (`230` desktop/core + `376` mobile) pass cleanly without simulated success.

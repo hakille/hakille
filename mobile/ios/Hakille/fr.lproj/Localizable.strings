@@ -63,7 +63,8 @@
 "Open the app before starting dictation." = "Ouvrez l’application avant de démarrer la dictée.";
 "Finish the current operation before dictating." = "Terminez l’opération en cours avant de dicter.";
 "Speech recognition does not support the selected language on this device." = "La reconnaissance vocale ne prend pas en charge cette langue sur cet appareil.";
-"On-device speech recognition is unavailable for this language. No network recognition will be used." = "La reconnaissance sur l’appareil est indisponible pour cette langue. Aucune reconnaissance réseau ne sera utilisée.";
+"On-device speech recognition is unavailable for this language. No network recognition will be used." = "Reconnaissance vocale locale indisponible sur cet appareil";
+"Reconnaissance vocale locale indisponible sur cet appareil" = "Reconnaissance vocale locale indisponible sur cet appareil";
 "Speech permission was denied. Enable it in iOS Settings to dictate." = "L’autorisation de reconnaissance vocale a été refusée. Activez-la dans les réglages iOS pour dicter.";
 "Speech recognition is restricted on this device." = "La reconnaissance vocale est restreinte sur cet appareil.";
 "Microphone permission was denied. Enable it in iOS Settings to dictate." = "L’autorisation du microphone a été refusée. Activez-la dans les réglages iOS pour dicter.";

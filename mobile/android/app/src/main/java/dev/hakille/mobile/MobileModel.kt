@@ -40,6 +40,8 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
     val snapshot = _snapshot.asStateFlow()
     private val _error = MutableStateFlow("")
     val error = _error.asStateFlow()
+    private val _requestStartTimeMs = MutableStateFlow<Long?>(null)
+    val requestStartTimeMs = _requestStartTimeMs.asStateFlow()
     private val _savedEndpoint = MutableStateFlow("")
     val savedEndpoint = _savedEndpoint.asStateFlow()
     val devices = DeviceCapabilitiesController(application, viewModelScope)
@@ -246,9 +248,63 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
     fun cancelRequest() {
         stopVoiceTurn()
         dictation.cancel()
+        _requestStartTimeMs.value = null
         val pending = _snapshot.value.objectOrNull("pending") ?: return
         generation++; operation?.cancel(); operation = null
         accept(bridge.failRequest(pending.getValue("request_id").jsonPrimitive.content.toULong(), "Transport cancelled; outcome unknown / Transport annulé, résultat inconnu"))
+    }
+
+    fun ghostActionAccept(id: String): Boolean = dispatch("ghost_action_accept") { put("id", id) }
+    fun ghostActionDismiss(id: String): Boolean = dispatch("ghost_action_dismiss") { put("id", id) }
+
+    fun undoAction(journalId: Long): Boolean = dispatch("undo") { put("journal_id", JsonPrimitive(journalId)) }
+    fun forgetFact(rowId: String): Boolean = dispatch("forget_memory") { put("row_id", rowId) }
+    fun setAutonomyCrank(domain: String, crank: Int, maxCostCents: Long? = null, maxActions: Int? = null, daysValid: Int? = null): Boolean =
+        dispatch("set_autonomy_crank") {
+            put("domain", domain)
+            put("crank", JsonPrimitive(crank))
+            if (maxCostCents != null) put("max_cost_cents", JsonPrimitive(maxCostCents))
+            if (maxActions != null) put("max_actions", JsonPrimitive(maxActions))
+            if (daysValid != null) put("days_valid", JsonPrimitive(daysValid))
+        }
+    fun requestWhy(targetId: String, targetType: String): Boolean =
+        dispatch("request_why") {
+            put("target_id", targetId)
+            put("target_type", targetType)
+        }
+    fun closeWhy(): Boolean = dispatch("close_why")
+    fun runAgent(name: String, inputJson: String): Boolean =
+        dispatch("run_agent") {
+            put("name", name)
+            put("input_json", inputJson)
+        }
+    fun loadJournal(limit: Int = 50): Boolean = dispatch("load_journal") { put("limit", JsonPrimitive(limit)) }
+    fun loadMemory(query: String? = null, limit: Int = 50): Boolean =
+        dispatch("load_memory") {
+            if (query != null) put("query", query)
+            put("limit", JsonPrimitive(limit))
+        }
+    fun rememberFact(text: String): Boolean = dispatch("remember") { put("text", text) }
+    fun loadAgents(): Boolean = dispatch("load_agents")
+    fun dismissPrivacyGuard(): Boolean = dispatch("dismiss_privacy_guard")
+    fun startGuestPass(name: String, power: String, durationSecs: Int = 3600): Boolean =
+        dispatch("start_guest_pass") {
+            put("name", name)
+            put("power", power)
+            put("duration_secs", JsonPrimitive(durationSecs))
+        }
+    fun tickGuestPass(elapsedSecs: Int): Boolean =
+        dispatch("tick_guest_pass") {
+            put("elapsed_secs", JsonPrimitive(elapsedSecs))
+        }
+    fun revokeGuestPass(): Boolean = dispatch("revoke_guest_pass")
+    fun connectFromPairingQr(rawQrJson: String) {
+        try {
+            val parsed = EndpointPolicy.parsePairingQr(rawQrJson)
+            connect(parsed.endpoint, parsed.token, useSaved = false)
+        } catch (_: Exception) {
+            _error.value = "Invalid pairing QR / QR d'appairage invalide"
+        }
     }
 
     private fun accept(json: String, clearStorageError: Boolean = true): Boolean {
@@ -257,53 +313,107 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
         _error.value = result.text("error")
         val ok = result["ok"]?.jsonPrimitive?.booleanOrNull == true
         val frame = result.objectOrNull("request")
-        if (frame == null) { queuePersistence(clearStorageError); return ok }
+        if (frame == null) {
+            _requestStartTimeMs.value = null
+            queuePersistence(clearStorageError)
+            return ok
+        }
+        _requestStartTimeMs.value = System.currentTimeMillis()
         val configuration = credentials
         val id = frame.getValue("id").jsonPrimitive.content.toULong()
         if (configuration == null) {
+            _requestStartTimeMs.value = null
             failBeforeSend(id, "Connect to a hub first / Connectez d’abord un hub"); return false
         }
         val epoch = generation
         val durableIntent = bridge.draftJson()
         val version = ++persistenceVersion
         val session = _snapshot.value.text("gateway_session").ifEmpty { null }
+        val isStreamingCandidate = frame.objectOrNull("body")?.objectOrNull("Request")
+            ?.objectOrNull("message")?.let { it.containsKey("HudSubmit") } == true
         operation = viewModelScope.launch {
             var sent = false
             try {
-                val response = afterDurableDraft(persist = {
-                    try {
-                        persist(durableIntent)
-                        if (version == persistenceVersion) _persistenceError.value = ""
-                    } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (failure: Exception) {
-                        _persistenceError.value = getApplication<Application>().getString(R.string.draft_save_failed)
-                        throw failure
+                if (isStreamingCandidate) {
+                    afterDurableDraft(persist = {
+                        try {
+                            persist(durableIntent)
+                            if (version == persistenceVersion) _persistenceError.value = ""
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (failure: Exception) {
+                            _persistenceError.value = getApplication<Application>().getString(R.string.draft_save_failed)
+                            throw failure
+                        }
+                    }) {
+                        if (epoch != generation) throw CancellationException()
+                        sent = true
+                        gateway.sendStream(configuration, frame.toString(), session) { chunk ->
+                            if (epoch == generation) {
+                                viewModelScope.launch(Dispatchers.Main) {
+                                    val resJson = bridge.receiveStreamFrame(id, chunk)
+                                    val streamResult = Json.parseToJsonElement(resJson).jsonObject
+                                    _snapshot.value = streamResult.getValue("snapshot").jsonObject
+                                    _error.value = streamResult.text("error")
+                                }
+                            }
+                        }
                     }
-                }) {
-                    if (epoch != generation) throw CancellationException()
-                    sent = true
-                    gateway.send(configuration, frame.toString(), session)
-                }
-                if (epoch == generation) {
-                    val accepted = accept(bridge.receiveJson(id, response))
-                    val reply = _snapshot.value.objectOrNull("voice_reply")
-                    val voiceRequest = _snapshot.value.text("voice_request_id").toULongOrNull()
-                    val correlated = reply != null && reply.text("request_id").toULongOrNull() == id &&
-                        reply.text("context_id") == _snapshot.value.text("voice_context_id") && voiceRequest == id
-                    val expectedVoiceReply = voicePolicy.expects(id)
-                    val text = voicePolicy.finish(id, accepted && correlated, reply?.text("text"))
-                    if (text != null && foregroundActive && _voiceConversationEnabled.value) speaker.speak(text, voiceLanguage)
-                    else if (expectedVoiceReply && accepted && voiceRequest == id && foregroundActive && _voiceConversationEnabled.value) {
-                        val outcome = _snapshot.value.rows("outcomes").firstOrNull { it.text("request_id").toULongOrNull() == id }
-                        val responseText = outcome?.objectOrNull("result")?.objectOrNull("HudReply")?.text("response")
-                        if (outcome?.text("state") == "confirmed" && responseText != null && responseText.toByteArray(Charsets.UTF_8).size > 8192) {
-                            _speechStatus.value = LocalSpeechStatus(LocalSpeechPhase.ERROR, LocalSpeechIssue.TEXT_TOO_LONG)
+                    if (epoch == generation) {
+                        _requestStartTimeMs.value = null
+                        val reply = _snapshot.value.objectOrNull("voice_reply")
+                        val voiceRequest = _snapshot.value.text("voice_request_id").toULongOrNull()
+                        val correlated = reply != null && reply.text("request_id").toULongOrNull() == id &&
+                            reply.text("context_id") == _snapshot.value.text("voice_context_id") && voiceRequest == id
+                        val expectedVoiceReply = voicePolicy.expects(id)
+                        val text = voicePolicy.finish(id, correlated, reply?.text("text"))
+                        if (text != null && foregroundActive && _voiceConversationEnabled.value) speaker.speak(text, voiceLanguage)
+                        else if (expectedVoiceReply && voiceRequest == id && foregroundActive && _voiceConversationEnabled.value) {
+                            val outcome = _snapshot.value.rows("outcomes").firstOrNull { it.text("request_id").toULongOrNull() == id }
+                            val responseText = outcome?.objectOrNull("result")?.objectOrNull("HudReply")?.text("response")
+                            if (outcome?.text("state") == "confirmed" && responseText != null && responseText.toByteArray(Charsets.UTF_8).size > 8192) {
+                                _speechStatus.value = LocalSpeechStatus(LocalSpeechPhase.ERROR, LocalSpeechIssue.TEXT_TOO_LONG)
+                            }
+                        }
+                        queuePersistence(clearStorageError = true)
+                    }
+                } else {
+                    val response = afterDurableDraft(persist = {
+                        try {
+                            persist(durableIntent)
+                            if (version == persistenceVersion) _persistenceError.value = ""
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (failure: Exception) {
+                            _persistenceError.value = getApplication<Application>().getString(R.string.draft_save_failed)
+                            throw failure
+                        }
+                    }) {
+                        if (epoch != generation) throw CancellationException()
+                        sent = true
+                        gateway.send(configuration, frame.toString(), session)
+                    }
+                    if (epoch == generation) {
+                        _requestStartTimeMs.value = null
+                        val accepted = accept(bridge.receiveJson(id, response))
+                        val reply = _snapshot.value.objectOrNull("voice_reply")
+                        val voiceRequest = _snapshot.value.text("voice_request_id").toULongOrNull()
+                        val correlated = reply != null && reply.text("request_id").toULongOrNull() == id &&
+                            reply.text("context_id") == _snapshot.value.text("voice_context_id") && voiceRequest == id
+                        val expectedVoiceReply = voicePolicy.expects(id)
+                        val text = voicePolicy.finish(id, accepted && correlated, reply?.text("text"))
+                        if (text != null && foregroundActive && _voiceConversationEnabled.value) speaker.speak(text, voiceLanguage)
+                        else if (expectedVoiceReply && accepted && voiceRequest == id && foregroundActive && _voiceConversationEnabled.value) {
+                            val outcome = _snapshot.value.rows("outcomes").firstOrNull { it.text("request_id").toULongOrNull() == id }
+                            val responseText = outcome?.objectOrNull("result")?.objectOrNull("HudReply")?.text("response")
+                            if (outcome?.text("state") == "confirmed" && responseText != null && responseText.toByteArray(Charsets.UTF_8).size > 8192) {
+                                _speechStatus.value = LocalSpeechStatus(LocalSpeechPhase.ERROR, LocalSpeechIssue.TEXT_TOO_LONG)
+                            }
                         }
                     }
                 }
             } catch (_: CancellationException) { /* Cancellation is reported explicitly by the initiating action. */ }
             catch (_: Exception) {
                 if (epoch == generation) {
+                    _requestStartTimeMs.value = null
                     if (sent) accept(bridge.failRequest(id, "Gateway request failed; no automatic retry / Requête interrompue, aucune relance automatique"))
                     else failBeforeSend(id, getApplication<Application>().getString(R.string.draft_request_not_sent), clearStorageError = false)
                 }

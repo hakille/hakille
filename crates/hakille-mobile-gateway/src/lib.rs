@@ -199,7 +199,7 @@ struct Connection {
 pub struct Gateway {
     pub(crate) config: GatewayConfig,
     pub(crate) bearer: BearerToken,
-    connection: Mutex<Option<Connection>>,
+    connection: std::sync::Arc<Mutex<Option<Connection>>>,
 }
 
 impl Gateway {
@@ -208,7 +208,7 @@ impl Gateway {
         Ok(Self {
             config,
             bearer,
-            connection: Mutex::new(None),
+            connection: std::sync::Arc::new(Mutex::new(None)),
         })
     }
 
@@ -226,27 +226,23 @@ impl Gateway {
         }
     }
 
-    pub async fn request(
-        &self,
-        frame: Frame,
-        expected_session: Option<&str>,
-    ) -> (u16, GatewayResponse) {
+    fn validate_request(&self, frame: &Frame) -> Result<bool, (u16, GatewayResponse)> {
         if frame.check().is_err() {
-            return (
+            return Err((
                 400,
                 GatewayResponse::failure("bad_version", "version IPC incompatible", false, None),
-            );
+            ));
         }
         if frame.id == 0 || frame.id == BARRIER_ID {
-            return (
+            return Err((
                 400,
                 GatewayResponse::failure("bad_id", "identifiant réservé", false, None),
-            );
+            ));
         }
         let message = match &frame.body {
             FrameBody::Request { message } if allowed(message) => message,
             _ => {
-                return (
+                return Err((
                     400,
                     GatewayResponse::failure(
                         "unsupported",
@@ -254,7 +250,7 @@ impl Gateway {
                         false,
                         None,
                     ),
-                );
+                ));
             }
         };
         let card_decision = matches!(
@@ -263,21 +259,21 @@ impl Gateway {
         );
         // Sérialisation vérifiée avant d'ouvrir la session ou de marquer l'issue
         // inconnue ; aucune erreur locale de taille ne doit envoyer de requête.
-        if serde_json::to_vec(&frame).map_or(true, |bytes| bytes.len() > MAX_FRAME_BYTES) {
-            return (
+        if serde_json::to_vec(frame).map_or(true, |bytes| bytes.len() > MAX_FRAME_BYTES) {
+            return Err((
                 413,
                 GatewayResponse::failure("too_large", "requête trop volumineuse", false, None),
-            );
+            ));
         }
-        let mut state = match self.connection.try_lock() {
-            Ok(state) => state,
-            Err(_) => {
-                return (
-                    429,
-                    GatewayResponse::failure("busy", "une requête est déjà en cours", false, None),
-                );
-            }
-        };
+        Ok(card_decision)
+    }
+
+    async fn ensure_connection(
+        &self,
+        state: &mut Option<Connection>,
+        card_decision: bool,
+        expected_session: Option<&str>,
+    ) -> Result<Connection, (u16, GatewayResponse)> {
         if state
             .as_ref()
             .is_some_and(|session| session.last_used.elapsed() >= self.config.session_idle_timeout)
@@ -289,7 +285,7 @@ impl Gateway {
             || expected_session.is_some_and(|expected| Some(expected) != current_id)
             || (card_decision && current_id.is_none())
         {
-            return (
+            return Err((
                 409,
                 GatewayResponse::failure(
                     "stale_session",
@@ -297,7 +293,7 @@ impl Gateway {
                     false,
                     current_id.map(str::to_owned),
                 ),
-            );
+            ));
         }
         if state.is_none() {
             let connected = tokio::time::timeout(Duration::from_secs(10), async {
@@ -321,7 +317,7 @@ impl Gateway {
             match connected {
                 Ok(Ok(connection)) => *state = Some(connection),
                 _ => {
-                    return (
+                    return Err((
                         503,
                         GatewayResponse::failure(
                             "ipc_unavailable",
@@ -329,14 +325,41 @@ impl Gateway {
                             false,
                             None,
                         ),
-                    );
+                    ));
                 }
             }
         }
+        Ok(state.take().expect("connexion établie"))
+    }
+
+    pub async fn request(
+        &self,
+        frame: Frame,
+        expected_session: Option<&str>,
+    ) -> (u16, GatewayResponse) {
+        let card_decision = match self.validate_request(&frame) {
+            Ok(c) => c,
+            Err(res) => return res,
+        };
+        let mut state = match self.connection.try_lock() {
+            Ok(state) => state,
+            Err(_) => {
+                return (
+                    429,
+                    GatewayResponse::failure("busy", "une requête est déjà en cours", false, None),
+                );
+            }
+        };
+        let mut connection = match self
+            .ensure_connection(&mut state, card_decision, expected_session)
+            .await
+        {
+            Ok(conn) => conn,
+            Err(res) => return res,
+        };
         // Retirer la connexion de l'état avant tout await d'envoi : si HTTP
         // abandonne la future, le flux local est détruit plutôt que réutilisé
         // avec une requête dont l'issue est inconnue.
-        let mut connection = state.take().expect("connexion établie");
         let session_id = connection.id.clone();
         let result = tokio::time::timeout(
             self.config.request_timeout,
@@ -387,6 +410,117 @@ impl Gateway {
             ),
         }
     }
+
+    pub async fn request_stream(
+        self: &std::sync::Arc<Self>,
+        frame: Frame,
+        expected_session: Option<&str>,
+    ) -> Result<(String, tokio::sync::mpsc::Receiver<bytes::Bytes>), (u16, GatewayResponse)> {
+        let card_decision = self.validate_request(&frame)?;
+        let mut state = match self.connection.clone().try_lock_owned() {
+            Ok(state) => state,
+            Err(_) => {
+                return Err((
+                    429,
+                    GatewayResponse::failure("busy", "une requête est déjà en cours", false, None),
+                ));
+            }
+        };
+        let mut connection = self
+            .ensure_connection(&mut state, card_decision, expected_session)
+            .await?;
+        let session_id = connection.id.clone();
+        let (tx, rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(32);
+        let gateway = self.clone();
+        let request_id = frame.id;
+
+        tokio::spawn(async move {
+            let mut state = state;
+            let res = tokio::time::timeout(gateway.config.request_timeout, async {
+                transport::write_frame(&mut connection.stream, &frame)
+                    .await
+                    .map_err(|_| ())?;
+                transport::write_frame(
+                    &mut connection.stream,
+                    &Frame::request(BARRIER_ID, UiToKernel::StatusRequest),
+                )
+                .await
+                .map_err(|_| ())?;
+
+                let mut saw_final = false;
+                let mut accounted_bytes = 0_usize;
+                let mut frame_count = 0_usize;
+
+                loop {
+                    let incoming = transport::read_frame(&mut connection.stream)
+                        .await
+                        .map_err(|_| ())?
+                        .ok_or(())?;
+                    incoming.check().map_err(|_| ())?;
+
+                    if incoming.id == BARRIER_ID {
+                        if !saw_final
+                            || !matches!(
+                                incoming.body,
+                                FrameBody::Reply {
+                                    message: KernelToUi::StatusReply { .. }
+                                }
+                            )
+                        {
+                            return Err(());
+                        }
+                        let done_event = b"event: done\ndata: {}\n\n";
+                        let _ = tx.send(bytes::Bytes::from_static(done_event)).await;
+                        return Ok(());
+                    }
+
+                    if !matches!(
+                        incoming.body,
+                        FrameBody::Reply { .. } | FrameBody::Error { .. }
+                    ) || (incoming.id != 0 && incoming.id != request_id)
+                    {
+                        return Err(());
+                    }
+
+                    if incoming.id == request_id {
+                        if saw_final {
+                            return Err(());
+                        }
+                        saw_final = true;
+                    }
+
+                    let json = serde_json::to_string(&incoming).map_err(|_| ())?;
+                    accounted_bytes = accounted_bytes.checked_add(json.len()).ok_or(())?;
+                    if accounted_bytes > MAX_RESPONSE_BYTES - 1024 {
+                        return Err(());
+                    }
+                    frame_count += 1;
+                    if frame_count > MAX_RESPONSE_FRAMES {
+                        return Err(());
+                    }
+
+                    let sse = format!("data: {json}\n\n");
+                    if tx.send(bytes::Bytes::from(sse)).await.is_err() {
+                        return Err(());
+                    }
+                }
+            })
+            .await;
+
+            match res {
+                Ok(Ok(())) => {
+                    connection.last_used = Instant::now();
+                    *state = Some(connection);
+                }
+                _ => {
+                    drop(connection);
+                    *state = None;
+                }
+            }
+        });
+
+        Ok((session_id, rx))
+    }
 }
 
 fn allowed(message: &UiToKernel) -> bool {
@@ -416,10 +550,10 @@ fn allowed(message: &UiToKernel) -> bool {
         | UiToKernel::GhostActionAccept { id }
         | UiToKernel::GhostActionDismiss { id } => !id.is_empty() && id.len() <= 256,
         UiToKernel::SpatialGesture(_) => true,
-        UiToKernel::Undo { .. }
-        | UiToKernel::RevokeAll
-        | UiToKernel::SettingsToggle { .. }
-        | UiToKernel::OutboxFlush => false,
+        UiToKernel::Undo { journal_id } => *journal_id > 0,
+        UiToKernel::RevokeAll | UiToKernel::SettingsToggle { .. } | UiToKernel::OutboxFlush => {
+            false
+        }
     }
 }
 

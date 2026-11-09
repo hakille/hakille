@@ -22,17 +22,12 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
-/** Signe immobile. Aucun indicateur de niveau audio n’est inventé. */
+/** Signe de présence souveraine Hakille avec 21 fils kora et respiration subtile. */
 @Composable fun PresenceMark(listening: Boolean, modifier: Modifier = Modifier) {
-    val line = MaterialTheme.colorScheme.outlineVariant
-    val glow = MaterialTheme.colorScheme.primary
-    Box(modifier.size(176.dp), contentAlignment = Alignment.Center) {
-        Canvas(Modifier.fillMaxSize()) {
-            drawCircle(if (listening) glow else line, radius = size.minDimension / 2 - 2.dp.toPx(), style = Stroke(if (listening) 2.dp.toPx() else 1.dp.toPx()))
-            drawCircle(line, radius = size.minDimension / 2 - 12.dp.toPx(), style = Stroke(1.dp.toPx()))
-        }
-        Image(painterResource(if (LocalHakilleDark.current) R.drawable.hakille_mark_dark else R.drawable.hakille_mark_light), contentDescription = null, modifier = Modifier.size(136.dp))
-    }
+    dev.hakille.mobile.ui.LivingAuraCanvas(
+        presenceState = if (listening) dev.hakille.mobile.ui.PresenceState.Listening else dev.hakille.mobile.ui.PresenceState.Idle,
+        modifier = modifier
+    )
 }
 
 enum class AppDestination(val label: Int, val tag: String) {

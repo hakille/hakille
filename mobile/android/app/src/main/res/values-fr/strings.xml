@@ -34,7 +34,7 @@
 <string name="dictation_finished">Texte ajouté au brouillon. Rien n’a été envoyé.</string>
 <string name="dictation_cancelled">Dictée arrêtée. Touchez Dicter pour démarrer une nouvelle session.</string>
 <string name="dictation_android_version">La dictée sur l’appareil nécessite Android 12 (API 31) ou ultérieur. Aucun moteur réseau n’est utilisé en remplacement.</string>
-<string name="dictation_engine_missing">Aucun moteur de reconnaissance sur l’appareil n’est disponible. Aucun repli cloud.</string>
+<string name="dictation_engine_missing">Reconnaissance vocale locale indisponible sur cet appareil</string>
 <string name="dictation_permission_denied">Autorisation du microphone refusée. Vous pouvez l’accorder dans les réglages Android, puis toucher Dicter.</string>
 <string name="dictation_permission_revoked">L’autorisation du microphone n’est plus disponible. La dictée est arrêtée.</string>
 <string name="dictation_busy">Le moteur de l’appareil est occupé. Réessayez plus tard.</string>

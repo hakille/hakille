@@ -636,6 +636,94 @@ async fn cancelled_request_future_drops_ipc_instead_of_reusing_pending_reply() {
     fake.await.unwrap();
 }
 
+#[tokio::test]
+async fn sse_streaming_pushes_frames_in_real_time_with_done_event() {
+    let (rig, listener) = setup(Duration::from_secs(3), Duration::from_secs(60)).await;
+    let fake = tokio::spawn(async move {
+        let mut stream = accept(&listener).await;
+        assert_eq!(read(&mut stream).await.id, 1);
+        write_frame(
+            &mut stream,
+            &Frame::reply(0, KernelToUi::Presence(PresenceState::Acting)),
+        )
+        .await
+        .unwrap();
+        write_frame(
+            &mut stream,
+            &Frame::reply(
+                0,
+                KernelToUi::TokenDelta {
+                    text: "Alpha ".into(),
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        write_frame(
+            &mut stream,
+            &Frame::reply(
+                0,
+                KernelToUi::TokenDelta {
+                    text: "Beta".into(),
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        write_frame(
+            &mut stream,
+            &Frame::reply(
+                1,
+                KernelToUi::HudReply {
+                    response: "Alpha Beta".into(),
+                    validation: None,
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        finish_barrier(&mut stream).await;
+    });
+
+    let res = rig
+        .post(&Frame::request(
+            1,
+            UiToKernel::HudSubmit {
+                query: "bonjour".into(),
+            },
+        ))
+        .header("Accept", "text/event-stream")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), 200);
+    assert!(
+        res.headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("text/event-stream")
+    );
+    let session = res
+        .headers()
+        .get("x-hakille-session")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(!session.is_empty());
+
+    let text = res.text().await.unwrap();
+    assert!(text.contains("event: done\ndata: {}\n\n"));
+    assert!(text.contains("Alpha "));
+    assert!(text.contains("Beta"));
+    assert!(text.contains("Alpha Beta"));
+
+    fake.await.unwrap();
+}
+
 #[test]
 fn private_token_creation_bounds_and_redaction() {
     let directory = std::env::temp_dir().join(format!("hmg-token-{}", uuid::Uuid::new_v4()));

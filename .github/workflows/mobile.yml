@@ -16,6 +16,7 @@ on:
       - "scripts/mobile_process.py"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
       - ".github/workflows/mobile.yml"
   workflow_dispatch:
 

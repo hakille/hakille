@@ -10,6 +10,7 @@ import Combine
     @Published private(set) var conversationEnabled = false
     @Published private(set) var speaking = false
     @Published private(set) var voiceMessage = ""
+    @Published private(set) var requestStartTime: Date?
     let phone = PhoneCapabilities()
     private var voicePolicy = VoiceConversationPolicy()
     private var voiceCaptureGeneration: UUID?
@@ -239,14 +240,83 @@ import Combine
     func cancelRequest() {
         guard let id = snapshot["pending"]["request_id"].id else { return }
         generation &+= 1; requestTask?.cancel(); requestTask = nil
+        requestStartTime = nil
         let response = transportStartedID == id
             ? bridge.failRequest(requestId: id, message: "Transport cancelled; outcome unknown / Transport annulé, résultat inconnu")
             : failBeforeSend(id: id, message: "Cancelled before transport / Annulée avant émission")
         transportStartedID = nil
         _ = accept(response)
     }
+    func ghostActionAccept(id: String) { dispatch("ghost_action_accept", ["id": .string(id)]) }
+    func ghostActionDismiss(id: String) { dispatch("ghost_action_dismiss", ["id": .string(id)]) }
+
+    func undoAction(journalId: UInt64) {
+        dispatch("undo", ["journal_id": .unsigned(journalId)])
+    }
+    func forgetFact(rowId: String) {
+        dispatch("forget_memory", ["row_id": .string(rowId)])
+    }
+    func setAutonomyCrank(domain: String, crank: Int, maxCostCents: UInt64? = nil, maxActions: UInt32? = nil, daysValid: UInt32? = nil) {
+        var fields: [String: JSONValue] = [
+            "domain": .string(domain),
+            "crank": .unsigned(UInt64(crank))
+        ]
+        if let maxCostCents { fields["max_cost_cents"] = .unsigned(maxCostCents) }
+        if let maxActions { fields["max_actions"] = .unsigned(UInt64(maxActions)) }
+        if let daysValid { fields["days_valid"] = .unsigned(UInt64(daysValid)) }
+        dispatch("set_autonomy_crank", fields)
+    }
+    func requestWhy(targetId: String, targetType: String) {
+        dispatch("request_why", ["target_id": .string(targetId), "target_type": .string(targetType)])
+    }
+    func closeWhy() {
+        dispatch("close_why")
+    }
+    func runAgent(name: String, inputJson: String) {
+        dispatch("run_agent", ["name": .string(name), "input_json": .string(inputJson)])
+    }
+    func loadJournal(limit: Int = 50) {
+        dispatch("load_journal", ["limit": .unsigned(UInt64(limit))])
+    }
+    func loadMemory(query: String? = nil, limit: Int = 50) {
+        var fields: [String: JSONValue] = ["limit": .unsigned(UInt64(limit))]
+        if let query, !query.isEmpty { fields["query"] = .string(query) }
+        dispatch("load_memory", fields)
+    }
+    func rememberFact(text: String) {
+        dispatch("remember", ["text": .string(text)])
+    }
+    func loadAgents() {
+        dispatch("load_agents")
+    }
+    func dismissPrivacyGuard() {
+        dispatch("dismiss_privacy_guard")
+    }
+    func startGuestPass(name: String, power: String, durationSecs: UInt32 = 3600) {
+        dispatch("start_guest_pass", [
+            "name": .string(name),
+            "power": .string(power),
+            "duration_secs": .unsigned(UInt64(durationSecs))
+        ])
+    }
+    func tickGuestPass(elapsedSecs: UInt32) {
+        dispatch("tick_guest_pass", ["elapsed_secs": .unsigned(UInt64(elapsedSecs))])
+    }
+    func revokeGuestPass() {
+        dispatch("revoke_guest_pass")
+    }
+    func connectFromPairingQr(_ rawQrJson: String) {
+        do {
+            let parsed = try EndpointPolicy.parsePairingQr(rawQrJson)
+            connect(endpoint: parsed.endpoint, token: parsed.token, useSaved: false)
+        } catch {
+            self.error = String(localized: "Invalid pairing QR code.")
+        }
+    }
+
     private func cancelUnsentRequest() {
         guard let id = snapshot["pending"]["request_id"].id, transportStartedID != id else { return }
+        requestStartTime = nil
         _ = accept(failBeforeSend(id: id, message: "Interrupted before transport / Interrompue avant émission"))
     }
     @discardableResult private func accept(_ json: String) -> Task<Bool, Never> {
@@ -260,29 +330,64 @@ import Combine
         let epoch = generation
         let sessionID = snapshot["gateway_session"].text
         let checkpoint = enqueueSave(bridge.draftJson())
+        if frame.isNull {
+            requestStartTime = nil
+        } else {
+            requestStartTime = Date()
+        }
         return Task {
             let saved = await checkpoint.value
             guard !frame.isNull, let id = frame["id"].id else { return saved && result["ok"] == .bool(true) }
             // Une interruption/reconnexion pendant fsync annule l'émission.
             guard generation == epoch, snapshot["pending"]["request_id"].id == id else { return false }
             guard saved else {
+                requestStartTime = nil
                 let failed = failBeforeSend(id: id, message: "Checkpoint unavailable; request was not sent / Sauvegarde indisponible ; requête non envoyée")
                 if let value = try? JSONValue.parse(failed) { snapshot = value["snapshot"] }
                 return false
             }
             guard let credentials else {
+                requestStartTime = nil
                 return await accept(failBeforeSend(id: id, message: "Connect to a hub first; request was not sent / Connectez d’abord un hub ; requête non envoyée")).value
             }
+            let isChat = frame["body"]["Request"]["message"]["HudSubmit"] != .null
             requestTask = Task {
                 do {
                     try Task.checkCancellation()
                     guard generation == epoch, snapshot["pending"]["request_id"].id == id else { return }
                     transportStartedID = id
-                    let response = try await gateway.send(credentials: credentials, frame: frame.encoded(), sessionID: sessionID)
-                    try Task.checkCancellation()
-                    if generation == epoch { requestTask = nil; transportStartedID = nil; _ = accept(bridge.receiveJson(requestId: id, responseJson: response)) }
+                    if isChat {
+                        try await gateway.sendStream(credentials: credentials, frame: frame.encoded(), sessionID: sessionID) { [weak self] chunk in
+                            guard let self, self.generation == epoch else { return }
+                            Task { @MainActor in
+                                let res = self.bridge.receiveStreamFrame(requestId: id, frameJson: chunk)
+                                if let parsed = try? JSONValue.parse(res), !parsed["snapshot"].isNull {
+                                    self.snapshot = parsed["snapshot"]
+                                    self.error = parsed["error"].text
+                                }
+                            }
+                        }
+                        try Task.checkCancellation()
+                        if generation == epoch {
+                            requestTask = nil; transportStartedID = nil; requestStartTime = nil
+                            updateVoiceReply()
+                            _ = enqueueSave(bridge.draftJson())
+                        }
+                    } else {
+                        let response = try await gateway.send(credentials: credentials, frame: frame.encoded(), sessionID: sessionID)
+                        try Task.checkCancellation()
+                        if generation == epoch {
+                            requestTask = nil; transportStartedID = nil; requestStartTime = nil
+                            _ = accept(bridge.receiveJson(requestId: id, responseJson: response))
+                        }
+                    }
                 } catch is CancellationError { }
-                catch { if generation == epoch { requestTask = nil; transportStartedID = nil; _ = accept(bridge.failRequest(requestId: id, message: "Gateway request failed; no automatic retry / Requête interrompue, aucune relance automatique")) } }
+                catch {
+                    if generation == epoch {
+                        requestTask = nil; transportStartedID = nil; requestStartTime = nil
+                        _ = accept(bridge.failRequest(requestId: id, message: "Gateway request failed; no automatic retry / Requête interrompue, aucune relance automatique"))
+                    }
+                }
             }
             return true
         }
