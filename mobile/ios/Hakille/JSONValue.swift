@@ -41,6 +41,14 @@ public indirect enum JSONValue: Codable, Equatable, Sendable {
     public var array: [JSONValue] { if case .array(let values) = self { return values }; return [] }
     public var object: [String: JSONValue] { if case .object(let values) = self { return values }; return [:] }
     public var id: UInt64? { UInt64(text) }
+    public var doubleValue: Double? {
+        switch self {
+        case .decimal(let v): return v
+        case .integer(let v): return Double(v)
+        case .unsigned(let v): return Double(v)
+        default: return Double(text)
+        }
+    }
     public var isNull: Bool { self == .null }
     public static func parse(_ json: String) throws -> JSONValue { try JSONDecoder().decode(Self.self, from: Data(json.utf8)) }
     public func encoded() throws -> String { String(decoding: try JSONEncoder().encode(self), as: UTF8.self) }

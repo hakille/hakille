@@ -17,7 +17,7 @@ The Hakille Universal Capability Architecture transforms Hakille from a local AI
 
 Hakille resolves these challenges by introducing a unified capability layer in pure Rust, adhering strictly to Hakille's core architectural tenets:
 - **Zero-Python in Production**: No runtime Python interpreters or subprocess virtual environments.
-- **Pure-Rust Sovereign Foundation**: Built on Tokio, Biscuit v5 Datalog capabilities, Wasmtime 48, redb 2.0, and Candle / ONNX Runtime.
+- **Pure-Rust Sovereign Foundation**: Built on Tokio, Biscuit v5 Datalog capabilities, redb 2.0, and Candle / ONNX Runtime.
 - **Cryptographic Capability Attenuation**: Mathematical least-privilege delegation without central authorization bottlenecks.
 - **Progressive Discovery & Execution**: Scalable discovery over thousands of tools with sub-millisecond retrieval and bounded context overhead.
 
@@ -27,11 +27,11 @@ Hakille resolves these challenges by introducing a unified capability layer in p
 
 ### 2.1 The Capability Concept
 A Capability in Hakille unifies:
-- **Native Rust Routines**: In-process high performance filesystem, system information, and spatial graph capabilities.
-- **WebAssembly Components**: Sandboxed plugins executing in Wasmtime 48 (WASI Preview 2) with fuel bounding.
+- **Native Rust Routines**: In-process high performance filesystem, system information, and arithmetic capabilities.
+- **Agent Executions**: Sandboxed agent capabilities executing via `crates/hakille-agents` with fuel bounding.
 - **Model Context Protocol (MCP)**: Local and remote MCP servers connected via asynchronous stdio child process pipes or HTTP Server-Sent Events (SSE).
-- **Agent Skills**: Procedural cognitive capabilities (`SKILL.md`) providing instructions, checklists, and scripts.
-- **External REST APIs**: OpenAPI-compatible web services integrated through secure zero-knowledge egress gateways.
+- **Agent Skills**: Procedural cognitive capabilities (`SKILL.md`) providing instructions, checklists, and bundled resources.
+- **External Services**: REST and HTTP capabilities integrated through secure anti-SSRF egress gateways.
 
 ### 2.2 Canonical Tool Data Structures
 Located in `crates/hakille-capability/src/types.rs`:
@@ -102,8 +102,8 @@ Frontier and local LLM engines require disparate wire formats. The translation l
    - JSON-RPC 2.0 protocol engine over `stdio` (isolated subprocess pipes with cleared environment) and `SSE` (HTTP streams).
 3. **3-Tier Progressive Skills Loader**:
    - Frontmatter catalog indexing (~40 tokens/skill) -> Runtime body injection on intent match -> Sandboxed lazy resource fetching with strict path traversal guards.
-4. **Sandboxed WASM Runner**:
-   - Wasmtime 48 Component Model (WASI Preview 2) with Cranelift AOT compilation, 64 MiB linear memory limits, MMU guard zones, CPU fuel metering, and 5 ms epoch preemption.
+4. **Sandboxed Agent Capabilities**:
+   - Delegated execution to `crates/hakille-agents` with fuel metering, linear memory caps, and epoch preemption.
 
 ---
 
@@ -140,10 +140,10 @@ Every capability invocation commits an immutable audit record to `redb 2.0`:
 
 | ADR ID | Title | Status |
 |---|---|---|
-| [ADR-001](../adr/ADR-001-universal-capability-registry.md) | Universal Capability Registry & Canonical Tool Contract | Ratified |
-| [ADR-002](../adr/ADR-002-sovereign-tokio-mcp-client-server.md) | Sovereign Tokio-Based MCP Client/Server Implementation | Ratified |
-| [ADR-003](../adr/ADR-003-3-tier-progressive-skills-loading.md) | 3-Tier Progressive Skills Loading | Ratified |
-| [ADR-004](../adr/ADR-004-defense-in-depth-biscuit-v5-risk-classification.md) | Defense-in-Depth with Biscuit v5 Datalog Attenuation & 4-Tier Risk Classification | Ratified |
-| [ADR-005](../adr/ADR-005-sandboxed-wasm-execution-wasmtime.md) | Sandboxed WASM Execution via Wasmtime 48 with Fuel Metering & 5ms Epoch Preemption | Ratified |
-| [ADR-006](../adr/ADR-006-hybrid-capability-discovery-hnsw.md) | Hybrid Capability Discovery via MiniLM 384-dim HNSW Vector Index & Structured Filtering | Ratified |
-| [ADR-007](../adr/ADR-007-cryptographic-audit-trail.md) | Cryptographically Bound Audit Trail in redb with SHA-256 Merkle Chaining & Token Binding | Ratified |
+| [ADR 015](../../adr/015-universal-capability-registry.md) | Universal Capability Registry & Canonical Tool Contract | Ratified |
+| [ADR 016](../../adr/016-sovereign-tokio-mcp-client-server.md) | Sovereign Tokio-Based MCP Client/Server Implementation | Ratified |
+| [ADR 017](../../adr/017-3-tier-progressive-skills-loading.md) | 3-Tier Progressive Skills Loading | Ratified |
+| [ADR 018](../../adr/018-defense-in-depth-biscuit-v5-risk-classification.md) | Defense-in-Depth with Biscuit v5 Datalog Attenuation & 4-Tier Risk Classification | Ratified |
+| [ADR 019](../../adr/019-sandboxed-wasm-execution-wasmtime.md) | Sandboxed WASM Architecture and Agent Execution Boundary | Ratified |
+| [ADR 020](../../adr/020-hybrid-capability-discovery.md) | Hybrid Capability Discovery via Structured Filtering and Vector Ranking with Lexical Fallback | Ratified |
+| [ADR 021](../../adr/021-cryptographic-audit-trail.md) | Cryptographically Bound Audit Trail in redb with SHA-256 Merkle Chaining & Token Binding | Ratified |

@@ -133,14 +133,25 @@ impl NativeToolsAdapter {
                     .get("path")
                     .and_then(|v| v.as_str())
                     .ok_or("Missing 'path'")?;
-                if path.contains("..") {
+                if path.contains("..") || path.starts_with('/') || path.starts_with('\\') {
                     return Err("Path traversal forbidden: '..' not permitted".to_string());
                 }
+                let std_path = std::path::Path::new(path);
+                if !std_path.exists() {
+                    return Err(format!("File not found: '{path}'"));
+                }
+                let meta = std::fs::metadata(std_path)
+                    .map_err(|e| format!("Cannot read file metadata: {e}"))?;
+                if meta.len() > 65536 {
+                    return Err("File exceeds maximum allowed read size of 64 KiB".to_string());
+                }
+                let content = std::fs::read_to_string(std_path)
+                    .map_err(|e| format!("Cannot read file content: {e}"))?;
                 Ok(json!({
                     "path": path,
                     "exists": true,
-                    "size_bytes": 1024,
-                    "content": format!("[VFS mock content for {path}]")
+                    "size_bytes": meta.len(),
+                    "content": content
                 }))
             },
         );

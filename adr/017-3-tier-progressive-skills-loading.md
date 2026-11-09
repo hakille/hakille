@@ -1,4 +1,4 @@
-# ADR-003: 3-Tier Progressive Skills Loading
+# ADR 017: 3-Tier Progressive Skills Loading
 
 - **Status**: Ratified
 - **Date**: 2026-11-07
