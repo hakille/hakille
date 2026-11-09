@@ -6,6 +6,43 @@ Le tableau initial ci-dessous décrit le travail sur la base `bbabc35`.
 Une validation distincte couvre son intégration à `d8ce84d`.
 Les tests longs marqués `#[ignore]` n'ont pas été lancés en debug.
 
+## Validation après intégration à `main`
+
+Les évolutions distantes jusqu'à `d8ce84d` ont été intégrées en conservant
+l'IPC multi-clients, l'identité persistante et l'annulation coopérative du moteur.
+Sur la révision Rust `8fecc02`, sous Linux x86_64 / Rust 1.95 :
+
+| Contrôle | Résultat |
+|---|---|
+| Formatage, tokens générés et `git diff --check` | Réussis. |
+| Check et build du workspace, toutes cibles, `--locked` | Réussis. |
+| Clippy workspace, toutes cibles, sans dépendances | Réussi avec les avertissements existants. |
+| Tests workspace `--locked --no-fail-fast -j 4` | **2 978 réussis, 0 échec, 19 ignorés**, 177 résultats de suites. |
+| `xtask conformance` | **66 réussis, 0 échec, 7 ignorés**. |
+| `cargo deny check bans sources advisories` | Réussi selon la politique existante. |
+
+Les 19 tests ignorés regroupent les dix tests longs Qwen et neuf tests
+neuronaux/audio ajoutés entre-temps dans `main`, nécessitant leurs artefacts
+ou fixtures spécifiques. Aucun nouveau test n'a été ignoré pour cette intégration.
+Les tests avec Qwen et MiniLM présents localement ont effectivement réussi.
+
+La régression IPC multi-clients couvre une lecture d'adresse privée refusée,
+l'absence de diffusion d'une synthèse provisoire et une requête de statut
+réussie après ce refus. Un test dédié vérifie également l'arrêt du préfill
+après annulation, avant le bloc suivant.
+
+Un nouvel essai HTTPS réel sur `https://example.org/` a terminé en **6,13 s**,
+avec TLS vérifié et le proxy explicitement configuré. Après redémarrage,
+l'épisode `Completed` et la source « Example Domain » sont retrouvés ; le
+graphe contient zéro fait utilisateur.
+
+La validation iOS distante a révélé un appel à l'accesseur inexistant `.int`
+dans `ActionCardTests`. L'assertion utilise maintenant l'accesseur `.id`
+(`UInt64`) déjà employé par le protocole et ses tests de limites ; elle n'est
+ni retirée ni affaiblie. Xcode n'est pas disponible sur cet hôte Linux : les
+résultats natifs et mobiles définitifs sont suivis dans la
+[PR #15](https://github.com/hakille/hakille/pull/15).
+
 ## Gates exécutés avant intégration des nouveaux commits distants
 
 | Contrôle | Résultat |
