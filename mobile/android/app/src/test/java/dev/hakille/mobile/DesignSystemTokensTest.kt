@@ -62,4 +62,13 @@ class DesignSystemTokensTest {
         assertEquals(24L, T.blurPanel)
         assertEquals(16L, T.blurGlow)
     }
+
+    @Test
+    fun testColorTokensValidColorSpace() {
+        // Calling .copy() exercises ColorSpace lookup; if color space ID is invalid this throws
+        val c = T.colorBraiseDark.copy(alpha = 0.5f)
+        assertNotNull(c)
+        val lueur = T.colorLueurDark.copy(alpha = 0.08f)
+        assertNotNull(lueur)
+    }
 }

@@ -569,13 +569,13 @@ pub fn emit_kotlin(color: &Doc, motion: &Doc, ty: &Doc) -> String {
                 let name = swift_ident(section, k);
                 let raw = hex.trim_start_matches('#');
                 let color_arg = if raw.len() == 6 {
-                    format!("0xFF{raw}U")
+                    format!("0xFF{raw}L")
                 } else if raw.len() == 8 {
                     let alpha = &raw[6..8];
                     let rgb = &raw[0..6];
-                    format!("0x{alpha}{rgb}U")
+                    format!("0x{alpha}{rgb}L")
                 } else {
-                    format!("0xFF{raw}U")
+                    format!("0xFF{raw}L")
                 };
                 out.push_str(&format!("    val {name}: Color = Color({color_arg})\n"));
                 out.push_str(&format!("    const val {name}Hex: String = \"{hex}\"\n"));
@@ -989,7 +989,7 @@ mod tests {
 
         // Kotlin assertions
         assert!(kotlin.contains("CubicBezierEasing(0.2f, 0.0f, 0.0f, 1.0f)"));
-        assert!(kotlin.contains("val colorBraiseDark: Color = Color(0xFFFF7A2FU)"));
+        assert!(kotlin.contains("val colorBraiseDark: Color = Color(0xFFFF7A2FL)"));
         assert!(kotlin.contains("const val fontInterfaceFamily: String = \"Inter Variable\""));
 
         // CSS assertions
