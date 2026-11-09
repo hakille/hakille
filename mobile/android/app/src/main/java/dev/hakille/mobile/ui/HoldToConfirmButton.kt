@@ -275,7 +275,7 @@ fun HoldToConfirmButton(
                         startAngle = -90f,
                         sweepAngle = 360f * progress,
                         useCenter = false,
-                        style = Stroke(width = 2.5f.toPx(), cap = StrokeCap.Round)
+                        style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round)
                     )
                 }
             }

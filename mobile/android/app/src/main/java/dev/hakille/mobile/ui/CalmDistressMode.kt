@@ -21,6 +21,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import dev.hakille.mobile.LocalHakilleDark
+import dev.hakille.mobile.minTouchTarget
 import hakille.tokens.HakilleTokens as T
 
 /**

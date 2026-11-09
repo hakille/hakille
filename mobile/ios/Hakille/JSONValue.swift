@@ -1,9 +1,9 @@
 import Foundation
 
 /// Protocol IDs stay UInt64 all the way through decoding and encoding.
-indirect enum JSONValue: Codable, Equatable, Sendable {
+public indirect enum JSONValue: Codable, Equatable, Sendable {
     case object([String: JSONValue]), array([JSONValue]), string(String), integer(Int64), unsigned(UInt64), decimal(Double), bool(Bool), null
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let value = try decoder.singleValueContainer()
         if value.decodeNil() { self = .null }
         else if let item = try? value.decode(Bool.self) { self = .bool(item) }
@@ -14,7 +14,7 @@ indirect enum JSONValue: Codable, Equatable, Sendable {
         else if let item = try? value.decode([String: JSONValue].self) { self = .object(item) }
         else { self = .array(try value.decode([JSONValue].self)) }
     }
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var value = encoder.singleValueContainer()
         switch self {
         case .object(let v): try value.encode(v)
@@ -27,8 +27,8 @@ indirect enum JSONValue: Codable, Equatable, Sendable {
         case .null: try value.encodeNil()
         }
     }
-    subscript(_ key: String) -> JSONValue { if case .object(let v) = self { return v[key] ?? .null }; return .null }
-    var text: String {
+    public subscript(_ key: String) -> JSONValue { if case .object(let v) = self { return v[key] ?? .null }; return .null }
+    public var text: String {
         switch self {
         case .string(let v): return v
         case .integer(let v): return String(v)
@@ -38,10 +38,10 @@ indirect enum JSONValue: Codable, Equatable, Sendable {
         default: return (try? encoded()) ?? ""
         }
     }
-    var array: [JSONValue] { if case .array(let values) = self { return values }; return [] }
-    var object: [String: JSONValue] { if case .object(let values) = self { return values }; return [:] }
-    var id: UInt64? { UInt64(text) }
-    var isNull: Bool { self == .null }
-    static func parse(_ json: String) throws -> JSONValue { try JSONDecoder().decode(Self.self, from: Data(json.utf8)) }
-    func encoded() throws -> String { String(decoding: try JSONEncoder().encode(self), as: UTF8.self) }
+    public var array: [JSONValue] { if case .array(let values) = self { return values }; return [] }
+    public var object: [String: JSONValue] { if case .object(let values) = self { return values }; return [:] }
+    public var id: UInt64? { UInt64(text) }
+    public var isNull: Bool { self == .null }
+    public static func parse(_ json: String) throws -> JSONValue { try JSONDecoder().decode(Self.self, from: Data(json.utf8)) }
+    public func encoded() throws -> String { String(decoding: try JSONEncoder().encode(self), as: UTF8.self) }
 }
