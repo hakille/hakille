@@ -102,6 +102,7 @@ class MainActivity : ComponentActivity() {
     var token by remember { mutableStateOf("") }
     var search by rememberSaveable { mutableStateOf("") }
     var memoryText by rememberSaveable { mutableStateOf("") }
+    var showDistress by rememberSaveable { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val draftFocus = remember { FocusRequester() }
@@ -112,9 +113,10 @@ class MainActivity : ComponentActivity() {
     val uncertain = snapshot.rows("uncertain_operations").filter { it.text("phase") == "unknown" }
     val lastOutcome = snapshot.rows("outcomes").lastOrNull()?.takeIf { it.text("state") != "confirmed" || it.text("kind") in setOf("remember", "run_agent", "approve", "reject") }
     val notices = (snapshot["notifications"] as? JsonArray)?.map { it.jsonPrimitive.content }.orEmpty()
+    val visibleCards = dev.hakille.mobile.ui.ActionCardHelper.filterSingleDecision(snapshot.rows("cards"))
     val leadingItems = (if (restoring) 1 else 0) + (if (persistenceError.isNotEmpty()) 1 else 0) +
         (if (uncertain.isNotEmpty()) 1 else 0) + uncertain.size + (if (error.isNotEmpty()) 1 else 0) +
-        (if (requestPending) 1 else 0) + (if (lastOutcome != null) 1 else 0) + notices.size + snapshot.rows("cards").size
+        (if (requestPending) 1 else 0) + (if (lastOutcome != null) 1 else 0) + notices.size + visibleCards.size
     val stateLabel = when (snapshot.text("connection")) {
         "connected" -> R.string.connected; "connecting" -> R.string.connecting; "unknown" -> R.string.unknown; else -> R.string.disconnected
     }
@@ -133,6 +135,9 @@ class MainActivity : ComponentActivity() {
             Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 24.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("hakille", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                TextButton(onClick = { showDistress = true }) {
+                    Text("+ Urgence", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 TextButton(onClick = { navigate(AppDestination.HUB); hubSection = 1 }) {
                     Text(stringResource(headerStateLabel), style = MaterialTheme.typography.labelMedium)
                 }
@@ -140,7 +145,16 @@ class MainActivity : ComponentActivity() {
         },
         bottomBar = { HakilleNavigation(destination, ::navigate) }) { padding ->
         // La largeur est bornée sur tablette ; le texte reste libre de grandir et de défiler.
-        Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding(), contentAlignment = Alignment.TopCenter) {
+        Box(
+            Modifier.fillMaxSize()
+                .padding(padding)
+                .consumeWindowInsets(padding)
+                .imePadding()
+                .pointerInput(Unit) {
+                    detectTapGestures { model.stopVoicePlayback() }
+                },
+            contentAlignment = Alignment.TopCenter
+        ) {
             LazyColumn(Modifier.widthIn(max = 720.dp).fillMaxSize().testTag("screen_${destination.name.lowercase()}"), state = listState, contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 if (restoring) item { StateNotice(stringResource(R.string.draft_restoring)) }
                 if (persistenceError.isNotEmpty()) item { StateNotice(persistenceError, error = true) }
@@ -151,18 +165,71 @@ class MainActivity : ComponentActivity() {
                         TextButton(onClick = { model.dispatch("acknowledge_unknown") { put("request_id", operation.getValue("request_id")) } }, enabled = !busy) { Text(stringResource(R.string.recovery_acknowledge)) }
                     }
                 }
-                if (error.isNotEmpty()) item { StateNotice(error, error = true) }
-                if (requestPending) item { QuietPanel {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Text(stringResource(R.string.waiting), style = MaterialTheme.typography.bodySmall)
-                    TextButton(onClick = model::cancelRequest) { Text(stringResource(R.string.cancel_request)) }
-                } }
-                if (lastOutcome != null) item { StateNotice(lastOutcome.text("message"), error = lastOutcome.text("state") == "failed") }
-                items(notices) { text -> StateNotice(text) }
-                items(snapshot.rows("cards"), key = { "card-${it.text("id")}" }) { card -> DecisionCard(card, snapshot.objectOrNull("approval"), busy, model) }
+                if (error.isNotEmpty()) item {
+                    dev.hakille.mobile.ui.HonestErrorComponent(
+                        errorState = dev.hakille.mobile.ui.ActionErrorState(
+                            done = "Brouillon sauvegardé localement",
+                            notDone = "Requête non transmise au hub",
+                            technicalDetail = error
+                        ),
+                        onRetry = {
+                            if (snapshot.text("draft").isNotBlank()) model.dispatch("submit")
+                            else model.dispatch("refresh_status")
+                        },
+                        onKeepDraft = { /* brouillon conservé */ }
+                    )
+                }
+                if (requestPending) item {
+                    dev.hakille.mobile.ui.HonestWaitComponent(
+                        startTimeMs = model.requestStartTimeMs.collectAsState().value,
+                        onCancel = model::cancelRequest
+                    )
+                }
+                if (lastOutcome != null) item {
+                    if (lastOutcome.text("state") == "failed") {
+                        dev.hakille.mobile.ui.HonestErrorComponent(
+                            errorState = dev.hakille.mobile.ui.ActionErrorState(
+                                done = "Opération tracée localement",
+                                notDone = "Échec du traitement sur le hub",
+                                technicalDetail = lastOutcome.text("message")
+                            ),
+                            onRetry = { model.dispatch("refresh_status") },
+                            onKeepDraft = { /* brouillon conservé */ }
+                        )
+                    } else {
+                        StateNotice(lastOutcome.text("message"), error = false)
+                    }
+                }
+                val privacyGuard = snapshot.objectOrNull("privacy_guard")
+                if (privacyGuard != null) item("privacy-guard") {
+                    dev.hakille.mobile.ui.PrivacyGuardBanner(
+                        event = privacyGuard,
+                        onDismiss = model::dismissPrivacyGuard
+                    )
+                }
+                val ghostAction = snapshot.objectOrNull("ghost_action")
+                if (ghostAction != null) item("ghost-action") {
+                    dev.hakille.mobile.ui.GhostActionComponent(
+                        ghost = ghostAction,
+                        onAccept = model::ghostActionAccept,
+                        onDismiss = model::ghostActionDismiss
+                    )
+                }
+                items(notices) { text ->
+                    if (text.startsWith("Conseil bien-être :")) {
+                        dev.hakille.mobile.ui.FatigueAlertComponent(
+                            recommendation = text.removePrefix("Conseil bien-être :").trim(),
+                            onDismiss = { /* dismiss */ }
+                        )
+                    } else {
+                        StateNotice(text)
+                    }
+                }
+                val visibleCards = dev.hakille.mobile.ui.ActionCardHelper.filterSingleDecision(snapshot.rows("cards"))
+                items(visibleCards, key = { "card-${it.text("id")}" }) { card -> DecisionCard(card, snapshot.objectOrNull("approval"), busy, model) }
                 when (destination) {
                     AppDestination.VOICE -> {
-                        item("voice-presence") { DictationControls(model, enabled = !busy && snapshot.rows("cards").isEmpty(), onWrite = { scope.launch { listState.animateScrollToItem(leadingItems + 1); withFrameNanos { }; if (destination == AppDestination.VOICE) runCatching { draftFocus.requestFocus() } } },
+                        item("voice-presence") { DictationControls(model, enabled = !busy && visibleCards.isEmpty(), onWrite = { scope.launch { listState.animateScrollToItem(leadingItems + 1); withFrameNanos { }; if (destination == AppDestination.VOICE) runCatching { draftFocus.requestFocus() } } },
                             onJournal = { navigate(AppDestination.ACTIVITY); activitySection = 0 }, onDevice = { navigate(AppDestination.HUB); hubSection = 2 }) }
                         item("draft") { QuietPanel {
                             Text(stringResource(R.string.ui_write_title), style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
@@ -179,49 +246,55 @@ class MainActivity : ComponentActivity() {
                     }
                     AppDestination.MEMORY -> {
                         item { SectionHeading(stringResource(R.string.memory), stringResource(R.string.ui_memory_hint)) }
-                        item { QuietPanel {
-                            OutlinedTextField(search, { search = it }, label = { Text(stringResource(R.string.search)) }, modifier = Modifier.fillMaxWidth())
-                            Button(onClick = { model.dispatch("load_memory") { put("query", search.ifBlank { null }); put("limit", 50) } }, enabled = hasHub && !busy) { Text(stringResource(R.string.search)) }
-                        } }
-                        if (snapshot.rows("memory").isEmpty()) item { StateNotice(stringResource(R.string.ui_memory_empty)) }
-                        items(snapshot.rows("memory")) { row -> QuietPanel {
-                            SelectionContainer { Text(row.text("text")) }
-                            Text("${row.text("source")} · ${row["tags"] ?: ""}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        } }
-                        item { QuietPanel {
-                            Text(stringResource(R.string.remember), style = MaterialTheme.typography.titleMedium)
-                            OutlinedTextField(memoryText, { memoryText = it }, label = { Text(stringResource(R.string.memory_text)) }, modifier = Modifier.fillMaxWidth())
-                            Button(onClick = { model.dispatch("remember") { put("text", memoryText) } }, enabled = hasHub && !busy && memoryText.isNotBlank()) { Text(stringResource(R.string.remember)) }
-                        } }
+                        item {
+                            dev.hakille.mobile.ui.MemoryGraphComponent(
+                                memoryRows = snapshot.rows("memory"),
+                                tombstones = (snapshot["tombstones"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty(),
+                                busy = busy,
+                                onSearch = { model.loadMemory(it.ifBlank { null }) },
+                                onRemember = { model.rememberFact(it) },
+                                onForgetFact = { model.forgetFact(it) }
+                            )
+                        }
                     }
                     AppDestination.ACTIVITY -> {
                         item { SectionHeading(stringResource(R.string.ui_activity), stringResource(R.string.ui_activity_hint)) }
                         item { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             listOf(R.string.journal, R.string.agents).forEachIndexed { index, label -> FilterChip(selected = activitySection == index, onClick = { activitySection = index }, label = { Text(stringResource(label)) }) }
                         } }
-                        item { Button(onClick = { model.dispatch(if (activitySection == 0) "load_journal" else "load_agents") { if (activitySection == 0) put("limit", 50) } }, enabled = hasHub && !busy) { Text(stringResource(R.string.refresh)) } }
                         if (activitySection == 0) {
-                            if (snapshot.rows("journal").isEmpty()) item { StateNotice(stringResource(R.string.ui_journal_empty)) }
-                            items(snapshot.rows("journal")) { row -> QuietPanel {
-                                Text(row.text("timestamp"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text(row.text("action"), style = MaterialTheme.typography.titleMedium)
-                                SelectionContainer { Text(row.text("summary")) }
-                            } }
+                            item {
+                                dev.hakille.mobile.ui.AuditJournalComponent(
+                                    entries = snapshot.rows("journal"),
+                                    busy = busy,
+                                    onRefresh = { model.loadJournal() },
+                                    onUndo = { model.undoAction(it) },
+                                    onRequestWhy = { model.requestWhy(it, "journal") }
+                                )
+                            }
                             if (snapshot.rows("outcomes").isNotEmpty()) item { Text(stringResource(R.string.outcomes), style = MaterialTheme.typography.titleMedium) }
                             items(snapshot.rows("outcomes")) { outcome -> QuietPanel {
                                 Text(outcome.text("state"), style = MaterialTheme.typography.labelMedium)
                                 SelectionContainer { Text(outcome.text("message")) }
                             } }
                         } else {
-                            if (snapshot.rows("agents").isEmpty()) item { StateNotice(stringResource(R.string.ui_agents_empty)) }
-                            items(snapshot.rows("agents"), key = { "agent-${it.text("name")}" }) { agent -> AgentCard(agent, !busy && hasHub, model) }
+                            item {
+                                dev.hakille.mobile.ui.AgentCatalogComponent(
+                                    agents = snapshot.rows("agents"),
+                                    lastAgentRun = snapshot.objectOrNull("last_agent_run"),
+                                    busy = busy,
+                                    onRefresh = { model.loadAgents() },
+                                    onRunAgent = { name, input -> model.runAgent(name, input) }
+                                )
+                            }
                         }
                     }
                     AppDestination.HUB -> {
                         item { SectionHeading(stringResource(R.string.ui_hub), stringResource(R.string.ui_hub_hint)) }
+                        val hubTabs = listOf(stringResource(R.string.status), stringResource(R.string.connection), stringResource(R.string.ui_device), "Autonomie")
                         item { FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf(R.string.status, R.string.connection, R.string.ui_device).forEachIndexed { index, label ->
-                                FilterChip(selected = hubSection == index, onClick = { hubSection = index }, label = { Text(stringResource(label)) }, modifier = Modifier.testTag(when(index) { 1 -> "destination_connection"; 2 -> "destination_capabilities"; else -> "destination_status" }))
+                            hubTabs.forEachIndexed { index, label ->
+                                FilterChip(selected = hubSection == index, onClick = { hubSection = index }, label = { Text(label) }, modifier = Modifier.testTag(when(index) { 1 -> "destination_connection"; 2 -> "destination_capabilities"; 3 -> "destination_autonomy"; else -> "destination_status" }))
                             }
                         } }
                         when (hubSection) {
@@ -254,12 +327,54 @@ class MainActivity : ComponentActivity() {
                                 TextButton(onClick = { model.disconnect(); token = "" }, enabled = !restoring) { Text(stringResource(R.string.forget)) }
                             } }
                             2 -> item { Column(Modifier.testTag("screen_capabilities")) { DeviceCapabilitiesPanel(model) } }
+                            3 -> {
+                                item("guest-pass") {
+                                    dev.hakille.mobile.ui.GuestPassPanel(
+                                        guestPass = snapshot.objectOrNull("guest_pass"),
+                                        busy = busy,
+                                        onStartGuestPass = { name, power, dur ->
+                                            model.startGuestPass(name, power, dur)
+                                        },
+                                        onRevokeGuestPass = model::revokeGuestPass
+                                    )
+                                }
+                                item("autonomy-ladder") {
+                                    dev.hakille.mobile.ui.AutonomyLadderComponent(
+                                        domainAutonomies = snapshot.rows("domain_autonomies"),
+                                        onSaveCrank = { domain, crank, maxCost, maxActions, daysValid ->
+                                            model.setAutonomyCrank(domain, crank, maxCost, maxActions, daysValid)
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
                 }
                 if (!hasHub && destination != AppDestination.HUB) item {
                     TextButton(onClick = { navigate(AppDestination.HUB); hubSection = 1 }) { Text(stringResource(R.string.ui_connect_hub)) }
                 }
+            }
+            val whySheet = snapshot.objectOrNull("why_sheet")
+            if (whySheet != null) {
+                dev.hakille.mobile.ui.WhySheetComponent(
+                    whySheet = whySheet,
+                    onDismiss = { model.closeWhy() },
+                    onDisputeFact = { factId -> model.forgetFact(factId) }
+                )
+            }
+            if (snapshot["privacy_veil_active"]?.jsonPrimitive?.booleanOrNull == true) {
+                dev.hakille.mobile.ui.PrivacyGuardVeilOverlay(
+                    event = snapshot.objectOrNull("privacy_guard"),
+                    onDismiss = model::dismissPrivacyGuard,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            if (showDistress || snapshot["distress"]?.jsonPrimitive?.booleanOrNull == true) {
+                dev.hakille.mobile.ui.CalmDistressMode(
+                    trustedContact = snapshot.text("trusted_contact").ifBlank { null },
+                    onDismiss = { showDistress = false },
+                    modifier = Modifier.fillMaxSize()
+                )
             }
         }
     }
@@ -282,42 +397,14 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable private fun DecisionCard(card: JsonObject, approval: JsonObject?, busy: Boolean, model: MobileModel) {
-    val id = card.getValue("id") // Preserve all 64 bits; never convert protocol IDs to floating point.
-    val armed = approval?.get("card_id") == id
-    val accent = tokenColor(if (LocalHakilleDark.current) HakilleTokens.colorBraiseDark else HakilleTokens.colorBraiseLight)
-    val onAccent = tokenColor(if (LocalHakilleDark.current) HakilleTokens.colorSurBraiseDark else HakilleTokens.colorSurBraiseLight)
-    val description = stringResource(R.string.approval_a11y)
-    val currentDispatch by rememberUpdatedState<(String) -> Unit>({ action -> model.dispatch(action) { put("card_id", id) } })
-    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(stringResource(R.string.decision), color = accent, style = MaterialTheme.typography.titleMedium)
-        Text("${card.text("verb")} ${card.text("object")}", style = MaterialTheme.typography.titleLarge)
-        Text("${stringResource(R.string.reason)} : ${card.text("reason")}")
-        Text("${stringResource(R.string.cost)} : ${CardPresentation.money(card["cost"])}")
-        Text("${stringResource(R.string.data_exit)} : ${CardPresentation.destination(card["data_exit"], stringResource(R.string.data_local), stringResource(R.string.data_cloud), stringResource(R.string.metadata_unknown))}")
-        Text("${stringResource(R.string.provenance)} : ${CardPresentation.provenance(card["provenance"], stringResource(R.string.external_origin), stringResource(R.string.verified_skill), stringResource(R.string.metadata_unknown))}")
-        Text(stringResource(if (card["reversible"]?.jsonPrimitive?.booleanOrNull == true) R.string.reversible else R.string.irreversible))
-        if (!busy) {
-            Box(Modifier.fillMaxWidth().heightIn(min = 56.dp).background(accent, MaterialTheme.shapes.medium)
-                .semantics {
-                    role = Role.Button; contentDescription = description
-                    onClick { currentDispatch(if (armed) "approve" else "begin_approval"); true }
-                }.pointerInput(id) {
-                    detectTapGestures(onPress = {
-                        currentDispatch("begin_approval")
-                        var ended = false
-                        try {
-                            val released = tryAwaitRelease()
-                            if (released) currentDispatch("approve") else model.dispatch("cancel_approval")
-                            ended = true
-                        } finally { if (!ended) model.dispatch("cancel_approval") }
-                    })
-                }.padding(16.dp), contentAlignment = Alignment.Center) {
-                Text(stringResource(if (armed) R.string.confirm_ready else R.string.hold_approve), color = onAccent)
-            }
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { currentDispatch("reject") }) { Text(stringResource(R.string.reject)) }
-                if (armed) TextButton(onClick = { model.dispatch("cancel_approval") }) { Text(stringResource(R.string.cancel_approval)) }
-            }
-        }
-    } }
+    dev.hakille.mobile.ui.ActionCardComponent(
+        card = card,
+        approval = approval,
+        busy = busy,
+        onApprove = { id -> model.dispatch("approve") { put("card_id", id) } },
+        onReject = { id -> model.dispatch("reject") { put("card_id", id) } },
+        onEdit = { id -> model.dispatch("edit_card") { put("card_id", id) } },
+        onRequestWhy = { id -> model.requestWhy(id.toString(), "card") },
+        onCancelApproval = { model.dispatch("cancel_approval") }
+    )
 }

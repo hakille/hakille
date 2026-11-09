@@ -67,6 +67,7 @@ import UniformTypeIdentifiers
             if let document = phone.document {
                 Label(document.name, systemImage: "doc.text").font(HakilleTypography.heading)
                 Text(ByteCountFormatter.string(fromByteCount: Int64(document.data.count), countStyle: .file))
+                Text("SHA-256: \(document.sha256)").font(HakilleTypography.mono).textSelection(.enabled)
                 if let text = document.text { Text(text).lineLimit(20).textSelection(.enabled) }
                 else { Text("This format has no text preview here. The file was read locally.").font(HakilleTypography.caption) }
             }

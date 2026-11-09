@@ -1,8 +1,9 @@
 use crate::{Gateway, GatewayResponse, MAX_RESPONSE_BYTES};
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full, Limited};
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Full, Limited, StreamBody};
 use hyper::body::Incoming;
-use hyper::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, ORIGIN};
+use hyper::header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, ORIGIN};
 use hyper::{Method, Request, Response};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use std::convert::Infallible;
@@ -13,7 +14,27 @@ use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-type HttpResponse = Response<Full<Bytes>>;
+type HttpResponse = Response<BoxBody<Bytes, Infallible>>;
+
+struct SseStream {
+    rx: tokio::sync::mpsc::Receiver<Bytes>,
+}
+
+impl futures_util::Stream for SseStream {
+    type Item = Result<hyper::body::Frame<Bytes>, Infallible>;
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        match self.rx.poll_recv(cx) {
+            std::task::Poll::Ready(Some(bytes)) => {
+                std::task::Poll::Ready(Some(Ok(hyper::body::Frame::data(bytes))))
+            }
+            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
 
 fn json(status: u16, value: &impl serde::Serialize) -> HttpResponse {
     let bytes =
@@ -23,7 +44,7 @@ fn json(status: u16, value: &impl serde::Serialize) -> HttpResponse {
         .header(CONTENT_TYPE, "application/json")
         .header(CACHE_CONTROL, "no-store")
         .header("x-content-type-options", "nosniff")
-        .body(Full::new(Bytes::from(bytes)))
+        .body(Full::new(Bytes::from(bytes)).boxed())
         .expect("en-têtes constants valides")
 }
 
@@ -101,6 +122,11 @@ async fn handle(
         },
         None => None,
     };
+    let is_sse = request
+        .headers()
+        .get(ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/event-stream"));
     if request
         .headers()
         .get("content-length")
@@ -130,8 +156,29 @@ async fn handle(
         Ok(frame) => frame,
         Err(_) => return Ok(reject(400, "bad_frame", "trame JSON invalide")),
     };
-    let (status, response) = gateway.request(frame, expected_session.as_deref()).await;
-    Ok(json(status, &response))
+
+    if is_sse {
+        match gateway
+            .request_stream(frame, expected_session.as_deref())
+            .await
+        {
+            Ok((session_id, rx)) => {
+                let response = Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, "text/event-stream")
+                    .header(CACHE_CONTROL, "no-cache")
+                    .header("x-content-type-options", "nosniff")
+                    .header("x-hakille-session", session_id)
+                    .body(StreamBody::new(SseStream { rx }).boxed())
+                    .expect("en-têtes constants valides");
+                Ok(response)
+            }
+            Err((status, err_resp)) => Ok(json(status, &err_resp)),
+        }
+    } else {
+        let (status, response) = gateway.request(frame, expected_session.as_deref()).await;
+        Ok(json(status, &response))
+    }
 }
 
 /// Serveur HTTP/1 local : au plus 32 connexions, sans keep-alive, délais bornés.

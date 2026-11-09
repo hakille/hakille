@@ -3,8 +3,7 @@ import UIKit
 
 extension Color {
     init(hakille hex: String) {
-        let value = UInt64(hex.dropFirst(), radix: 16) ?? 0
-        self.init(red: Double((value >> 16) & 255) / 255, green: Double((value >> 8) & 255) / 255, blue: Double(value & 255) / 255)
+        self.init(hex: hex)
     }
 }
 
@@ -25,6 +24,7 @@ extension Color {
     @State private var token = ""
     @State private var search = ""
     @State private var memoryText = ""
+    @State private var showDistress = false
     private var requestBusy: Bool { !model.snapshot["pending"].isNull }
     private var busy: Bool { requestBusy || model.dictationStatus.isBusy || !model.persistenceReady }
     private var hub: Bool { !model.snapshot["hub_id"].isNull }
@@ -47,11 +47,45 @@ extension Color {
                 if activityTab == 0 { journal } else { agents }
             }.tabItem { Label("Activity", systemImage: "list.bullet.rectangle") }.tag(2)
             page("Hub") {
-                Section { Picker("Hub", selection: $hubTab) { Text("Connection").tag(0); Text("Status").tag(1); Text("Phone").tag(2) }.pickerStyle(.segmented) }
+                Section { Picker("Hub", selection: $hubTab) { Text("Connection").tag(0); Text("Status").tag(1); Text("Phone").tag(2); Text("Autonomie").tag(3) }.pickerStyle(.segmented) }
                 if hubTab == 0 { connection }
                 else if hubTab == 1 { status }
-                else { PhoneCapabilitiesView(phone: model.phone) }
+                else if hubTab == 2 { PhoneCapabilitiesView(phone: model.phone) }
+                else {
+                    GuestPassView(
+                        guestPass: model.snapshot["guest_pass"],
+                        busy: busy,
+                        onStartGuestPass: { name, power, dur in
+                            model.startGuestPass(name: name, power: power, durationSecs: dur)
+                        },
+                        onRevokeGuestPass: { model.revokeGuestPass() }
+                    )
+                    AutonomyLadderView(
+                        domainAutonomies: model.snapshot["domain_autonomies"].array,
+                        onSaveCrank: { domain, crank, cost, actions, days in
+                            model.setAutonomyCrank(domain: domain, crank: crank, maxCostCents: cost, maxActions: actions, daysValid: days)
+                        }
+                    )
+                }
             }.tabItem { Label("Hub", systemImage: "network") }.tag(3)
+        }
+        .overlay {
+            if model.snapshot["privacy_veil_active"] == .bool(true) {
+                PrivacyGuardVeilView(
+                    event: model.snapshot["privacy_guard"],
+                    onDismiss: { model.dismissPrivacyGuard() }
+                )
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { !model.snapshot["why_sheet"].isNull },
+            set: { if !$0 { model.closeWhy() } }
+        )) {
+            WhySheetView(
+                whySheet: model.snapshot["why_sheet"],
+                onDismiss: { model.closeWhy() },
+                onDisputeFact: { factId in model.forgetFact(rowId: factId) }
+            )
         }
         .onChange(of: selection) { destination in
             if destination != 0 { model.disableConversation(); model.cancelDictation(); model.stopSpokenReply() }
@@ -77,26 +111,81 @@ extension Color {
             List {
                 Section {
                     Label(connectionLabel, systemImage: model.snapshot["connection"].text == "connected" ? "link" : "link.badge.plus").font(HakilleTypography.caption)
-                    if !model.error.isEmpty { Text(model.error).foregroundStyle(foreground).textSelection(.enabled) }
+                    if !model.error.isEmpty {
+                        HonestErrorView(
+                            state: ActionErrorState(
+                                done: "Brouillon sauvegardé localement",
+                                notDone: "Requête non transmise au hub",
+                                technicalDetail: model.error
+                            ),
+                            onRetry: {
+                                if !model.snapshot["draft"].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    model.dispatch("submit")
+                                } else {
+                                    model.dispatch("refresh_status")
+                                }
+                            },
+                            onKeepDraft: { }
+                        )
+                    }
                     if !model.storageError.isEmpty {
                         Text(model.storageError).foregroundStyle(foreground).textSelection(.enabled)
                         Button("Retry recovery storage") { model.retryPersistence() }
                     }
                     recoveryWarnings
-                    if let outcome = model.snapshot["outcomes"].array.last { Text("\(outcome["state"].text) · \(outcome["message"].text)").textSelection(.enabled) }
+                    if let outcome = model.snapshot["outcomes"].array.last {
+                        if outcome["state"].text == "failed" {
+                            HonestErrorView(
+                                state: ActionErrorState(
+                                    done: "Opération enregistrée",
+                                    notDone: "Échec du traitement sur le hub",
+                                    technicalDetail: outcome["message"].text
+                                ),
+                                onRetry: { model.dispatch("refresh_status") },
+                                onKeepDraft: { }
+                            )
+                        } else {
+                            Text("\(outcome["state"].text) · \(outcome["message"].text)").textSelection(.enabled)
+                        }
+                    }
                     if requestBusy {
-                        ProgressView("Request in progress. No automatic retry.")
-                        Button("Cancel waiting — result may be unknown") { model.cancelRequest() }
+                        HonestWaitView(
+                            startTime: model.requestStartTime,
+                            onCancel: { model.cancelRequest() }
+                        )
+                    }
+                    if !model.snapshot["privacy_guard"].isNull {
+                        PrivacyGuardBannerView(
+                            event: model.snapshot["privacy_guard"],
+                            onDismiss: { model.dismissPrivacyGuard() }
+                        )
+                    }
+                    if !model.snapshot["ghost_action"].isNull {
+                        GhostActionView(
+                            ghost: model.snapshot["ghost_action"],
+                            onAccept: { id in model.ghostActionAccept(id: id) },
+                            onDismiss: { id in model.ghostActionDismiss(id: id) }
+                        )
                     }
                     if model.snapshot["history_trimmed"] == .bool(true) { Text("Older entries are omitted. Consult the journal.").font(HakilleTypography.caption) }
-                    ForEach(Array(model.snapshot["notifications"].array.enumerated()), id: \.offset) { _, notification in Text(notification.text).textSelection(.enabled) }
+                    ForEach(Array(model.snapshot["notifications"].array.enumerated()), id: \.offset) { _, notification in
+                        if notification.text.hasPrefix("Conseil bien-être :") {
+                            FatigueAlertView(
+                                recommendation: String(notification.text.dropFirst("Conseil bien-être :".count)).trimmingCharacters(in: .whitespaces),
+                                onDismiss: { }
+                            )
+                        } else {
+                            Text(notification.text).textSelection(.enabled)
+                        }
+                    }
                     if !hub { Button("Connect a hub") { hubTab = 0; selection = 3 } }
                 }.listRowBackground(surface)
-                ForEach(model.snapshot["cards"].array, id: \.stableID) { card in
+                ForEach(ActionCardHelper.filterSingleDecision(model.snapshot["cards"].array), id: \.stableID) { card in
                     Section { DecisionView(card: card, approval: model.snapshot["approval"], busy: busy) }.listRowBackground(surface)
                 }
                 content()
             }.listStyle(.insetGrouped).scrollContentBackground(.hidden).background(background)
+                .onTapGesture { model.stopSpokenReply() }
                 .listRowSeparatorTint(Color(hakille: colorScheme == .dark ? HakilleTokens.colorLigneDark : HakilleTokens.colorLigneLight))
                 .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -105,6 +194,22 @@ extension Color {
                             .frame(width: 32, height: 32)
                             .accessibilityLabel("Hakille")
                     }
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button {
+                            showDistress = true
+                        } label: {
+                            Image(systemName: "cross.fill")
+                                .font(.caption2)
+                                .foregroundStyle(secondary)
+                                .accessibilityLabel("Mode détresse")
+                        }
+                    }
+                }
+                .sheet(isPresented: $showDistress) {
+                    CalmDistressView(
+                        trustedContact: model.snapshot["trusted_contact"].text.isEmpty ? nil : model.snapshot["trusted_contact"].text,
+                        onDismiss: { showDistress = false }
+                    )
                 }
                 .toolbarBackground(background, for: .navigationBar, .tabBar)
                 .toolbarBackground(.visible, for: .navigationBar, .tabBar)
@@ -121,7 +226,10 @@ extension Color {
     private var voiceHome: some View {
         Section {
             VStack(spacing: 24) {
-                VoicePresenceMark(listening: model.dictationStatus.phase == .listening, speaking: model.speaking)
+                LivingPresenceAuraView(
+                    state: model.speaking ? .speaking : (model.dictationStatus.phase == .listening ? .listening : .idle),
+                    size: 176
+                )
                 VStack(spacing: 8) {
                     Text(presenceTitle).font(HakilleTypography.title).multilineTextAlignment(.center)
                     Text(LocalizedStringKey(model.conversationEnabled ? "One tap, one voice turn with your hub." : "Speak here. Review your draft before sending."))
@@ -237,33 +345,41 @@ extension Color {
         }
     }
     private var memory: some View {
-        Group {
-            Section {
-                TextField("Memory search", text: $search)
-                Button("Search") { model.dispatch("load_memory", ["query": search.isEmpty ? .null : .string(search), "limit": .integer(50)]) }.disabled(!hub || busy)
-            }
-            ForEach(Array(model.snapshot["memory"].array.enumerated()), id: \.offset) { _, row in
-                Section { Text(row["text"].text).textSelection(.enabled); Text("\(row["source"].text) · \(row["tags"].text)").font(HakilleTypography.caption) }
-            }
-            Section {
-                TextField("Text to remember", text: $memoryText, axis: .vertical)
-                Button("Save memory") { model.dispatch("remember", ["text": .string(memoryText)]) }.disabled(!hub || busy || memoryText.isEmpty)
-            }
+        Section {
+            MemoryGraphView(
+                memoryRows: model.snapshot["memory"].array,
+                tombstones: model.snapshot["tombstones"].array.map(\.text),
+                busy: busy,
+                onSearch: { q in model.loadMemory(query: q.isEmpty ? nil : q) },
+                onRemember: { text in model.rememberFact(text: text) },
+                onForgetFact: { id in model.forgetFact(rowId: id) }
+            )
         }
+        .listRowBackground(surface)
     }
     private var journal: some View {
-        Group {
-            Section { Button("Refresh") { model.dispatch("load_journal", ["limit": .integer(50)]) }.disabled(!hub || busy) }
-            ForEach(Array(model.snapshot["journal"].array.enumerated()), id: \.offset) { _, row in
-                Section { Text("\(row["timestamp"].text) · \(row["action"].text)").font(HakilleTypography.heading); Text(row["summary"].text).textSelection(.enabled) }
-            }
+        Section {
+            AuditJournalView(
+                entries: model.snapshot["journal"].array,
+                busy: busy,
+                onRefresh: { model.loadJournal() },
+                onUndo: { id in model.undoAction(journalId: id) },
+                onRequestWhy: { id in model.requestWhy(targetId: id, targetType: "journal") }
+            )
         }
+        .listRowBackground(surface)
     }
     private var agents: some View {
-        Group {
-            Section { Button("Refresh") { model.dispatch("load_agents") }.disabled(!hub || busy) }
-            ForEach(model.snapshot["agents"].array, id: \.agentName) { agent in Section { AgentView(agent: agent, enabled: hub && !busy) } }
+        Section {
+            AgentCatalogView(
+                agents: model.snapshot["agents"].array,
+                lastAgentRun: model.snapshot["last_agent_run"],
+                busy: busy,
+                onRefresh: { model.loadAgents() },
+                onRunAgent: { name, input in model.runAgent(name: name, inputJson: input) }
+            )
         }
+        .listRowBackground(surface)
     }
     private var connection: some View {
         Group {
@@ -319,56 +435,19 @@ private struct JSONDetails: View {
 
 @MainActor private struct DecisionView: View {
     @EnvironmentObject private var model: MobileModel
-    @Environment(\.colorScheme) private var colorScheme
     let card: JSONValue
     let approval: JSONValue
     let busy: Bool
-    @State private var started = false
-    @State private var gestureGeneration: UInt64 = 0
-    @GestureState private var touching = false
-    private var armed: Bool { approval["card_id"] == card["id"] }
-    private var accent: Color { Color(hakille: colorScheme == .dark ? HakilleTokens.colorBraiseDark : HakilleTokens.colorBraiseLight) }
-    private var onAccent: Color { Color(hakille: colorScheme == .dark ? HakilleTokens.colorSurBraiseDark : HakilleTokens.colorSurBraiseLight) }
-    private func action(_ type: String) { model.dispatch(type, ["card_id": card["id"]]) }
+
     var body: some View {
-        Text("Decision required").font(HakilleTypography.heading).foregroundStyle(accent)
-        Text("\(card["verb"].text) \(card["object"].text)").font(HakilleTypography.title)
-        Text("Reason: \(card["reason"].text)")
-        Text("Cost: \(CardPresentation.money(card["cost"]))")
-        Text("Data destination: \(CardPresentation.destination(card["data_exit"]))")
-        Text("Provenance: \(CardPresentation.provenance(card["provenance"]))")
-        Text(LocalizedStringKey(card["reversible"] == .bool(true) ? "Reversible" : "Irreversible"))
-        if !busy {
-            Text(LocalizedStringKey(armed ? "Confirm approval after 600 ms" : "Hold for 600 ms, then release to approve"))
-                .frame(maxWidth: .infinity, minHeight: 56).padding(8).background(accent, in: RoundedRectangle(cornerRadius: 12)).foregroundStyle(onAccent)
-                .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0)
-                    .updating($touching) { _, state, _ in state = true }
-                    .onChanged { _ in if !started { gestureGeneration &+= 1; started = true; action("begin_approval") } }
-                    .onEnded { value in
-                        gestureGeneration &+= 1
-                        let wasStarted = started; started = false
-                        if wasStarted && abs(value.translation.width) < 20 && abs(value.translation.height) < 20 { action("approve") }
-                        else { model.dispatch("cancel_approval") }
-                    })
-                .onChange(of: touching) { active in
-                    guard !active && started else { return }
-                    let epoch = gestureGeneration
-                    // Laisser onEnded finaliser le même geste ; une annulation
-                    // différée ne doit jamais toucher le geste suivant.
-                    DispatchQueue.main.async {
-                        if gestureGeneration == epoch && started && !touching {
-                            gestureGeneration &+= 1; started = false
-                            model.dispatch("cancel_approval")
-                        }
-                    }
-                }
-                .onDisappear { gestureGeneration &+= 1; started = false; model.dispatch("cancel_approval") }
-                .accessibilityAddTraits(.isButton)
-                .accessibilityLabel("Approve in two steps. Activate once to begin confirmation, then again after 600 milliseconds.")
-                .accessibilityAction { action(armed ? "approve" : "begin_approval") }
-            Button("Reject", role: .destructive) { action("reject") }
-            if armed { Button("Cancel confirmation") { model.dispatch("cancel_approval") } }
-        }
+        ActionCardComponent(
+            card: card,
+            busy: busy,
+            onApprove: { id in model.dispatch("approve", ["card_id": id]) },
+            onReject: { id in model.dispatch("reject", ["card_id": id]) },
+            onEdit: { id in model.dispatch("edit_card", ["card_id": id]) },
+            onRequestWhy: { id in model.requestWhy(targetId: id.text, targetType: "card") },
+            onCancelApproval: { model.dispatch("cancel_approval") }
+        )
     }
 }

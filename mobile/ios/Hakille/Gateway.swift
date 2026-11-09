@@ -35,6 +35,25 @@ enum EndpointPolicy {
     static func validateToken(_ token: String) throws {
         guard (1...4096).contains(token.utf8.count), token.unicodeScalars.allSatisfy({ (33...126).contains($0.value) }) else { throw GatewayError.invalidToken }
     }
+    static func validateHexBearerToken(_ token: String) throws {
+        guard token.utf8.count == 64,
+              token.unicodeScalars.allSatisfy({ ("0"..."9").contains($0) || ("a"..."f").contains($0) || ("A"..."F").contains($0) })
+        else { throw GatewayError.invalidToken }
+    }
+    static func parsePairingQr(_ rawJson: String) throws -> HubCredentials {
+        guard !rawJson.isEmpty, rawJson.utf8.count <= 8192,
+              let data = rawJson.data(using: .utf8),
+              let rawObj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(rawObj.keys) == Set(["endpoint", "token"]),
+              let rawEndpoint = rawObj["endpoint"] as? String,
+              let rawToken = rawObj["token"] as? String
+        else { throw GatewayError.invalidEndpoint }
+        let trimmedEndpoint = rawEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedToken = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let canonicalEndpoint = try canonical(trimmedEndpoint)
+        try validateHexBearerToken(trimmedToken)
+        return HubCredentials(endpoint: canonicalEndpoint, token: trimmedToken)
+    }
 }
 
 private final class RefuseRedirects: NSObject, URLSessionTaskDelegate {
@@ -68,5 +87,35 @@ struct GatewayTransport {
         }
         guard let json = String(data: data, encoding: .utf8) else { throw GatewayError.invalidResponse }
         return json // Rust consumes success and error envelopes, including issue_unknown.
+    }
+
+    func sendStream(credentials: HubCredentials, frame: String, sessionID: String?, onFrame: @escaping (String) -> Void) async throws {
+        let canonical = try EndpointPolicy.canonical(credentials.endpoint)
+        try EndpointPolicy.validateToken(credentials.token)
+        guard let url = URL(string: canonical + "/v1/request"), frame.utf8.count <= Self.maxBytes else { throw GatewayError.invalidResponse }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 700; configuration.timeoutIntervalForResource = 700
+        configuration.waitsForConnectivity = false; configuration.httpCookieStorage = nil; configuration.urlCache = nil
+        let session = URLSession(configuration: configuration, delegate: RefuseRedirects(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 700)
+        request.httpMethod = "POST"; request.httpBody = Data(frame.utf8); request.httpShouldHandleCookies = false
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer " + credentials.token, forHTTPHeaderField: "Authorization")
+        if let sessionID, !sessionID.isEmpty { request.setValue(sessionID, forHTTPHeaderField: "X-Hakille-Session") }
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let response = response as? HTTPURLResponse, (200...299).contains(response.statusCode) else { throw GatewayError.invalidResponse }
+        for try await line in bytes.lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("data:") {
+                let data = String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+                if data != "{}" {
+                    onFrame(data)
+                }
+            } else if trimmed.hasPrefix("event: done") {
+                break
+            }
+        }
     }
 }

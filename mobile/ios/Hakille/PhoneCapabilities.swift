@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreLocation
+import CryptoKit
 import Darwin
 import Foundation
 import UIKit
@@ -12,14 +13,26 @@ struct PhoneLocation: Equatable, Sendable {
     let accuracy: Double
     let timestamp: Date
     var approximate: Bool = false
+    var mock: Bool = false
 }
 
 enum PhoneCapabilityPolicy {
     static let maximumDocumentBytes = 8 * 1024 * 1024
     static let maximumPhotoBytes = 8 * 1024 * 1024
+    static let maximumPreviewChars = 4000
+    static let maximumCameraLongEdgePx: CGFloat = 1536
+    static let maximumCameraTotalPixels: Int = 4_000_000
+
+    static func computeCameraScale(width: CGFloat, height: CGFloat) -> CGFloat {
+        let longEdge = max(width, height)
+        guard longEdge > 0 else { return 0 }
+        return min(1, maximumCameraLongEdgePx / longEdge)
+    }
+
     static func accepts(_ location: PhoneLocation, now: Date) -> Bool {
         let age = now.timeIntervalSince(location.timestamp)
-        return location.latitude.isFinite && location.longitude.isFinite && location.accuracy.isFinite
+        return !location.mock
+            && location.latitude.isFinite && location.longitude.isFinite && location.accuracy.isFinite
             && (-90...90).contains(location.latitude) && (-180...180).contains(location.longitude)
             && (0...40_100_000).contains(location.accuracy) && (-2...15).contains(age)
     }
@@ -31,7 +44,15 @@ enum PhoneCapabilityPolicy {
 struct LocalDocument: Sendable {
     let name: String
     let data: Data
+    let sha256: String
     let text: String?
+
+    init(name: String, data: Data, text: String?) {
+        self.name = name
+        self.data = data
+        self.sha256 = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        self.text = text
+    }
 }
 
 /// Le fichier choisi est lu sous scope, de façon bornée, puis le scope est
@@ -59,7 +80,7 @@ actor PhoneDocumentReader {
             guard data.count + count <= PhoneCapabilityPolicy.maximumDocumentBytes else { throw MobileStateError.invalidCheckpoint }
             data.append(contentsOf: buffer.prefix(count))
         }
-        let text = String(data: data, encoding: .utf8).map { String($0.prefix(4000)) }
+        let text = String(data: data, encoding: .utf8).map { String($0.prefix(PhoneCapabilityPolicy.maximumPreviewChars)) }
         return LocalDocument(name: PhoneCapabilityPolicy.displayName(url.lastPathComponent), data: data, text: text)
     }
 }
@@ -74,7 +95,15 @@ private final class LocationCallbacks: NSObject, CLLocationManagerDelegate {
     }
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let last = locations.last else { return }
-        let sample = PhoneLocation(latitude: last.coordinate.latitude, longitude: last.coordinate.longitude, accuracy: last.horizontalAccuracy, timestamp: last.timestamp, approximate: manager.accuracyAuthorization == .reducedAccuracy)
+        let isMocked = last.sourceInformation?.isSimulatedBySoftware == true
+        let sample = PhoneLocation(
+            latitude: last.coordinate.latitude,
+            longitude: last.coordinate.longitude,
+            accuracy: last.horizontalAccuracy,
+            timestamp: last.timestamp,
+            approximate: manager.accuracyAuthorization == .reducedAccuracy,
+            mock: isMocked
+        )
         let receive = receive
         Task { @MainActor in receive(.sample(sample)) }
     }
@@ -84,7 +113,7 @@ private final class LocationCallbacks: NSObject, CLLocationManagerDelegate {
 }
 
 enum ExternalDestination: String, CaseIterable, Identifiable {
-    case maps, calendar, settings, documentation
+    case maps, calendar, settings, documentation, clock
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -92,6 +121,7 @@ enum ExternalDestination: String, CaseIterable, Identifiable {
         case .calendar: return String(localized: "Open Calendar")
         case .settings: return String(localized: "Open Hakille settings")
         case .documentation: return String(localized: "Open project documentation")
+        case .clock: return String(localized: "Open Clock")
         }
     }
     var url: URL {
@@ -100,6 +130,7 @@ enum ExternalDestination: String, CaseIterable, Identifiable {
         case .calendar: return URL(string: "calshow:")!
         case .settings: return URL(string: UIApplication.openSettingsURLString)!
         case .documentation: return URL(string: "https://github.com/hakille/hakille#readme")!
+        case .clock: return URL(string: "clock://")!
         }
     }
 }
@@ -162,8 +193,9 @@ enum ExternalLaunchPolicy {
         cameraPresented = false
         guard let image else { message = String(localized: "Photo capture cancelled."); return }
         let width = image.size.width, height = image.size.height
-        guard width.isFinite, height.isFinite, width > 0, height > 0 else { message = String(localized: "The captured photo could not be previewed."); return }
-        let scale = min(1, 1536 / max(width, height))
+        guard width.isFinite, height.isFinite, width > 0, height > 0,
+              Int(width) * Int(height) <= PhoneCapabilityPolicy.maximumCameraTotalPixels else { message = String(localized: "The captured photo could not be previewed."); return }
+        let scale = PhoneCapabilityPolicy.computeCameraScale(width: width, height: height)
         let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
         let preview = UIGraphicsImageRenderer(size: CGSize(width: width * scale, height: height * scale), format: format).image { _ in
             image.draw(in: CGRect(x: 0, y: 0, width: width * scale, height: height * scale))

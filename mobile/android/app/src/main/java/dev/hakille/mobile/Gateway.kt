@@ -38,6 +38,29 @@ object EndpointPolicy {
             "Invalid gateway token / Jeton de passerelle invalide"
         }
     }
+
+    fun validateHexBearerToken(token: String) {
+        require(token.length == 64 && token.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) {
+            "Invalid 64-hex gateway token / Jeton hexadécimal 64 caractères attendu"
+        }
+    }
+
+    fun parsePairingQr(rawJson: String): HubCredentials {
+        require(rawJson.isNotBlank() && rawJson.length <= 8192) {
+            "Invalid QR payload size / Taille du QR d'appairage invalide"
+        }
+        val element = kotlinx.serialization.json.Json.parseToJsonElement(rawJson)
+        val obj = element as? kotlinx.serialization.json.JsonObject
+            ?: error("Invalid QR JSON object / Objet JSON d'appairage invalide")
+        require(obj.keys == setOf("endpoint", "token")) {
+            "Unexpected QR fields / Champs QR inattendus"
+        }
+        val rawEndpoint = (obj["endpoint"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.trim().orEmpty()
+        val rawToken = (obj["token"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.trim().orEmpty()
+        val canonicalEndpoint = canonical(rawEndpoint.trimEnd('/'))
+        validateHexBearerToken(rawToken)
+        return HubCredentials(canonicalEndpoint, rawToken)
+    }
 }
 
 class Gateway {
@@ -90,6 +113,51 @@ class Gateway {
                 }
             }
         })
+    suspend fun sendStream(
+        credentials: HubCredentials,
+        frame: String,
+        session: String?,
+        onFrame: (String) -> Unit
+    ): Unit = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val requestBytes = frame.toByteArray(Charsets.UTF_8)
+        if (requestBytes.size > MAX_BYTES) {
+            throw IOException("Request too large / Requête trop volumineuse")
+        }
+        val builder = Request.Builder().url(credentials.endpoint + "/v1/request")
+            .header("Authorization", "Bearer ${credentials.token}")
+            .header("Accept", "text/event-stream")
+            .post(requestBytes.toRequestBody("application/json".toMediaType()))
+        if (!session.isNullOrEmpty()) builder.header("X-Hakille-Session", session)
+        val call = client.newCall(builder.build())
+        val response = call.execute()
+        response.use { resp ->
+            require(resp.code !in 300..399) { "Redirect refused / Redirection refusée" }
+            if (resp.code !in 200..299) {
+                val errorBody = resp.body?.string().orEmpty()
+                throw IOException("Gateway error ${resp.code}: $errorBody")
+            }
+            val body = resp.body ?: throw IOException("Empty gateway response / Réponse vide")
+            val contentType = resp.header("Content-Type").orEmpty()
+            if (contentType.contains("text/event-stream")) {
+                val reader = body.byteStream().bufferedReader(Charsets.UTF_8)
+                var line: String? = reader.readLine()
+                while (line != null) {
+                    val trimmed = line.trim()
+                    if (trimmed.startsWith("data:")) {
+                        val data = trimmed.removePrefix("data:").trim()
+                        if (data != "{}") {
+                            onFrame(data)
+                        }
+                    } else if (trimmed.startsWith("event: done")) {
+                        break
+                    }
+                    line = reader.readLine()
+                }
+            } else {
+                val fullBody = body.string()
+                onFrame(fullBody)
+            }
+        }
     }
 
     companion object { const val MAX_BYTES = 1024 * 1024 }

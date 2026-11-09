@@ -52,4 +52,22 @@ class GatewayTest {
             assertEquals(2, server.requestCount)
         } finally { server.shutdown() }
     }
+
+    @Test fun sendStreamConsumesDeltasAndHandlesTermination() = runBlocking {
+        val server = MockWebServer(); server.start()
+        try {
+            val credentials = HubCredentials("http://127.0.0.1:${server.port}", "test-token")
+            val sseBody = "data: {\"frame\":1}\n\ndata: {\"frame\":2}\n\nevent: done\ndata: {}\n\n"
+            server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "text/event-stream").setBody(sseBody))
+            val received = mutableListOf<String>()
+            Gateway().sendStream(credentials, "{}", "session-456") { chunk ->
+                received.add(chunk)
+            }
+            assertEquals(listOf("{\"frame\":1}", "{\"frame\":2}"), received)
+            val request = server.takeRequest()
+            assertEquals("text/event-stream", request.getHeader("Accept"))
+            assertEquals("session-456", request.getHeader("X-Hakille-Session"))
+        } finally { server.shutdown() }
+    }
 }
+

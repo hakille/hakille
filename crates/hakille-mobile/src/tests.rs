@@ -1536,3 +1536,129 @@ fn mobile_battery_and_shadow_sync_bindings() {
     shadow.enter_doze();
     assert_eq!(shadow.wake_and_resync(), 0);
 }
+
+#[test]
+fn stream_frame_accumulates_deltas_and_hud_reply_authoritatively_replaces() {
+    let bridge = hub();
+    call(&bridge, json!({"type":"set_draft","text":"bonjour"}));
+    let id = call(&bridge, json!({"type":"submit"}))["request"]["id"]
+        .as_u64()
+        .unwrap();
+
+    let d1 = Frame::reply(
+        0,
+        KernelToUi::TokenDelta {
+            text: "Salut ".into(),
+        },
+    );
+    let res1: serde_json::Value =
+        serde_json::from_str(&bridge.receive_stream_frame(id, serde_json::to_string(&d1).unwrap()))
+            .unwrap();
+    assert_eq!(res1["ok"], true);
+    assert_eq!(res1["snapshot"]["streaming"], true);
+    assert_eq!(res1["snapshot"]["chat"][1]["text"], "Salut ");
+
+    let d2 = Frame::reply(
+        0,
+        KernelToUi::TokenDelta {
+            text: "le monde".into(),
+        },
+    );
+    let res2: serde_json::Value =
+        serde_json::from_str(&bridge.receive_stream_frame(id, serde_json::to_string(&d2).unwrap()))
+            .unwrap();
+    assert_eq!(res2["ok"], true);
+    assert_eq!(res2["snapshot"]["streaming"], true);
+    assert_eq!(res2["snapshot"]["chat"][1]["text"], "Salut le monde");
+
+    // Terminal HudReply authoritatively replaces
+    let final_reply = Frame::reply(
+        id,
+        KernelToUi::HudReply {
+            response: "Bonjour ! Comment puis-je vous aider ?".into(),
+            validation: None,
+        },
+    );
+    let res3: serde_json::Value = serde_json::from_str(
+        &bridge.receive_stream_frame(id, serde_json::to_string(&final_reply).unwrap()),
+    )
+    .unwrap();
+    assert_eq!(res3["ok"], true);
+    assert_eq!(res3["snapshot"]["streaming"], false);
+    assert_eq!(
+        res3["snapshot"]["chat"][1]["text"],
+        "Bonjour ! Comment puis-je vous aider ?"
+    );
+    assert!(res3["snapshot"]["pending"].is_null());
+    assert_eq!(res3["snapshot"]["draft"], "");
+}
+
+#[test]
+fn fatigue_alert_and_ghost_action_updates_snapshot() {
+    let bridge = hub();
+    let id = call(&bridge, json!({"type":"refresh_status"}))["request"]["id"]
+        .as_u64()
+        .unwrap();
+
+    let alert = hakille_ui_protocol::FatigueAlertEvent {
+        severity: hakille_ui_protocol::FatigueSeverity::Moderate,
+        perclos_p80: 0.35,
+        ear: 0.22,
+        mar: 0.45,
+        yawn_count: 3,
+        recommendation: "Prenez une pause de 5 minutes.".into(),
+        timestamp_ms: 1000,
+    };
+    let alert_frame = Frame::reply(0, KernelToUi::FatigueAlert(alert));
+    let res1: serde_json::Value = serde_json::from_str(
+        &bridge.receive_stream_frame(id, serde_json::to_string(&alert_frame).unwrap()),
+    )
+    .unwrap();
+    assert_eq!(res1["ok"], true);
+    assert!(
+        res1["snapshot"]["notifications"][0]
+            .as_str()
+            .unwrap()
+            .contains("Conseil bien-être : Prenez une pause")
+    );
+
+    let ghost = hakille_ui_protocol::GhostActionDto {
+        id: "ghost-123".into(),
+        label: "Archiver note".into(),
+        confidence: 0.95,
+        focal_u: 0.5,
+        focal_v: 0.5,
+        hold_duration_ms: 600,
+        action: hakille_ui_protocol::ActionCard {
+            id: 10,
+            verb: "Archiver".into(),
+            object: "Note".into(),
+            reason: "Fin de tâche".into(),
+            cost: hakille_ui_protocol::Money::from_cents(0, "EUR"),
+            data_exit: hakille_ui_protocol::DataExit::Local,
+            reversible: true,
+            provenance: hakille_ui_protocol::Provenance::Hakille,
+        },
+    };
+    let ghost_frame = Frame::reply(0, KernelToUi::GhostActionSuggest(ghost));
+    let res2: serde_json::Value = serde_json::from_str(
+        &bridge.receive_stream_frame(id, serde_json::to_string(&ghost_frame).unwrap()),
+    )
+    .unwrap();
+    assert_eq!(res2["ok"], true);
+    assert_eq!(res2["snapshot"]["ghost_action"]["id"], "ghost-123");
+
+    // Dismiss ghost action
+    let dismiss_frame = Frame::reply(
+        0,
+        KernelToUi::GhostActionDismissed {
+            id: "ghost-123".into(),
+        },
+    );
+    let res3: serde_json::Value = serde_json::from_str(
+        &bridge.receive_stream_frame(id, serde_json::to_string(&dismiss_frame).unwrap()),
+    )
+    .unwrap();
+    assert_eq!(res3["ok"], true);
+    assert!(res3["snapshot"]["ghost_action"].is_null());
+}

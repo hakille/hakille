@@ -36,21 +36,90 @@ impl ProvenanceBand {
     }
 }
 
-/// Assainit le texte fourni par un skill : aucun markup, image ou couleur
-/// n'atteint une carte. Le shell choisit gabarit, couleurs, typographie.
+/// Assainit le texte fourni par un skill : aucun markup, bloc script/style,
+/// image ou séquence d'échappement ANSI n'atteint une carte.
 pub fn sanitize_skill_text(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
-    let mut in_tag = false;
-    for c in input.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(c),
-            _ => {}
+    let lower = input.to_lowercase();
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    // Étape 1 : suppression intégrale des blocs <script>...</script> et <style>...</style>,
+    // puis des balises HTML générales <...>
+    while i < len {
+        if bytes[i] == b'<' {
+            let rest_lower = &lower[i..];
+            if rest_lower.starts_with("<script") {
+                if let Some(end_idx) = rest_lower.find("</script>") {
+                    i += end_idx + "</script>".len();
+                    continue;
+                }
+            } else if rest_lower.starts_with("<style") {
+                if let Some(end_idx) = rest_lower.find("</style>") {
+                    i += end_idx + "</style>".len();
+                    continue;
+                }
+            }
+            while i < len && bytes[i] != b'>' {
+                i += 1;
+            }
+            if i < len && bytes[i] == b'>' {
+                i += 1;
+            }
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
         }
     }
-    // Pas de couleur/marque : on écrase les séquences d'échappement ANSI.
-    out.replace('\u{1b}', "")
+
+    // Étape 2 : suppression complète des séquences d'échappement terminales ANSI
+    // (CSI \x1b[...m, OSC \x1b]..., séquences Fe, et octets d'échappement nus)
+    let mut clean = String::with_capacity(out.len());
+    let chars: Vec<char> = out.chars().collect();
+    let c_len = chars.len();
+    let mut j = 0;
+
+    while j < c_len {
+        if chars[j] == '\u{001b}' {
+            j += 1;
+            if j < c_len {
+                if chars[j] == '[' {
+                    // Séquence CSI : consomme paramètres puis lettre de commande
+                    j += 1;
+                    while j < c_len
+                        && (chars[j].is_ascii_digit() || chars[j] == ';' || chars[j] == '?')
+                    {
+                        j += 1;
+                    }
+                    if j < c_len && (chars[j].is_ascii_alphabetic() || chars[j] == '@') {
+                        j += 1;
+                    }
+                } else if chars[j] == ']' {
+                    // Séquence OSC : consomme jusqu'à BEL (\x07) ou String Terminator (\x1b\)
+                    j += 1;
+                    while j < c_len {
+                        if chars[j] == '\u{0007}' {
+                            j += 1;
+                            break;
+                        } else if chars[j] == '\u{001b}' && j + 1 < c_len && chars[j + 1] == '\\' {
+                            j += 2;
+                            break;
+                        }
+                        j += 1;
+                    }
+                } else if chars[j] >= '@' && chars[j] <= '_' {
+                    // Séquence d'échappement 2 octets
+                    j += 1;
+                }
+            }
+        } else {
+            clean.push(chars[j]);
+            j += 1;
+        }
+    }
+
+    clean
 }
 
 /// Contenu externe : filet latéral 2 px + pastille « externe ».
@@ -78,11 +147,23 @@ mod tests {
 
     #[test]
     fn test_trusted_rendering_strips_skill_markup() {
-        let evil = "<script>alert(1)</script><b style=\"color:red\">Clique !</b>\u{1b}[31m";
+        let evil = "<script>stealKeys(); alert(1);</script><style>body { color:red; }</style><b style=\"color:red\">Clique !</b>\u{1b}[31m\u{1b}[1m";
         let clean = sanitize_skill_text(evil);
         assert!(!clean.contains('<') && !clean.contains('>'));
         assert!(!clean.contains('\u{1b}'));
-        assert!(clean.contains("Clique !"));
+        assert!(
+            !clean.contains("[31m"),
+            "Must not leak ANSI CSI parameters: {clean}"
+        );
+        assert!(
+            !clean.contains("stealKeys"),
+            "Must strip script body: {clean}"
+        );
+        assert!(
+            !clean.contains("color:red"),
+            "Must strip style body and attributes: {clean}"
+        );
+        assert_eq!(clean, "Clique !");
     }
 
     #[test]

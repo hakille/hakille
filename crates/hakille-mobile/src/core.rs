@@ -19,6 +19,7 @@ pub(crate) struct Core {
     inflight: Option<UiToKernel>,
     hold_started: Option<Instant>,
     voice_started_at: Option<Instant>,
+    saved_owner_cranks: Option<Vec<(String, u8)>>,
 }
 impl Default for Core {
     fn default() -> Self {
@@ -28,11 +29,35 @@ impl Default for Core {
             inflight: None,
             hold_started: None,
             voice_started_at: None,
+            saved_owner_cranks: None,
         }
     }
 }
 
 impl Core {
+    fn is_guest_active(&self) -> bool {
+        self.snapshot
+            .guest_pass
+            .as_ref()
+            .is_some_and(|g| !g.expired)
+    }
+
+    fn restore_owner_cranks(&mut self) {
+        if let Some(saved) = self.saved_owner_cranks.take() {
+            for (domain, crank) in saved {
+                if let Some(d) = self
+                    .snapshot
+                    .domain_autonomies
+                    .iter_mut()
+                    .find(|d| d.domain == domain)
+                {
+                    d.crank = crank;
+                    d.crank_label = crank_label(crank).to_string();
+                }
+            }
+        }
+    }
+
     pub fn dispatch(
         &mut self,
         action: MobileAction,
@@ -85,12 +110,16 @@ impl Core {
                 }
                 if self.snapshot.hub_id.as_deref() != Some(&hub_id) {
                     self.interrupt("Hub changé : aucune requête n'est rejouée");
+                    self.restore_owner_cranks();
                     let draft = self.snapshot.draft.clone();
                     let foreground = self.snapshot.foreground;
                     let outcomes = self.snapshot.outcomes.clone();
                     let uncertain_operations = self.snapshot.uncertain_operations.clone();
                     let acknowledged_operations = self.snapshot.acknowledged_operations.clone();
                     let recovery_required = self.snapshot.recovery_required;
+                    let domain_autonomies = self.snapshot.domain_autonomies.clone();
+                    let tombstones = self.snapshot.tombstones.clone();
+                    let erasure_receipts = self.snapshot.erasure_receipts.clone();
                     self.snapshot = MobileSnapshot {
                         hub_id: Some(hub_id),
                         draft,
@@ -99,6 +128,9 @@ impl Core {
                         uncertain_operations,
                         acknowledged_operations,
                         recovery_required,
+                        domain_autonomies,
+                        tombstones,
+                        erasure_receipts,
                         ..Default::default()
                     };
                     if recovery_required {
@@ -129,10 +161,9 @@ impl Core {
                     .uncertain_operations
                     .iter_mut()
                     .find(|op| op.request_id == request_id)
+                    && op.phase == OperationPhase::InFlight
                 {
-                    if op.phase == OperationPhase::InFlight {
-                        op.phase = OperationPhase::InFlightDetached;
-                    }
+                    op.phase = OperationPhase::InFlightDetached;
                 }
                 self.refresh_recovery();
                 return Ok(None);
@@ -167,6 +198,173 @@ impl Core {
                     return Err("Application inactive : prise de connaissance refusée".into());
                 }
                 self.acknowledge_unknown(request_id)?;
+                return Ok(None);
+            }
+            MobileAction::CloseWhy {} => {
+                self.snapshot.why_sheet = None;
+                return Ok(None);
+            }
+            MobileAction::DismissPrivacyGuard {} => {
+                self.snapshot.privacy_guard = None;
+                self.snapshot.privacy_veil_active = false;
+                return Ok(None);
+            }
+            MobileAction::StartGuestPass {
+                name,
+                power,
+                duration_secs,
+            } => {
+                text(&name, 128, false)?;
+                text(&power, 128, false)?;
+                let dur = duration_secs.unwrap_or(3600);
+                let dto = GuestPassDto::new(name.trim(), power.trim(), dur);
+                if !dto.expired {
+                    if self.saved_owner_cranks.is_none() {
+                        self.saved_owner_cranks = Some(
+                            self.snapshot
+                                .domain_autonomies
+                                .iter()
+                                .map(|d| (d.domain.clone(), d.crank))
+                                .collect(),
+                        );
+                    }
+                    for d in &mut self.snapshot.domain_autonomies {
+                        d.crank = 0;
+                        d.crank_label = DomainAutonomyDto::label_for_crank(0).to_string();
+                    }
+                } else {
+                    self.restore_owner_cranks();
+                }
+                self.snapshot.guest_pass = Some(dto);
+                return Ok(None);
+            }
+            MobileAction::TickGuestPass { elapsed_secs } => {
+                let Some(pass) = &mut self.snapshot.guest_pass else {
+                    return Err("Aucun pass invité actif".into());
+                };
+                pass.tick(elapsed_secs);
+                let expired = pass.expired;
+                if expired {
+                    self.restore_owner_cranks();
+                }
+                return Ok(None);
+            }
+            MobileAction::RevokeGuestPass {} => {
+                self.restore_owner_cranks();
+                self.snapshot.guest_pass = None;
+                return Ok(None);
+            }
+            MobileAction::RequestWhy {
+                target_id,
+                target_type,
+            } => {
+                text(&target_id, 256, false)?;
+                text(&target_type, 64, false)?;
+                let why = if target_type == "card" {
+                    if let Some(card) = self
+                        .snapshot
+                        .cards
+                        .iter()
+                        .find(|c| c.id.to_string() == target_id)
+                    {
+                        WhySheetDto {
+                            target_id: target_id.clone(),
+                            sentence: format!("Action proposée : {} {}", card.verb, card.object),
+                            facts: vec![],
+                            plan: card.reason.clone(),
+                            powers: vec!["Intervention locale".to_string()],
+                            confidence_word: "haute".to_string(),
+                            confidence_value: 0.95,
+                            alternatives: vec![
+                                "Refuser l'action".to_string(),
+                                "Modifier les paramètres".to_string(),
+                            ],
+                            model_line: "Qwen 2.5 0.5B Local CPU".to_string(),
+                            cost_label: card.cost.display(),
+                            data_line: match &card.data_exit {
+                                hakille_ui_protocol::DataExit::Local => {
+                                    "Local uniquement".to_string()
+                                }
+                                hakille_ui_protocol::DataExit::Cloud { provider } => {
+                                    format!("Cloud ({provider})")
+                                }
+                            },
+                            would_change: "L'action sera exécutée ou mise en file selon le mode."
+                                .to_string(),
+                        }
+                    } else {
+                        WhySheetDto::missing(&target_id, "Trace non conservée pour cette entrée")
+                    }
+                } else if target_type == "journal" {
+                    if let Some(entry) = self.snapshot.journal.iter().find(|e| e.id == target_id) {
+                        WhySheetDto {
+                            target_id: target_id.clone(),
+                            sentence: format!("{}: {}", entry.action, entry.summary),
+                            facts: vec![],
+                            plan: format!("Exécution validée à {}", entry.timestamp),
+                            powers: vec!["Audit Ed25519".to_string()],
+                            confidence_word: "haute".to_string(),
+                            confidence_value: 1.0,
+                            alternatives: vec!["Annuler l'action (Undo)".to_string()],
+                            model_line: "Qwen 2.5 0.5B Local CPU".to_string(),
+                            cost_label: "0.00 EUR".to_string(),
+                            data_line: "Local uniquement".to_string(),
+                            would_change: "Révocation dans le journal d'audit".to_string(),
+                        }
+                    } else {
+                        WhySheetDto::missing(&target_id, "Trace non conservée pour cette entrée")
+                    }
+                } else {
+                    WhySheetDto::missing(&target_id, "Trace non conservée pour cette entrée")
+                };
+                self.snapshot.why_sheet = Some(why);
+                return Ok(None);
+            }
+            MobileAction::SetAutonomyCrank {
+                domain,
+                crank,
+                max_cost_cents,
+                max_actions,
+                days_valid,
+            } => {
+                if self.is_guest_active() {
+                    return Err("Action interdite en mode invité éphémère".into());
+                }
+                text(&domain, 64, false)?;
+                if crank > 4 {
+                    return Err("Cran d'autonomie invalide (0 à 4 attendu)".into());
+                }
+                if let Some(d) = self
+                    .snapshot
+                    .domain_autonomies
+                    .iter_mut()
+                    .find(|d| d.domain.eq_ignore_ascii_case(&domain))
+                {
+                    d.crank = crank;
+                    d.crank_label = crank_label(crank).to_string();
+                    if crank >= 3 {
+                        d.envelope = Some(EnvelopeDto {
+                            max_cost_cents: max_cost_cents.unwrap_or(1000),
+                            max_actions: max_actions.unwrap_or(50),
+                            days_valid: days_valid.unwrap_or(90),
+                        });
+                    } else {
+                        d.envelope = None;
+                    }
+                    d.promotion_offerable = (crank == 1 || crank == 2) && d.validated_count >= 20;
+                } else {
+                    let mut d = DomainAutonomyDto::new(&domain);
+                    d.crank = crank;
+                    d.crank_label = crank_label(crank).to_string();
+                    if crank >= 3 {
+                        d.envelope = Some(EnvelopeDto {
+                            max_cost_cents: max_cost_cents.unwrap_or(1000),
+                            max_actions: max_actions.unwrap_or(50),
+                            days_valid: days_valid.unwrap_or(90),
+                        });
+                    }
+                    self.snapshot.domain_autonomies.push(d);
+                }
                 return Ok(None);
             }
             _ => {}
@@ -239,14 +437,19 @@ impl Core {
                 text(&input_json, MAX_DRAFT_BYTES, false)?;
                 serde_json::from_str::<serde_json::Value>(&input_json)
                     .map_err(|_| "Entrée agent JSON invalide")?;
-                if !self
+                let Some(agent) = self
                     .snapshot
                     .agents
                     .iter()
-                    .any(|agent| agent.name == name && agent.artifact_present)
-                {
+                    .find(|agent| agent.name == name && agent.artifact_present)
+                else {
                     return Err(
                         "Agent non confirmé exécutable par le hub ; actualiser sa liste".into(),
+                    );
+                };
+                if self.is_guest_active() && !agent.required_caps.is_empty() {
+                    return Err(
+                        "Mode invité : seuls les agents sans capacité hôte sont autorisés".into(),
                     );
                 }
                 (
@@ -282,6 +485,38 @@ impl Core {
                 self.card_available(card_id)?;
                 (UiToKernel::Reject { card_id }, "reject", true)
             }
+            MobileAction::GhostActionAccept { id } => {
+                text(&id, 256, false)?;
+                (
+                    UiToKernel::GhostActionAccept { id },
+                    "ghost_action_accept",
+                    false,
+                )
+            }
+            MobileAction::GhostActionDismiss { id } => {
+                text(&id, 256, false)?;
+                (
+                    UiToKernel::GhostActionDismiss { id },
+                    "ghost_action_dismiss",
+                    false,
+                )
+            }
+            MobileAction::Undo { journal_id } => {
+                if self.is_guest_active() {
+                    return Err("Action interdite en mode invité éphémère".into());
+                }
+                if journal_id == 0 {
+                    return Err("Identifiant de journal invalide".into());
+                }
+                (UiToKernel::Undo { journal_id }, "undo", true)
+            }
+            MobileAction::ForgetMemory { row_id } => {
+                if self.is_guest_active() {
+                    return Err("Action interdite en mode invité éphémère".into());
+                }
+                text(&row_id, 256, false)?;
+                (UiToKernel::MemoryForget { row_id }, "forget_memory", true)
+            }
             _ => return Err("Action mobile non prise en charge".into()),
         };
         if mutating && self.snapshot.connection == ConnectionState::Unknown {
@@ -302,7 +537,6 @@ impl Core {
             None
         };
         let id = self.next_id;
-        self.next_id = self.next_id.checked_add(1).ok_or("Identifiants épuisés")?;
         let frame = Frame::request(id, request.clone());
         if serde_json::to_vec(&frame)
             .map_err(|_| "Sérialisation impossible")?
@@ -311,17 +545,75 @@ impl Core {
         {
             return Err("Requête supérieure à 1 Mio".into());
         }
+        self.next_id = self.next_id.checked_add(1).ok_or("Identifiants épuisés")?;
         self.cancel_hold();
-        if let UiToKernel::HudSubmit { query } = &request {
-            if voice_submission {
-                self.snapshot.draft = query.clone();
-                self.snapshot.voice_request_id = Some(id);
-                self.voice_started_at = None;
+        match &request {
+            UiToKernel::HudSubmit { query } => {
+                if voice_submission {
+                    self.snapshot.draft = query.clone();
+                    self.snapshot.voice_request_id = Some(id);
+                    self.voice_started_at = None;
+                }
+                self.push_chat("user", query.clone());
+                self.snapshot.streaming = false;
+                // Le brouillon n'est pas effacé avant l'accusé : aucun texte perdu
+                // si l'application s'arrête ou si le résultat réseau reste inconnu.
             }
-            self.push_chat("user", query.clone());
-            self.snapshot.streaming = false;
-            // Le brouillon n'est pas effacé avant l'accusé : aucun texte perdu
-            // si l'application s'arrête ou si le résultat réseau reste inconnu.
+            UiToKernel::GhostActionAccept { .. } | UiToKernel::GhostActionDismiss { .. } => {
+                self.snapshot.ghost_action = None;
+            }
+            UiToKernel::Undo { journal_id } => {
+                let matched_domain = self
+                    .snapshot
+                    .journal
+                    .iter()
+                    .find(|e| e.id == journal_id.to_string())
+                    .and_then(|entry| {
+                        self.snapshot
+                            .domain_autonomies
+                            .iter()
+                            .find(|d| {
+                                entry
+                                    .action
+                                    .to_lowercase()
+                                    .contains(&d.domain.to_lowercase())
+                                    || entry
+                                        .summary
+                                        .to_lowercase()
+                                        .contains(&d.domain.to_lowercase())
+                            })
+                            .map(|d| d.domain.clone())
+                    });
+                if let Some(domain_name) = matched_domain {
+                    if let Some(d) = self
+                        .snapshot
+                        .domain_autonomies
+                        .iter_mut()
+                        .find(|d| d.domain == domain_name)
+                    {
+                        d.record_reverted();
+                    }
+                } else {
+                    for d in self.snapshot.domain_autonomies.iter_mut() {
+                        d.record_reverted();
+                    }
+                }
+            }
+            UiToKernel::MemoryForget { row_id } => {
+                if !self.snapshot.tombstones.contains(row_id) {
+                    self.snapshot.tombstones.push(row_id.clone());
+                }
+                self.snapshot.memory.retain(|row| &row.id != row_id);
+                let receipt_id = format!("receipt-{id}");
+                self.snapshot.erasure_receipts.push(ErasureReceiptDto {
+                    receipt_id: receipt_id.clone(),
+                    target_id: row_id.clone(),
+                    timestamp_str: format!("t-{id}"),
+                    reason: "Droit à l'oubli / Rectification mémoire".to_string(),
+                    verification_token: format!("sha256-receipt-{receipt_id}"),
+                });
+            }
+            _ => {}
         }
         self.snapshot.pending = Some(PendingRequest {
             request_id: id,
@@ -482,6 +774,10 @@ impl Core {
                             | KernelToUi::ShowCard(_)
                             | KernelToUi::JournalAppended { .. }
                             | KernelToUi::Toast { .. }
+                            | KernelToUi::FatigueAlert(_)
+                            | KernelToUi::PrivacyGuardAlert(_)
+                            | KernelToUi::GhostActionSuggest(_)
+                            | KernelToUi::GhostActionDismissed { .. }
                     ) {
                         return Err("Type de réponse incompatible avec la requête".into());
                     }
@@ -577,6 +873,104 @@ impl Core {
         Ok(())
     }
 
+    pub fn receive_stream_frame(&mut self, request_id: u64, frame: Frame) -> Result<(), String> {
+        let was_unknown = self.snapshot.connection == ConnectionState::Unknown;
+        if self.snapshot.pending.as_ref().map(|p| p.request_id) != Some(request_id) {
+            return Err("Trame de streaming sans requête active correspondante".into());
+        }
+        if frame.version != PROTOCOL_VERSION || (frame.id != 0 && frame.id != request_id) {
+            return Err("Version ou corrélation de trame de streaming invalide".into());
+        }
+        let inflight = self.inflight.clone().ok_or("Requête interne absente")?;
+        match frame.body {
+            FrameBody::Reply { message } => {
+                validate_message(&message)?;
+                match &message {
+                    KernelToUi::TokenDelta { text: delta } => {
+                        if !matches!(inflight, UiToKernel::HudSubmit { .. }) {
+                            return Err("Delta de texte sans demande de dialogue".into());
+                        }
+                        if !self.snapshot.streaming {
+                            self.push_chat("assistant", String::new());
+                            self.snapshot.streaming = true;
+                        }
+                        let entry = self
+                            .snapshot
+                            .chat
+                            .last_mut()
+                            .ok_or("Réponse de dialogue absente")?;
+                        if entry.text.len().saturating_add(delta.len()) > MAX_TEXT_BYTES {
+                            return Err("Réponse de dialogue trop longue".into());
+                        }
+                        entry.text.push_str(delta);
+                    }
+                    KernelToUi::HudReply { response, .. } if frame.id == request_id => {
+                        if self.snapshot.streaming {
+                            if let Some(last) = self.snapshot.chat.last_mut() {
+                                last.text = response.clone();
+                            }
+                        } else {
+                            self.push_chat("assistant", response.clone());
+                        }
+                        self.snapshot.streaming = false;
+                        if let UiToKernel::HudSubmit { query } = &inflight
+                            && self.snapshot.draft == *query
+                        {
+                            self.snapshot.draft.clear();
+                        }
+                        if self.snapshot.voice_request_id == Some(request_id)
+                            && let Some(context_id) = self.snapshot.voice_context_id
+                            && !response.trim().is_empty()
+                            && response.len() <= MAX_DRAFT_BYTES
+                        {
+                            self.snapshot.voice_reply = Some(VoiceReply {
+                                context_id,
+                                request_id,
+                                text: response.clone(),
+                            });
+                        }
+                        self.complete(
+                            "confirmed",
+                            "Réponse du hub reçue ; voir son effet réel".into(),
+                            Some(message),
+                        );
+                    }
+                    _ => {
+                        let final_reply =
+                            frame.id == request_id && terminal_matches(&inflight, &message);
+                        self.apply_message(&message, &inflight)?;
+                        if final_reply {
+                            self.complete(
+                                "confirmed",
+                                "Réponse du hub reçue ; voir son effet réel".into(),
+                                Some(message),
+                            );
+                        }
+                    }
+                }
+            }
+            FrameBody::Error { code, message } if frame.id == request_id => {
+                let pending_mutating = self.snapshot.pending.as_ref().is_some_and(|p| p.mutating);
+                let uncertain =
+                    pending_mutating && matches!(code, hakille_ipc::ErrorCode::Internal);
+                self.complete(
+                    if uncertain { "unknown" } else { "failed" },
+                    format!("{code:?} : {message}"),
+                    None,
+                );
+                if uncertain || was_unknown {
+                    self.snapshot.connection = ConnectionState::Unknown;
+                    self.snapshot.cards.clear();
+                    self.snapshot.ghost_action = None;
+                    self.cancel_hold();
+                }
+            }
+            _ => return Err("Corps de trame de streaming inattendu".into()),
+        }
+        self.trim_history_to_budget()?;
+        Ok(())
+    }
+
     fn apply_message(&mut self, message: &KernelToUi, request: &UiToKernel) -> Result<(), String> {
         match message {
             KernelToUi::Presence(presence) => self.snapshot.presence = Some(presence.clone()),
@@ -628,7 +1022,13 @@ impl Core {
                 }
             }
             KernelToUi::JournalReply { entries } => self.snapshot.journal = entries.clone(),
-            KernelToUi::MemoryReply { rows } => self.snapshot.memory = rows.clone(),
+            KernelToUi::MemoryReply { rows } => {
+                self.snapshot.memory = rows
+                    .iter()
+                    .filter(|r| !self.snapshot.tombstones.contains(&r.id))
+                    .cloned()
+                    .collect();
+            }
             KernelToUi::StatusReply { status } => self.snapshot.status = Some(status.clone()),
             KernelToUi::AgentListReply { agents } => self.snapshot.agents = agents.clone(),
             KernelToUi::CardDecisionAck { card_id, .. } => {
@@ -652,15 +1052,66 @@ impl Core {
                 }
             }
             KernelToUi::NotificationDismissed { .. } => {}
+            KernelToUi::FatigueAlert(alert) => {
+                let text = format!("Conseil bien-être : {}", alert.recommendation);
+                self.snapshot.notifications.push(text);
+                if self.snapshot.notifications.len() > 16 {
+                    self.snapshot.notifications.remove(0);
+                    self.snapshot.history_trimmed = true;
+                }
+            }
+            KernelToUi::GhostActionSuggest(dto) => {
+                self.snapshot.ghost_action = Some(dto.clone());
+            }
+            KernelToUi::GhostActionDismissed { id } => {
+                if self
+                    .snapshot
+                    .ghost_action
+                    .as_ref()
+                    .is_some_and(|g| g.id == *id)
+                {
+                    self.snapshot.ghost_action = None;
+                }
+            }
+            KernelToUi::AgentRunReply {
+                name,
+                output_json,
+                duration_ms,
+                input_sha256,
+                output_sha256,
+            } => {
+                self.snapshot.last_agent_run = Some(AgentRunOutcomeDto {
+                    name: name.clone(),
+                    output_json: output_json.clone(),
+                    duration_ms: *duration_ms,
+                    input_sha256: input_sha256.clone(),
+                    output_sha256: output_sha256.clone(),
+                });
+            }
+            KernelToUi::PrivacyGuardAlert(alert) => match &alert.trigger {
+                hakille_ui_protocol::PrivacyGuardTrigger::ShoulderSurfingDetected {
+                    people_count,
+                } => {
+                    if *people_count >= 2 {
+                        self.snapshot.privacy_veil_active = true;
+                        self.snapshot.privacy_guard = Some(alert.clone());
+                    } else {
+                        self.snapshot.privacy_veil_active = false;
+                        self.snapshot.privacy_guard = None;
+                    }
+                }
+                hakille_ui_protocol::PrivacyGuardTrigger::RawDataExfiltrationBlocked { .. }
+                | hakille_ui_protocol::PrivacyGuardTrigger::HardwareKillSwitchActivated {
+                    ..
+                }
+                | hakille_ui_protocol::PrivacyGuardTrigger::EphemeralTtlPurged => {
+                    self.snapshot.privacy_guard = Some(alert.clone());
+                }
+            },
             KernelToUi::MemoryRememberAck { .. }
-            | KernelToUi::AgentRunReply { .. }
             | KernelToUi::UserContext(_)
             | KernelToUi::EmotionUpdate(_)
-            | KernelToUi::FatigueAlert(_)
-            | KernelToUi::PrivacyGuardAlert(_)
             | KernelToUi::AuraRingUpdate(_)
-            | KernelToUi::GhostActionSuggest(_)
-            | KernelToUi::GhostActionDismissed { .. }
             | KernelToUi::MicroGestureRecognized(_) => {}
         }
         Ok(())
@@ -684,19 +1135,16 @@ impl Core {
 
     pub fn detach_active_flight(&mut self) {
         self.invalidate_voice();
-        if let Some(pending) = &self.snapshot.pending {
-            if pending.mutating {
-                if let Some(op) = self
-                    .snapshot
-                    .uncertain_operations
-                    .iter_mut()
-                    .find(|op| op.request_id == pending.request_id)
-                {
-                    if op.phase == OperationPhase::InFlight {
-                        op.phase = OperationPhase::InFlightDetached;
-                    }
-                }
-            }
+        if let Some(pending) = &self.snapshot.pending
+            && pending.mutating
+            && let Some(op) = self
+                .snapshot
+                .uncertain_operations
+                .iter_mut()
+                .find(|op| op.request_id == pending.request_id)
+            && op.phase == OperationPhase::InFlight
+        {
+            op.phase = OperationPhase::InFlightDetached;
         }
         self.refresh_recovery();
     }
@@ -711,6 +1159,7 @@ impl Core {
         self.snapshot.connection = ConnectionState::Unknown;
         self.snapshot.gateway_session = None;
         self.snapshot.cards.clear();
+        self.snapshot.ghost_action = None;
         self.cancel_hold();
         self.bound_error_state();
     }
@@ -776,6 +1225,7 @@ impl Core {
     fn clear_hub_views(&mut self) {
         self.invalidate_voice();
         self.snapshot.cards.clear();
+        self.snapshot.ghost_action = None;
         self.snapshot.status = None;
         self.snapshot.memory.clear();
         self.snapshot.journal.clear();
@@ -939,6 +1389,21 @@ fn terminal_matches(request: &UiToKernel, message: &KernelToUi) -> bool {
                 ..
             },
         ) => card_id == reply,
+        (
+            UiToKernel::GhostActionAccept { .. },
+            KernelToUi::HudReply { .. }
+            | KernelToUi::JournalAppended { .. }
+            | KernelToUi::CardDecisionAck { .. },
+        ) => true,
+        (
+            UiToKernel::GhostActionDismiss { id },
+            KernelToUi::GhostActionDismissed { id: reply_id },
+        ) => id == reply_id,
+        (UiToKernel::Undo { journal_id }, KernelToUi::JournalAppended { id }) => journal_id == id,
+        (UiToKernel::Undo { .. }, KernelToUi::Toast { .. }) => true,
+        (UiToKernel::MemoryForget { .. }, KernelToUi::Toast { .. }) => true,
+        (UiToKernel::MemoryForget { .. }, KernelToUi::HudReply { .. }) => true,
+        (UiToKernel::MemoryForget { .. }, KernelToUi::JournalAppended { .. }) => true,
         _ => false,
     }
 }
@@ -1026,6 +1491,36 @@ fn validate_message(message: &KernelToUi) -> Result<(), String> {
             text(audit_id, 256, false)?;
             if let Some(effect) = effect {
                 text(effect, 4096, false)?;
+            }
+        }
+        KernelToUi::GhostActionSuggest(ghost) => {
+            text(&ghost.id, 256, false)?;
+            text(&ghost.label, 8192, false)?;
+            if !(0.0..=1.0).contains(&ghost.focal_u)
+                || !(0.0..=1.0).contains(&ghost.focal_v)
+                || !(0.0..=1.0).contains(&ghost.confidence)
+            {
+                return Err("Coordonnées ou confiance de Ghost Action hors limites".into());
+            }
+        }
+        KernelToUi::GhostActionDismissed { id } => {
+            text(id, 256, false)?;
+        }
+        KernelToUi::FatigueAlert(alert) => {
+            text(&alert.recommendation, 8192, false)?;
+        }
+        KernelToUi::PrivacyGuardAlert(alert) => {
+            text(&alert.description, 8192, false)?;
+            text(&alert.recommended_action, 8192, false)?;
+            match &alert.trigger {
+                hakille_ui_protocol::PrivacyGuardTrigger::RawDataExfiltrationBlocked {
+                    blocked_scope,
+                } => text(blocked_scope, 256, false)?,
+                hakille_ui_protocol::PrivacyGuardTrigger::HardwareKillSwitchActivated {
+                    device,
+                } => text(device, 256, false)?,
+                hakille_ui_protocol::PrivacyGuardTrigger::ShoulderSurfingDetected { .. }
+                | hakille_ui_protocol::PrivacyGuardTrigger::EphemeralTtlPurged => {}
             }
         }
         _ => {}

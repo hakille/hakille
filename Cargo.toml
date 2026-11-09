@@ -45,6 +45,7 @@ members = [
     "conformance",
     "xtask",
     "tests/e2e",
+    "tests/e2e/mobile",
 ]
 
 # Socle commun : MSRV 1.95 (édition 2024, aligné CI + rust-toolchain).

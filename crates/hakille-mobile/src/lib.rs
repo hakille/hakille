@@ -8,7 +8,11 @@ pub mod types;
 use core::{Core, MAX_JSON_BYTES};
 use persistence::MAX_CHECKPOINT_BYTES;
 use std::{sync::Mutex, time::Instant};
-pub use types::{BridgeResult, MobileAction, MobileSnapshot};
+pub use types::{
+    BridgeResult, GuestPassDto, MobileAction, MobileSnapshot, PairingQrPayload,
+    compute_camera_scale, is_allowed_external_destination, parse_pairing_qr, validate_camera_frame,
+    validate_gps_fix,
+};
 use types::{GatewayResponse, SavedDraft};
 
 #[cfg(feature = "ffi")]
@@ -73,9 +77,19 @@ impl MobileBridge {
         };
         let before = state.clone();
         let outcome = state.dispatch(action, Instant::now());
-        if outcome.is_ok()
-            && let Err(error) = state.trim_history_to_budget()
-        {
+        if outcome.is_err() {
+            let hold_cancelled = state.snapshot.approval.is_none();
+            let voice_invalidated = state.snapshot.voice_context_id.is_none();
+            *state = before;
+            if hold_cancelled {
+                state.cancel_hold();
+            }
+            if voice_invalidated {
+                state.invalidate_voice();
+            }
+            return result(&state, outcome);
+        }
+        if let Err(error) = state.trim_history_to_budget() {
             *state = before;
             return result(&state, Err(error));
         }
@@ -109,6 +123,33 @@ impl MobileBridge {
             {
                 let _ = state.fail(request_id, error);
             }
+        }
+        result(&state, outcome.map(|_| None))
+    }
+
+    /// Reçoit une trame individuelle de streaming (SSE).
+    pub fn receive_stream_frame(&self, request_id: u64, frame_json: String) -> String {
+        let Ok(mut state) = self.state.lock() else {
+            return unavailable();
+        };
+        let parsed = if frame_json.len() > MAX_JSON_BYTES {
+            Err("Trame de streaming supérieure à 1 Mio".to_owned())
+        } else {
+            serde_json::from_str::<hakille_ipc::Frame>(&frame_json)
+                .map_err(|_| "Trame streaming JSON invalide".into())
+        };
+        let outcome = match parsed {
+            Ok(frame) => state.receive_stream_frame(request_id, frame),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = &outcome
+            && state
+                .snapshot
+                .pending
+                .as_ref()
+                .is_some_and(|p| p.request_id == request_id)
+        {
+            let _ = state.fail(request_id, error);
         }
         result(&state, outcome.map(|_| None))
     }
