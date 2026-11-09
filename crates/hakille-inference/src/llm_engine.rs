@@ -1668,6 +1668,28 @@ mod role_boundary_tests {
 mod prefill_budget_tests {
     use super::*;
     #[test]
+    fn prefill_cancellation_stops_between_chunks() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let cancelled = AtomicBool::new(false);
+        let mut forwards = 0;
+        let result = prefill_in_chunks(
+            &[1, 2, 3, 4],
+            2,
+            GenerationControl {
+                deadline: None,
+                cancellation: Some(&cancelled),
+            },
+            |_, _| {
+                forwards += 1;
+                cancelled.store(true, Ordering::Release);
+                Ok(())
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("annulée"));
+        assert_eq!(forwards, 1, "aucun second bloc après annulation");
+    }
+
+    #[test]
     fn prefill_preserves_positions_and_stops_before_work_after_deadline() {
         let mut observed = vec![];
         let last = prefill_in_chunks(

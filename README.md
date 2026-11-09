@@ -103,7 +103,7 @@ Hakille n'est ni une application de chat, ni un wrapper d'API, ni un agent promp
 
 ---
 
-## 📦 Structure du Workspace (31 Crates + 5 Agents + Conformance)
+## 📦 Structure du Workspace (37 Crates + 5 Agents + Conformance)
 
 Le projet est un monorepo Cargo structuré en **37 crates modulaires**, **2 agents WASM de référence réellement exécutés**, **5 manifests métier déclaratifs**, une suite de conformité exhaustive (66 tests fast de conformité et 10 slow ignorés — 7 dans `conformance`, 3 dans `hakille-kernel` — voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
 

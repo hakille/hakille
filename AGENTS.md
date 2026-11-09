@@ -1,6 +1,6 @@
 # AGENTS.md — Hakille
 
-Monorepo Rust (33 crates + 5 crates d'agents + `conformance` + `xtask`), édition 2024,
+Monorepo Rust (37 crates + 5 crates d'agents + `conformance` + `xtask`), édition 2024,
 MSRV/toolchain **1.95** (épinglé par `rust-toolchain.toml`).
 Contrat produit central : **aucun succès simulé** (voir « Contrat d'honnêteté »).
 

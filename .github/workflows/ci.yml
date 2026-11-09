@@ -101,9 +101,9 @@ jobs:
 
   conformance-slow:
     # Gate lente hebdo : 10 tests ignorés (décodage Qwen CPU réel, minutes en
-    # debug) — 7 dans `conformance`, 5 dans `hakille-kernel`. Fast gate
+    # debug) — 7 dans `conformance`, 3 dans `hakille-kernel`. Fast gate
     # (66 tests) reste dans check-test via `xtask conformance`.
-    # Tant que les 12 slow ne sont pas verts en nightly, la suite fast est la
+    # Tant que les 10 slow ne sont pas verts en nightly, la suite fast est la
     # référence CI ; voir xtask conformance-slow.
     # ATTENTION : ces tests exigent le GGUF Qwen + son tokenizer (~475 Mo) :
     # sans provisionnement, ils ÉCHOUENT (ils ne SKIP pas) — c'est voulu,

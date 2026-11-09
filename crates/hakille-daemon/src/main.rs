@@ -3,7 +3,9 @@ use hakille_agents::{AgentManifest, AgentRegistry, sha256_hex};
 use hakille_audit::journal::AuditJournal;
 use hakille_audit::{ActionRecord, AuditEntry, ReasoningStep, ReasoningTrace};
 use hakille_constitution::rules::Constitution;
-use hakille_core::{ActorId, CapabilityScope, EntryId, Timestamp, TrustLevel, UserId};
+use hakille_core::{
+    ActorId, CapabilityAuthority, CapabilityScope, EntryId, Timestamp, TrustLevel, UserId,
+};
 use hakille_inference::{ModelCatalog, ModelProvisioner, ModelTier};
 use hakille_kernel::{
     budget::PipelineBudgetConfig, fabric::CognitiveFabric, orchestrator::CognitiveOrchestrator,
@@ -13,7 +15,7 @@ use hakille_metrics::{
 };
 use hakille_perception::{CameraPipeline, WorldModel};
 use hakille_substrate::{CameraConfig, CameraFacing, CameraStreamHandle, Compute, Substrate};
-use hakille_sync::{CrdtSync, HandoffCoordinator, Outbox, OutboxEntry};
+use hakille_sync::{CrdtSync, HandoffCoordinator, OutboxEntry};
 use hakille_ui::{
     AccessibilityManager, AcrylicOverlayWindowSpec, ChannelSelector, CostCounter, DeviceType,
     EphemeralHud, InitiativeOrigin, InteractionContext, MemoryViewerPanel, OnboardingManager,
