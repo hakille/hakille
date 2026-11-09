@@ -2,6 +2,7 @@ use crate::triplet::{InsertResult, TriplePattern, Triplet};
 use hakille_core::{NodeId, PredicateId, TripletId};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+#[derive(Clone)]
 pub struct KnowledgeGraph {
     /// Stockage principal ordonné (itération déterministe par `TripletId`).
     triplets: BTreeMap<TripletId, Triplet>,
@@ -62,7 +63,12 @@ impl KnowledgeGraph {
     /// l'échelle d'un graphe local. Le registre nom→UUID ci-dessous rend
     /// l'opération réversible pour l'affichage.
     pub fn deterministic_uuid(namespace: &str, name: &str) -> uuid::Uuid {
-        let normalized = Self::normalize_name(name);
+        Self::exact_uuid(namespace, &Self::normalize_name(name))
+    }
+
+    /// Identité sensible à la casse pour les contenus, jamais normalisés.
+    pub fn exact_uuid(namespace: &str, name: &str) -> uuid::Uuid {
+        let normalized = name;
         let mut h1_input = Vec::with_capacity(namespace.len() + normalized.len() + 1);
         h1_input.extend_from_slice(namespace.as_bytes());
         h1_input.push(0x1F);
@@ -95,7 +101,7 @@ impl KnowledgeGraph {
         object: &crate::triplet::NodeValue,
     ) -> TripletId {
         let repr = format!("{:?}|{:?}|{:?}", subject.0, predicate.0, object);
-        TripletId(Self::deterministic_uuid("hakille-triplet", &repr))
+        TripletId(Self::exact_uuid("hakille-triplet", &repr))
     }
 
     /// Registre nom→UUID persistant en mémoire du graphe (spec mission 1).
@@ -260,7 +266,9 @@ impl KnowledgeGraph {
             if let Some(existing_id) = bucket
                 .iter()
                 .filter_map(|id| self.triplets.get(id))
-                .find(|t| t.object == triplet.object)
+                .find(|t| {
+                    t.object == triplet.object && t.metadata.context == triplet.metadata.context
+                })
                 .map(|t| t.id.clone())
             {
                 self.activate(&existing_id);
@@ -607,29 +615,7 @@ impl KnowledgeGraph {
         use std::io::Write as _;
 
         let path = path.as_ref();
-        let snapshot = GraphSnapshot {
-            triplets: self.triplets.values().cloned().collect(),
-            subject_names: self
-                .subject_names
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-            predicate_names: self
-                .predicate_names
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-            subject_labels: self
-                .subject_labels
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-            predicate_labels: self
-                .predicate_labels
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-        };
+        let snapshot = self.snapshot();
         let bytes = serde_json::to_vec_pretty(&snapshot)
             .map_err(|e| hakille_core::HakilleError::SerializationError(e.to_string()))?;
 
@@ -691,9 +677,47 @@ impl KnowledgeGraph {
             .map_err(|e| hakille_core::HakilleError::StorageError(e.to_string()))?;
         let snapshot: GraphSnapshot = serde_json::from_slice(&bytes)
             .map_err(|e| hakille_core::HakilleError::SerializationError(e.to_string()))?;
+        Self::from_snapshot(snapshot)
+    }
+
+    /// Snapshot complet : les libellés font partie de la mémoire durable.
+    pub fn snapshot(&self) -> GraphSnapshot {
+        GraphSnapshot {
+            triplets: self.triplets.values().cloned().collect(),
+            subject_names: self
+                .subject_names
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            predicate_names: self
+                .predicate_names
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            subject_labels: self
+                .subject_labels
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            predicate_labels: self
+                .predicate_labels
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        }
+    }
+
+    /// Restauration stricte : refuse les métadonnées invalides et les IDs
+    /// dupliqués au lieu de perdre silencieusement un fait.
+    pub fn from_snapshot(snapshot: GraphSnapshot) -> hakille_core::Result<Self> {
         let mut graph = Self::new();
         for t in snapshot.triplets {
-            graph.triplets.insert(t.id.clone(), t);
+            t.validate()?;
+            if graph.triplets.insert(t.id.clone(), t).is_some() {
+                return Err(hakille_core::HakilleError::StorageError(
+                    "snapshot mémoire : identifiant de triplet dupliqué".into(),
+                ));
+            }
         }
         graph.rebuild_indexes();
         graph.subject_names = snapshot.subject_names.into_iter().collect();

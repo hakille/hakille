@@ -1,60 +1,157 @@
-# Mémoire Hakille de bout en bout (Agent E — intégration)
+# Mémoire Hakille de bout en bout
 
-Cycle complet : `:remember` → graphe RAM → snapshot → export/import → `:recall` → `:forget`.
+Le démon utilise désormais `<data_dir>/memory.redb` comme source durable.
+Les faits, leurs libellés, les conflits en attente, les corrections et le
+contexte court sont conservés dans un checkpoint transactionnel redb. Les
+échanges complets sont archivés séparément, sans troncature du texte stocké.
 
-## Diagramme du cycle
+## Parcours effectif
 
-```
-┌─────────────┐    extraction auto (insensible casse, trim .,!?;:)   ┌──────────────────┐
-│  REPL / prompt│ ── "je m'appelle…", "retiens que…" ──────────────▶ │ CognitiveOrch.   │
-│  hakille-daemon│    :remember S P O ──▶ orchestrator.remember() ───▶ │  memory_graph    │
-└─────────────┘                                                     │  (RAM, Knowledge │
-       ▲                                                            │   Graph + SPO)     │
-       │ :recall ──▶ orchestrator.recall() ── étages GraphQuery      └────────┬─────────┘
-       │            (poids→confiance, dédupliqué) ◀── search_text ◀──┤        │
-       │                                                            │        │ insert (routage
-       │ :forget <préfixe-8|uuid> ── révocation + reçu crypto        │        │  contradiction :
-       │                                                            │        │  AskUser ⇒ warn +
-       ▼                                                            │        │  pending_resolutions,
-       │                                                     ┌──────┴────────┴──┐  jamais écrasé)
-┌──────────────┐  save_to_file/load_from_file  │ snapshot ./hakille-memory.json │◀─────────────┘
-│ :export <fic>│ ── export_graph(Json) ──▶ fichier ── :import ──▶ import_graph + import_into_graph
-│ :memory      │    (affiche taille + compte + snapshot auto)   (labels→registres, insert, warn si conflit)
-│ :memory-view │    UUID court 8 chars + texte (:forget utilisable)
-│ :embed-test  │    [DEMO] hash non sémantique — PAS un vrai embedding
-│ :contrad.    │    scan_contradictions (boîte, décision utilisateur)
-└──────────────┘
-       │ CRDT (sans réseau) : knowledge_graph_to_crdt() / apply_crdt_to_graph() (hakille-sync)
-       ▼ redb : EdgeStore (persist_to / hydrate_from) — tier edge, distinct du snapshot JSON
+```text
+REPL / IPC → autorisation → épisode Started (commit)
+                         → extraction prudente des déclarations User
+                         → checkpoint faits + conflits (commit avant inférence)
+                         → BM25 + MiniLM optionnel + fusion par rang
+                         → faits sourcés + épisodes récents/pertinents bornés
+                         → S1 ou S2 reçoit ce contexte avant génération
+                         → épisode Completed / Failed + checkpoint (commit)
+                         → audit : ID épisode + IDs des faits rappelés
 ```
 
-## Commandes REPL
+Un crash pendant l'inférence laisse un épisode `Started`, et non une réponse
+inventée. Une erreur de persistance remonte à l'appelant. REPL et IPC confirment
+`:remember` / `MemoryRemember` après sauvegarde ; les conflits IPC sont eux
+aussi sauvegardés. Le journal d'audit reste distinct, signé et append-only.
 
-| Commande | Effet |
+Au premier démarrage de cette version, `memory.json` sous `data_dir`, ou à
+défaut `./hakille-memory.json`, est importé dans le checkpoint. L'original est
+conservé intact. Un JSON invalide bloque la migration ; une base corrompue ou
+une version inconnue bloque l'ouverture. Après migration, un ancien JSON ne
+peut pas remplacer une base déjà initialisée.
+
+## Trois formes de mémoire
+
+- **Faits symboliques** : sujet, prédicat, objet, source, confiance, partition.
+  Les identifiants de contenu distinguent la casse ; les noms d'entités restent
+  normalisés. Des faits de partitions différentes ne se contredisent pas.
+- **Épisodes** : prompt intégral, réponse effectivement obtenue ou erreur,
+  statut, date, partition, niveau de confiance de la source et IDs rappelés.
+  Le contexte court peut être compacté sans effacer ces archives.
+- **Travail et corrections** : focus/objectifs/contexte court restaurés,
+  contradictions dédupliquées et persistantes, historique des résolutions.
+  Les anciennes valeurs restent consultables sans devenir des faits actuels.
+  Lorsqu'un ancien épisode rappelle une valeur corrigée, le contexte indique
+  aussi la valeur actuelle, même si la recherche ne trouvait que l'épisode.
+
+Les textes du modèle et le journal du tour ne sont plus insérés comme des faits
+utilisateur certains. Une distillation conserve sa confiance et sa source
+`Inferred`, avec `TrustLevel::Untrusted` : elle est inspectable mais exclue du
+rappel automatique. Les invités et les contenus externes ne peuvent pas créer
+une déclaration `User` par extraction. L'extraction est une heuristique limitée
+aux déclarations directes, pas un parseur linguistique universel.
+
+## Rappel et contexte
+
+`HybridRetriever` travaille sur le triplet complet, y compris les libellés.
+Le classement lexical BM25 normalise les accents français et retire une liste
+explicite de mots courants. Les scores lexicaux et cosinus sont fusionnés par
+rang (RRF), puis départagés de façon déterministe. Un score de rappel mesure
+la pertinence, pas la probabilité qu'un fait soit vrai.
+
+Quand MiniLM est présent, le démon branche son véritable forward ONNX :
+
+```bash
+cargo run -p hakille-daemon -- models download --model all-minilm-l6-v2
+cargo run -p hakille-daemon -- models verify
+```
+
+Sans modèle, le rappel lexical reste disponible et le mode est annoncé au
+boot. Un échec d'encodage est exposé dans le rapport, les logs et l'audit.
+Aucun vecteur simulé n'est substitué au modèle. Le cache encode chaque contenu
+une seule fois tant qu'il reste inchangé ; les suppressions et les changements
+de modèle/partition invalident les données concernées. L'index HNSW est construit
+en un lot au-delà de 1 000 vecteurs ; en dessous, recherche cosinus exacte.
+
+Valeurs par défaut : 12 faits, 6 000 octets de preuves, au plus 32 nouveaux
+encodages par recherche. Le retard d'indexation est signalé ; la recherche
+lexicale continue de couvrir tous les faits visibles. Le contexte combiné
+est borné à 10 000 octets avant sérialisation : trois épisodes récents et
+quatre épisodes pertinents au maximum, avec déduplication. Les extraits sont
+centrés sur les termes recherchés quand ils apparaissent loin dans le texte.
+Les archives complètes restent disponibles via `:episodes`.
+
+S1 et S2 utilisent la même enveloppe de citations JSON échappées. Les faits
+ambigus sont signalés comme conflits ; les épisodes et conflits ne comptent
+pas comme corroborations indépendantes dans S2. Cette discipline réduit la
+confusion entre données et instructions, sans prétendre rendre un LLM immunisé
+contre toute injection. Les contrôles Biscuit et constitutionnels restent
+nécessaires avant tout effet.
+
+Le démon accepte `HAKILLE_MEMORY_BUDGET_MS` (défaut 5 000 ms par étape mémoire,
+mesuré et vérifié après l'étape). Ce budget inclut les vrais encodages et les
+commits disque ; il ne garantit pas une interruption au milieu d'un forward.
+Les budgets de bibliothèque restent inchangés.
+
+## Commandes
+
+| Commande | Effet réel |
 |---|---|
-| `:remember Marie aime le jazz` (ou 1–2 mots → `Fait est <texte>`) | `orchestrator.remember()` → `Inserted` / `ContradictionResolved` / `NeedsUserResolution` (rien écrasé, mis en `pending_resolutions` + `warn`). Usage affiché si vide. |
-| `:recall jazz` | `orchestrator.recall()` : GraphQuery (tri poids→confiance) + registre SPO + fallback substring + embeddings réels si branchés. Dédupliqué. Usage si vide. |
-| `:memory` | Liste `UUID-court (8)` + texte ; hint `:forget`. Vide → 1 phrase + 3 exemples (spec §19). |
-| `:memory-view` / `:mem2` / `:contradictions` | Inspection riche (poids, confiance, partitions) / boîte à contradictions. |
-| `:forget <préfixe-8 \| uuid-complet>` | Préfixe unique accepté (ambigu ⇒ erreur + conseil `:memory-view`) ; reçu crypto (`Droit à l'oubli`). |
-| `:export [fichier]` | `export_graph(Json)` : taille + compte affichés ; écrit le fichier si donné ; **snapshot RAM auto** (`./hakille-memory.json`). |
-| `:import <fichier>` | `import_graph` (JSON `:export` v`"1"`, refus explicite sinon) + `import_into_graph` (labels→registres, `insert`, `warn` si conflit) ; **snapshot RAM auto**. |
-| `:embed-test <txt>` | **[DEMO]** hash stable non sémantique, norme affichée non mesurée — brancher le vrai MiniLM `ort` pour un vecteur réel. |
-| `:exit` / `:quit` (ou EOF) | **Sauvegarde auto** du snapshot avant arrêt. |
-| Démarrage daemon | `load_from_file(./hakille-memory.json)` si présent (compte affiché), sinon graphe vide. |
+| `:remember Alice ville Paris` | Insère un fait, ou conserve un conflit sans écrasement ; accuse après commit. |
+| `retiens que le projet Atlas termine mardi` | Une note indépendante et idempotente ; ne concurrence pas les autres notes. |
+| `:recall échéance Atlas` | Rappel hybride des faits de la partition active, Default et Shared. |
+| `:episodes [texte]` | 20 échanges récents ou pertinents, avec texte complet et état réel. |
+| `:contradictions` | Paires en attente avec UUID de l'entrant. |
+| `:resolve <uuid-entrant> existing\|incoming` | Décision explicite, checkpoint et historique ; rollback RAM si commit échoue. |
+| `:memory-history` | Anciennes et nouvelles valeurs des corrections. |
+| `:memory-scope [personal\|professional\|shared\|default]` | Sélection persistante du contexte ; Shared n'ouvre pas les partitions privées. |
+| `:forget <préfixe\|uuid>` | Retire le fait, ses conflits/révisions et les épisodes référençant le fait ou ses anciennes valeurs, ou contenant leurs objets exacts ; vide le cache associé. |
+| `:forget-episode <uuid>` | Retire un échange et ses copies du contexte court, sans effacer les faits indépendants. |
+| `:export` / `:import` | Export/import du graphe uniquement ; ne constitue pas une sauvegarde complète des épisodes. |
 
-## Fichiers touchés (Agent E uniquement)
+La recherche automatique exclut Guest/Untrusted ; les épisodes correspondants
+restent conservés dans la base avec leur statut pour inspection explicite par
+l'API `MemoryJournal::episode(id)`.
 
-- `crates/hakille-kernel/src/orchestrator.rs` — champ `pending_resolutions`, `warn`+stockage dans `remember`, extraction auto insensible à la casse + trim ponctuation + accusé réception (recall déjà trié/dédupliqué : vérifié, inchangé).
-- `crates/hakille-daemon/src/main.rs` — restore/save snapshot, `:import` + `import_into_graph()`, `:memory` UUID court, `:embed-test [DEMO]`, gardes `:remember`/`:recall`, `:forget` préfixe.
-- `crates/hakille-sync/src/crdt.rs` — ajout seul : `knowledge_graph_to_crdt()` / `apply_crdt_to_graph()` + test roundtrip.
-- `docs/MEMORY_END_TO_END.md` — ce fichier.
+## Limites et choix assumés
 
-## Limites honnêtes
+- Ce n'est pas une AGI et aucune garantie de rappel parfait n'est revendiquée.
+- Le checkpoint sérialise le graphe complet en O(N). La recherche d'archives
+  parcourt le disque en O(N), avec une sélection bornée. Un index textuel durable
+  et des checkpoints différentiels sont les prochaines optimisations à mesurer.
+- Le cache vectoriel du noyau est reconstructible, en RAM ; un redémarrage le
+  reconstruit progressivement. Le modèle MiniLM existant est surtout anglophone,
+  son seuil 0,40 n'est pas calibré sur un corpus utilisateur francophone.
+- Les textes sont stockés localement **sans chiffrement** dans cette base.
+  L'oubli est logique : il ne garantit pas l'effacement physique des anciennes
+  pages redb, des exports, des JSON legacy ni du journal d'audit indépendant.
+  La purge textuelle détecte les occurrences exactes, pas toutes les paraphrases.
+- Il n'y a ni réplication réseau des épisodes ni synthèse neuronale des archives.
+  Le compteur `archived_summary` du contexte court reste un compteur honnête.
+- `MemoryManager`, `MemoryRuntime` et `EdgeStore` restent des APIs de bibliothèque
+  historiques. Le démon utilise `MemoryJournal` et le graphe de l'orchestrateur ;
+  il ne maintient pas en parallèle une copie JSON ou une seconde base vectorielle.
 
-- **Volatilité résiduelle** : la RAM reste la source de vérité en session ; seul le snapshot `./hakille-memory.json` (+ `:export`) survit au redémarrage. Crash entre deux sauvegardes = faits perdus. Pas de fsync/dir-sync garanti, pas de journal d'écriture.
-- **Snapshot local au CWD** : `./hakille-memory.json` dépend du répertoire de lancement (contrairement à `audit.redb`/`outbox.json` sous `LOCALAPPDATA/Hakille`). Ne pas lancer depuis deux CWD en espérant partager la mémoire.
-- **Embeddings optionnels** : `:embed-test` = hash démo ; `recall` sémantique réel seulement si `embedding_engine` (MiniLM `ort`) branché, seuil cosinus 0.40 hérité à recalibrer avec le vrai modèle.
-- **Sync sans réseau** : le pont CRDT est une conversion locale (`Triplet` <-> élément) ; `merge`/tombstones/LWW existent mais aucun transport, aucune découverte de pairs, aucun chiffrement de canal.
-- **redb ≠ snapshot** : `EdgeStore` (`persist_to`/`hydrate_from`) est un tier edge distinct, non branché au cycle REPL ci-dessus (pas d'auto-persist vers redb au `:exit`).
-- **Contradictions** : `AskUser` ne résout rien seul — les paires s'accumulent dans `pending_resolutions` / `:contradictions` jusqu'à décision humaine (`:forget` ou ré-insertion).
+## Vérifications
+
+```bash
+cargo test -p hakille-memory --locked
+cargo test -p hakille-kernel --locked
+cargo test -p hakille-daemon --locked
+cargo test --workspace --locked
+```
+
+Les tests couvrent les redémarrages, migrations, corruptions, textes longs,
+épisodes interrompus/échoués, conflits/résolutions, provenance, partitions,
+cache, limites de contexte et absence de résurrection après oubli. Le test
+`memory_real_minilm_retrieves_paraphrase_with_provenance` exécute réellement
+MiniLM si son artefact est présent ; sinon il imprime un `SKIP` explicite.
+Les résultats de la validation complète et les limites de l'environnement
+sont consignés dans [MEMORY_VALIDATION.md](MEMORY_VALIDATION.md).
+
+## Sources issues d'outils
+
+Le champ optionnel `tool_trace` des épisodes conserve les recherches, lectures,
+extraits et échecs. Ces sources peuvent être rappelées comme archives externes
+datées et sont incluses dans l'oubli d'un épisode ou d'un fait associé. Elles
+ne deviennent jamais automatiquement des déclarations utilisateur. Voir
+[HARNESS_END_TO_END.md](HARNESS_END_TO_END.md).

@@ -93,22 +93,17 @@ impl ExecutionPlan {
         Ok(())
     }
 
-    /// Vérification avec token optionnel : si `token` est `None`, forge un
-    /// token atténué court (Network+Execute, 5 min) via `mint_short_network_token`
-    /// au lieu d'un root longue durée, puis vérifie. Le token court ne couvre
-    /// que le réseau : les pas Wallet/Filesystem restent refusés (verrou
-    /// `requires_human_confirmation` inchangé) — on ne décloisonne jamais.
+    /// Compatibilité d'API : l'absence de token est un refus, jamais une
+    /// création implicite de droits réseau par le planificateur.
     pub fn verify_capabilities_or_short_token(
         &self,
         token: Option<&CapabilityToken>,
         authority: &CapabilityAuthority,
     ) -> Result<(), String> {
-        if let Some(t) = token {
-            return self.verify_capabilities(t, authority);
-        }
-        let short = crate::providers::mint_short_network_token(authority, None)
-            .map_err(|e| format!("mint short token: {e}"))?;
-        self.verify_capabilities(&short, authority)
+        let token = token.ok_or_else(|| {
+            "capability explicite requise ; aucun droit forgé par le planificateur".to_string()
+        })?;
+        self.verify_capabilities(token, authority)
     }
 
     /// Vérification pré-exécution avec [`AuthorizationContext`] : valide le
@@ -172,13 +167,51 @@ pub struct PlanReflection {
 /// Cognitive Planner implementing the Plan-Execute-Reflect loop (§28b).
 pub struct DeliberatePlanner;
 
+/// Reçu associé à une étape réelle. Une étape seulement proposée n'en a pas.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepReceipt {
+    pub step_id: u32,
+    pub succeeded: bool,
+    pub evidence_ref: String,
+}
+
 impl DeliberatePlanner {
+    pub fn reflect_receipts(
+        plan: &ExecutionPlan,
+        receipts: &[StepReceipt],
+    ) -> hakille_core::Result<PlanReflection> {
+        let mut seen = std::collections::HashSet::new();
+        for receipt in receipts {
+            if !plan.steps.iter().any(|s| s.step_id == receipt.step_id)
+                || !seen.insert(receipt.step_id)
+                || receipt.evidence_ref.trim().is_empty()
+            {
+                return Err(hakille_core::HakilleError::Internal(
+                    "reçu d'exécution invalide, dupliqué ou sans preuve".into(),
+                ));
+            }
+        }
+        let succeeded = receipts.iter().filter(|r| r.succeeded).count();
+        let mut reflection = Self::evaluate_reflection(plan, succeeded, plan.steps.len());
+        // Réussir une opération ne prouve pas la vérité d'une réponse LLM.
+        reflection.confidence_delta = 0.0;
+        if receipts.is_empty() {
+            reflection.summary = format!(
+                "Plan '{}' proposé : {} étapes sans reçu, aucune exécution vérifiée.",
+                plan.plan_id,
+                plan.steps.len()
+            );
+        }
+        Ok(reflection)
+    }
+
     pub fn evaluate_reflection(
         plan: &ExecutionPlan,
         steps_succeeded: usize,
         total_steps: usize,
     ) -> PlanReflection {
-        let all_succeeded = steps_succeeded == total_steps;
+        let all_succeeded =
+            total_steps > 0 && total_steps == plan.steps.len() && steps_succeeded == total_steps;
         let delta = if all_succeeded { 0.05 } else { -0.15 };
         let summary = if all_succeeded {
             format!(
@@ -199,5 +232,55 @@ impl DeliberatePlanner {
             confidence_delta: delta,
             summary,
         }
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    #[test]
+    fn reflection_never_counts_proposals_or_duplicate_receipts_as_execution() {
+        let mut plan = ExecutionPlan::new("p", "Lire et vérifier");
+        plan.add_step(
+            "lire",
+            CapabilityScope::Network,
+            CapabilityAction::Read,
+            false,
+        );
+        plan.add_step(
+            "vérifier",
+            CapabilityScope::ModelInference,
+            CapabilityAction::Read,
+            false,
+        );
+        let proposed = DeliberatePlanner::reflect_receipts(&plan, &[]).unwrap();
+        assert!(!proposed.all_steps_succeeded);
+        assert_eq!(proposed.confidence_delta, 0.0);
+        let receipt = StepReceipt {
+            step_id: 0,
+            succeeded: true,
+            evidence_ref: "episode:tool-1".into(),
+        };
+        assert!(
+            !DeliberatePlanner::reflect_receipts(&plan, std::slice::from_ref(&receipt))
+                .unwrap()
+                .all_steps_succeeded
+        );
+        assert!(
+            DeliberatePlanner::reflect_receipts(&plan, &[receipt.clone(), receipt.clone()])
+                .is_err()
+        );
+        let second = StepReceipt {
+            step_id: 1,
+            succeeded: true,
+            evidence_ref: "episode:tool-2".into(),
+        };
+        let done = DeliberatePlanner::reflect_receipts(&plan, &[receipt, second]).unwrap();
+        assert!(done.all_steps_succeeded);
+        assert_eq!(done.confidence_delta, 0.0);
+        assert!(
+            !DeliberatePlanner::evaluate_reflection(&ExecutionPlan::new("empty", ""), 0, 0)
+                .all_steps_succeeded
+        );
     }
 }

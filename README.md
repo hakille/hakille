@@ -105,7 +105,7 @@ Hakille n'est ni une application de chat, ni un wrapper d'API, ni un agent promp
 
 ## 📦 Structure du Workspace (31 Crates + 5 Agents + Conformance)
 
-Le projet est un monorepo Cargo structuré en **33 crates modulaires**, **2 agents WASM de référence réellement exécutés**, **5 manifests métier déclaratifs**, une suite de conformité exhaustive (78 tests : 66 fast + 12 slow ignorés — 7 dans `conformance`, 5 dans `hakille-kernel` — voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
+Le projet est un monorepo Cargo structuré en **37 crates modulaires**, **2 agents WASM de référence réellement exécutés**, **5 manifests métier déclaratifs**, une suite de conformité exhaustive (66 tests fast de conformité et 10 slow ignorés — 7 dans `conformance`, 3 dans `hakille-kernel` — voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
 
 ### 1. Fondations & Substrates OS
 - [`hakille-core`](crates/hakille-core) : Primitives cryptographiques (Ed25519, ChaCha20Poly1305), jetons Biscuit, types temporels, bus de messages typés (`Message`) et niveaux de confiance (`TrustLevel`).
@@ -216,7 +216,7 @@ cargo xtask conformance-slow
 cargo run -p hakille-daemon
 ```
 
-Le premier prompt est lent : le premier tour inclut le chargement lazy du GGUF Qwen (~10-60 s) puis un décodage CPU réel — comptez ~478 s en debug contre ~24 s en release (64 tokens, i7-1165G7 mesuré), donc préférez `cargo run -p hakille-daemon --release`. Le REPL est résilient (un tour raté n'arrête pas la session) et la mémoire `./hakille-memory.json` est auto-sauvegardée après chaque tour. Dépannage, variables d'environnement et codes de sortie headless : [docs/getting_started.md § 5. Dépannage & Configuration](docs/getting_started.md#5-dépannage--configuration).
+Le premier prompt est lent : le premier tour inclut le chargement lazy du GGUF Qwen (~10-60 s) puis un décodage CPU réel — comptez ~478 s en debug contre ~24 s en release (64 tokens, i7-1165G7 mesuré), donc préférez `cargo run -p hakille-daemon --release`. Le REPL est résilient (un tour raté n'arrête pas la session) et la mémoire `<data_dir>/memory.redb` conserve les faits, conflits, corrections et échanges complets par transactions (migration automatique des anciens JSON). Dépannage, variables d'environnement et codes de sortie headless : [docs/getting_started.md § 5. Dépannage & Configuration](docs/getting_started.md#5-dépannage--configuration).
 
 ### Lancement du shell desktop natif (winit + wgpu + AccessKit, ADR-009)
 ```bash
@@ -378,11 +378,24 @@ hakille> :agents-run echo-agent {"msg":"bonjour"}  # Exécuter un agent WASM de 
 hakille> :cost             # Suivre la consommation financière en temps réel
 hakille> :memory           # Afficher les triplets SPO du graphe de connaissances
 hakille> :remember Bob habite à Paris
-hakille> :recall Paris     # Rechercher dans la mémoire sémantique
+hakille> :recall Paris     # Rappel BM25 + MiniLM réel si installé
+hakille> :episodes Atlas   # Retrouver les échanges complets, même après redémarrage
+hakille> :contradictions   # Conflits persistants ; :resolve <uuid> existing|incoming
+hakille> :memory-history   # Historique des corrections
+hakille> :memory-scope professional  # Partition active persistante
 hakille> :exit             # Arrêt propre du démon
 ```
 
 ---
+
+## Mémoire continue
+
+Les faits sourcés et les échanges complets sont conservés séparément. Le rappel
+hybride et les épisodes pertinents alimentent **S1 et S2 avant génération**,
+avec un contexte borné. Les réponses du modèle ne deviennent pas des faits
+utilisateur certains. Les conflits, leur résolution et les suppressions sont
+durables. Détails, commandes et limites : [mémoire de bout en bout](docs/MEMORY_END_TO_END.md)
+et [diagnostic architectural](docs/MEMORY_REDESIGN.md).
 
 ## 📚 Documentation Technique Détaillée
 
@@ -404,3 +417,15 @@ Pour explorer chaque sous-système en profondeur, consultez les guides dédiés 
 
 ---
 
+
+## Harness et recherche web
+
+Le noyau partage ses instructions système entre S1/S2, transmet une échéance
+au décodeur et distingue les étapes proposées des opérations vérifiées.
+`:research <requête>` (Brave ou SearXNG configuré) et `:read-web <URL>`
+déclenchent une collecte bornée avec autorisation réseau, sources horodatées,
+contrôle des références et traces conservées dans la mémoire.
+Les erreurs et résultats partiels restent explicites ; aucun fournisseur
+réseau n'est activé à partir du contenu d'une page.
+
+Voir [le fonctionnement et la configuration](docs/HARNESS_END_TO_END.md).

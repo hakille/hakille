@@ -100,7 +100,7 @@ jobs:
         run: cargo deny check bans sources advisories
 
   conformance-slow:
-    # Gate lente hebdo : 12 tests ignorés (décodage Qwen CPU réel, minutes en
+    # Gate lente hebdo : 10 tests ignorés (décodage Qwen CPU réel, minutes en
     # debug) — 7 dans `conformance`, 5 dans `hakille-kernel`. Fast gate
     # (66 tests) reste dans check-test via `xtask conformance`.
     # Tant que les 12 slow ne sont pas verts en nightly, la suite fast est la

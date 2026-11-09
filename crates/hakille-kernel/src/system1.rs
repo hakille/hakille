@@ -44,7 +44,7 @@ fn resolve_llm_timeout_ms(configured: u64) -> u64 {
 /// `HAKILLE_QWEN_MAX_TOKENS` permet de raccourcir la réponse (donc le délai)
 /// sans toucher au code. Une valeur invalide ou nulle est IGNORÉE (on
 /// garde le défaut) et journalisée : jamais de panique, jamais de silence.
-fn resolve_max_tokens() -> usize {
+pub(crate) fn resolve_max_tokens() -> usize {
     let default = if cfg!(test) {
         TEST_MAX_TOKENS
     } else {
@@ -129,6 +129,15 @@ impl System1Engine {
     }
 
     pub async fn process(&self, prompt: &str, trust_level: &TrustLevel) -> Result<System1Output> {
+        self.process_with_context(prompt, &[], trust_level).await
+    }
+
+    pub async fn process_with_context(
+        &self,
+        prompt: &str,
+        context: &[String],
+        trust_level: &TrustLevel,
+    ) -> Result<System1Output> {
         let start = std::time::Instant::now();
 
         // System 1 checks untrusted inputs: never interpret as executable command
@@ -159,7 +168,7 @@ impl System1Engine {
         // timeout, forward en échec) → Err HONNÊTE, jamais de phrase de secours.
         let max_tokens = resolve_max_tokens();
         let timeout_ms = self.llm_timeout_ms();
-        let prompt_owned = prompt.to_string();
+        let prompt_owned = crate::memory::grounded_prompt(prompt, context);
         // Échéance DURRE transmise au moteur : le décodage s'arrête lui-même à
         // l'échéance. Le `tokio::time::timeout` externe reste un filet de
         // sécurité, mais il ne peut plus laisser une génération « zombie »
@@ -167,9 +176,18 @@ impl System1Engine {
         // ferait attendre toutes les requêtes suivantes).
         let deadline =
             Some(std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms));
+        let system =
+            crate::instructions::system_instructions(crate::instructions::ReasoningMode::Direct);
         let handle = tokio::task::spawn_blocking(move || {
             let mut engine = hakille_inference::global_qwen_engine()?;
-            engine.generate_with_deadline(&prompt_owned, max_tokens, 0.0, 1.0, deadline)
+            engine.generate_with_system_deadline(
+                &prompt_owned,
+                &system,
+                max_tokens,
+                0.0,
+                1.0,
+                deadline,
+            )
         });
         let gen_out = tokio::time::timeout(
             std::time::Duration::from_millis(timeout_ms.saturating_add(30_000)),

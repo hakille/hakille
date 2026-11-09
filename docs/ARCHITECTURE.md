@@ -55,7 +55,7 @@ Hakille est structuré selon une hiérarchie stricte en 6 couches hermétiques. 
 |                            COUCHE 4 : MÉMOIRE DISTRIBUÉE                          |
 |  - Triple Store SPO / POS / OSP (hakille-memory)                                   |
 |  - Moteur local embarqué ACID redb (Tier Edge - zéro configuration)               |
-|  - Index vectoriel sémantique HNSW instant-distance (non branché au recall — brute-force documentée, `crates/hakille-memory/src/vector/edge.rs:22-34`) |
+|  - Rappel BM25 + MiniLM réel optionnel + HNSW (exact sous 1 000 vecteurs) |
 |  - Cluster distribué Raft transactionnel TiKV (Tier Cluster)                      |
 |  - Synchronisation CRDT (Grow-only Sets + Tombstones, Vector Clocks) (hakille-sync)|
 |  - Décroissance temporelle exponentielle & Résolution de contradictions           |
@@ -339,3 +339,11 @@ L'architecture supporte trois paliers d'accueil honnêtes, sans prétendre que t
 2. **Le tag `Untrusted` ne se dissipe jamais** : Tout octet ingéré d'une source externe (mail, flux web, document lu) porte un tag immuable `TrustLevel::Untrusted`. Il peut servir de donnée de raisonnement, mais ne peut jamais être promu en instruction motrice directe.
 3. **Immutabilité de l'audit** : Le journal d'audit est append-only. Aucune primitive du système ne permet la modification ou la suppression rétroactive d'une entrée.
 4. **La Constitution prime toujours** : Si une instruction utilisateur contredit une règle de la Constitution (ex: auto-préservation humaine, intégrité du système), l'instruction est rejetée avec justification formelle.
+
+## Continuité mémoire du démon
+
+Le chemin actif utilise `MemoryJournal` (redb) pour les épisodes complets et le
+checkpoint graphe/libellés/conflits/corrections/contexte. `HybridRetriever`
+alimente S1 et S2 avant génération. Les anciens stores SPO restent disponibles
+comme bibliothèques. Le fonctionnement réel et ses limites sont décrits dans
+[MEMORY_END_TO_END.md](MEMORY_END_TO_END.md).

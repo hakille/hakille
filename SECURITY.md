@@ -120,12 +120,19 @@ location and accessibility validation remain required.
   loopback. It is a separate process with a separate bearer token, which grants
   access to the exposed hub operations. Remote mobile access requires a trusted
   HTTPS reverse proxy or tunnel; the gateway supplies no TLS or automatic device
-  pairing. The daemon still serves one IPC client at a time. See
+  pairing. The daemon accepts concurrent IPC clients and serializes cognitive turns. See
   [ADR-011](adr/011-mobile-native-client-and-hub.md).
 - Mobile native credential storage does not establish hardware attestation or
   a paired-device identity. The mobile substrate reports absent drivers and
   unknown measurements explicitly. Its shadow queue is an acknowledged local
   synchronization primitive, not a deployed TiKV/APNs/FCM service.
+
+- The continuous memory database (`memory.redb`) stores full conversations,
+  facts and correction history locally in plaintext (owner-only file mode on
+  Unix). Logical forgetting removes active records and explicitly associated
+  episodes; it does not securely erase old database pages, legacy JSON backups,
+  exports or the independent audit journal. Exact-text association does not
+  detect every paraphrase. See [memory lifecycle](docs/MEMORY_END_TO_END.md).
 
 - No TPM/VBS hardware attestation (local dev signature only).
 - UI-TARS accepts only an explicitly configured loopback server. Model alias
@@ -167,3 +174,14 @@ location and accessibility validation remain required.
 
 See [platform analysis](docs/ANALYSE_MULTIPLATEFORME_2026-11-03.md) and
 [implementation review](docs/ANALYSE_APPROFONDIE_2026-11-03.md) for scope and remaining gaps.
+
+### Recherche web explicite
+
+Les pages sont des données externes, pas des instructions ni des faits certains.
+Le harness exige une capability liée à la requête, un journal durable et des
+budgets d'outils. Les lectures publiques valident HTTPS, port, adresse et chaque
+redirection ; les corps sont bornés et aucun cookie de navigateur n'est transmis.
+Le transport direct épingle le DNS. Un proxy explicitement configuré reçoit la
+confiance nécessaire à la résolution/connexion finale ; sa politique réseau
+doit protéger les adresses internes. TLS reste vérifié, y compris avec un bundle
+CA privé explicitement configuré. Voir [le contrat réseau](docs/HARNESS_END_TO_END.md).
