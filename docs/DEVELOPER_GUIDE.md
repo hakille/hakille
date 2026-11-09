@@ -346,3 +346,13 @@ Le CLI propose une session continue avec `--listen --voice-language fr` ;
 Le worker partagé est `hakille_voice::input` (CPAL, Silero, Whisper, activation).
 Voir [le guide de démarrage et de diagnostic vocal](ACTIVATION_VOCALE.md) et
 [les mesures et limites de transcription](VALIDATION_VOCALE_2026-11-04.md).
+
+## Autorité réseau et sélection du fournisseur
+
+Aucun chemin optionnel ne crée une autorisation réseau en l'absence de jeton.
+`mint_short_network_token` exige une autorisation parente et ne fait que
+l'atténuer. Les prévisualisations sans jeton ne prouvent aucun droit d'exécution.
+System 2 ne dispose actuellement que de l'adaptateur GGUF branché : sélectionner
+un fournisseur Cloud ou Ollama produit une erreur explicite, même avec les
+permissions adéquates, jusqu'à l'intégration d'un véritable adaptateur.
+Les tests de ces refus sont rapides et ne nécessitent aucun modèle.

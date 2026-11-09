@@ -33,13 +33,11 @@ use serde::{Deserialize, Serialize};
 /// Durée de vie du token réseau court (5 minutes, initiative bornée).
 pub const SHORT_NETWORK_TOKEN_SECS: i64 = 5 * 60;
 
-/// Forge un token réseau court (Network+Execute, expiry 5 min) au lieu d'un
-/// root longue durée.
+/// Atténue une autorisation réseau existante (Network+Execute, cinq minutes).
 ///
 /// - `parent = Some` ⇒ atténuation via `authority.attenuate` (scope ⊆ parent,
 ///   expiry min(parent, now+5min)) — jamais d'expansion ;
-/// - `parent = None` ⇒ racine courte (Network+Execute, now+5min) — périmètre
-///   minimal, durée minimale, pas de root longue durée.
+/// - `parent = None` ⇒ refus : une durée courte ne remplace pas le consentement.
 ///
 /// Échec (parent incompatible/expiré) ⇒ `Err` explicite, jamais de repli
 /// silencieux vers un token large.
@@ -50,17 +48,21 @@ pub fn mint_short_network_token(
     let expiry =
         Timestamp(chrono::Utc::now() + chrono::Duration::seconds(SHORT_NETWORK_TOKEN_SECS));
     match parent {
-        Some(p) => authority.attenuate(
-            p,
-            vec![CapabilityScope::Network],
-            vec![CapabilityAction::Execute],
-            expiry,
-        ),
-        None => authority.create_root_token(
-            vec![CapabilityScope::Network],
-            vec![CapabilityAction::Execute],
-            expiry,
-        ),
+        Some(p) => {
+            let parent_expiry = p
+                .min_expiry_timestamp()
+                .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0))
+                .ok_or(HakilleError::CapabilityExpired)?;
+            authority.attenuate(
+                p,
+                vec![CapabilityScope::Network],
+                vec![CapabilityAction::Execute],
+                Timestamp(expiry.0.min(parent_expiry)),
+            )
+        }
+        None => Err(HakilleError::CapabilityDenied(
+            "Autorisation réseau parente explicite requise ; aucune autorité implicite".into(),
+        )),
     }
 }
 
@@ -308,6 +310,32 @@ pub fn require_network_capability_with_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_network_token_requires_existing_authority() {
+        let authority = CapabilityAuthority::new();
+        assert!(mint_short_network_token(&authority, None).is_err());
+        let parent = authority
+            .create_root_token(
+                vec![CapabilityScope::Network],
+                vec![CapabilityAction::Execute],
+                Timestamp(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            )
+            .unwrap();
+        let child = mint_short_network_token(&authority, Some(&parent)).unwrap();
+        assert_eq!(child.min_expiry_timestamp(), parent.min_expiry_timestamp());
+        require_network_capability(&authority, Some(&child)).unwrap();
+        let wrong = CapabilityAuthority::new();
+        assert!(require_network_capability(&wrong, Some(&child)).is_err());
+        let restricted = authority
+            .create_root_token(
+                vec![CapabilityScope::Filesystem],
+                vec![CapabilityAction::Read],
+                Timestamp(chrono::Utc::now() + chrono::Duration::minutes(10)),
+            )
+            .unwrap();
+        assert!(mint_short_network_token(&authority, Some(&restricted)).is_err());
+    }
 
     #[test]
     fn default_registry_is_local_only() {

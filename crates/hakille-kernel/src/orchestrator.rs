@@ -1298,7 +1298,7 @@ impl CognitiveOrchestrator {
                     }
                 }
                 None => {
-                    // P0 : sans token fourni, audit via token atténué court
+                    // Sans token fourni, la vérification doit refuser le plan
                     // (Network+Execute, 5 min) sur authority éphémère — jamais
                     // de root longue durée. Le court ne couvre pas
                     // Wallet/Filesystem : `verify` échoue (tracé) mais la carte
@@ -1307,11 +1307,11 @@ impl CognitiveOrchestrator {
                     let eph = CapabilityAuthority::new();
                     match plan0.verify_capabilities_or_short_token(None, &eph) {
                         Ok(()) => tracing::debug!(
-                            "plan card: short-token audit passed (unexpected for irreversible)"
+                            "plan card: verification unexpectedly accepted without authority"
                         ),
-                        Err(msg) => tracing::debug!(
-                            "plan card: short-token audit (attendu pour irréversible): {msg}"
-                        ),
+                        Err(msg) => {
+                            tracing::debug!("plan card: missing authority correctly refused: {msg}")
+                        }
                     }
                     (plan0, report0, card0)
                 }
@@ -1394,12 +1394,8 @@ impl CognitiveOrchestrator {
                 estimated_cost,
                 reason: _,
             } => {
-                // Enforcement réseau (P0) : provider Cloud exige une capability
-                // Network/Execute valide. Chemin autorisé → `reason_with_authorization`
-                // (épinglée + expiry + contexte) ; chemin historique sans token →
-                // token atténué court (Network+Execute, 5 min) sur authority
-                // éphémère via `reason_with_network_capability_or_short`
-                // (jamais de root longue durée). Local-only → `reason` direct.
+                // Sans autorisation transmise par l'hôte, `reason` refuse le
+                // réseau. Aucune autorité éphémère ne remplace un consentement.
                 let s2_res = match auth {
                     Some((ctx, token, authority)) => {
                         self.system2
@@ -1415,22 +1411,9 @@ impl CognitiveOrchestrator {
                             .await?
                     }
                     None => {
-                        if self.system2.provider().is_cloud() {
-                            let eph = CapabilityAuthority::new();
-                            self.system2
-                                .reason_with_network_capability_or_short(
-                                    prompt,
-                                    &relevant_facts,
-                                    trust_level,
-                                    &eph,
-                                    None,
-                                )
-                                .await?
-                        } else {
-                            self.system2
-                                .reason(prompt, &relevant_facts, trust_level)
-                                .await?
-                        }
+                        self.system2
+                            .reason(prompt, &relevant_facts, trust_level)
+                            .await?
                     }
                 };
                 s2_confidence_opt = Some(s2_res.confidence_score);

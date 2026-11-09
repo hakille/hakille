@@ -93,11 +93,8 @@ impl ExecutionPlan {
         Ok(())
     }
 
-    /// Vérification avec token optionnel : si `token` est `None`, forge un
-    /// token atténué court (Network+Execute, 5 min) via `mint_short_network_token`
-    /// au lieu d'un root longue durée, puis vérifie. Le token court ne couvre
-    /// que le réseau : les pas Wallet/Filesystem restent refusés (verrou
-    /// `requires_human_confirmation` inchangé) — on ne décloisonne jamais.
+    /// Compatibilité de signature : sans autorisation, le plan est refusé.
+    /// La construction d'une prévisualisation n'accorde aucun droit d'exécution.
     pub fn verify_capabilities_or_short_token(
         &self,
         token: Option<&CapabilityToken>,
@@ -106,9 +103,7 @@ impl ExecutionPlan {
         if let Some(t) = token {
             return self.verify_capabilities(t, authority);
         }
-        let short = crate::providers::mint_short_network_token(authority, None)
-            .map_err(|e| format!("mint short token: {e}"))?;
-        self.verify_capabilities(&short, authority)
+        Err("Autorisation explicite requise pour vérifier le plan".into())
     }
 
     /// Vérification pré-exécution avec [`AuthorizationContext`] : valide le

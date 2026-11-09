@@ -194,11 +194,8 @@ impl System2Engine {
             .await
     }
 
-    /// Variante avec token optionnel + fallback court : si `network_capability`
-    /// est `None`, forge un token atténué court (Network+Execute, 5 min) via
-    /// `mint_short_network_token` au lieu d'un root longue durée, puis
-    /// délègue à [`Self::reason_with_network_capability`]. Le token court
-    /// reste vérifié (épinglé + expiry) — jamais de passage silencieux.
+    /// Compatibilité de signature : aucune autorisation n'est créée ici.
+    /// Un fournisseur distant sans jeton explicite est toujours refusé.
     pub async fn reason_with_network_capability_or_short(
         &self,
         prompt: &str,
@@ -207,24 +204,12 @@ impl System2Engine {
         authority: &CapabilityAuthority,
         network_capability: Option<&CapabilityToken>,
     ) -> Result<System2Plan> {
-        if let Some(tok) = network_capability {
-            return self
-                .reason_with_network_capability(
-                    prompt,
-                    context_triplets,
-                    trust_level,
-                    authority,
-                    Some(tok),
-                )
-                .await;
-        }
-        let short = crate::providers::mint_short_network_token(authority, None)?;
         self.reason_with_network_capability(
             prompt,
             context_triplets,
             trust_level,
             authority,
-            Some(&short),
+            network_capability,
         )
         .await
     }
@@ -268,6 +253,15 @@ impl System2Engine {
         context_triplets: &[String],
         trust_level: &TrustLevel,
     ) -> Result<System2Plan> {
+        // Le seul adaptateur réellement branché ici est GGUF. Une sélection
+        // distante ou Ollama ne doit jamais être présentée comme exécutée
+        // alors qu'une génération GGUF locale lui a été substituée.
+        if self.provider != ProviderId::LocalGguf {
+            return Err(HakilleError::InferenceError(format!(
+                "Adaptateur d'inférence '{}' non connecté au moteur System 2",
+                self.provider.display_name()
+            )));
+        }
         let infer_start = std::time::Instant::now();
         let mut trace = Vec::new();
         trace.push(format!(
@@ -409,6 +403,35 @@ mod provider_gate_tests {
     use hakille_core::{CapabilityAction, CapabilityScope};
 
     #[tokio::test]
+    async fn optional_token_path_never_creates_network_authority() {
+        let mut engine = System2Engine::new("test", 2);
+        engine.with_provider(ProviderId::Cloud(CloudProvider::OpenAI));
+        let authority = CapabilityAuthority::new();
+        let error = engine
+            .reason_with_network_capability_or_short(
+                "test",
+                &[],
+                &TrustLevel::User,
+                &authority,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("explicit Network capability"));
+    }
+
+    #[tokio::test]
+    async fn ollama_selection_never_silently_uses_gguf() {
+        let mut engine = System2Engine::new("test", 0);
+        engine.with_provider(ProviderId::LocalOllama);
+        let error = engine
+            .reason("test", &[], &TrustLevel::User)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("non connecté"));
+    }
+
+    #[tokio::test]
     #[ignore = "slow: décodage Qwen CPU réel (minutes en debug) ; gate lente `-- --ignored`"]
     async fn test_system2_local_only_passes() {
         // Timeout aligné sur le décodage Qwen CPU réel (debug) : le défaut
@@ -419,7 +442,6 @@ mod provider_gate_tests {
     }
 
     #[tokio::test]
-    #[ignore = "slow: décodage Qwen CPU réel (minutes en debug) ; gate lente `-- --ignored`"]
     async fn test_system2_cloud_refused_by_default() {
         let mut engine = System2Engine::new("TestSlot", 2);
         engine.with_provider(ProviderId::Cloud(CloudProvider::OpenAI));
@@ -431,8 +453,7 @@ mod provider_gate_tests {
     }
 
     #[tokio::test]
-    #[ignore = "slow: décodage Qwen CPU réel (minutes en debug) ; gate lente `-- --ignored`"]
-    async fn test_system2_cloud_allowed_with_network_capability() {
+    async fn test_system2_authorized_cloud_requires_real_adapter() {
         let authority = CapabilityAuthority::new();
         let expiry = hakille_core::Timestamp(chrono::Utc::now() + chrono::Duration::hours(1));
         let token = authority
@@ -455,6 +476,6 @@ mod provider_gate_tests {
                 Some(&token),
             )
             .await;
-        assert!(plan.is_ok());
+        assert!(plan.unwrap_err().to_string().contains("non connecté"));
     }
 }
