@@ -66,6 +66,7 @@ pub struct CognitiveOrchestrator {
     pub(crate) retriever: std::sync::Mutex<hakille_memory::retrieval::HybridRetriever>,
     pub(crate) embedding_engine: Option<hakille_inference::MiniLmOnnx>,
     pub budget_config: PipelineBudgetConfig,
+    pub decay_scheduler: hakille_memory::DecayScheduler,
     /// Mémoire de travail éphémère (scratchpad, §28a) — jamais persistée telle
     /// quelle, distillée vers le graphe souverain via `distill_and_clear`.
     pub working_memory: WorkingMemory,
@@ -128,6 +129,10 @@ impl CognitiveOrchestrator {
             active_episode: None,
             retriever: Default::default(),
             budget_config: PipelineBudgetConfig::default(),
+            decay_scheduler: hakille_memory::DecayScheduler::new(
+                300,
+                hakille_memory::DEFAULT_COGNITIVE_CUTOFF_WEIGHT,
+            ),
             working_memory: WorkingMemory::new(wm_task),
             self_model: SelfModel::new(),
             curiosity_scanner: GraphCuriosityScanner::new(),

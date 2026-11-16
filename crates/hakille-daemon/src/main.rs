@@ -1002,6 +1002,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "  :contradictions   Show contradiction box (facts that disagree + resolution)"
                 );
                 println!(
+                    "  :decay [cutoff]   Execute memory decay & prune faded cognitive signals (default: 0.05)"
+                );
+                println!(
                     "  :memory-view      Inspect rich memory triplets with weights, confidence & partitions"
                 );
                 println!(
@@ -1439,6 +1442,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 } else {
                     eprintln!("UUID de conflit invalide.");
+                }
+            }
+            s if s == ":decay" || s.starts_with(":decay ") => {
+                let arg = s.strip_prefix(":decay").unwrap_or_default().trim();
+                let cutoff = if arg.is_empty() {
+                    Some(orchestrator.decay_scheduler.cutoff)
+                } else if let Ok(val) = arg.parse::<f64>() {
+                    if (0.0..=1.0).contains(&val) {
+                        Some(val)
+                    } else {
+                        eprintln!(
+                            "Le seuil de coupure (cutoff) doit être compris entre 0.0 et 1.0."
+                        );
+                        None
+                    }
+                } else {
+                    eprintln!("Usage : :decay [cutoff] (ex. :decay 0.05)");
+                    None
+                };
+
+                if let Some(cutoff) = cutoff {
+                    match audit_memory_event(
+                        &audit_journal,
+                        "MemoryDecay",
+                        "Maintenance de décroissance et purge cognitive".into(),
+                        serde_json::json!({
+                            "cutoff": cutoff,
+                            "forced": true,
+                        }),
+                    ) {
+                        Err(error) => eprintln!("Décroissance refusée : {error}"),
+                        Ok(_) => match orchestrator.run_decay_maintenance(cutoff) {
+                            Ok(report) => {
+                                println!("Maintenance de décroissance terminée :");
+                                println!("  Nœuds dégradés (decayed) : {}", report.nodes_decayed);
+                                println!(
+                                    "  Signaux cognitifs purgés (removed) : {}",
+                                    report.nodes_removed
+                                );
+                                println!(
+                                    "  Faits fanés conservés (faded) : {}",
+                                    report.nodes_faded
+                                );
+                                if report.nodes_decayed + report.nodes_faded + report.nodes_removed
+                                    > 0
+                                {
+                                    println!(
+                                        "  Poids min : {:.4} | Poids moyen : {:.4}",
+                                        report.min_weight, report.avg_weight
+                                    );
+                                }
+                            }
+                            Err(error) => eprintln!("Erreur lors de la décroissance : {error}"),
+                        },
+                    }
                 }
             }
             s if s == ":episodes" || s.starts_with(":episodes ") => {
@@ -3357,6 +3415,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     ":mem2",
     ":contradictions",
     ":resolve",
+    ":decay",
     ":episodes",
     ":memory-scope",
     ":memory-history",
@@ -3711,6 +3770,19 @@ mod tests {
             bare_command_usage(":plan quelque chose"),
             None,
             "une commande avec argument ne doit pas être interceptée"
+        );
+    }
+
+    #[test]
+    fn test_decay_command_registered() {
+        assert!(
+            KNOWN_COMMANDS.contains(&":decay"),
+            ":decay doit être répertoriée dans KNOWN_COMMANDS"
+        );
+        assert_eq!(
+            bare_command_usage(":decay"),
+            None,
+            ":decay accepte un appel sans argument (cutoff par défaut)"
         );
     }
 }
