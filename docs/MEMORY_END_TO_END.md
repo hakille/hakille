@@ -102,6 +102,7 @@ Les budgets de bibliothèque restent inchangés.
 | `:episodes [texte]` | 20 échanges récents ou pertinents, avec texte complet et état réel. |
 | `:contradictions` | Paires en attente avec UUID de l'entrant. |
 | `:resolve <uuid-entrant> existing\|incoming` | Décision explicite, checkpoint et historique ; rollback RAM si commit échoue. |
+| `:decay [cutoff]` | Déclenche la décroissance exponentielle, fane les faits ordinaires sous le seuil et purge physiquement les signaux cognitifs personnels sans tombstone. |
 | `:memory-history` | Anciennes et nouvelles valeurs des corrections. |
 | `:memory-scope [personal\|professional\|shared\|default]` | Sélection persistante du contexte ; Shared n'ouvre pas les partitions privées. |
 | `:forget <préfixe\|uuid>` | Retire le fait, ses conflits/révisions et les épisodes référençant le fait ou ses anciennes valeurs, ou contenant leurs objets exacts ; vide le cache associé. |

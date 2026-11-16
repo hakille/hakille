@@ -293,9 +293,54 @@ impl CognitiveOrchestrator {
                 }
             }
         }
+        if let Err(error) = self.apply_scheduled_decay() {
+            tracing::warn!("Échec de la décroissance mémoire planifiée : {error}");
+        }
         let persistence = self.checkpoint_memory();
         self.last_episode = self.active_episode.take();
         persistence
+    }
+
+    /// Exécute un cycle complet de décroissance exponentielle et de purge cognitive.
+    ///
+    /// 1. Purge physiquement les signaux cognitifs personnels (`prune_cognitive_signals`) :
+    ///    ceux dont le poids passe sous `cutoff` sont supprimés sans tombstone (anti-surveillance).
+    /// 2. Applique la décroissance exponentielle aux faits ordinaires (`apply_decay`),
+    ///    en fanant au seuil `cutoff` pour préserver l'historique (tombstones logiques).
+    /// 3. Met à jour l'horodatage d'exécution du planificateur (`decay_scheduler.mark_run`).
+    /// 4. Si des nœuds ont été dégradés, fanés ou purgés, persiste un checkpoint mémoire.
+    pub fn run_decay_maintenance(&mut self, cutoff: f64) -> Result<hakille_memory::DecayReport> {
+        let cognitive_report =
+            hakille_memory::prune_cognitive_signals(&mut self.memory_graph, cutoff);
+        let decay_report = hakille_memory::DecayEngine::apply_decay(&mut self.memory_graph, cutoff);
+        self.decay_scheduler.mark_run();
+
+        let total_decayed = cognitive_report.nodes_decayed + decay_report.nodes_decayed;
+        let total_removed = cognitive_report.nodes_removed + decay_report.nodes_removed;
+        let total_faded = cognitive_report.nodes_faded + decay_report.nodes_faded;
+
+        let report = hakille_memory::DecayReport {
+            nodes_decayed: total_decayed,
+            nodes_removed: total_removed,
+            nodes_faded: total_faded,
+            min_weight: decay_report.min_weight,
+            avg_weight: decay_report.avg_weight,
+        };
+
+        if report.nodes_decayed > 0 || report.nodes_removed > 0 || report.nodes_faded > 0 {
+            self.checkpoint_memory()?;
+        }
+
+        Ok(report)
+    }
+
+    /// Déclenche la maintenance de décroissance si l'intervalle configuré est écoulé.
+    pub fn apply_scheduled_decay(&mut self) -> Result<Option<hakille_memory::DecayReport>> {
+        if !self.decay_scheduler.should_run() {
+            return Ok(None);
+        }
+        self.run_decay_maintenance(self.decay_scheduler.cutoff)
+            .map(Some)
     }
 
     pub fn recall_evidence(&self, query: &str) -> Result<RecallReport> {
@@ -1208,5 +1253,76 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn memory_decay_maintenance_fades_facts_and_prunes_cognitive_signals() {
+        let dir = TestDir::new();
+        let mut orch = orchestrator();
+        orch.open_memory(&dir.db(), None).unwrap();
+
+        // 1. Insertion d'un fait utilisateur ordinaire (decay_rate: 0.01)
+        let fact_id = match orch.remember("Marie", "aime", "la musique") {
+            InsertResult::Inserted(id) => id,
+            other => panic!("{other:?}"),
+        };
+
+        // 2. Insertion d'un signal cognitif personnel ("user:active", decay_rate: 0.00231)
+        let emo = hakille_memory::cognition::create_emotion_triplet("fatigued", 0.95).unwrap();
+        let emo_id = emo.id.clone();
+        orch.insert_memory_triplet(emo);
+
+        // Simulation de 10 heures d'inactivité pour les deux triplets
+        let past = hakille_core::Timestamp(chrono::Utc::now() - chrono::Duration::hours(10));
+        if let Some(t) = orch.memory_graph.get_mut(&fact_id) {
+            t.metadata.last_activated = past.clone();
+        }
+        if let Some(t) = orch.memory_graph.get_mut(&emo_id) {
+            t.metadata.last_activated = past;
+        }
+
+        // Exécution de la maintenance de décroissance (cutoff 0.05)
+        let report = orch.run_decay_maintenance(0.05).unwrap();
+
+        // Le signal cognitif passe sous 0.05 et est physiquement supprimé (anti-surveillance)
+        assert_eq!(report.nodes_removed, 1);
+        assert!(!orch.memory_graph.contains(&emo_id));
+
+        // Le fait ordinaire passe sous 0.05 mais est fané (conservé comme tombstone logique à cutoff)
+        assert_eq!(report.nodes_faded, 1);
+        assert!(orch.memory_graph.contains(&fact_id));
+        let fact_after = orch.memory_graph.get(&fact_id).unwrap();
+        assert!((fact_after.metadata.weight - 0.05).abs() < 1e-6);
+
+        // Vérification de la persistance durable après redémarrage
+        drop(orch);
+        let mut restored = orchestrator();
+        restored.open_memory(&dir.db(), None).unwrap();
+        assert!(!restored.memory_graph.contains(&emo_id));
+        assert!(restored.memory_graph.contains(&fact_id));
+        assert!((restored.memory_graph.get(&fact_id).unwrap().metadata.weight - 0.05).abs() < 1e-6);
+    }
+
+    #[test]
+    fn memory_finish_turn_executes_scheduled_decay_and_marks_scheduler() {
+        let mut orch = orchestrator();
+        orch.decay_scheduler.interval_secs = 10;
+        // Simule un dernier run il y a 20 secondes
+        let past = chrono::Utc::now() - chrono::Duration::seconds(20);
+        orch.decay_scheduler.last_run = Some(past);
+        assert!(orch.decay_scheduler.should_run());
+
+        orch.begin_memory_turn("bonjour", &TrustLevel::User)
+            .unwrap();
+        orch.finish_memory_turn(&Err(HakilleError::InferenceError("test".into())))
+            .unwrap();
+
+        // Le planificateur a été exécuté et marqué
+        assert!(!orch.decay_scheduler.should_run());
+        let last = orch
+            .decay_scheduler
+            .last_run
+            .expect("dernier run mis à jour");
+        assert!((chrono::Utc::now() - last).num_seconds() < 5);
     }
 }
