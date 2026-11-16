@@ -1,6 +1,7 @@
 pub mod bicameral;
 pub mod capability;
 pub mod gui_agent;
+pub mod package;
 pub mod protocol;
 pub mod reference;
 pub mod registry;
@@ -11,6 +12,7 @@ pub mod wasm_runner;
 pub use bicameral::*;
 pub use capability::*;
 pub use gui_agent::*;
+pub use package::*;
 pub use protocol::*;
 pub use reference::*;
 pub use registry::*;

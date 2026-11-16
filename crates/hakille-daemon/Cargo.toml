@@ -59,4 +59,5 @@ mock-audio = ["hakille-audio/mock-audio"]
 # Clé de signature de test pour le journal d'audit (aucune clé réelle n'est
 # versionnée : la clé de test est un motif fixe, sans valeur de production).
 ed25519-dalek = { workspace = true }
+wat = "1"
 
