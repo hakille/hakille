@@ -991,6 +991,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "  :agents-run <name> <json>  Execute a real reference WASM agent (echo-agent/count-agent)"
                 );
+                println!(
+                    "  :agent-install <path.hap>  Install and verify a signed .hap agent package"
+                );
                 println!("  :cost             Display System 2 inference cost tracking");
                 println!(
                     "  :memory           Display all triplets currently stored in knowledge graph"
@@ -2089,6 +2092,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!(
                         "WASM runtime indisponible — aucune exécution tentée. Vérifie l'avertissement de démarrage."
                     );
+                }
+            }
+            ":agent-install" => {
+                println!("Usage : :agent-install <chemin_vers_paquet.hap>");
+            }
+            s if s.starts_with(":agent-install ") => {
+                let path_str = s.trim_start_matches(":agent-install ").trim();
+                if path_str.is_empty() {
+                    eprintln!("Usage : :agent-install <chemin_vers_paquet.hap>");
+                } else if let Some(runtime) = agent_runtime.as_mut() {
+                    let path = PathBuf::from(path_str);
+                    match hakille_agents::HakilleAgentPackage::from_file(&path) {
+                        Err(e) => {
+                            eprintln!("Paquet .hap invalide ou corrompu ({path_str}) : {e}");
+                        }
+                        Ok(pkg) => match runtime.install_package(&pkg) {
+                            Err(e) => {
+                                eprintln!("Échec de l'installation du paquet : {e}");
+                            }
+                            Ok(verified) => {
+                                let _ = agent_registry.register(verified.manifest.clone());
+                                println!(
+                                    "Agent '{}' ({}) installé et vérifié avec succès.",
+                                    verified.manifest.id, verified.manifest.name
+                                );
+                                println!("  Version : {}", verified.manifest.version);
+                                println!("  Description : {}", verified.manifest.description);
+                                println!("  SHA-256 WASM : {}", verified.wasm_sha256_hex);
+                                println!(
+                                    "  Signature développeur Ed25519 : vérifiée mathématiquement"
+                                );
+                                println!("  Auto-test bac à sable : passé avec succès");
+                                println!(
+                                    "  Exécution : :agents-run {} {{\"probe\":true}}",
+                                    verified.manifest.id
+                                );
+                                if let Err(audit_err) = audit_readonly_action(
+                                    &audit_journal,
+                                    "AgentPackageInstalled",
+                                    format!(
+                                        "Installation du paquet .hap de l'agent '{}'",
+                                        verified.manifest.id
+                                    ),
+                                    serde_json::json!({
+                                        "agent_id": verified.manifest.id,
+                                        "agent_version": verified.manifest.version,
+                                        "wasm_sha256": verified.wasm_sha256_hex,
+                                        "package_path": path_str,
+                                    }),
+                                ) {
+                                    eprintln!(
+                                        "  Avertissement : audit de l'installation impossible : {audit_err}"
+                                    );
+                                }
+                            }
+                        },
+                    }
+                } else {
+                    eprintln!("WASM runtime indisponible — installation impossible.");
                 }
             }
             ":cost" => {
@@ -3272,6 +3334,7 @@ fn bare_command_usage(input: &str) -> Option<&'static str> {
         ":import" => Some("Usage : :import <fichier> (JSON produit par :export)"),
         ":revalidate" => Some("Usage : :revalidate <key>"),
         ":heritage-erase" => Some("Usage : :heritage-erase <key_id>"),
+        ":agent-install" => Some("Usage : :agent-install <chemin_vers_paquet.hap>"),
         _ => None,
     }
 }
@@ -3314,6 +3377,7 @@ const KNOWN_COMMANDS: &[&str] = &[
     ":metrics",
     ":agents",
     ":agents-run",
+    ":agent-install",
     ":cost",
     ":models-honest",
     ":agents-cards",

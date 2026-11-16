@@ -185,6 +185,53 @@ impl ReferenceAgentRuntime {
             output_sha256,
         })
     }
+
+    /// Installe et charge dynamiquement un paquet scellé `.hap` (Hakille Agent Package).
+    ///
+    /// Vérifie en fail-closed :
+    /// 1. L'intégrité binaire SHA-256
+    /// 2. La signature développeur Ed25519
+    /// 3. La stricte conformité du manifeste
+    /// 4. L'auto-test en bac à sable Wasmtime (AEl minimal)
+    pub fn install_package(
+        &mut self,
+        package: &hakille_agents::HakilleAgentPackage,
+    ) -> Result<hakille_agents::VerifiedAgentPackage, AgentError> {
+        let (path, verified) =
+            package
+                .install_into(&self.dir)
+                .map_err(|e| AgentError::InvalidModule {
+                    agent: "package".to_string(),
+                    message: e.to_string(),
+                })?;
+
+        let sandbox = AgentSandbox::new()?;
+        let mut agent = sandbox.load(&verified.manifest.id, &verified.wasm_bytes)?;
+        let output = agent.run(SELF_TEST_INPUT, run_limits())?;
+        serde_json::from_str::<serde_json::Value>(&output).map_err(|e| {
+            AgentError::InvalidOutput {
+                agent: verified.manifest.id.clone(),
+                message: format!("auto-test du paquet non JSON : {e}"),
+            }
+        })?;
+
+        let id = verified.manifest.id.clone();
+        let loaded = LoadedReferenceAgent {
+            name: id.clone(),
+            path,
+            sha256: verified.wasm_sha256_hex.clone(),
+            bytes_len: verified.wasm_bytes.len(),
+            agent,
+        };
+
+        if let Some(pos) = self.loaded.iter().position(|a| a.name == id) {
+            self.loaded[pos] = loaded;
+        } else {
+            self.loaded.push(loaded);
+        }
+
+        Ok(verified)
+    }
 }
 
 fn loaded_agent(artifact: ReferenceArtifact, agent: Agent) -> LoadedReferenceAgent {
@@ -285,5 +332,50 @@ mod tests {
             let val: serde_json::Value = serde_json::from_str(&res.output).unwrap();
             assert_eq!(val["status"], "ready");
         }
+    }
+
+    #[test]
+    fn installs_and_runs_signed_hap_package_dynamically() {
+        use ed25519_dalek::SigningKey;
+        use hakille_agents::HakilleAgentPackage;
+
+        let dir = tempfile::tempdir().expect("répertoire temporaire");
+        let mut runtime = ReferenceAgentRuntime::provision(dir.path()).expect("provisionnement");
+        assert_eq!(runtime.agents().len(), 2);
+
+        let wat_src = r#"
+        (module
+          (memory (export "memory") 1)
+          (func (export "run") (param $ptr i32) (param $len i32) (result i32 i32)
+            local.get $ptr
+            local.get $len
+          )
+        )
+        "#;
+        let wasm_bytes = wat::parse_str(wat_src).expect("compilation WAT");
+
+        let manifest_toml = r#"
+        id = "custom-echo-plugin"
+        name = "Custom Echo Plugin"
+        version = "1.0.0"
+        description = "Plugin dynamique signé en format .hap"
+        isolated = true
+        required_capabilities = ["Filesystem"]
+        "#;
+
+        let signing_key = SigningKey::from_bytes(&[123u8; 32]);
+        let pkg =
+            HakilleAgentPackage::pack(manifest_toml, &wasm_bytes, &signing_key).expect("pack .hap");
+
+        let verified = runtime.install_package(&pkg).expect("installation .hap");
+        assert_eq!(verified.manifest.id, "custom-echo-plugin");
+        assert_eq!(runtime.agents().len(), 3);
+
+        // Exécution de l'agent installé
+        let res = runtime
+            .run("custom-echo-plugin", r#"{"hello":"world"}"#)
+            .expect("exécution custom-echo-plugin");
+        assert_eq!(res.output, r#"{"hello":"world"}"#);
+        assert_eq!(res.agent, "custom-echo-plugin");
     }
 }
