@@ -477,29 +477,80 @@ impl CognitiveOrchestrator {
         if statement.contains('?') || statement.contains(['"', '«', '»', '\n']) {
             return;
         }
-        let lower = statement.to_lowercase();
         let trimmed = |text: &str| {
             text.trim()
                 .trim_end_matches(['.', '!', ';'])
                 .trim()
                 .to_owned()
         };
+
+        // Permet les salutations de politesse en tête ("Bonjour, ...", "Salut ! ...")
+        let mut intro_text = statement;
+        let lower = intro_text.to_lowercase();
+        for greeting in ["bonjour", "bonsoir", "salut", "coucou", "hello", "hi"] {
+            if let Some(after) = lower.strip_prefix(greeting) {
+                let trimmed_after = after.trim_start_matches(|c: char| {
+                    c.is_whitespace() || c == ',' || c == '!' || c == '.'
+                });
+                let stripped_bytes = lower.len() - trimmed_after.len();
+                if intro_text.is_char_boundary(stripped_bytes) {
+                    intro_text = &intro_text[stripped_bytes..];
+                }
+                break;
+            }
+        }
+        let lower_intro = intro_text.to_lowercase();
+
         for prefix in ["je m'appelle ", "mon nom est "] {
-            if lower.starts_with(prefix) {
-                let name = trimmed(&statement[prefix.len()..]);
+            if lower_intro.starts_with(prefix) {
+                let raw = &intro_text[prefix.len()..];
+                let name_clause = raw.split(" et ").next().unwrap_or(raw);
+                let name_clause = name_clause
+                    .split([',', ';', '.', '!'])
+                    .next()
+                    .unwrap_or(name_clause);
+                let name = trimmed(name_clause);
                 if !name.is_empty() && name.split_whitespace().count() <= 6 {
                     self.remember("Utilisateur", "nom", &name);
+                }
+                // Si une proposition d'intérêt ou de préférence suit " et " (ex: "et j'adore Rust")
+                if let Some((_, rest)) = raw.split_once(" et ") {
+                    let rest_trimmed = rest.trim();
+                    let rest_lower = rest_trimmed.to_lowercase();
+                    for interest_prefix in ["j'adore ", "j'aime ", "je préfère ", "je prefere "] {
+                        if rest_lower.starts_with(interest_prefix) {
+                            let prefix_chars = interest_prefix.chars().count();
+                            let interest_raw: String =
+                                rest_trimmed.chars().skip(prefix_chars).collect();
+                            let interest = trimmed(&interest_raw);
+                            if !interest.is_empty() && interest.split_whitespace().count() <= 6 {
+                                self.remember("Utilisateur", "intérêt", &interest);
+                            }
+                            break;
+                        }
+                    }
                 }
                 return;
             }
         }
         for prefix in ["retiens que ", "enregistre que "] {
-            if lower.starts_with(prefix) {
-                let text = trimmed(&statement[prefix.len()..]);
+            if lower_intro.starts_with(prefix) {
+                let text = trimmed(&intro_text[prefix.len()..]);
                 if !text.is_empty() {
                     let subject =
                         format!("Note {}", KnowledgeGraph::exact_uuid("hakille-note", &text));
                     self.remember(&subject, "contenu", &text);
+                }
+                return;
+            }
+        }
+        for interest_prefix in ["j'adore ", "j'aime ", "je préfère ", "je prefere "] {
+            if lower_intro.starts_with(interest_prefix) {
+                let prefix_chars = interest_prefix.chars().count();
+                let interest_raw: String = intro_text.chars().skip(prefix_chars).collect();
+                let interest = trimmed(&interest_raw);
+                if !interest.is_empty() && interest.split_whitespace().count() <= 6 {
+                    self.remember("Utilisateur", "intérêt", &interest);
                 }
                 return;
             }
@@ -816,6 +867,25 @@ mod tests {
         assert_eq!(orch.memory_graph.len(), 2);
         orch.extract_user_facts("JE M'APPELLE Zoé.", &TrustLevel::User);
         assert_eq!(orch.recall("nom"), vec!["Zoé"]);
+    }
+
+    #[test]
+    fn memory_extraction_handles_greetings_and_compound_introductions() {
+        let mut orch = orchestrator();
+        orch.extract_user_facts(
+            "Bonjour, je m'appelle Amadou et j'adore Rust",
+            &TrustLevel::User,
+        );
+        assert_eq!(orch.recall("nom"), vec!["Amadou"]);
+        assert_eq!(orch.recall("intérêt"), vec!["Rust"]);
+
+        let mut orch2 = orchestrator();
+        orch2.extract_user_facts("Salut ! Mon nom est Alice.", &TrustLevel::User);
+        assert_eq!(orch2.recall("nom"), vec!["Alice"]);
+
+        let mut orch3 = orchestrator();
+        orch3.extract_user_facts("Coucou, j'aime le thé vert", &TrustLevel::User);
+        assert_eq!(orch3.recall("intérêt"), vec!["le thé vert"]);
     }
 
     #[test]
