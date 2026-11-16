@@ -38,6 +38,12 @@ pub const META_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("haki
 /// Stockage en clair (vecteurs non sensibles par eux-mêmes) ; les triplets
 /// restent chiffrés via `ID_TABLE` quand une clé est fournie.
 pub const EMBEDDINGS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("id_to_embedding");
+/// Table d'index aveugle exacte (ADR-012 §3) : `token_exact (32 octets HMAC) → Vec<TripletId> (bincode)`.
+pub const BLIND_EXACT_TABLE: TableDefinition<&[u8; 32], &[u8]> =
+    TableDefinition::new("blind_exact");
+/// Table d'index aveugle par préfixe (ADR-012 §3) : `token_prefix (32 octets HMAC) → Vec<TripletId> (bincode)`.
+pub const BLIND_PREFIX_TABLE: TableDefinition<&[u8; 32], &[u8]> =
+    TableDefinition::new("blind_prefix");
 
 /// Version courante du schéma des tables edge. Toute ouverture d'une base
 /// portant une autre version échoue avec une erreur explicite (migration
@@ -49,14 +55,10 @@ pub struct EdgeStore {
     pub db: Arc<Database>,
     /// Clé de chiffrement au repos (32 octets). Si `None`, les valeurs sont
     /// stockées en clair (avec `tracing::warn!` à chaque `store`).
-    ///
-    /// TODO(chiffrement) : chiffrer aussi les clés d'index SPO/POS/OSP
-    /// (actuellement en clair pour permettre le scan par préfixe) via un
-    /// schéma d'index chiffré interrogeable (ex. hachage déterministe du
-    /// préfixe + nonce), et brancher la rotation de clé + `crypto_erase`
-    /// côté `heritage`. Le contenu (`ID_TABLE`) est déjà chiffré quand une
-    /// clé est fournie.
     encryption_key: Option<[u8; 32]>,
+    /// Clé d'indexation aveugle dérivée pour les tables `BLIND_EXACT_TABLE` et
+    /// `BLIND_PREFIX_TABLE` (ADR-012 §3), effacée de la mémoire à la destruction.
+    blind_key: Option<crate::blind_index::BlindIndexKey>,
 }
 
 /// Vérifie (et initialise si absente) la version du schéma dans `META_TABLE`.
@@ -126,6 +128,7 @@ impl EdgeStore {
         Self {
             db,
             encryption_key: None,
+            blind_key: None,
         }
     }
 
@@ -136,21 +139,113 @@ impl EdgeStore {
         Ok(Self {
             db,
             encryption_key: None,
+            blind_key: None,
         })
     }
 
-    /// Construit avec chiffrement au repos (`hakille-core` ChaCha20-Poly1305).
+    /// Construit avec chiffrement au repos (`hakille-core` ChaCha20-Poly1305) et indexation aveugle (ADR-012).
     pub fn with_encryption_key(mut self, key: [u8; 32]) -> Self {
         self.encryption_key = Some(key);
+        self.blind_key = Some(crate::blind_index::BlindIndexKey::new(key));
         self
     }
 
     pub fn set_encryption_key(&mut self, key: Option<[u8; 32]>) {
         self.encryption_key = key;
+        self.blind_key = key.map(crate::blind_index::BlindIndexKey::new);
     }
 
     pub fn has_encryption(&self) -> bool {
         self.encryption_key.is_some()
+    }
+
+    /// Recherche aveugle exacte selon ADR-012 : recherche O(1) par HMAC-SHA256
+    /// dans `BLIND_EXACT_TABLE` sans déchiffrer ni scanner l'intégralité du disque.
+    pub async fn query_blind_exact(&self, term: &str) -> hakille_core::Result<Vec<Triplet>> {
+        let bkey = match self.blind_key {
+            Some(ref k) => k,
+            None => {
+                return Err(HakilleError::Internal(
+                    "query_blind_exact requiert une clé de chiffrement".to_string(),
+                ));
+            }
+        };
+        let token = crate::blind_index::exact_token(bkey, term);
+        let read_txn = self.db.begin_read().map_err(|e| {
+            HakilleError::StorageError(format!("EdgeStore::query_blind_exact: begin_read: {e}"))
+        })?;
+        let table = match read_txn.open_table(BLIND_EXACT_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(HakilleError::StorageError(format!(
+                    "EdgeStore::query_blind_exact: {e}"
+                )));
+            }
+        };
+        let ids: Vec<TripletId> = match table.get(&token).map_err(|e| {
+            HakilleError::StorageError(format!("EdgeStore::query_blind_exact: get: {e}"))
+        })? {
+            Some(entry) => bincode::deserialize(entry.value()).unwrap_or_default(),
+            None => return Ok(Vec::new()),
+        };
+        let mut triplets = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(t) = self.load(&id).await? {
+                triplets.push(t);
+            }
+        }
+        Ok(triplets)
+    }
+
+    /// Recherche aveugle par préfixe selon ADR-012 : longueur bornée [3, 8],
+    /// recherche O(1) par HMAC-SHA256 dans `BLIND_PREFIX_TABLE`.
+    pub async fn query_blind_prefix(&self, prefix: &str) -> hakille_core::Result<Vec<Triplet>> {
+        let bkey = match self.blind_key {
+            Some(ref k) => k,
+            None => {
+                return Err(HakilleError::Internal(
+                    "query_blind_prefix requiert une clé de chiffrement".to_string(),
+                ));
+            }
+        };
+        let norm = crate::blind_index::normalize(prefix);
+        let char_len = norm.chars().count();
+        if char_len < crate::blind_index::DEFAULT_MIN_PREFIX_LEN {
+            return Err(HakilleError::Internal(format!(
+                "query_blind_prefix: longueur {} < minimum {}",
+                char_len,
+                crate::blind_index::DEFAULT_MIN_PREFIX_LEN
+            )));
+        }
+        let bounded_len = char_len.min(crate::blind_index::DEFAULT_MAX_PREFIX_LEN);
+        let prefix_slice: String = norm.chars().take(bounded_len).collect();
+        let token = crate::blind_index::prefix_token(bkey, &prefix_slice, bounded_len);
+        let read_txn = self.db.begin_read().map_err(|e| {
+            HakilleError::StorageError(format!("EdgeStore::query_blind_prefix: begin_read: {e}"))
+        })?;
+        let table = match read_txn.open_table(BLIND_PREFIX_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(HakilleError::StorageError(format!(
+                    "EdgeStore::query_blind_prefix: {e}"
+                )));
+            }
+        };
+        let ids: Vec<TripletId> = match table.get(&token).map_err(|e| {
+            HakilleError::StorageError(format!("EdgeStore::query_blind_prefix: get: {e}"))
+        })? {
+            Some(entry) => bincode::deserialize(entry.value()).unwrap_or_default(),
+            None => return Ok(Vec::new()),
+        };
+        let mut triplets = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(t) = self.load(&id).await? {
+                triplets.push(t);
+            }
+        }
+        Ok(triplets)
     }
 
     /// Persiste un embedding (`id → Vec<f32>`) dans `EMBEDDINGS_TABLE`.
@@ -284,6 +379,13 @@ impl EdgeStore {
             osp_table.remove(osp.as_slice()).map_err(|e| {
                 HakilleError::StorageError(format!("EdgeStore::delete: remove osp: {e}"))
             })?;
+
+            if let Some(ref bkey) = self.blind_key
+                && let Ok(mut exact_table) = write_txn.open_table(BLIND_EXACT_TABLE)
+                && let Ok(mut prefix_table) = write_txn.open_table(BLIND_PREFIX_TABLE)
+            {
+                deindex_triplet_blind(&mut exact_table, &mut prefix_table, bkey, &t)?;
+            }
         }
         write_txn
             .commit()
@@ -316,6 +418,167 @@ impl EdgeStore {
             None => bincode::deserialize(bytes).map_err(|e| HakilleError::Internal(e.to_string())),
         }
     }
+}
+
+fn node_value_text(v: &crate::triplet::NodeValue) -> Option<String> {
+    match v {
+        crate::triplet::NodeValue::Entity(id) => Some(id.0.to_string()),
+        crate::triplet::NodeValue::Text(s) => Some(s.clone()),
+        crate::triplet::NodeValue::Number(n) => Some(n.to_string()),
+        crate::triplet::NodeValue::Boolean(b) => Some(b.to_string()),
+        crate::triplet::NodeValue::Timestamp(ts) => Some(ts.0.to_rfc3339()),
+        crate::triplet::NodeValue::Embedding(_) => None,
+    }
+}
+
+fn add_triplet_id_to_blind_table(
+    table: &mut redb::Table<&[u8; 32], &[u8]>,
+    token: &[u8; 32],
+    id: &TripletId,
+) -> hakille_core::Result<()> {
+    let mut ids: Vec<TripletId> = match table
+        .get(token)
+        .map_err(|e| HakilleError::StorageError(e.to_string()))?
+    {
+        Some(entry) => bincode::deserialize(entry.value()).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    if !ids.contains(id) {
+        ids.push(id.clone());
+        let encoded =
+            bincode::serialize(&ids).map_err(|e| HakilleError::Internal(e.to_string()))?;
+        table
+            .insert(token, encoded.as_slice())
+            .map_err(|e| HakilleError::StorageError(e.to_string()))?;
+    }
+    Ok(())
+}
+
+fn remove_triplet_id_from_blind_table(
+    table: &mut redb::Table<&[u8; 32], &[u8]>,
+    token: &[u8; 32],
+    id: &TripletId,
+) -> hakille_core::Result<()> {
+    let existing: Option<Vec<TripletId>> = match table
+        .get(token)
+        .map_err(|e| HakilleError::StorageError(e.to_string()))?
+    {
+        Some(entry) => bincode::deserialize(entry.value()).ok(),
+        None => None,
+    };
+    if let Some(mut ids) = existing
+        && let Some(pos) = ids.iter().position(|x| x == id)
+    {
+        ids.swap_remove(pos);
+        if ids.is_empty() {
+            let _ = table.remove(token);
+        } else {
+            let encoded =
+                bincode::serialize(&ids).map_err(|e| HakilleError::Internal(e.to_string()))?;
+            table
+                .insert(token, encoded.as_slice())
+                .map_err(|e| HakilleError::StorageError(e.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
+fn index_text_blind(
+    exact_table: &mut redb::Table<&[u8; 32], &[u8]>,
+    prefix_table: &mut redb::Table<&[u8; 32], &[u8]>,
+    key: &crate::blind_index::BlindIndexKey,
+    text: &str,
+    id: &TripletId,
+) -> hakille_core::Result<()> {
+    let exact = crate::blind_index::exact_token(key, text);
+    add_triplet_id_to_blind_table(exact_table, &exact, id)?;
+
+    let norm = crate::blind_index::normalize(text);
+    if norm.contains(' ') {
+        for word in norm.split_whitespace() {
+            let w_exact = crate::blind_index::exact_token(key, word);
+            add_triplet_id_to_blind_table(exact_table, &w_exact, id)?;
+        }
+    }
+
+    for (p_tok, _) in crate::blind_index::prefix_tokens(
+        key,
+        text,
+        crate::blind_index::DEFAULT_MIN_PREFIX_LEN,
+        crate::blind_index::DEFAULT_MAX_PREFIX_LEN,
+    ) {
+        add_triplet_id_to_blind_table(prefix_table, &p_tok, id)?;
+    }
+
+    Ok(())
+}
+
+fn deindex_text_blind(
+    exact_table: &mut redb::Table<&[u8; 32], &[u8]>,
+    prefix_table: &mut redb::Table<&[u8; 32], &[u8]>,
+    key: &crate::blind_index::BlindIndexKey,
+    text: &str,
+    id: &TripletId,
+) -> hakille_core::Result<()> {
+    let exact = crate::blind_index::exact_token(key, text);
+    remove_triplet_id_from_blind_table(exact_table, &exact, id)?;
+
+    let norm = crate::blind_index::normalize(text);
+    if norm.contains(' ') {
+        for word in norm.split_whitespace() {
+            let w_exact = crate::blind_index::exact_token(key, word);
+            remove_triplet_id_from_blind_table(exact_table, &w_exact, id)?;
+        }
+    }
+
+    for (p_tok, _) in crate::blind_index::prefix_tokens(
+        key,
+        text,
+        crate::blind_index::DEFAULT_MIN_PREFIX_LEN,
+        crate::blind_index::DEFAULT_MAX_PREFIX_LEN,
+    ) {
+        remove_triplet_id_from_blind_table(prefix_table, &p_tok, id)?;
+    }
+
+    Ok(())
+}
+
+fn index_triplet_blind(
+    exact_table: &mut redb::Table<&[u8; 32], &[u8]>,
+    prefix_table: &mut redb::Table<&[u8; 32], &[u8]>,
+    key: &crate::blind_index::BlindIndexKey,
+    triplet: &Triplet,
+) -> hakille_core::Result<()> {
+    let subj_str = triplet.subject.0.to_string();
+    index_text_blind(exact_table, prefix_table, key, &subj_str, &triplet.id)?;
+
+    let pred_str = triplet.predicate.0.to_string();
+    index_text_blind(exact_table, prefix_table, key, &pred_str, &triplet.id)?;
+
+    if let Some(obj_text) = node_value_text(&triplet.object) {
+        index_text_blind(exact_table, prefix_table, key, &obj_text, &triplet.id)?;
+    }
+
+    Ok(())
+}
+
+fn deindex_triplet_blind(
+    exact_table: &mut redb::Table<&[u8; 32], &[u8]>,
+    prefix_table: &mut redb::Table<&[u8; 32], &[u8]>,
+    key: &crate::blind_index::BlindIndexKey,
+    triplet: &Triplet,
+) -> hakille_core::Result<()> {
+    let subj_str = triplet.subject.0.to_string();
+    deindex_text_blind(exact_table, prefix_table, key, &subj_str, &triplet.id)?;
+
+    let pred_str = triplet.predicate.0.to_string();
+    deindex_text_blind(exact_table, prefix_table, key, &pred_str, &triplet.id)?;
+
+    if let Some(obj_text) = node_value_text(&triplet.object) {
+        deindex_text_blind(exact_table, prefix_table, key, &obj_text, &triplet.id)?;
+    }
+
+    Ok(())
 }
 
 /// Encodage documenté des composants pour les clés d'index concaténées
@@ -437,6 +700,16 @@ impl GraphStorage for EdgeStore {
                 .map_err(|e| {
                     HakilleError::StorageError(format!("EdgeStore::store: insert osp: {e}"))
                 })?;
+
+            if let Some(ref bkey) = self.blind_key {
+                let mut exact_table = write_txn.open_table(BLIND_EXACT_TABLE).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::store: open blind_exact: {e}"))
+                })?;
+                let mut prefix_table = write_txn.open_table(BLIND_PREFIX_TABLE).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::store: open blind_prefix: {e}"))
+                })?;
+                index_triplet_blind(&mut exact_table, &mut prefix_table, bkey, triplet)?;
+            }
         }
         write_txn
             .commit()
@@ -515,6 +788,22 @@ impl GraphStorage for EdgeStore {
                             "EdgeStore::batch_store: insert osp: {e}"
                         ))
                     })?;
+            }
+
+            if let Some(ref bkey) = self.blind_key {
+                let mut exact_table = write_txn.open_table(BLIND_EXACT_TABLE).map_err(|e| {
+                    HakilleError::StorageError(format!(
+                        "EdgeStore::batch_store: open blind_exact: {e}"
+                    ))
+                })?;
+                let mut prefix_table = write_txn.open_table(BLIND_PREFIX_TABLE).map_err(|e| {
+                    HakilleError::StorageError(format!(
+                        "EdgeStore::batch_store: open blind_prefix: {e}"
+                    ))
+                })?;
+                for t in &triplets {
+                    index_triplet_blind(&mut exact_table, &mut prefix_table, bkey, t)?;
+                }
             }
         }
         write_txn.commit().map_err(|e| {
@@ -1144,6 +1433,69 @@ mod tests {
             hits.iter()
                 .all(|t| t.subject == hakille_core::NodeId(uuid::Uuid::from_u128(0x10)))
         );
+
+        drop(store);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_blind_indexing_edge_store_lifecycle_and_zero_knowledge() {
+        let (db, dir) = open_test_db("blind-indexing-test");
+        let key = [0x42u8; 32];
+        let store = EdgeStore::try_new(db.clone())
+            .expect("try_new")
+            .with_encryption_key(key);
+
+        let t1 = sample_triplet_with(101, 0xAA, "Marie Curie");
+        let t2 = sample_triplet_with(102, 0xBB, "Pierre Curie");
+        let t3 = sample_triplet_with(103, 0xCC, "Albert Einstein");
+
+        block_on(store.batch_store(vec![t1.clone(), t2.clone(), t3.clone()])).expect("batch_store");
+
+        // 1. Recherche aveugle exacte
+        let hits_marie =
+            block_on(store.query_blind_exact("marie curie")).expect("query_blind_exact");
+        assert_eq!(hits_marie.len(), 1);
+        assert_eq!(hits_marie[0].id, t1.id);
+
+        // Tolérance à la casse et espaces
+        let hits_marie_caps =
+            block_on(store.query_blind_exact("  MARIE   CURIE  ")).expect("query_blind_exact caps");
+        assert_eq!(hits_marie_caps.len(), 1);
+        assert_eq!(hits_marie_caps[0].id, t1.id);
+
+        // 2. Recherche aveugle par préfixe
+        let hits_prefix_curie =
+            block_on(store.query_blind_prefix("curie")).expect("query_blind_prefix");
+        assert_eq!(hits_prefix_curie.len(), 2);
+
+        let hits_prefix_albert =
+            block_on(store.query_blind_prefix("alb")).expect("query_blind_prefix alb");
+        assert_eq!(hits_prefix_albert.len(), 1);
+        assert_eq!(hits_prefix_albert[0].id, t3.id);
+
+        // 3. Invariant Zero-Knowledge sur disque :
+        // Aucun terme en clair ("Marie", "Curie", "Albert") dans les clés blind
+        let read_txn = db.begin_read().expect("begin_read");
+        let exact_table = read_txn
+            .open_table(BLIND_EXACT_TABLE)
+            .expect("open blind_exact");
+        for item in exact_table.iter().expect("iter") {
+            let (token_key, _) = item.expect("entry");
+            assert_eq!(token_key.value().len(), 32);
+            let raw_key = token_key.value();
+            assert!(!raw_key.windows(5).any(|w| w == b"Marie" || w == b"marie"));
+            assert!(!raw_key.windows(5).any(|w| w == b"Curie" || w == b"curie"));
+        }
+        drop(read_txn);
+
+        // 4. Suppression et désindexation
+        let deleted = block_on(store.delete_returning(&t1.id)).expect("delete_returning");
+        assert!(deleted);
+
+        let hits_after = block_on(store.query_blind_exact("Marie Curie"))
+            .expect("query_blind_exact after delete");
+        assert!(hits_after.is_empty());
 
         drop(store);
         std::fs::remove_dir_all(&dir).ok();
