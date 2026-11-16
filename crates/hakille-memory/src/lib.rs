@@ -1,3 +1,4 @@
+pub mod blind_index;
 pub mod cognition;
 pub mod context_partition;
 pub mod contradiction;
@@ -16,6 +17,7 @@ pub mod task;
 pub mod triplet;
 pub mod vector;
 
+pub use blind_index::*;
 pub use cognition::*;
 pub use context_partition::*;
 pub use contradiction::*;

@@ -3001,6 +3001,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "hakille-core",
+ "hmac",
  "instant-distance",
  "redb",
  "serde",
@@ -3010,6 +3011,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
