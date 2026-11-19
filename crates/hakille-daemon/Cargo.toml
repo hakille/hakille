@@ -32,6 +32,7 @@ hakille-ui-shell = { path = "../hakille-ui-shell" }
 hakille-keystore = { path = "../hakille-keystore" }
 hakille-design = { path = "../hakille-design" }
 hakille-metrics = { path = "../hakille-metrics" }
+hakille-media = { path = "../hakille-media" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 biscuit-auth = { workspace = true }
@@ -48,6 +49,8 @@ sha2 = { workspace = true }
 hound = "3.5.1"
 reqwest = { workspace = true }
 scraper = { version = "0.29", default-features = false }
+base64 = "0.22"
+ed25519-dalek = { workspace = true }
 
 [features]
 default = []
@@ -56,8 +59,5 @@ dummy-audio = ["hakille-audio/dummy-audio"]
 mock-audio = ["hakille-audio/mock-audio"]
 
 [dev-dependencies]
-# Clé de signature de test pour le journal d'audit (aucune clé réelle n'est
-# versionnée : la clé de test est un motif fixe, sans valeur de production).
-ed25519-dalek = { workspace = true }
 wat = "1"
 

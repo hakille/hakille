@@ -15,6 +15,8 @@ pub mod desktop_shell;
 #[cfg(test)]
 pub mod end_to_end_integration;
 #[cfg(test)]
+pub mod generative_media_tests;
+#[cfg(test)]
 pub mod model_connection_tests;
 #[cfg(test)]
 pub mod neural_vad_tests;

@@ -342,6 +342,20 @@ pub fn normalize_resource_for_scope(raw: &str, scope: &CapabilityScope) -> Resul
         return Ok(trimmed.to_string());
     }
 
+    if *scope == CapabilityScope::MediaGeneration {
+        // Ressources logiques média (ex. `media:image-<sha256>`, `media:video:auto`).
+        // Rejette strictement tout caractère hors `[A-Za-z0-9._:/-]` (anti-injection Datalog).
+        if !trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-'))
+        {
+            return Err(HakilleError::CapabilityDenied(
+                "caractère interdit dans la ressource média".to_string(),
+            ));
+        }
+        return Ok(trimmed.to_string());
+    }
+
     // --- Scopes non-réseau : VFS strict ---
     let mut path = trimmed.to_string();
     if path.contains("://") {

@@ -154,6 +154,40 @@ impl From<KernelToUi> for KernelEvent {
             KernelToUi::MicroGestureRecognized(m) => Self::Toast {
                 text: format!("micro-geste reconnu : {:?}", m),
             },
+            KernelToUi::MediaEnginesReply {
+                engines,
+                ffmpeg_available,
+            } => {
+                let ready = engines.iter().filter(|e| e.ready).count();
+                Self::Toast {
+                    text: format!(
+                        "moteurs média : {ready}/{} prêt(s) (ffmpeg={ffmpeg_available})",
+                        engines.len()
+                    ),
+                }
+            }
+            KernelToUi::MediaJobProgress(p) => Self::Toast {
+                text: format!(
+                    "média [{:?}] {} — {:.0}%",
+                    p.modality,
+                    p.stage,
+                    p.fraction * 100.0
+                ),
+            },
+            KernelToUi::MediaJobCompleted { artifact, .. } => Self::Toast {
+                text: format!(
+                    "média généré [{:?}] via {} ({} ms) : {}",
+                    artifact.modality, artifact.engine_id, artifact.elapsed_ms, artifact.path
+                ),
+            },
+            KernelToUi::MediaJobFailed {
+                modality, error, ..
+            } => Self::Toast {
+                text: format!("échec média [{modality:?}] : {error}"),
+            },
+            KernelToUi::MediaGalleryReply { artifacts } => Self::Toast {
+                text: format!("galerie média : {} artefact(s)", artifacts.len()),
+            },
         }
     }
 }

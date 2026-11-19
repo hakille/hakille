@@ -703,6 +703,43 @@ impl DesktopApp {
                         self.apply(actions, event_loop);
                     }
                 }
+                HudAction::RequestMediaEngines => {
+                    let sent = self
+                        .ipc
+                        .as_ref()
+                        .is_some_and(|ipc| ipc.request_media_engines());
+                    if !sent {
+                        let actions = self.core.on_panel_request_failed(PanelKind::Media);
+                        self.apply(actions, event_loop);
+                    }
+                }
+                HudAction::RequestMediaGallery { limit } => {
+                    let sent = self
+                        .ipc
+                        .as_ref()
+                        .is_some_and(|ipc| ipc.request_media_gallery(limit));
+                    if !sent {
+                        let actions = self.core.on_panel_request_failed(PanelKind::Media);
+                        self.apply(actions, event_loop);
+                    }
+                }
+                HudAction::GenerateMedia(req) => {
+                    let sent = self.ipc.as_ref().is_some_and(|ipc| ipc.generate_media(req));
+                    if !sent {
+                        let actions = self.core.on_ipc_unavailable("génération média");
+                        self.apply(actions, event_loop);
+                    }
+                }
+                HudAction::CancelMediaJob { job_id } => {
+                    let sent = self
+                        .ipc
+                        .as_ref()
+                        .is_some_and(|ipc| ipc.cancel_media_job(job_id));
+                    if !sent {
+                        let actions = self.core.on_ipc_unavailable("annulation média");
+                        self.apply(actions, event_loop);
+                    }
+                }
                 HudAction::Quit => event_loop.exit(),
             }
         }
@@ -1087,6 +1124,7 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                             Key::Named(NamedKey::F2) => inputs.push(HudInput::ShowMemory),
                             Key::Named(NamedKey::F3) => inputs.push(HudInput::ShowStatus),
                             Key::Named(NamedKey::F4) => inputs.push(HudInput::ShowAgents),
+                            Key::Named(NamedKey::F5) => inputs.push(HudInput::ShowMedia),
                             Key::Named(NamedKey::PageDown) => {
                                 inputs.push(HudInput::ScrollPanel(CONSULT_PAGE_LINES as i32))
                             }

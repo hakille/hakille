@@ -103,9 +103,9 @@ Hakille n'est ni une application de chat, ni un wrapper d'API, ni un agent promp
 
 ---
 
-## 📦 Structure du Workspace (37 Crates + 5 Agents + Conformance)
+## 📦 Structure du Workspace (38 Crates + 5 Agents + Conformance)
 
-Le projet est un monorepo Cargo structuré en **37 crates modulaires**, **2 agents WASM de référence réellement exécutés**, **5 manifests métier déclaratifs**, une suite de conformité exhaustive (66 tests fast de conformité et 10 slow ignorés — 7 dans `conformance`, 3 dans `hakille-kernel` — voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
+Le projet est un monorepo Cargo structuré en **38 crates modulaires**, **2 agents WASM de référence réellement exécutés**, **5 manifests métier déclaratifs**, une suite de conformité exhaustive (71 tests fast de conformité et 10 slow ignorés — 7 dans `conformance`, 3 dans `hakille-kernel` — voir [CI](.github/workflows/ci.yml)) et des utilitaires `xtask` :
 
 ### 1. Fondations & Substrates OS
 - [`hakille-core`](crates/hakille-core) : Primitives cryptographiques (Ed25519, ChaCha20Poly1305), jetons Biscuit, types temporels, bus de messages typés (`Message`) et niveaux de confiance (`TrustLevel`).
@@ -121,11 +121,12 @@ Le projet est un monorepo Cargo structuré en **37 crates modulaires**, **2 agen
 - [`hakille-memory`](crates/hakille-memory) : Graphe en triplets SPO avec triple indexation (SPO, POS, OSP), backend local ACID `redb`, index vectoriel sémantique HNSW `instant-distance`, GraphQueryLang DSL, déclin temporel et résolution des contradictions.
 - [`hakille-sync`](crates/hakille-sync) : Fusion CRDT avec tombstones et horloges vectorielles, handoff signé v2 entre pairs explicitement approuvés. Le transport réseau et la réplication TiKV ne sont pas déployés ; voir les [limites de convergence et de persistance](crates/hakille-sync/README.md).
 
-### 3. Perception, Voix & Inférence Neuronale
+### 3. Perception, Voix, Inférence & Génération Multimodale
 - [`hakille-perception`](crates/hakille-perception) : Pipeline audio (SenseVoice-Small, Silero VAD, CAM++ et diarisation par clustering), client UI-TARS local, CameraPipeline et WorldModel. L’activation passe par Whisper puis un contrôleur lexical ; aucun frontend openWakeWord compatible ni modèle Nemotron n’est fourni.
 - [`hakille-audio`](crates/hakille-audio) : I/O audio temps réel via `cpal` — capture micro 16 kHz (downmix + rééchantillonnage) et lecture PCM ; aucune simulation, erreur explicite si aucun périphérique.
 - [`hakille-voice`](crates/hakille-voice) : Service d’écoute locale Silero → Whisper → activation, codec Mimi neuronal complet (24 kHz, trames de 80 ms), TTS formantique Klatt et détecteur d’interruption Barge-In. Le modèle de dialogue Moshi est absent ; `MoshiEngine::is_simulated()` reste `true`.
 - [`hakille-inference`](crates/hakille-inference) : Runtimes neuronaux natifs (parseur binaire streaming GGUF v3, parseur Safetensors Candle, inspecteur ONNX Runtime `ort`, registre de réservations mémoire bornées) et provisioner d’artefacts vérifiés. Le registre ne décharge pas automatiquement les tenseurs des moteurs.
+- [`hakille-media`](crates/hakille-media) : Moteur génératif multimodal souverain (image, audio, vidéo, composition DAG multi-étapes — [ADR-024](adr/024-sovereign-generative-media-engine.md), [guide](docs/GENERATIVE_MEDIA.md)). Stockage content-addressed, provenance cryptographique Ed25519 (sidecar `.provenance.json` + chunk PNG `iTXt`), garde constitutionnelle, Biscuit v5 `MediaGeneration` et anti-SSRF. Les moteurs DSP/formantiques locaux fonctionnent sans poids externes ; les moteurs neuronaux locaux (Flux/SDXL/SD1.5 Candle, Kokoro/Piper/MusicGen/SVD/Wan ONNX) annoncent explicitement `ModelMissing` tant que les poids ne sont pas provisionnés (aucune dégradation silencieuse).
 
 ### 4. Cognition, Agents, Confiance & UI
 - [`hakille-kernel`](crates/hakille-kernel) : Fabric cognitif, routeur System 1/2, Working Memory scratchpad, Deliberate Planner, Self-Model introspectif, Graph Curiosity Scanner, Dry-Run Simulator et budgets de latence par étage.
@@ -136,17 +137,17 @@ Le projet est un monorepo Cargo structuré en **37 crates modulaires**, **2 agen
 - [`hakille-constitution`](crates/hakille-constitution) : Les 10 règles constitutionnelles machine-vérifiables, gouvernance d'amendement par quorum et batterie de tests éthiques.
 - [`hakille-design`](crates/hakille-design) : Design system Rust — marque (`brand.rs`), jetons, cartes d'action, bandes de provenance, silence et présence vocale.
 - [`hakille-ui`](crates/hakille-ui) : Indicateur de présence ambiant à 6 états (Idle/Listening/Acting/Speaking/DecisionRequired/Urgent, voir `presence.rs:90-99`), HUD Spotlight éphémère (`Ctrl+Alt+Space`, alias `Alt+Space`), sélecteur dynamique de canal (seuil bruit 65 dB), budget de silence proactif et compteur financier System 2 en direct.
-- [`hakille-ui-protocol`](crates/hakille-ui-protocol) : Protocole UI ↔ noyau versionné (messages typés, négociation de version, schéma golden `schema_snapshot.json`) ; extension additive v1 `ShowCard`/`CardDecisionAck`.
+- [`hakille-ui-protocol`](crates/hakille-ui-protocol) : Protocole UI ↔ noyau versionné (messages typés, négociation de version, schéma golden `schema_snapshot.json`) ; extensions additives v1 `ShowCard`/`CardDecisionAck`, agents et Studio Média.
 - [`hakille-ui-model`](crates/hakille-ui-model) : Modèle de snapshot et d'état de l'interface, découplé du rendu.
 - [`hakille-ui-shell`](crates/hakille-ui-shell) : Shell d'interface (vues, pont noyau ↔ UI, composition des cartes et de la présence).
 - [`hakille-ui-platform`](crates/hakille-ui-platform) : Abstraction plateforme pour fenêtres, icône de zone de notification et intégration système.
-- [`hakille-ui-desktop`](crates/hakille-ui-desktop) : Rendu desktop (scène, texte multi-script, accessibilité, runtime) sous forme d'application native ; carte d'action 720×360, décision clavier/AccessKit et accusé d'audit réel.
+- [`hakille-ui-desktop`](crates/hakille-ui-desktop) : Rendu desktop (scène, texte multi-script, accessibilité, runtime) sous forme d'application native ; carte d'action 720×360, Studio Média (`F5`) avec blitting RGBA natif, décision clavier/souris/AccessKit et accusé d'audit réel.
 - [`hakille-metrics`](crates/hakille-metrics) : Tableau de bord des 3 métriques cardinales (Continuité, Initiative Bornée, Généralité Pratique) et détecteur de dérive des valeurs éthiques.
 - [`hakille-ipc`](crates/hakille-ipc) : Transport IPC local du démon (named pipe Windows, socket Unix).
 - [`hakille-mobile`](crates/hakille-mobile) : État du client mobile Rust et liaisons UniFFI pour les interfaces natives Android/iOS ; checkpoint v2 et suivi durable des opérations à l'issue inconnue.
 - [`hakille-mobile-gateway`](crates/hakille-mobile-gateway) : Passerelle HTTP loopback, lancée explicitement et authentifiée par un jeton distinct, vers le hub personnel. Voir [ADR-011](adr/011-mobile-native-client-and-hub.md) pour le périmètre et les limites mobiles.
 - [`hakille-spikes`](crates/hakille-spikes) : Spikes techniques isolés (arbre de rendu S1, rendu S2, accessibilité S3) utilisés pour valider l'UI avant intégration.
-- [`hakille-daemon`](crates/hakille-daemon) : Démon système exécutable orchestrant l'ensemble de la pile avec invite interactive REPL, mode `--serve` IPC et cartes d'action auditées.
+- [`hakille-daemon`](crates/hakille-daemon) : Démon système exécutable orchestrant l'ensemble de la pile avec invite interactive REPL (`:gen-image`, `:gen-audio`, `:gen-video`, `:gen-story`…), sous-commandes CLI `media`, mode `--serve` IPC et cartes d'action auditées.
 
 ### 5. Agents Métier (`agents/` — manifests déclaratifs)
 - `mail` : Gestion des courriels sous capability déclarée `Filesystem` + `Network`.

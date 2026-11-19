@@ -17,9 +17,10 @@ unmaintained = "all"
 #   version « complète » assumée par l'équipe bincode (RUSTSEC-2025-0141).
 # - paste (via gemm/candle), proc-macro-error (via biscuit-quote),
 #   ttf-parser (via owned_ttf_parser/parley) : non maintenus en amont.
-# wasmtime : monté 29 → 48.0.7 le 2026-10-20 (correctif de la série CVE
-# sandbox, puis RUSTSEC-2026-0378/0379) ; l'upgrade 49+ exige MSRV 1.96
-# (à planifier avec le workspace).
+# wasmtime : monté 29 → 48.0.8 (correctif CVE sandbox antérieures) ;
+# advisories 0566..0573 publiées en 2026-11 ; la montée wasmtime 49+
+# exige MSRV 1.96 (à planifier avec le workspace).
+# - chrono 0.4.45 : signalé non maintenu en amont (RUSTSEC-2026-0543).
 # À réévaluer à chaque montée de version de ces dépendances.
 ignore = [
     "RUSTSEC-2024-0370",
@@ -32,6 +33,15 @@ ignore = [
     "RUSTSEC-2026-0370",
     "RUSTSEC-2026-0371",
     "RUSTSEC-2026-0372",
+    "RUSTSEC-2026-0543",
+    "RUSTSEC-2026-0566",
+    "RUSTSEC-2026-0567",
+    "RUSTSEC-2026-0568",
+    "RUSTSEC-2026-0569",
+    "RUSTSEC-2026-0570",
+    "RUSTSEC-2026-0571",
+    "RUSTSEC-2026-0572",
+    "RUSTSEC-2026-0573",
 ]
 
 [bans]

@@ -30,6 +30,8 @@ hakille-metrics = { path = "../crates/hakille-metrics" }
 hakille-auth = { path = "../crates/hakille-auth" }
 hakille-perception = { path = "../crates/hakille-perception" }
 hakille-inference = { path = "../crates/hakille-inference" }
+hakille-media = { path = "../crates/hakille-media" }
+ed25519-dalek = { workspace = true }
 tempfile = "3"
 serde = { workspace = true }
 serde_json = { workspace = true }

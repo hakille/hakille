@@ -117,6 +117,12 @@ impl KernelStub for RealDaemonBridge {
                 | UiToKernel::SpatialGesture(_) => {
                     self.require_daemon("ghost action / geste en attente")
                 }
+                UiToKernel::MediaEnginesRequest
+                | UiToKernel::MediaGenerateRequest(_)
+                | UiToKernel::MediaJobCancel { .. }
+                | UiToKernel::MediaGalleryRequest { .. } => {
+                    self.require_daemon("moteur génératif média réel requis")
+                }
             };
         }
         // LocalAuthorized : le noyau (simulé ici) revérifie puis journalise.
@@ -203,6 +209,12 @@ impl KernelStub for RealDaemonBridge {
             UiToKernel::SpatialGesture(gesture) => {
                 Ok(KernelToUi::MicroGestureRecognized(gesture.clone()))
             }
+            UiToKernel::MediaEnginesRequest
+            | UiToKernel::MediaGenerateRequest(_)
+            | UiToKernel::MediaJobCancel { .. }
+            | UiToKernel::MediaGalleryRequest { .. } => Ok(KernelToUi::Toast {
+                text: "moteur génératif média réel requis — démon non branché (pont simulé)".into(),
+            }),
         }
     }
 }

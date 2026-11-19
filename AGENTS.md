@@ -1,6 +1,6 @@
 # AGENTS.md — Hakille
 
-Monorepo Rust (37 crates + 5 crates d'agents + `conformance` + `xtask`), édition 2024,
+Monorepo Rust (38 crates + 5 crates d'agents + `conformance` + `xtask`), édition 2024,
 MSRV/toolchain **1.95** (épinglé par `rust-toolchain.toml`).
 Contrat produit central : **aucun succès simulé** (voir « Contrat d'honnêteté »).
 
@@ -14,7 +14,7 @@ cargo run -p xtask -- tokens --check
 cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --no-deps
 cargo test --workspace --locked
-cargo run -p xtask -- conformance          # = cargo test -p conformance (66 fast)
+cargo run -p xtask -- conformance          # = cargo test -p conformance (71 fast)
 cargo deny check bans sources advisories    # cargo-deny à installer
 ```
 
@@ -73,3 +73,10 @@ cargo deny check bans sources advisories    # cargo-deny à installer
 - Recherche uniquement par commande explicite `:research` / `:read-web`, capability Network/Execute liée à la requête, quotas et traces durables avant/après les outils. Ne jamais forger un jeton dans le raisonneur.
 - Les providers S2 hors LocalGguf restent indisponibles : aucune substitution silencieuse. Un plan textuel sans reçus ne peut pas être annoncé exécuté.
 - Le proxy réseau doit être explicitement configuré ; ne pas désactiver TLS pour contourner une erreur. Les tests réseau utilisent des fixtures déclarées et des serveurs locaux isolés, jamais une réponse web simulée en production.
+
+## Génération multimodale (ADR-024)
+
+- `crates/hakille-media/` (`docs/GENERATIVE_MEDIA.md`, `adr/024-sovereign-generative-media-engine.md`) implémente la génération souveraine image, audio, vidéo et la composition DAG multi-étapes (`MediaPipelineDag` + `MediaJobManager` + `MediaStore` content-addressed dans `<data_dir>/media/`).
+- Chaque artefact produit reçoit un sidecar `.provenance.json` signé Ed25519 (et un chunk PNG `iTXt` `hakille.provenance` pour les PNG), vérifiable hors-ligne via `hakille-daemon media verify <fichier>` ou `:media-verify <fichier>`.
+- Points d'entrée : CLI `hakille-daemon media {engines|image|audio|video|compose|list|verify}`, REPL/HUD `:gen-image`, `:gen-audio`, `:gen-video`, `:gen-story`, `:media-engines`, `:media-list`, `:media-verify`, `:media-cancel`, et panneau desktop `F5` (Studio Média avec prévisualisation RGBA native `DrawCmd::ImageRgba`, protocole IPC additif v1 sans casser `PROTOCOL_VERSION == 1`).
+- Contrat d'honnêteté strict : les moteurs DSP/formantiques locaux (`ProceduralImage`, `KlattSpeech`, `ProceduralAudio`, `ProceduralVideo`) sont prêts d'emblée et explicitement étiquetés ; les 8 moteurs neuronaux Candle/ONNX (`Flux`, `Sdxl`, `Sd15`, `Kokoro`, `Piper`, `MusicGen`, `Svd`, `Wan`) retournent `ModelMissing` tant que leurs poids ne sont pas provisionnés (aucune dégradation silencieuse d'un moteur neuronal vers le DSP). Les adaptateurs Loopback (`127.0.0.1`) et Cloud HTTPS sont opt-in explicites, protégés contre le SSRF et soumis à Biscuit v5 `CapabilityScope::MediaGeneration` (+ `Network` et `ActionCard` irréversible pour le cloud). Le muxage MP4/WebM utilise `ffmpeg` s'il est présent sur `PATH`, sinon erreur explicite ou format APNG pur Rust.

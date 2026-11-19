@@ -28,6 +28,8 @@ pub enum CapabilityScope {
     CognitiveInference,
     /// Émission et gestion des notifications système et alertes utilisateur (SMNF).
     Notification,
+    /// Synthèse multimodale (image, vidéo, audio) gouvernée par provenance signée.
+    MediaGeneration,
 }
 
 impl CapabilityScope {
@@ -47,6 +49,7 @@ impl CapabilityScope {
             CapabilityScope::Spatial => "spatial",
             CapabilityScope::CognitiveInference => "cognitive_inference",
             CapabilityScope::Notification => "notification",
+            CapabilityScope::MediaGeneration => "media_generation",
         }
     }
 }

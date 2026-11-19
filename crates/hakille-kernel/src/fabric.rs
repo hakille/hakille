@@ -13,6 +13,9 @@ pub enum CapabilityName {
     ReasonHeavy,
     Identify,
     Diarize,
+    GenerateImage,
+    GenerateVideo,
+    GenerateAudio,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
