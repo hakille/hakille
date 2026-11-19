@@ -340,10 +340,10 @@ pub fn try_read_host_power_state() -> Result<PowerState, String> {
             let supply_type = supply_type.trim();
 
             if supply_type.eq_ignore_ascii_case("Mains") {
-                if let Ok(on_str) = std::fs::read_to_string(path.join("online")) {
-                    if on_str.trim() == "1" {
-                        ac_online = true;
-                    }
+                if let Ok(on_str) = std::fs::read_to_string(path.join("online"))
+                    && on_str.trim() == "1"
+                {
+                    ac_online = true;
                 }
             } else if supply_type.eq_ignore_ascii_case("Battery") {
                 let status = std::fs::read_to_string(path.join("status"))
@@ -467,43 +467,43 @@ pub fn read_host_thermal_state() -> ThermalState {
     #[cfg(target_os = "linux")]
     {
         let thermal_dir = Path::new("/sys/class/thermal");
-        if thermal_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(thermal_dir) {
-                let mut highest_temp: f32 = 0.0;
-                let mut any_throttled = false;
-                let mut found_any = false;
+        if thermal_dir.is_dir()
+            && let Ok(entries) = std::fs::read_dir(thermal_dir)
+        {
+            let mut highest_temp: f32 = 0.0;
+            let mut any_throttled = false;
+            let mut found_any = false;
 
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if !name.starts_with("thermal_zone") {
-                        continue;
-                    }
-                    let path = entry.path();
-                    let Ok(temp_str) = std::fs::read_to_string(path.join("temp")) else {
-                        continue;
-                    };
-                    let type_str = std::fs::read_to_string(path.join("type"))
-                        .unwrap_or_else(|_| "unknown".to_string());
-                    match parse_thermal_zone(&temp_str, &type_str, &name) {
-                        Ok(data) => {
-                            found_any = true;
-                            if data.temp_celsius > highest_temp {
-                                highest_temp = data.temp_celsius;
-                            }
-                            if data.is_throttled {
-                                any_throttled = true;
-                            }
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.starts_with("thermal_zone") {
+                    continue;
+                }
+                let path = entry.path();
+                let Ok(temp_str) = std::fs::read_to_string(path.join("temp")) else {
+                    continue;
+                };
+                let type_str = std::fs::read_to_string(path.join("type"))
+                    .unwrap_or_else(|_| "unknown".to_string());
+                match parse_thermal_zone(&temp_str, &type_str, &name) {
+                    Ok(data) => {
+                        found_any = true;
+                        if data.temp_celsius > highest_temp {
+                            highest_temp = data.temp_celsius;
                         }
-                        Err(e) => tracing::warn!("ignoring thermal zone `{name}`: {e}"),
+                        if data.is_throttled {
+                            any_throttled = true;
+                        }
                     }
+                    Err(e) => tracing::warn!("ignoring thermal zone `{name}`: {e}"),
                 }
+            }
 
-                if found_any {
-                    return ThermalState {
-                        temperature_celsius: highest_temp,
-                        throttled: any_throttled,
-                    };
-                }
+            if found_any {
+                return ThermalState {
+                    temperature_celsius: highest_temp,
+                    throttled: any_throttled,
+                };
             }
         }
         ThermalState::Unknown
@@ -533,11 +533,11 @@ pub fn detect_linux_vram_bytes() -> Option<u64> {
             }
             let device_dir = entry.path().join("device");
             for candidate in ["mem_info_vram_total", "mem_info_vis_vram_total"] {
-                if let Ok(raw) = std::fs::read_to_string(device_dir.join(candidate)) {
-                    if let Ok(bytes) = raw.trim().parse::<u64>() {
-                        total = total.saturating_add(bytes);
-                        break;
-                    }
+                if let Ok(raw) = std::fs::read_to_string(device_dir.join(candidate))
+                    && let Ok(bytes) = raw.trim().parse::<u64>()
+                {
+                    total = total.saturating_add(bytes);
+                    break;
                 }
             }
         }

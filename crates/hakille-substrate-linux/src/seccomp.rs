@@ -47,19 +47,41 @@ pub struct BpfInstruction {
 
 pub type SockFilter = BpfInstruction;
 
-#[derive(Debug, Clone, Copy)]
+/// Structure ABI Linux `struct sock_fprog`, liée à la durée de vie `'a` de son
+/// tampon d'instructions pour empêcher tout pointeur pendant.
+#[derive(Debug)]
 #[repr(C)]
-pub struct SockFprog {
+pub struct SockFprog<'a> {
     pub len: u16,
     pub filter: *const SockFilter,
+    _marker: std::marker::PhantomData<&'a [SockFilter]>,
 }
 
-impl SockFprog {
-    pub fn new(filters: &[SockFilter]) -> Self {
-        Self {
-            len: filters.len() as u16,
+impl<'a> SockFprog<'a> {
+    pub fn try_new(filters: &'a [SockFilter]) -> Result<Self, String> {
+        let len = u16::try_from(filters.len())
+            .map_err(|_| format!("programme BPF trop grand ({} > 65535)", filters.len()))?;
+        Ok(Self {
+            len,
             filter: filters.as_ptr(),
-        }
+            _marker: std::marker::PhantomData,
+        })
+    }
+}
+
+/// Filtre Seccomp-BPF compilé propriétaire de ses instructions.
+#[derive(Debug, Clone)]
+pub struct CompiledSeccompFilter {
+    instructions: Vec<SockFilter>,
+}
+
+impl CompiledSeccompFilter {
+    pub fn instructions(&self) -> &[SockFilter] {
+        &self.instructions
+    }
+
+    pub fn as_sock_fprog(&self) -> Result<SockFprog<'_>, String> {
+        SockFprog::try_new(&self.instructions)
     }
 }
 
@@ -175,10 +197,12 @@ impl SeccompProfile {
         profile.allow_syscall("connect", 42, 203);
         profile.allow_syscall("sendto", 44, 206);
         profile.allow_syscall("recvfrom", 45, 207);
-        profile.allow_syscall("poll", 7, 73);
+        // Sur aarch64 (asm-generic), `poll` et `epoll_wait` n'existent pas :
+        // on autorise `ppoll` (x86_64=271, aarch64=73) et `epoll_pwait` (281, 22).
+        profile.allow_syscall("ppoll", 271, 73);
         profile.allow_syscall("epoll_create1", 291, 20);
         profile.allow_syscall("epoll_ctl", 233, 21);
-        profile.allow_syscall("epoll_wait", 232, 22);
+        profile.allow_syscall("epoll_pwait", 281, 22);
         profile
     }
 
@@ -200,47 +224,73 @@ impl SeccompProfile {
         }
     }
 
-    /// Compiles this SeccompProfile into executable BPF bytecode instructions
-    pub fn compile_bpf(&self, arch: SyscallArch) -> Vec<BpfInstruction> {
-        // 1. Check architecture: [BPF_LD | BPF_W | BPF_ABS, arch_offset]
-        let mut instructions = vec![
-            BpfInstruction::stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_ARCH_OFFSET),
-            // If arch == expected, jump 1 forward (skip kill), else jump 0 (execute kill)
-            BpfInstruction::jump(BPF_JMP | BPF_JEQ | BPF_K, arch.audit_arch(), 1, 0),
-            // Architecture mismatch -> kill immediately
-            BpfInstruction::stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
-            // 2. Load system call number: [BPF_LD | BPF_W | BPF_ABS, nr_offset]
-            BpfInstruction::stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR_OFFSET),
-        ];
-
-        // 3. For each rule: if nr == rule_nr, jump to rule action
-        let num_rules = self.rules.len().min(255);
-        for (i, rule) in self.rules.iter().take(num_rules).enumerate() {
-            let nr = rule.nr_for(arch);
-            let remaining_checks = (num_rules - 1 - i) as u8;
-            let jt = remaining_checks + 1 + (i as u8); // jumps to the corresponding return instruction
-            let jf = 0; // fall through to next check
-            instructions.push(BpfInstruction::jump(BPF_JMP | BPF_JEQ | BPF_K, nr, jt, jf));
+    /// Compile le profil en bytecode BPF sans troncature à 255 règles.
+    /// Refuse explicitement si le programme dépasse la limite noyau `BPF_MAXINSNS` (4096).
+    pub fn try_compile_bpf(&self, arch: SyscallArch) -> Result<Vec<BpfInstruction>, String> {
+        let total_insns = 4usize
+            .checked_add(self.rules.len().saturating_mul(2))
+            .and_then(|n| n.checked_add(1))
+            .ok_or_else(|| "débordement du nombre d'instructions BPF".to_string())?;
+        if total_insns > 4096 {
+            return Err(format!(
+                "profil seccomp trop volumineux ({total_insns} instructions > 4096 BPF_MAXINSNS)"
+            ));
         }
 
-        // 4. Default action if no rule matched
-        let default_ret = Self::action_code(&self.default_action);
-        instructions.push(BpfInstruction::stmt(BPF_RET | BPF_K, default_ret));
+        let mut instructions = Vec::with_capacity(total_insns);
+        // 1. Vérification de l'architecture
+        instructions.push(BpfInstruction::stmt(
+            BPF_LD | BPF_W | BPF_ABS,
+            SECCOMP_DATA_ARCH_OFFSET,
+        ));
+        instructions.push(BpfInstruction::jump(
+            BPF_JMP | BPF_JEQ | BPF_K,
+            arch.audit_arch(),
+            1,
+            0,
+        ));
+        instructions.push(BpfInstruction::stmt(
+            BPF_RET | BPF_K,
+            SECCOMP_RET_KILL_PROCESS,
+        ));
+        // 2. Chargement du numéro d'appel système
+        instructions.push(BpfInstruction::stmt(
+            BPF_LD | BPF_W | BPF_ABS,
+            SECCOMP_DATA_NR_OFFSET,
+        ));
 
-        // 5. Actions for each matched rule
-        for rule in self.rules.iter().take(num_rules) {
+        // 3. Paires (JEQ nr, jt=0, jf=1) + (RET action) : aucune limite à 255 règles.
+        for rule in &self.rules {
+            let nr = rule.nr_for(arch);
             let action_ret = Self::action_code(&rule.action);
+            instructions.push(BpfInstruction::jump(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1));
             instructions.push(BpfInstruction::stmt(BPF_RET | BPF_K, action_ret));
         }
 
-        instructions
+        // 4. Action par défaut si aucune règle ne correspond
+        let default_ret = Self::action_code(&self.default_action);
+        instructions.push(BpfInstruction::stmt(BPF_RET | BPF_K, default_ret));
+
+        Ok(instructions)
     }
 
-    /// Compiles this SeccompProfile into a native SockFprog structure for seccomp(2) / prctl
-    pub fn compile_sock_fprog(&self, arch: SyscallArch) -> (Vec<SockFilter>, SockFprog) {
-        let instructions = self.compile_bpf(arch);
-        let fprog = SockFprog::new(&instructions);
-        (instructions, fprog)
+    /// Compiles this SeccompProfile into executable BPF bytecode instructions.
+    /// En cas de profil trop volumineux (> 4096 instructions), bascule fail-closed
+    /// sur un programme `SECCOMP_RET_KILL_PROCESS` unique.
+    pub fn compile_bpf(&self, arch: SyscallArch) -> Vec<BpfInstruction> {
+        self.try_compile_bpf(arch).unwrap_or_else(|_| {
+            vec![BpfInstruction::stmt(
+                BPF_RET | BPF_K,
+                SECCOMP_RET_KILL_PROCESS,
+            )]
+        })
+    }
+
+    /// Compile le profil dans un conteneur propriétaire dont le `SockFprog<'_>`
+    /// reste garanti valide tant que le conteneur vit.
+    pub fn compile_filter(&self, arch: SyscallArch) -> Result<CompiledSeccompFilter, String> {
+        let instructions = self.try_compile_bpf(arch)?;
+        Ok(CompiledSeccompFilter { instructions })
     }
 
     /// Simulates classic BPF bytecode execution against a system call and architecture

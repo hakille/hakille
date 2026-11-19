@@ -60,26 +60,34 @@ impl Default for ChanScheme {
     }
 }
 
+const MAX_ORBITAL_WINDOWS: usize = 16;
+const MAX_AUDIO_SCHEME_BYTES: usize = 4 * 1024 * 1024;
+const MAX_CHAN_MESSAGES_PER_PATH: usize = 1024;
+
+fn lock_err() -> HakilleError {
+    HakilleError::SubstrateError("verrou interne du scheme Redox empoisonné".to_string())
+}
+
 impl SchemeHandler for ChanScheme {
     fn open(&self, path: &str, _flags: usize) -> Result<usize> {
-        let mut next = self.next_handle.lock().unwrap();
+        let mut next = self.next_handle.lock().map_err(|_| lock_err())?;
         let handle = *next;
         *next += 1;
 
-        let mut chs = self.channels.lock().unwrap();
+        let mut chs = self.channels.lock().map_err(|_| lock_err())?;
         chs.entry(path.to_string()).or_default();
 
-        let mut hdls = self.handles.lock().unwrap();
+        let mut hdls = self.handles.lock().map_err(|_| lock_err())?;
         hdls.insert(handle, path.to_string());
         Ok(handle)
     }
 
     fn read(&self, handle: usize, buf: &mut [u8]) -> Result<usize> {
-        let hdls = self.handles.lock().unwrap();
+        let hdls = self.handles.lock().map_err(|_| lock_err())?;
         let path = hdls
             .get(&handle)
             .ok_or_else(|| HakilleError::SubstrateError("Invalid handle".to_string()))?;
-        let mut chs = self.channels.lock().unwrap();
+        let mut chs = self.channels.lock().map_err(|_| lock_err())?;
         if let Some(queue) = chs.get_mut(path)
             && !queue.is_empty()
         {
@@ -92,24 +100,29 @@ impl SchemeHandler for ChanScheme {
     }
 
     fn write(&self, handle: usize, buf: &[u8]) -> Result<usize> {
-        let hdls = self.handles.lock().unwrap();
+        let hdls = self.handles.lock().map_err(|_| lock_err())?;
         let path = hdls
             .get(&handle)
             .ok_or_else(|| HakilleError::SubstrateError("Invalid handle".to_string()))?;
-        let mut chs = self.channels.lock().unwrap();
+        let mut chs = self.channels.lock().map_err(|_| lock_err())?;
         let queue = chs.entry(path.clone()).or_default();
+        if queue.len() >= MAX_CHAN_MESSAGES_PER_PATH {
+            return Err(HakilleError::SubstrateError(
+                "file chan: saturée (plafond anti-DoS atteint)".to_string(),
+            ));
+        }
         queue.push(buf.to_vec());
         Ok(buf.len())
     }
 
     fn close(&self, handle: usize) -> Result<()> {
-        let mut hdls = self.handles.lock().unwrap();
+        let mut hdls = self.handles.lock().map_err(|_| lock_err())?;
         hdls.remove(&handle);
         Ok(())
     }
 
     fn fpath(&self, handle: usize) -> Result<String> {
-        let hdls = self.handles.lock().unwrap();
+        let hdls = self.handles.lock().map_err(|_| lock_err())?;
         hdls.get(&handle)
             .map(|p| format!("chan:{}", p))
             .ok_or_else(|| HakilleError::SubstrateError("Invalid handle".to_string()))
@@ -134,7 +147,7 @@ impl OrbitalScheme {
     }
 
     pub fn get_surface(&self, handle: usize) -> Option<(u32, u32, Vec<u8>)> {
-        self.windows.lock().unwrap().get(&handle).cloned()
+        self.windows.lock().ok()?.get(&handle).cloned()
     }
 }
 
@@ -146,21 +159,25 @@ impl Default for OrbitalScheme {
 
 impl SchemeHandler for OrbitalScheme {
     fn open(&self, _path: &str, _flags: usize) -> Result<usize> {
-        let mut next = self.next_handle.lock().unwrap();
+        let mut wins = self.windows.lock().map_err(|_| lock_err())?;
+        if wins.len() >= MAX_ORBITAL_WINDOWS {
+            return Err(HakilleError::SubstrateError(format!(
+                "plafond de fenêtres Orbital atteint ({MAX_ORBITAL_WINDOWS})"
+            )));
+        }
+        let mut next = self.next_handle.lock().map_err(|_| lock_err())?;
         let handle = *next;
         *next += 1;
 
-        // Default surface dimensions 1920x1080
         let (w, h) = (1920, 1080);
         let fb = vec![0u8; (w * h * 4) as usize];
 
-        let mut wins = self.windows.lock().unwrap();
         wins.insert(handle, (w, h, fb));
         Ok(handle)
     }
 
     fn read(&self, handle: usize, buf: &mut [u8]) -> Result<usize> {
-        let wins = self.windows.lock().unwrap();
+        let wins = self.windows.lock().map_err(|_| lock_err())?;
         if let Some((_, _, fb)) = wins.get(&handle) {
             let len = fb.len().min(buf.len());
             buf[..len].copy_from_slice(&fb[..len]);
@@ -170,7 +187,7 @@ impl SchemeHandler for OrbitalScheme {
     }
 
     fn write(&self, handle: usize, buf: &[u8]) -> Result<usize> {
-        let mut wins = self.windows.lock().unwrap();
+        let mut wins = self.windows.lock().map_err(|_| lock_err())?;
         if let Some((_, _, fb)) = wins.get_mut(&handle) {
             let len = fb.len().min(buf.len());
             fb[..len].copy_from_slice(&buf[..len]);
@@ -180,7 +197,7 @@ impl SchemeHandler for OrbitalScheme {
     }
 
     fn close(&self, handle: usize) -> Result<()> {
-        let mut wins = self.windows.lock().unwrap();
+        let mut wins = self.windows.lock().map_err(|_| lock_err())?;
         wins.remove(&handle);
         Ok(())
     }
@@ -270,7 +287,12 @@ impl SchemeHandler for AudioScheme {
     }
 
     fn write(&self, _handle: usize, buf: &[u8]) -> Result<usize> {
-        let mut out = self.output_buffer.lock().unwrap();
+        let mut out = self.output_buffer.lock().map_err(|_| lock_err())?;
+        if out.len().saturating_add(buf.len()) > MAX_AUDIO_SCHEME_BYTES {
+            return Err(HakilleError::SubstrateError(format!(
+                "tampon audio: saturé (plafond {MAX_AUDIO_SCHEME_BYTES} octets)"
+            )));
+        }
         out.extend_from_slice(buf);
         Ok(buf.len())
     }
@@ -300,15 +322,27 @@ impl DiskScheme {
         }
     }
 
+    /// Lit intégralement un objet stocké sans troncature à 4 Kio.
+    pub fn read_all(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        let store = self.storage.lock().map_err(|_| lock_err())?;
+        Ok(store.get(path).cloned())
+    }
+
     /// Remove a stored object by path. Returns `true` if an entry existed.
     pub fn remove(&self, path: &str) -> bool {
-        self.storage.lock().unwrap().remove(path).is_some()
+        self.storage
+            .lock()
+            .ok()
+            .and_then(|mut s| s.remove(path))
+            .is_some()
     }
 
     /// List immediate child names under `prefix` ("" = root of the disk scheme).
     pub fn list_keys(&self, prefix: &str) -> Vec<String> {
         let norm = prefix.trim_matches('/');
-        let store = self.storage.lock().unwrap();
+        let Ok(store) = self.storage.lock() else {
+            return Vec::new();
+        };
         let mut out = Vec::new();
         for key in store.keys() {
             let rest = if norm.is_empty() {
@@ -340,21 +374,21 @@ impl Default for DiskScheme {
 
 impl SchemeHandler for DiskScheme {
     fn open(&self, path: &str, _flags: usize) -> Result<usize> {
-        let mut next = self.next_handle.lock().unwrap();
+        let mut next = self.next_handle.lock().map_err(|_| lock_err())?;
         let handle = *next;
         *next += 1;
 
-        let mut hdls = self.handles.lock().unwrap();
+        let mut hdls = self.handles.lock().map_err(|_| lock_err())?;
         hdls.insert(handle, path.to_string());
         Ok(handle)
     }
 
     fn read(&self, handle: usize, buf: &mut [u8]) -> Result<usize> {
-        let hdls = self.handles.lock().unwrap();
+        let hdls = self.handles.lock().map_err(|_| lock_err())?;
         let path = hdls
             .get(&handle)
             .ok_or_else(|| HakilleError::SubstrateError("Invalid handle".to_string()))?;
-        let store = self.storage.lock().unwrap();
+        let store = self.storage.lock().map_err(|_| lock_err())?;
         if let Some(data) = store.get(path) {
             let len = data.len().min(buf.len());
             buf[..len].copy_from_slice(&data[..len]);
@@ -364,23 +398,30 @@ impl SchemeHandler for DiskScheme {
     }
 
     fn write(&self, handle: usize, buf: &[u8]) -> Result<usize> {
-        let hdls = self.handles.lock().unwrap();
+        if buf.len() > hakille_substrate::VFS_MAX_FILE_BYTES {
+            return Err(HakilleError::StorageError(format!(
+                "écriture disk: refusée : {} octets > plafond {}",
+                buf.len(),
+                hakille_substrate::VFS_MAX_FILE_BYTES
+            )));
+        }
+        let hdls = self.handles.lock().map_err(|_| lock_err())?;
         let path = hdls
             .get(&handle)
             .ok_or_else(|| HakilleError::SubstrateError("Invalid handle".to_string()))?;
-        let mut store = self.storage.lock().unwrap();
+        let mut store = self.storage.lock().map_err(|_| lock_err())?;
         store.insert(path.clone(), buf.to_vec());
         Ok(buf.len())
     }
 
     fn close(&self, handle: usize) -> Result<()> {
-        let mut hdls = self.handles.lock().unwrap();
+        let mut hdls = self.handles.lock().map_err(|_| lock_err())?;
         hdls.remove(&handle);
         Ok(())
     }
 
     fn fpath(&self, handle: usize) -> Result<String> {
-        let hdls = self.handles.lock().unwrap();
+        let hdls = self.handles.lock().map_err(|_| lock_err())?;
         hdls.get(&handle)
             .map(|p| format!("disk:{}", p))
             .ok_or_else(|| HakilleError::SubstrateError("Invalid handle".to_string()))
@@ -521,12 +562,17 @@ impl RedoxSchemeHandler {
             SYS_OPEN => {
                 let path_start = packet.b;
                 let path_len = packet.c;
-                if path_start + path_len > buffer_pool.len() {
+                let Some(end) = path_start.checked_add(path_len) else {
+                    return Err(HakilleError::SubstrateError(
+                        "Buffer bounds overflow for SYS_OPEN".to_string(),
+                    ));
+                };
+                if end > buffer_pool.len() {
                     return Err(HakilleError::SubstrateError(
                         "Buffer bounds exceeded for SYS_OPEN".to_string(),
                     ));
                 }
-                let path_bytes = &buffer_pool[path_start..path_start + path_len];
+                let path_bytes = &buffer_pool[path_start..end];
                 let path_str = std::str::from_utf8(path_bytes).map_err(|e| {
                     HakilleError::SubstrateError(format!("Invalid UTF-8 path: {}", e))
                 })?;
@@ -538,12 +584,17 @@ impl RedoxSchemeHandler {
                 let handle = packet.a;
                 let buf_start = packet.b;
                 let buf_len = packet.c;
-                if buf_start + buf_len > buffer_pool.len() {
+                let Some(end) = buf_start.checked_add(buf_len) else {
+                    return Err(HakilleError::SubstrateError(
+                        "Buffer bounds overflow for SYS_READ".to_string(),
+                    ));
+                };
+                if end > buffer_pool.len() {
                     return Err(HakilleError::SubstrateError(
                         "Buffer bounds exceeded for SYS_READ".to_string(),
                     ));
                 }
-                let buf = &mut buffer_pool[buf_start..buf_start + buf_len];
+                let buf = &mut buffer_pool[buf_start..end];
                 let bytes_read = self.dispatch_read(handle, buf)?;
                 packet.a = bytes_read;
                 Ok(bytes_read)
@@ -552,12 +603,17 @@ impl RedoxSchemeHandler {
                 let handle = packet.a;
                 let buf_start = packet.b;
                 let buf_len = packet.c;
-                if buf_start + buf_len > buffer_pool.len() {
+                let Some(end) = buf_start.checked_add(buf_len) else {
+                    return Err(HakilleError::SubstrateError(
+                        "Buffer bounds overflow for SYS_WRITE".to_string(),
+                    ));
+                };
+                if end > buffer_pool.len() {
                     return Err(HakilleError::SubstrateError(
                         "Buffer bounds exceeded for SYS_WRITE".to_string(),
                     ));
                 }
-                let buf = &buffer_pool[buf_start..buf_start + buf_len];
+                let buf = &buffer_pool[buf_start..end];
                 let bytes_written = self.dispatch_write(handle, buf)?;
                 packet.a = bytes_written;
                 Ok(bytes_written)
@@ -575,13 +631,17 @@ impl RedoxSchemeHandler {
                 let buf_start = packet.b;
                 let max_len = packet.c;
                 let copy_len = path_bytes.len().min(max_len);
-                if buf_start + copy_len > buffer_pool.len() {
+                let Some(end) = buf_start.checked_add(copy_len) else {
+                    return Err(HakilleError::SubstrateError(
+                        "Buffer bounds overflow for SYS_FPATH".to_string(),
+                    ));
+                };
+                if end > buffer_pool.len() {
                     return Err(HakilleError::SubstrateError(
                         "Buffer bounds exceeded for SYS_FPATH".to_string(),
                     ));
                 }
-                buffer_pool[buf_start..buf_start + copy_len]
-                    .copy_from_slice(&path_bytes[..copy_len]);
+                buffer_pool[buf_start..end].copy_from_slice(&path_bytes[..copy_len]);
                 packet.a = copy_len;
                 Ok(copy_len)
             }

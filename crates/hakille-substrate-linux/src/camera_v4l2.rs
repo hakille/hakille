@@ -182,7 +182,12 @@ pub fn enumerate_devices() -> Vec<V4l2DeviceInfo> {
             Err(_) => continue,
         };
 
-        let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDWR | libc::O_NONBLOCK) };
+        let fd = unsafe {
+            libc::open(
+                c_path.as_ptr(),
+                libc::O_RDWR | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            )
+        };
         if fd < 0 {
             continue;
         }
@@ -265,8 +270,15 @@ pub fn yuyv_to_rgb8(
     height: usize,
     out: &mut [u8],
 ) -> Result<(), String> {
-    let expected_in = width * height * 2;
-    let expected_out = width * height * 3;
+    let pixels = width
+        .checked_mul(height)
+        .ok_or_else(|| "dépassement arithmétique sur les dimensions YUYV".to_string())?;
+    let expected_in = pixels
+        .checked_mul(2)
+        .ok_or_else(|| "dépassement arithmétique sur la taille d'entrée YUYV".to_string())?;
+    let expected_out = pixels
+        .checked_mul(3)
+        .ok_or_else(|| "dépassement arithmétique sur la taille de sortie RGB8".to_string())?;
     if yuyv.len() < expected_in || out.len() < expected_out {
         return Err(format!(
             "taille de buffer invalide pour YUYV : in={}, out={}, attendu_in={}, attendu_out={}",
@@ -277,7 +289,7 @@ pub fn yuyv_to_rgb8(
         ));
     }
 
-    let pairs = (width * height) / 2;
+    let pairs = pixels / 2;
     for i in 0..pairs {
         let y0 = yuyv[i * 4] as i32;
         let u = yuyv[i * 4 + 1] as i32 - 128;
@@ -306,9 +318,9 @@ pub fn yuyv_to_rgb8(
     Ok(())
 }
 
-/// Convertit un buffer BGR24 en RGB24 par permutation R <-> B.
+/// Convertit un buffer BGR24 en RGB24 par permutation R <-> B (borné par `min(bgr, out)`).
 pub fn bgr_to_rgb(bgr: &[u8], out: &mut [u8]) {
-    let count = bgr.len() / 3;
+    let count = (bgr.len() / 3).min(out.len() / 3);
     for i in 0..count {
         let b = bgr[i * 3];
         let g = bgr[i * 3 + 1];
@@ -324,15 +336,42 @@ pub fn bgr_to_rgb(bgr: &[u8], out: &mut [u8]) {
 // ============================================================================
 
 #[cfg(target_os = "linux")]
+struct FdGuard(i32);
+
+#[cfg(target_os = "linux")]
+impl Drop for FdGuard {
+    fn drop(&mut self) {
+        if self.0 >= 0 {
+            unsafe {
+                libc::close(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
 struct MmapBuffer {
     ptr: *mut libc::c_void,
     length: usize,
 }
 
 #[cfg(target_os = "linux")]
+impl Drop for MmapBuffer {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() && self.ptr != libc::MAP_FAILED && self.length > 0 {
+            unsafe {
+                libc::munmap(self.ptr, self.length);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
 struct ActiveCapture {
-    fd: i32,
+    // Ordre des champs important : `buffers` est libéré (munmap) avant `_fd` (close),
+    // et `ActiveCapture::drop` exécute STREAMOFF tant que le fd est ouvert.
     buffers: Vec<MmapBuffer>,
+    fd: FdGuard,
     width: u32,
     height: u32,
     pixelformat: u32,
@@ -343,11 +382,7 @@ impl Drop for ActiveCapture {
     fn drop(&mut self) {
         let type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         unsafe {
-            let _ = libc::ioctl(self.fd, VIDIOC_STREAMOFF as libc::Ioctl, &type_);
-            for buf in &self.buffers {
-                libc::munmap(buf.ptr, buf.length);
-            }
-            libc::close(self.fd);
+            let _ = libc::ioctl(self.fd.0, VIDIOC_STREAMOFF as libc::Ioctl, &type_);
         }
     }
 }
@@ -362,14 +397,15 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
     let c_path = std::ffi::CString::new(device.path.to_string_lossy().as_bytes())
         .map_err(|e| format!("camera unavailable: chemin de périphérique invalide : {e}"))?;
 
-    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDWR) };
-    if fd < 0 {
+    let raw_fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+    if raw_fd < 0 {
         return Err(format!(
             "camera unavailable: ouverture V4L2 de {:?} échouée (errno={})",
             device.path,
             std::io::Error::last_os_error()
         ));
     }
+    let fd = FdGuard(raw_fd);
 
     // 1. Énumération des formats supportés
     let mut supported_formats = Vec::new();
@@ -377,7 +413,7 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
         let mut fmtdesc: v4l2_fmtdesc = unsafe { std::mem::zeroed() };
         fmtdesc.index = index;
         fmtdesc.type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        if unsafe { libc::ioctl(fd, VIDIOC_ENUM_FMT as libc::Ioctl, &mut fmtdesc) } != 0 {
+        if unsafe { libc::ioctl(fd.0, VIDIOC_ENUM_FMT as libc::Ioctl, &mut fmtdesc) } != 0 {
             break;
         }
         supported_formats.push(fmtdesc.pixelformat);
@@ -395,7 +431,6 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
     } else if let Some(&first) = supported_formats.first() {
         first
     } else {
-        unsafe { libc::close(fd) };
         return Err("camera unavailable: V4L2 aucun format vidéo supporté".to_string());
     };
 
@@ -417,8 +452,7 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
         xfer_func: 0,
     };
 
-    if unsafe { libc::ioctl(fd, VIDIOC_S_FMT as libc::Ioctl, &mut fmt) } != 0 {
-        unsafe { libc::close(fd) };
+    if unsafe { libc::ioctl(fd.0, VIDIOC_S_FMT as libc::Ioctl, &mut fmt) } != 0 {
         return Err(format!(
             "camera unavailable: négociation format V4L2 VIDIOC_S_FMT échouée ({})",
             std::io::Error::last_os_error()
@@ -428,6 +462,11 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
     let actual_width = unsafe { fmt.fmt.pix.width };
     let actual_height = unsafe { fmt.fmt.pix.height };
     let actual_pixelformat = unsafe { fmt.fmt.pix.pixelformat };
+    if actual_width == 0 || actual_height == 0 || actual_width > 16384 || actual_height > 16384 {
+        return Err(format!(
+            "camera unavailable: dimensions V4L2 invalides ({actual_width}x{actual_height})"
+        ));
+    }
 
     // 4. Demande des buffers mmap (4 buffers)
     let mut req: v4l2_requestbuffers = unsafe { std::mem::zeroed() };
@@ -435,12 +474,11 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
     req.type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     req.memory = V4L2_MEMORY_MMAP;
 
-    if unsafe { libc::ioctl(fd, VIDIOC_REQBUFS as libc::Ioctl, &mut req) } != 0 || req.count < 2 {
-        unsafe { libc::close(fd) };
+    if unsafe { libc::ioctl(fd.0, VIDIOC_REQBUFS as libc::Ioctl, &mut req) } != 0 || req.count < 2 {
         return Err("camera unavailable: allocation buffers mmap V4L2 échouée".to_string());
     }
 
-    // 5. Mappage en mémoire userspace et mise en file (QBUF)
+    // 5. Mappage en mémoire userspace et mise en file (QBUF) — RAII évite toute fuite mmap/fd
     let mut buffers = Vec::with_capacity(req.count as usize);
     for index in 0..req.count {
         let mut buf: v4l2_buffer = unsafe { std::mem::zeroed() };
@@ -448,9 +486,11 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index = index;
 
-        if unsafe { libc::ioctl(fd, VIDIOC_QUERYBUF as libc::Ioctl, &mut buf) } != 0 {
-            unsafe { libc::close(fd) };
+        if unsafe { libc::ioctl(fd.0, VIDIOC_QUERYBUF as libc::Ioctl, &mut buf) } != 0 {
             return Err("camera unavailable: requête VIDIOC_QUERYBUF échouée".to_string());
+        }
+        if buf.length == 0 {
+            return Err("camera unavailable: longueur de buffer V4L2 nulle".to_string());
         }
 
         let ptr = unsafe {
@@ -459,13 +499,12 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
                 buf.length as usize,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
-                fd,
+                fd.0,
                 buf.m.offset as libc::off_t,
             )
         };
 
-        if ptr == libc::MAP_FAILED {
-            unsafe { libc::close(fd) };
+        if ptr == libc::MAP_FAILED || ptr.is_null() {
             return Err("camera unavailable: libc::mmap du buffer V4L2 échoué".to_string());
         }
 
@@ -474,8 +513,7 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
             length: buf.length as usize,
         });
 
-        if unsafe { libc::ioctl(fd, VIDIOC_QBUF as libc::Ioctl, &mut buf) } != 0 {
-            unsafe { libc::close(fd) };
+        if unsafe { libc::ioctl(fd.0, VIDIOC_QBUF as libc::Ioctl, &mut buf) } != 0 {
             return Err(
                 "camera unavailable: mise en file VIDIOC_QBUF initiale échouée".to_string(),
             );
@@ -484,14 +522,13 @@ fn open_v4l2_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
 
     // 6. Démarrage du streaming vidéo (STREAMON)
     let type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if unsafe { libc::ioctl(fd, VIDIOC_STREAMON as libc::Ioctl, &type_) } != 0 {
-        unsafe { libc::close(fd) };
+    if unsafe { libc::ioctl(fd.0, VIDIOC_STREAMON as libc::Ioctl, &type_) } != 0 {
         return Err("camera unavailable: démarrage VIDIOC_STREAMON échoué".to_string());
     }
 
     Ok(ActiveCapture {
-        fd,
         buffers,
+        fd,
         width: actual_width,
         height: actual_height,
         pixelformat: actual_pixelformat,
@@ -516,9 +553,20 @@ fn capture_loop(
         }
     };
 
+    let Some(rgb_len) = (capture.width as usize)
+        .checked_mul(capture.height as usize)
+        .and_then(|p| p.checked_mul(3))
+    else {
+        let _ = init_tx.send(Err(
+            "camera unavailable: dépassement arithmétique sur la taille RGB V4L2".to_string(),
+        ));
+        let _ = exit_tx.send(());
+        return;
+    };
+
     let mut initialized = false;
     let started = Instant::now();
-    let mut rgb_buffer = vec![0u8; (capture.width * capture.height * 3) as usize];
+    let mut rgb_buffer = vec![0u8; rgb_len];
 
     while !stop.load(Ordering::SeqCst) {
         if !initialized && started.elapsed() > FIRST_FRAME_DEADLINE {
@@ -527,7 +575,7 @@ fn capture_loop(
 
         // Attente via poll avec timeout 1000 ms
         let mut pfd = libc::pollfd {
-            fd: capture.fd,
+            fd: capture.fd.0,
             events: libc::POLLIN,
             revents: 0,
         };
@@ -553,30 +601,35 @@ fn capture_loop(
         buf.type_ = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         buf.memory = V4L2_MEMORY_MMAP;
 
-        if unsafe { libc::ioctl(capture.fd, VIDIOC_DQBUF as libc::Ioctl, &mut buf) } != 0 {
+        if unsafe { libc::ioctl(capture.fd.0, VIDIOC_DQBUF as libc::Ioctl, &mut buf) } != 0 {
             break;
         }
 
-        let slice = unsafe {
-            std::slice::from_raw_parts(
-                capture.buffers[buf.index as usize].ptr as *const u8,
-                buf.bytesused as usize,
-            )
+        let buf_idx = buf.index as usize;
+        let bytesused = buf.bytesused as usize;
+        let Some(mapped) = capture.buffers.get(buf_idx) else {
+            break;
         };
+        if bytesused > mapped.length {
+            let _ = unsafe { libc::ioctl(capture.fd.0, VIDIOC_QBUF as libc::Ioctl, &mut buf) };
+            break;
+        }
+
+        let slice = unsafe { std::slice::from_raw_parts(mapped.ptr as *const u8, bytesused) };
 
         let timestamp_ms = (buf.timestamp.tv_sec.max(0) as u64) * 1000
             + (buf.timestamp.tv_usec.max(0) as u64) / 1000;
 
         let frame_opt = match capture.pixelformat {
-            V4L2_PIX_FMT_RGB24 => Some(CameraFrame {
+            V4L2_PIX_FMT_RGB24 if slice.len() >= rgb_len => Some(CameraFrame {
                 width: capture.width,
                 height: capture.height,
-                data: slice.to_vec(),
+                data: slice[..rgb_len].to_vec(),
                 format: ImageFormat::Rgb8,
                 timestamp_ms,
             }),
-            V4L2_PIX_FMT_BGR24 => {
-                bgr_to_rgb(slice, &mut rgb_buffer);
+            V4L2_PIX_FMT_BGR24 if slice.len() >= rgb_len => {
+                bgr_to_rgb(&slice[..rgb_len], &mut rgb_buffer);
                 Some(CameraFrame {
                     width: capture.width,
                     height: capture.height,
@@ -613,7 +666,7 @@ fn capture_loop(
         };
 
         // Ré-enclenchement immédiat du buffer dans la file noyau (QBUF)
-        let _ = unsafe { libc::ioctl(capture.fd, VIDIOC_QBUF as libc::Ioctl, &mut buf) };
+        let _ = unsafe { libc::ioctl(capture.fd.0, VIDIOC_QBUF as libc::Ioctl, &mut buf) };
 
         if let Some(frame) = frame_opt {
             if watch_tx.send(Some(frame)).is_err() {
@@ -667,7 +720,7 @@ fn decode_mjpeg_to_rgb8(
 }
 
 // ============================================================================
-// Mode Émulation Headless / CI (Activé via HAKILLE_CAMERA_EMULATION=1)
+// Mode Émulation Headless / CI (strictement désactivé en release)
 // ============================================================================
 
 /// Verrou de sérialisation pour les tests manipulant `HAKILLE_CAMERA_EMULATION`
@@ -675,10 +728,17 @@ fn decode_mjpeg_to_rgb8(
 #[doc(hidden)]
 pub static CAMERA_EMULATION_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+#[cfg(any(test, debug_assertions))]
 fn is_emulation_enabled() -> bool {
     std::env::var("HAKILLE_CAMERA_EMULATION")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+#[cfg(not(any(test, debug_assertions)))]
+fn is_emulation_enabled() -> bool {
+    // En release, aucune frame synthétique ne peut être activée par variable d'environnement.
+    false
 }
 
 fn emulated_capture_loop(

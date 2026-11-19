@@ -280,6 +280,7 @@ mod non_windows {
         0
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub unsafe fn BitBlt(
         _: isize,
         _: i32,

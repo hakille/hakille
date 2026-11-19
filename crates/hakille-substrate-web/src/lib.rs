@@ -31,6 +31,11 @@ mod tests {
         );
         assert!(
             manifest
+                .capabilities_granted
+                .contains(&CapabilityScope::Filesystem)
+        );
+        assert!(
+            manifest
                 .capabilities_denied
                 .contains(&CapabilityScope::FullSystem)
         );
@@ -39,19 +44,27 @@ mod tests {
             .attest(b"web-nonce")
             .await
             .expect("Attestation failed");
-        assert_eq!(attestation.platform_id, "Wasm-Browser-Client");
+        assert_eq!(
+            attestation.platform_id,
+            "Wasm-Browser-Client-dev-attestation"
+        );
+        assert_eq!(
+            attestation.manifest_hash,
+            format!("sha256-{}", hakille_substrate::sha256_hex(b"web-nonce"))
+        );
         assert!(!attestation.signature.0.is_empty());
     }
 
     #[test]
     fn test_web_compute_backends_and_quantization() {
+        // Honnête par défaut sans adaptateur navigateur : seul Cpu est actif.
         let compute = WebComputeBackend::new();
         let backends = compute.available_backends();
-        assert!(backends.contains(&hakille_substrate::ComputeBackend::WebGpu));
+        assert!(!backends.contains(&hakille_substrate::ComputeBackend::WebGpu));
         assert!(backends.contains(&hakille_substrate::ComputeBackend::Cpu));
         assert_eq!(
             compute.preferred_backend(),
-            hakille_substrate::ComputeBackend::WebGpu
+            hakille_substrate::ComputeBackend::Cpu
         );
         assert!(compute.supports_quantization("q4_k"));
         assert!(compute.supports_quantization("int8"));
@@ -121,20 +134,35 @@ mod tests {
 
     #[test]
     fn test_webgpu_compute_capability_detection() {
-        let detector = WebGpuDetector::new();
+        // Par défaut (hors navigateur) : WebGPU non supporté honnêtement.
+        let default_detector = WebGpuDetector::new();
+        assert!(!default_detector.capabilities().is_webgpu_supported);
+        assert_eq!(
+            default_detector.optimal_compute_backend(),
+            hakille_substrate::ComputeBackend::Cpu
+        );
+        assert!(!default_detector.can_run_half_precision_gemm());
+        assert!(default_detector.validate_tensor_allocation(1024).is_err());
+
+        // Quand un adaptateur WebGPU réel est injecté par l'hôte navigateur :
+        let gpu_caps = WebGpuCapabilities {
+            is_webgpu_supported: true,
+            adapter_name: "Injected WebGPU Adapter".to_string(),
+            has_shader_f16: true,
+            has_subgroups: true,
+            has_timestamp_query: false,
+            limits: WebGpuLimits::default(),
+        };
+        let detector = WebGpuDetector::with_capabilities(gpu_caps);
         assert!(detector.capabilities().is_webgpu_supported);
         assert!(detector.capabilities().has_shader_f16);
         assert!(detector.capabilities().has_subgroups);
         assert!(detector.can_run_half_precision_gemm());
-
-        // Limits test
         assert!(detector.capabilities().limits.max_buffer_size >= 2 * 1024 * 1024 * 1024);
         assert_eq!(
             detector.optimal_compute_backend(),
             hakille_substrate::ComputeBackend::WebGpu
         );
-
-        // Allocation validation
         assert!(
             detector
                 .validate_tensor_allocation(512 * 1024 * 1024)
@@ -144,32 +172,13 @@ mod tests {
             detector
                 .validate_tensor_allocation(4 * 1024 * 1024 * 1024)
                 .is_err()
-        ); // Exceeds 2GB
-
-        // Workgroup dispatch validation
+        );
         assert!(detector.validate_workgroup_dispatch(256, 16 * 1024).is_ok());
         assert!(
             detector
                 .validate_workgroup_dispatch(512, 16 * 1024)
                 .is_err()
-        ); // Exceeds 256 invocations
-
-        // Fallback test when WebGPU is unavailable
-        let fallback_caps = WebGpuCapabilities {
-            is_webgpu_supported: false,
-            adapter_name: "Fallback CPU SIMD".to_string(),
-            has_shader_f16: false,
-            has_subgroups: false,
-            has_timestamp_query: false,
-            limits: WebGpuLimits::default(),
-        };
-        let fallback_detector = WebGpuDetector::with_capabilities(fallback_caps);
-        assert_eq!(
-            fallback_detector.optimal_compute_backend(),
-            hakille_substrate::ComputeBackend::Cpu
         );
-        assert!(!fallback_detector.can_run_half_precision_gemm());
-        assert!(fallback_detector.validate_tensor_allocation(1024).is_err());
     }
 
     #[tokio::test]

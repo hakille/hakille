@@ -42,6 +42,7 @@ impl MacosSubstrate {
         // explicitly simulated fallback keeps the manifest structurally
         // valid (see `read_total_physical_ram_bytes`).
         let total_ram = read_total_physical_ram_bytes();
+        let on_battery = read_host_power_state().on_battery;
 
         let manifest = PlatformManifest {
             tier: Tier::Native,
@@ -60,9 +61,10 @@ impl MacosSubstrate {
             // only knowable via a Metal / IORegistry query (not linked);
             // unknown, not a hard-coded 3/4 share.
             gpu_vram_bytes: None,
-            has_secure_enclave: true,
+            // Honnête : aucun binding Security.framework / Secure Enclave raccordé.
+            has_secure_enclave: false,
             has_tpm: false,
-            battery_powered: true,
+            battery_powered: on_battery,
             // Honest: no thermal-pressure source linked; unknown, not invented.
             thermal_envelope_watts: None,
             os_name: "macOS".to_string(),
@@ -97,9 +99,8 @@ impl MacosSubstrate {
         if let Some(root) = &self.trusted_capability_root {
             hakille_core::verify_capability_with_root_key(cap, root, scope, action)
         } else {
-            // Legacy fallback UNIQUEMENT en debug/tests : vérification
-            // structurelle sans pinning (accepte les tokens auto-signés).
-            // En release, panique fail-closed : `verify_unpinned` est interdit.
+            // Repli legacy UNIQUEMENT en debug/tests ; en release, refus fail-closed
+            // propre (`Err`) sans jamais paniquer le processus.
             #[cfg(debug_assertions)]
             {
                 #[allow(deprecated)]
@@ -109,9 +110,9 @@ impl MacosSubstrate {
             }
             #[cfg(not(debug_assertions))]
             {
-                panic!(
-                    "unpinned capability verification forbidden in release; call with_trusted_root in production"
-                );
+                Err(hakille_core::HakilleError::CapabilityDenied(
+                    "vérification non épinglée interdite en release : appeler with_trusted_root en production".into(),
+                ))
             }
         }
     }
@@ -131,66 +132,6 @@ impl MacosSubstrate {
     /// Current egress policy.
     pub fn egress_policy(&self) -> &EgressPolicy {
         &self.egress_policy
-    }
-
-    /// Resolve a VirtualPath to a real path inside the isolated root.
-    /// Secure: rejects `..`, absolute paths, drive letters, NUL bytes and
-    /// ensures the final path stays inside `virtual_fs_root`.
-    fn resolve_path(&self, path: &VirtualPath) -> hakille_core::Result<PathBuf> {
-        use std::path::Component;
-        if path.0.contains('\0') {
-            return Err(hakille_core::HakilleError::CapabilityDenied(
-                "NUL byte in virtual path".into(),
-            ));
-        }
-        // Reject Windows drive letters and UNC prefixes early.
-        let lower = path.0.to_ascii_lowercase();
-        if lower.contains(':') || path.0.starts_with(r"\\") {
-            return Err(hakille_core::HakilleError::CapabilityDenied(
-                "absolute / drive path rejected".into(),
-            ));
-        }
-        let mut clean = PathBuf::new();
-        let mut saw_normal = false;
-        for comp in std::path::Path::new(&path.0).components() {
-            match comp {
-                Component::Normal(p) => {
-                    if p == std::ffi::OsStr::new("..") {
-                        return Err(hakille_core::HakilleError::CapabilityDenied(
-                            "path traversal (..) rejected".into(),
-                        ));
-                    }
-                    clean.push(p);
-                    saw_normal = true;
-                }
-                Component::CurDir => {}
-                // Any ParentDir, RootDir, Prefix => reject
-                _ => {
-                    return Err(hakille_core::HakilleError::CapabilityDenied(
-                        "non-normal path component rejected".into(),
-                    ));
-                }
-            }
-        }
-        if !saw_normal {
-            // Empty virtual path means the VirtualFS root itself (for list_dir).
-            return Ok(self.virtual_fs_root.clone());
-        }
-        let joined = self.virtual_fs_root.join(&clean);
-        // Defence in depth: canonicalize prefix check when root exists.
-        // If canonicalization fails (path doesn't exist yet for writes),
-        // the component-level rejection above already blocks traversal.
-        if let (Ok(root_c), Ok(joined_c)) =
-            (self.virtual_fs_root.canonicalize(), joined.canonicalize())
-        {
-            if !joined_c.starts_with(&root_c) {
-                return Err(hakille_core::HakilleError::CapabilityDenied(
-                    "resolved path escapes VirtualFS root".into(),
-                ));
-            }
-            return Ok(joined_c);
-        }
-        Ok(joined)
     }
 
     pub fn virtual_fs_root(&self) -> &Path {
@@ -220,9 +161,11 @@ impl Substrate for MacosSubstrate {
 
     async fn attest(&self, data: &[u8]) -> Result<SignedAttestation> {
         let sig = self.attestation_keypair.sign(data);
+        // Honnête : dev-attestation locale (clé éphémère, pas de Secure Enclave),
+        // empreinte SHA-256 réelle des octets attestés.
         Ok(SignedAttestation {
-            manifest_hash: format!("sha256-macos-manifest-{}", data.len()),
-            platform_id: "macOS-AppleSilicon-Host".to_string(),
+            manifest_hash: format!("sha256-{}", hakille_substrate::sha256_hex(data)),
+            platform_id: "macOS-Substrate-Host-dev-attestation".to_string(),
             timestamp: Timestamp::now(),
             signature: sig,
         })
@@ -234,21 +177,7 @@ impl Substrate for MacosSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Read,
         )?;
-        let local_path = self.resolve_path(path)?;
-        if local_path.exists() {
-            tokio::fs::read(&local_path).await.map_err(|e| {
-                hakille_core::HakilleError::StorageError(format!(
-                    "Read error {}: {}",
-                    local_path.display(),
-                    e
-                ))
-            })
-        } else {
-            Err(hakille_core::HakilleError::StorageError(format!(
-                "File not found: {}",
-                path.0
-            )))
-        }
+        hakille_substrate::read_confined_file(&self.virtual_fs_root, path).await
     }
 
     async fn write_file(
@@ -262,23 +191,7 @@ impl Substrate for MacosSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Write,
         )?;
-        let local_path = self.resolve_path(path)?;
-        if let Some(parent) = local_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                hakille_core::HakilleError::StorageError(format!(
-                    "Create dir error {}: {}",
-                    parent.display(),
-                    e
-                ))
-            })?;
-        }
-        tokio::fs::write(&local_path, data).await.map_err(|e| {
-            hakille_core::HakilleError::StorageError(format!(
-                "Write error {}: {}",
-                local_path.display(),
-                e
-            ))
-        })
+        hakille_substrate::write_confined_file(&self.virtual_fs_root, path, data).await
     }
 
     async fn list_dir(
@@ -291,23 +204,7 @@ impl Substrate for MacosSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Read,
         )?;
-        let local_path = self.resolve_path(path)?;
-        if local_path.exists() && local_path.is_dir() {
-            let mut entries = Vec::new();
-            if let Ok(mut read_dir) = tokio::fs::read_dir(&local_path).await {
-                while let Ok(Some(entry)) = read_dir.next_entry().await {
-                    if let Some(name) = entry.file_name().to_str() {
-                        entries.push(VirtualPath(name.to_string()));
-                    }
-                }
-            }
-            Ok(entries)
-        } else {
-            Err(hakille_core::HakilleError::StorageError(format!(
-                "Directory not found: {}",
-                path.0
-            )))
-        }
+        hakille_substrate::list_confined_dir(&self.virtual_fs_root, path).await
     }
 
     async fn delete_file(&self, path: &VirtualPath, cap: &CapabilityToken) -> Result<()> {
@@ -316,17 +213,7 @@ impl Substrate for MacosSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Delete,
         )?;
-        let local_path = self.resolve_path(path)?;
-        if local_path.exists() {
-            tokio::fs::remove_file(&local_path).await.map_err(|e| {
-                hakille_core::HakilleError::StorageError(format!(
-                    "Delete error {}: {}",
-                    local_path.display(),
-                    e
-                ))
-            })?;
-        }
-        Ok(())
+        hakille_substrate::delete_confined_file(&self.virtual_fs_root, path).await
     }
 
     async fn http_request(&self, req: HttpRequest, cap: &CapabilityToken) -> Result<HttpResponse> {
@@ -397,7 +284,9 @@ impl Substrate for MacosSubstrate {
     }
 
     async fn stop_camera_capture(&self, _handle: CameraStreamHandle) -> Result<()> {
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            MACOS_CAMERA_UNIMPLEMENTED.into(),
+        ))
     }
 
     async fn capture_camera_frame(
@@ -443,9 +332,6 @@ impl Substrate for MacosSubstrate {
         _wasm: &[u8],
         caps: Vec<CapabilityToken>,
     ) -> Result<ProcessHandle> {
-        // Caller must prove it holds at least one delegable capability;
-        // spawned sandbox receives only attenuated `caps` (verified by caller).
-        // Here we enforce that every delegated cap is at least structurally valid.
         let delegable = [
             (
                 CapabilityScope::Filesystem,
@@ -485,8 +371,6 @@ impl Substrate for MacosSubstrate {
                 )));
             }
         }
-        // Aucun moteur WASM n'est relié à cette API : ne jamais inventer
-        // un handle de processus. Le runtime des agents de référence est distinct.
         Err(hakille_core::HakilleError::SubstrateError(
             "spawn_sandboxed indisponible : moteur WASM non raccordé au substrat macos; aucun processus lancé"
                 .to_string(),
@@ -512,37 +396,58 @@ impl Substrate for MacosSubstrate {
             hakille_core::CapabilityAction::Write,
         )?;
 
-        tracing::info!(
-            id = %request.id,
-            title = %request.title,
-            urgency = ?request.urgency,
-            category = ?request.category,
-            "MacosSubstrate: Dispatching notification"
-        );
-
         #[cfg(target_os = "macos")]
         {
-            let script = format!(
-                "display notification \"{}\" with title \"{}\" subtitle \"Hakille\"",
-                request.body.replace('\"', "\\\""),
-                request.title.replace('\"', "\\\"")
-            );
-            let _ = std::process::Command::new("osascript")
-                .arg("-e")
-                .arg(script)
-                .spawn();
+            // Sécurité : aucune interpolation de texte utilisateur dans le code AppleScript.
+            // Le titre et le corps sont passés via argv au script statique.
+            const SCRIPT: &str = "on run argv\n\
+                display notification (item 1 of argv) with title (item 2 of argv) subtitle \"Hakille\"\n\
+                end run";
+            let body = request.body.clone();
+            let title = request.title.clone();
+            let status = tokio::task::spawn_blocking(move || {
+                std::process::Command::new("osascript")
+                    .arg("-e")
+                    .arg(SCRIPT)
+                    .arg("--")
+                    .arg(body)
+                    .arg(title)
+                    .status()
+            })
+            .await
+            .map_err(|e| {
+                hakille_core::HakilleError::SubstrateError(format!(
+                    "notification macOS échouée (tâche osascript) : {e}"
+                ))
+            })?
+            .map_err(|e| {
+                hakille_core::HakilleError::SubstrateError(format!(
+                    "notification macOS indisponible (osascript) : {e}"
+                ))
+            })?;
+            if !status.success() {
+                return Err(hakille_core::HakilleError::SubstrateError(format!(
+                    "notification macOS refusée par osascript (code {status})"
+                )));
+            }
+            Ok(hakille_substrate::NotificationHandle {
+                id: request.id,
+                channel: "macos_user_notifications".to_string(),
+                delivered_at_ms: chrono::Utc::now().timestamp_millis() as u64,
+            })
         }
-
-        Ok(hakille_substrate::NotificationHandle {
-            id: request.id,
-            channel: "macos_user_notifications".to_string(),
-            delivered_at_ms: chrono::Utc::now().timestamp_millis() as u64,
-        })
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = request;
+            Err(hakille_core::HakilleError::SubstrateError(
+                "notification macOS indisponible hors macOS (osascript absent)".to_string(),
+            ))
+        }
     }
 
     async fn dismiss_notification(
         &self,
-        handle: &hakille_substrate::NotificationHandle,
+        _handle: &hakille_substrate::NotificationHandle,
         cap: &CapabilityToken,
     ) -> Result<()> {
         self.enforce(
@@ -550,7 +455,8 @@ impl Substrate for MacosSubstrate {
             CapabilityScope::Notification,
             hakille_core::CapabilityAction::Delete,
         )?;
-        tracing::debug!(id = %handle.id, "MacosSubstrate: Dismissed notification");
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "fermeture de notification macOS indisponible : binding UNUserNotificationCenter non raccordé".to_string(),
+        ))
     }
 }

@@ -104,8 +104,25 @@ impl WebAudioPcmBuffer {
         Some(chunk)
     }
 
-    /// Queues audio data for browser speaker playback
+    /// Queues audio data for browser speaker playback (borné à 4 Mio anti-DoS).
     pub fn push_playback_audio(&mut self, audio: &[u8]) {
+        const MAX_PLAYBACK_BYTES: usize = 4 * 1024 * 1024;
+        if audio.len() >= MAX_PLAYBACK_BYTES {
+            self.playback_queue.clear();
+            self.playback_queue
+                .extend(audio[audio.len() - MAX_PLAYBACK_BYTES..].iter().copied());
+            self.overrun_count += 1;
+            return;
+        }
+        let excess = self
+            .playback_queue
+            .len()
+            .saturating_add(audio.len())
+            .saturating_sub(MAX_PLAYBACK_BYTES);
+        if excess > 0 {
+            self.playback_queue.drain(..excess);
+            self.overrun_count += 1;
+        }
         self.playback_queue.extend(audio.iter().copied());
     }
 

@@ -70,10 +70,10 @@ pub fn parse_os_release(content: &str) -> Option<String> {
 /// `/proc/sys/kernel/osrelease`, else `"unknown"` — never a hard-coded string.
 #[cfg(target_os = "linux")]
 fn read_linux_os_version() -> String {
-    if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
-        if let Some(version) = parse_os_release(&content) {
-            return version;
-        }
+    if let Ok(content) = std::fs::read_to_string("/etc/os-release")
+        && let Some(version) = parse_os_release(&content)
+    {
+        return version;
     }
     if let Ok(release) = std::fs::read_to_string("/proc/sys/kernel/osrelease") {
         let release = release.trim();
@@ -95,6 +95,8 @@ fn read_linux_os_version() -> String {
 impl LinuxSubstrate {
     pub fn new() -> Self {
         let mem = read_host_meminfo();
+        let has_tpm = cfg!(target_os = "linux")
+            && (Path::new("/dev/tpm0").exists() || Path::new("/dev/tpmrm0").exists());
         let manifest = PlatformManifest {
             tier: Tier::Native,
             capabilities_granted: vec![
@@ -112,8 +114,8 @@ impl LinuxSubstrate {
             // None (shared-memory iGPUs / headless VMs report nothing).
             gpu_vram_bytes: detect_linux_vram_bytes(),
             has_secure_enclave: false,
-            has_tpm: true,
-            battery_powered: false,
+            has_tpm,
+            battery_powered: read_host_power_state().on_battery,
             // Honest: no thermal envelope modeling without RAPL/powercap
             // sampling (see /sys/class/powercap); unknown, not invented.
             thermal_envelope_watts: None,
@@ -186,9 +188,8 @@ impl LinuxSubstrate {
         if let Some(root) = &self.trusted_capability_root {
             hakille_core::verify_capability_with_root_key(cap, root, scope, action)
         } else {
-            // Legacy fallback UNIQUEMENT en debug/tests : vérification
-            // structurelle sans pinning (accepte les tokens auto-signés).
-            // En release, panique fail-closed : `verify_unpinned` est interdit.
+            // Repli legacy UNIQUEMENT en debug/tests ; en release, refus fail-closed
+            // propre (`Err`) sans jamais paniquer le processus.
             #[cfg(debug_assertions)]
             {
                 #[allow(deprecated)]
@@ -198,9 +199,9 @@ impl LinuxSubstrate {
             }
             #[cfg(not(debug_assertions))]
             {
-                panic!(
-                    "unpinned capability verification forbidden in release; call with_trusted_root in production"
-                );
+                Err(hakille_core::HakilleError::CapabilityDenied(
+                    "vérification non épinglée interdite en release : appeler with_trusted_root en production".into(),
+                ))
             }
         }
     }
@@ -209,66 +210,6 @@ impl LinuxSubstrate {
     pub fn with_virtual_fs_root(mut self, root: PathBuf) -> Self {
         self.virtual_fs_root = root;
         self
-    }
-
-    /// Resolve a VirtualPath to a real path inside the isolated root.
-    /// Secure: rejects `..`, absolute paths, drive letters, NUL bytes and
-    /// ensures the final path stays inside `virtual_fs_root`.
-    fn resolve_path(&self, path: &VirtualPath) -> hakille_core::Result<PathBuf> {
-        use std::path::Component;
-        if path.0.contains('\0') {
-            return Err(hakille_core::HakilleError::CapabilityDenied(
-                "NUL byte in virtual path".into(),
-            ));
-        }
-        // Reject Windows drive letters and UNC prefixes early.
-        let lower = path.0.to_ascii_lowercase();
-        if lower.contains(':') || path.0.starts_with(r"\\") {
-            return Err(hakille_core::HakilleError::CapabilityDenied(
-                "absolute / drive path rejected".into(),
-            ));
-        }
-        let mut clean = PathBuf::new();
-        let mut saw_normal = false;
-        for comp in std::path::Path::new(&path.0).components() {
-            match comp {
-                Component::Normal(p) => {
-                    if p == std::ffi::OsStr::new("..") {
-                        return Err(hakille_core::HakilleError::CapabilityDenied(
-                            "path traversal (..) rejected".into(),
-                        ));
-                    }
-                    clean.push(p);
-                    saw_normal = true;
-                }
-                Component::CurDir => {}
-                // Any ParentDir, RootDir, Prefix => reject
-                _ => {
-                    return Err(hakille_core::HakilleError::CapabilityDenied(
-                        "non-normal path component rejected".into(),
-                    ));
-                }
-            }
-        }
-        if !saw_normal {
-            // Empty virtual path means the VirtualFS root itself (for list_dir).
-            return Ok(self.virtual_fs_root.clone());
-        }
-        let joined = self.virtual_fs_root.join(&clean);
-        // Defence in depth: canonicalize prefix check when root exists.
-        // If canonicalization fails (path doesn't exist yet for writes),
-        // the component-level rejection above already blocks traversal.
-        if let (Ok(root_c), Ok(joined_c)) =
-            (self.virtual_fs_root.canonicalize(), joined.canonicalize())
-        {
-            if !joined_c.starts_with(&root_c) {
-                return Err(hakille_core::HakilleError::CapabilityDenied(
-                    "resolved path escapes VirtualFS root".into(),
-                ));
-            }
-            return Ok(joined_c);
-        }
-        Ok(joined)
     }
 
     pub fn virtual_fs_root(&self) -> &Path {
@@ -343,9 +284,11 @@ impl Substrate for LinuxSubstrate {
 
     async fn attest(&self, data: &[u8]) -> Result<SignedAttestation> {
         let sig = self.attestation_keypair.sign(data);
+        // Honnête : dev-attestation locale (clé éphémère, pas de quote TPM),
+        // empreinte SHA-256 réelle des octets attestés.
         Ok(SignedAttestation {
-            manifest_hash: format!("sha256-linux-manifest-{}", data.len()),
-            platform_id: "Linux-Substrate-Host".to_string(),
+            manifest_hash: format!("sha256-{}", hakille_substrate::sha256_hex(data)),
+            platform_id: "Linux-Substrate-Host-dev-attestation".to_string(),
             timestamp: Timestamp::now(),
             signature: sig,
         })
@@ -357,21 +300,7 @@ impl Substrate for LinuxSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Read,
         )?;
-        let local_path = self.resolve_path(path)?;
-        if local_path.exists() {
-            tokio::fs::read(&local_path).await.map_err(|e| {
-                hakille_core::HakilleError::StorageError(format!(
-                    "Read error {}: {}",
-                    local_path.display(),
-                    e
-                ))
-            })
-        } else {
-            Err(hakille_core::HakilleError::StorageError(format!(
-                "File not found: {}",
-                path.0
-            )))
-        }
+        hakille_substrate::read_confined_file(&self.virtual_fs_root, path).await
     }
 
     async fn write_file(
@@ -385,23 +314,7 @@ impl Substrate for LinuxSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Write,
         )?;
-        let local_path = self.resolve_path(path)?;
-        if let Some(parent) = local_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                hakille_core::HakilleError::StorageError(format!(
-                    "Create dir error {}: {}",
-                    parent.display(),
-                    e
-                ))
-            })?;
-        }
-        tokio::fs::write(&local_path, data).await.map_err(|e| {
-            hakille_core::HakilleError::StorageError(format!(
-                "Write error {}: {}",
-                local_path.display(),
-                e
-            ))
-        })
+        hakille_substrate::write_confined_file(&self.virtual_fs_root, path, data).await
     }
 
     async fn list_dir(
@@ -414,23 +327,7 @@ impl Substrate for LinuxSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Read,
         )?;
-        let local_path = self.resolve_path(path)?;
-        if local_path.exists() && local_path.is_dir() {
-            let mut entries = Vec::new();
-            if let Ok(mut read_dir) = tokio::fs::read_dir(&local_path).await {
-                while let Ok(Some(entry)) = read_dir.next_entry().await {
-                    if let Some(name) = entry.file_name().to_str() {
-                        entries.push(VirtualPath(name.to_string()));
-                    }
-                }
-            }
-            Ok(entries)
-        } else {
-            Err(hakille_core::HakilleError::StorageError(format!(
-                "Directory not found: {}",
-                path.0
-            )))
-        }
+        hakille_substrate::list_confined_dir(&self.virtual_fs_root, path).await
     }
 
     async fn delete_file(&self, path: &VirtualPath, cap: &CapabilityToken) -> Result<()> {
@@ -439,24 +336,10 @@ impl Substrate for LinuxSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Delete,
         )?;
-        let local_path = self.resolve_path(path)?;
-        if local_path.exists() {
-            tokio::fs::remove_file(&local_path).await.map_err(|e| {
-                hakille_core::HakilleError::StorageError(format!(
-                    "Delete error {}: {}",
-                    local_path.display(),
-                    e
-                ))
-            })?;
-        }
-        Ok(())
+        hakille_substrate::delete_confined_file(&self.virtual_fs_root, path).await
     }
 
     async fn http_request(&self, req: HttpRequest, cap: &CapabilityToken) -> Result<HttpResponse> {
-        // Network capability (GET ⇒ Read, others ⇒ Write) including expiry
-        // is enforced first; without it egress is refused explicitly.
-        // Then the shared allowlist policy applies (loopback-only by
-        // default) and the real fetch runs over rustls TLS (10 s, 5 MiB cap).
         let action = if req.method.eq_ignore_ascii_case("get") {
             hakille_core::CapabilityAction::Read
         } else {
@@ -599,12 +482,7 @@ impl Substrate for LinuxSubstrate {
         _wasm: &[u8],
         caps: Vec<CapabilityToken>,
     ) -> Result<ProcessHandle> {
-        // Pinned-root enforcement: every delegated cap MUST verify against the
-        // pinned authority root. No silent unpinned fallback — without a
-        // trusted root, refuse (error logged in `require_trusted_root`).
         let root = self.require_trusted_root("spawn_sandboxed")?;
-        // Caller must prove it holds at least one delegable capability;
-        // spawned sandbox receives only attenuated `caps` (verified by caller).
         for c in &caps {
             hakille_core::verify_capability_with_root_key(
                 c,
@@ -642,8 +520,6 @@ impl Substrate for LinuxSubstrate {
                 ))
             })?;
         }
-        // Aucun moteur WASM n'est relié à cette API : ne jamais inventer
-        // un handle de processus. Le runtime des agents de référence est distinct.
         Err(hakille_core::HakilleError::SubstrateError(
             "spawn_sandboxed indisponible : moteur WASM non raccordé au substrat linux; aucun processus lancé"
                 .to_string(),
@@ -669,48 +545,60 @@ impl Substrate for LinuxSubstrate {
             hakille_core::CapabilityAction::Write,
         )?;
 
-        tracing::info!(
-            id = %request.id,
-            title = %request.title,
-            urgency = ?request.urgency,
-            category = ?request.category,
-            "LinuxSubstrate: Dispatching notification"
-        );
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            return Err(hakille_core::HakilleError::SubstrateError(
+                "notification Linux indisponible : aucune session graphique active (DISPLAY/WAYLAND_DISPLAY absents)".to_string(),
+            ));
+        }
 
-        let channel =
-            if std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok() {
-                let urgency_str = match request.urgency {
-                    hakille_substrate::NotificationUrgency::Low => "low",
-                    hakille_substrate::NotificationUrgency::Normal => "normal",
-                    hakille_substrate::NotificationUrgency::High
-                    | hakille_substrate::NotificationUrgency::Critical => "critical",
-                };
-                let mut cmd = std::process::Command::new("notify-send");
-                cmd.arg(&request.title)
-                    .arg(&request.body)
-                    .arg("-u")
-                    .arg(urgency_str)
-                    .arg("-a")
-                    .arg("Hakille");
-                if let Some(timeout) = request.timeout_ms {
-                    cmd.arg("-t").arg(timeout.to_string());
-                }
-                let _ = cmd.spawn();
-                "freedesktop_dbus".to_string()
-            } else {
-                "linux_session_log".to_string()
-            };
+        let urgency_str = match request.urgency {
+            hakille_substrate::NotificationUrgency::Low => "low",
+            hakille_substrate::NotificationUrgency::Normal => "normal",
+            hakille_substrate::NotificationUrgency::High
+            | hakille_substrate::NotificationUrgency::Critical => "critical",
+        };
+        let title = request.title.clone();
+        let body = request.body.clone();
+        let timeout_ms = request.timeout_ms;
+
+        let status = tokio::task::spawn_blocking(move || {
+            let mut cmd = std::process::Command::new("notify-send");
+            cmd.arg("-u").arg(urgency_str).arg("-a").arg("Hakille");
+            if let Some(timeout) = timeout_ms {
+                cmd.arg("-t").arg(timeout.to_string());
+            }
+            // Séparateur `--` obligatoire : empêche l'injection d'options CLI via titre/corps.
+            cmd.arg("--").arg(title).arg(body);
+            cmd.status()
+        })
+        .await
+        .map_err(|e| {
+            hakille_core::HakilleError::SubstrateError(format!(
+                "notification Linux échouée (tâche notify-send) : {e}"
+            ))
+        })?
+        .map_err(|e| {
+            hakille_core::HakilleError::SubstrateError(format!(
+                "notification Linux indisponible (notify-send) : {e}"
+            ))
+        })?;
+
+        if !status.success() {
+            return Err(hakille_core::HakilleError::SubstrateError(format!(
+                "notification Linux refusée par notify-send (code {status})"
+            )));
+        }
 
         Ok(hakille_substrate::NotificationHandle {
             id: request.id,
-            channel,
+            channel: "freedesktop_dbus".to_string(),
             delivered_at_ms: chrono::Utc::now().timestamp_millis() as u64,
         })
     }
 
     async fn dismiss_notification(
         &self,
-        handle: &hakille_substrate::NotificationHandle,
+        _handle: &hakille_substrate::NotificationHandle,
         cap: &CapabilityToken,
     ) -> Result<()> {
         self.enforce(
@@ -718,8 +606,9 @@ impl Substrate for LinuxSubstrate {
             CapabilityScope::Notification,
             hakille_core::CapabilityAction::Delete,
         )?;
-        tracing::debug!(id = %handle.id, "LinuxSubstrate: Dismissed notification");
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "fermeture de notification Linux indisponible : aucun binding D-Bus org.freedesktop.Notifications raccordé".to_string(),
+        ))
     }
 }
 
@@ -804,20 +693,29 @@ mod tests {
         .with_urgency(hakille_substrate::NotificationUrgency::Normal)
         .with_category(hakille_substrate::NotificationCategory::System);
 
-        // 2. Émission autorisée
-        let handle = substrate
-            .send_notification(request, &notif_token)
-            .await
-            .expect("notification delivered");
-        assert_eq!(handle.id, "notif-123");
+        // 2. Émission autorisée : sans session graphique ou sans notify-send,
+        // le contrat d'honnêteté impose un SubstrateError explicite (jamais un faux Ok).
+        let res = substrate.send_notification(request, &notif_token).await;
+        match res {
+            Ok(handle) => assert_eq!(handle.id, "notif-123"),
+            Err(hakille_core::HakilleError::SubstrateError(_)) => {}
+            Err(other) => panic!("erreur inattendue avec capability Notification valide : {other}"),
+        }
 
-        // 3. Fermeture autorisée
-        substrate
-            .dismiss_notification(&handle, &notif_token)
-            .await
-            .expect("dismissed");
+        // 3. Fermeture autorisée : sans binding D-Bus, retourne honnêtement SubstrateError.
+        let dummy_handle = hakille_substrate::NotificationHandle {
+            id: "notif-123".to_string(),
+            channel: "freedesktop_dbus".to_string(),
+            delivered_at_ms: 0,
+        };
+        assert!(matches!(
+            substrate
+                .dismiss_notification(&dummy_handle, &notif_token)
+                .await,
+            Err(hakille_core::HakilleError::SubstrateError(_))
+        ));
 
-        // 4. Token frauduleux (Scope Camera uniquement) : REFUS STRICT
+        // 4. Token frauduleux (Scope Camera uniquement) : REFUS STRICT (CapabilityDenied)
         let camera_token = authority
             .create_root_token(
                 vec![CapabilityScope::Camera],
@@ -830,7 +728,7 @@ mod tests {
             .send_notification(unauthorized_req, &camera_token)
             .await;
         assert!(
-            err.is_err(),
+            matches!(err, Err(hakille_core::HakilleError::CapabilityDenied(_))),
             "Must reject notification without CapabilityScope::Notification"
         );
     }

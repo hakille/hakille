@@ -31,7 +31,7 @@ mod tests {
         let manifest = substrate.manifest();
         assert_eq!(manifest.tier, Tier::Native);
         assert_eq!(manifest.os_name, "Windows");
-        assert!(manifest.has_tpm);
+        assert!(!manifest.has_tpm);
         assert!(
             manifest
                 .capabilities_granted
@@ -80,6 +80,15 @@ mod tests {
     #[test]
     fn test_appcontainer_profile_creation() {
         let temp_dir = std::env::temp_dir().join("hakille_ac_test");
+        assert!(
+            AppContainerSandbox::create_profile(
+                "../../evil",
+                vec![CapabilityScope::Filesystem],
+                temp_dir.to_str().unwrap(),
+            )
+            .is_err(),
+            "AppContainer doit refuser la traversée de chemin"
+        );
         let mut profile = AppContainerSandbox::create_profile(
             "MailClient",
             vec![CapabilityScope::Network, CapabilityScope::Filesystem],
@@ -205,6 +214,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_windows_tray_and_hotkey() {
         let mut tray = WindowsPresenceTray::new();
         assert_eq!(tray.state(), WindowsPresenceState::Idle);

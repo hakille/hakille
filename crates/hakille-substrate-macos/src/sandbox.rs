@@ -50,6 +50,29 @@ impl Default for MacosSandboxProfile {
     }
 }
 
+/// Échappe une chaîne littérale Scheme/Seatbelt pour empêcher toute injection
+/// de directives (guillemets, antislash, retours chariot, NUL).
+fn escape_seatbelt_string(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\0' => {}
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn is_valid_seatbelt_ident(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'*'))
+}
+
 impl MacosSandboxProfile {
     pub fn new(rules: Vec<SeatbeltRule>) -> Self {
         let mut profile = Self {
@@ -76,8 +99,16 @@ impl MacosSandboxProfile {
         self.allow_file_write = false;
         self.allow_network_outbound = false;
 
-        for (k, v) in &self.parameters {
-            dsl.push_str(&format!("(define {} \"{}\")\n", k, v));
+        let mut sorted_params: Vec<(&String, &String)> = self.parameters.iter().collect();
+        sorted_params.sort_by_key(|(k, _)| *k);
+        for (k, v) in sorted_params {
+            if is_valid_seatbelt_ident(k) {
+                dsl.push_str(&format!(
+                    "(define {} \"{}\")\n",
+                    k,
+                    escape_seatbelt_string(v)
+                ));
+            }
         }
 
         // Standard Darwin security minimums: POSIX shm, sysctl-read, /dev/urandom
@@ -104,11 +135,17 @@ impl MacosSandboxProfile {
         self.profile_string = dsl;
     }
 
-    /// Applies this profile via Darwin sandbox_init(3) API
+    /// Tente d'appliquer ce profil via l'API Darwin `sandbox_init(3)`.
+    ///
+    /// Honnêteté : aucun binding FFI `libsystem_sandbox.dylib` (`sandbox_init`)
+    /// n'est lié dans ce binaire ; renvoie donc systématiquement une erreur
+    /// explicite après validation syntaxique, jamais un faux `Ok(())`.
     pub fn apply(&self) -> Result<(), String> {
         self.validate_safety()?;
-        // When running on Darwin hardware, links to libsystem_sandbox.dylib `sandbox_init`
-        Ok(())
+        Err(
+            "Seatbelt non appliqué : binding libsystem_sandbox (sandbox_init) non raccordé ; profil compilé et validé uniquement"
+                .to_string(),
+        )
     }
 
     pub fn agent_minimal() -> Self {
@@ -121,14 +158,15 @@ impl MacosSandboxProfile {
     }
 
     pub fn agent_mail(home_dir: &str) -> Self {
+        let safe_home = escape_seatbelt_string(home_dir);
         let rules = vec![
             SeatbeltRule::allow(
                 "file-read*",
-                Some(&format!("(subpath \"{}/Library/Hakille/Mail\")", home_dir)),
+                Some(&format!("(subpath \"{safe_home}/Library/Hakille/Mail\")")),
             ),
             SeatbeltRule::allow(
                 "file-write*",
-                Some(&format!("(subpath \"{}/Library/Hakille/Mail\")", home_dir)),
+                Some(&format!("(subpath \"{safe_home}/Library/Hakille/Mail\")")),
             ),
             SeatbeltRule::allow("network-outbound", Some("(remote tcp)")),
             SeatbeltRule::allow(
@@ -140,19 +178,18 @@ impl MacosSandboxProfile {
     }
 
     pub fn agent_calendar(home_dir: &str) -> Self {
+        let safe_home = escape_seatbelt_string(home_dir);
         let rules = vec![
             SeatbeltRule::allow(
                 "file-read*",
                 Some(&format!(
-                    "(subpath \"{}/Library/Hakille/Calendar\")",
-                    home_dir
+                    "(subpath \"{safe_home}/Library/Hakille/Calendar\")"
                 )),
             ),
             SeatbeltRule::allow(
                 "file-write*",
                 Some(&format!(
-                    "(subpath \"{}/Library/Hakille/Calendar\")",
-                    home_dir
+                    "(subpath \"{safe_home}/Library/Hakille/Calendar\")"
                 )),
             ),
             SeatbeltRule::allow(
@@ -165,15 +202,10 @@ impl MacosSandboxProfile {
     }
 
     pub fn agent_code_sandbox(sandbox_dir: &str) -> Self {
+        let safe_dir = escape_seatbelt_string(sandbox_dir);
         let rules = vec![
-            SeatbeltRule::allow(
-                "file-read*",
-                Some(&format!("(subpath \"{}\")", sandbox_dir)),
-            ),
-            SeatbeltRule::allow(
-                "file-write*",
-                Some(&format!("(subpath \"{}\")", sandbox_dir)),
-            ),
+            SeatbeltRule::allow("file-read*", Some(&format!("(subpath \"{safe_dir}\")"))),
+            SeatbeltRule::allow("file-write*", Some(&format!("(subpath \"{safe_dir}\")"))),
             SeatbeltRule::deny("network*", None),
             SeatbeltRule::deny("mach-lookup", None),
             SeatbeltRule::deny("process-fork", None),
@@ -182,11 +214,9 @@ impl MacosSandboxProfile {
     }
 
     pub fn agent_wallet_readonly(storage_path: &str) -> Self {
+        let safe_path = escape_seatbelt_string(storage_path);
         let rules = vec![
-            SeatbeltRule::allow(
-                "file-read*",
-                Some(&format!("(subpath \"{}\")", storage_path)),
-            ),
+            SeatbeltRule::allow("file-read*", Some(&format!("(subpath \"{safe_path}\")"))),
             SeatbeltRule::deny("file-write*", None),
             SeatbeltRule::deny("network*", None),
             SeatbeltRule::deny("process-exec*", None),
@@ -195,11 +225,9 @@ impl MacosSandboxProfile {
     }
 
     pub fn inference_engine_profile(models_path: &str) -> Self {
+        let safe_path = escape_seatbelt_string(models_path);
         let rules = vec![
-            SeatbeltRule::allow(
-                "file-read*",
-                Some(&format!("(subpath \"{}\")", models_path)),
-            ),
+            SeatbeltRule::allow("file-read*", Some(&format!("(subpath \"{safe_path}\")"))),
             SeatbeltRule::allow(
                 "mach-lookup",
                 Some("(global-name \"com.apple.metal.device\")"),
@@ -220,6 +248,21 @@ impl MacosSandboxProfile {
         }
         if !self.profile_string.contains("(deny default)") {
             return Err("Seatbelt profile must enforce default deny".to_string());
+        }
+        for key in self.parameters.keys() {
+            if !is_valid_seatbelt_ident(key) {
+                return Err(format!(
+                    "identifiant de paramètre Seatbelt invalide : '{key}'"
+                ));
+            }
+        }
+        for rule in &self.rules {
+            if !matches!(rule.action.as_str(), "allow" | "deny") {
+                return Err(format!("action Seatbelt invalide : '{}'", rule.action));
+            }
+            if !is_valid_seatbelt_ident(&rule.filter) {
+                return Err(format!("filtre Seatbelt invalide : '{}'", rule.filter));
+            }
         }
         Ok(())
     }

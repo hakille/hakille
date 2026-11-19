@@ -83,7 +83,10 @@ mod tests {
         let manifest = substrate.manifest();
         assert_eq!(manifest.tier, Tier::Native);
         assert_eq!(manifest.os_name, "Linux");
-        assert!(manifest.has_tpm);
+        let expected_tpm = cfg!(target_os = "linux")
+            && (std::path::Path::new("/dev/tpm0").exists()
+                || std::path::Path::new("/dev/tpmrm0").exists());
+        assert_eq!(manifest.has_tpm, expected_tpm);
         assert!(
             manifest
                 .capabilities_granted
@@ -99,7 +102,14 @@ mod tests {
             .attest(b"linux-nonce")
             .await
             .expect("Attestation failed");
-        assert_eq!(attestation.platform_id, "Linux-Substrate-Host");
+        assert_eq!(
+            attestation.platform_id,
+            "Linux-Substrate-Host-dev-attestation"
+        );
+        assert_eq!(
+            attestation.manifest_hash,
+            format!("sha256-{}", hakille_substrate::sha256_hex(b"linux-nonce"))
+        );
         assert!(!attestation.signature.0.is_empty());
     }
 
@@ -139,8 +149,11 @@ mod tests {
         assert_eq!(x86_instructions[0].code, BPF_LD | BPF_W | BPF_ABS);
         assert_eq!(x86_instructions[0].k, SECCOMP_DATA_ARCH_OFFSET);
 
-        let (filters, fprog) = wasm_profile.compile_sock_fprog(SyscallArch::X86_64);
-        assert_eq!(filters.len(), fprog.len as usize);
+        let compiled = wasm_profile
+            .compile_filter(SyscallArch::X86_64)
+            .expect("compile_filter");
+        let fprog = compiled.as_sock_fprog().expect("as_sock_fprog");
+        assert_eq!(compiled.instructions().len(), fprog.len as usize);
 
         // Simulate BPF execution
         // 1. Allowed syscall (mmap = 9 on x86_64) -> ALLOW
@@ -164,7 +177,7 @@ mod tests {
         assert!(
             net_profile
                 .allowed_syscalls
-                .contains(&"epoll_wait".to_string())
+                .contains(&"epoll_pwait".to_string())
         );
 
         let lockdown = SeccompProfile::strict_lockdown();
