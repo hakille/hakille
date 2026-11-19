@@ -227,6 +227,20 @@ pub fn check_home_capabilities() -> Vec<(CapabilityScope, CapabilityAction)> {
     ]
 }
 
+/// Catalogue complet des 19 protocoles domotiques / bâtiment / énergie de `hakille-home`.
+pub fn supported_protocols() -> Vec<hakille_home::ProtocolCapabilityInfo> {
+    hakille_home::protocols::protocol_catalog()
+}
+
+/// Valide qu'un endpoint domotique respecte strictement `HomeLanGuard` (aucun WAN/cloud).
+pub fn validate_local_endpoint(endpoint: &str) -> hakille_home::HomeResult<()> {
+    hakille_home::HomeLanGuard::new().validate_endpoint(endpoint)
+}
+
+pub use hakille_home::{
+    HomeDigitalTwin, HomeLanGuard, HomeRiskClassifier, HomeRiskTier, ProtocolKind, SovereignHomeHub,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

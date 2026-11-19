@@ -6,5 +6,6 @@ license.workspace = true
 
 [dependencies]
 hakille-core = { path = "../../crates/hakille-core" }
+hakille-home = { path = "../../crates/hakille-home" }
 serde = { workspace = true }
 serde_json = { workspace = true }

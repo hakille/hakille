@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
 mod agent_runtime;
+mod home_cli;
 mod host;
 mod identity;
 mod ipc;
@@ -749,6 +750,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("  Presence State: {:?} (Ready)", presence.state());
 
+    let home_db_path = data_dir.join("home.redb");
+    let home_hub = Arc::new(
+        hakille_home::SovereignHomeHub::open(&home_db_path)
+            .await
+            .map_err(|e| {
+                format!(
+                    "SovereignHomeHub indisponible ({}): {e}",
+                    home_db_path.display()
+                )
+            })?,
+    );
+    println!(
+        "  Sovereign Home Hub: {} ({} appareil(s), {} protocole(s) LAN, 0 appareil fictif)",
+        home_db_path.display(),
+        home_hub.list_devices().await.len(),
+        home_hub.protocol_catalog().len()
+    );
+
     if let Some(prompt) = eval_prompt {
         println!("\n[Headless Evaluation Mode]");
         println!("Evaluating Prompt: '{}'", prompt);
@@ -815,6 +834,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             agent_runtime_shared,
             &agent_registry,
             Some(Arc::clone(&media_manager)),
+            Some(Arc::clone(&home_hub)),
         )
         .await;
     }
@@ -1155,6 +1175,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 println!(
                     "  :win-tray         Test Windows system tray presence states & global hotkey (Ctrl+Alt+Space, alias Alt+Space)"
+                );
+                println!("  :home             Lister les appareils et pièces du hub domotique");
+                println!("  :home-protocols   Catalogue complet des 19 protocoles domotiques LAN");
+                println!(
+                    "  :home-discover [proto]  Découverte réseau locale réelle (mDNS/SSDP/ONVIF)"
+                );
+                println!(
+                    "  :home-room <id> <nom> [étage]  Enregistrer une pièce dans le jumeau 3D"
+                );
+                println!(
+                    "  :home-pair <id> <nom> <pièce> <proto> <cat> <endpoint>  Appairer un appareil LAN"
+                );
+                println!(
+                    "  :home-cmd <id> <action> [json] [--hold-600ms]  Exécuter une commande LAN"
+                );
+                println!("  :home-energy      Bilan énergétique réel et arbitrage dialectique");
+                println!(
+                    "  :home-twin        Projeter le jumeau 3D vers KnowledgeGraph et PalaceLayout"
+                );
+                println!("  :home-scenes      Lister les scènes domotiques persistées");
+                println!(
+                    "  :home-ask <phrase> [--exec]  Résoudre une intention FR/EN hors-ligne (aperçu ou exécution Tier 0-2)"
+                );
+                println!(
+                    "  :home-rules       Lister les automatisations réactives (Tier 3 toujours escaladé)"
+                );
+                println!(
+                    "  :home-rules-eval  Évaluer les automatisations contre les sondes réelles"
+                );
+                println!(
+                    "  :home-tariffs [bleu|blanc|rouge]  Consulter/basculer le tarif EDF Tempo & coût kWh"
+                );
+                println!(
+                    "  :home-anomalies   Détecter les anomalies réelles (surcharge, gel, batterie faible)"
+                );
+                println!(
+                    "  :home-mesh-sync   Exporter le résumé du delta P2P chiffré (hakille-mesh Air-Gap)"
                 );
                 println!("  :help             Show this command list");
                 println!("  :exit             Shutdown Hakille daemon");
@@ -3042,6 +3099,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Aucun job média actif avec l'identifiant '{job_id}'.");
                 }
             }
+            s if s == ":home" || s.starts_with(":home-") => {
+                if !home_cli::handle_home_repl_command(
+                    s,
+                    &home_hub,
+                    &authority,
+                    &audit_journal,
+                    &mut orchestrator.memory_graph,
+                )
+                .await
+                {
+                    println!("✗ Commande domotique inconnue : {s}");
+                    if let Some(suggestion) = suggest_command(s) {
+                        println!("  → Commande proche : {suggestion}");
+                    }
+                    println!("  Tape :help pour la liste.");
+                }
+            }
 
             s if bare_command_usage(s).is_some() => {
                 if let Some(usage) = bare_command_usage(s) {
@@ -3694,6 +3768,21 @@ const KNOWN_COMMANDS: &[&str] = &[
     ":win-power",
     ":win-screen",
     ":win-tray",
+    ":home",
+    ":home-protocols",
+    ":home-discover",
+    ":home-room",
+    ":home-pair",
+    ":home-cmd",
+    ":home-energy",
+    ":home-twin",
+    ":home-scenes",
+    ":home-ask",
+    ":home-rules",
+    ":home-rules-eval",
+    ":home-tariffs",
+    ":home-anomalies",
+    ":home-mesh-sync",
 ];
 
 /// Distance de Levenshtein (insertion/suppression/substitution = 1) —

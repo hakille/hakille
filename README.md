@@ -9,7 +9,7 @@
 
 [![Rust Version](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org)
 [![Build Status](https://github.com/hakille/hakille/actions/workflows/ci.yml/badge.svg)](https://github.com/hakille/hakille/actions/workflows/ci.yml)
-[![Conformance](https://img.shields.io/badge/conformance-66%20fast%20%2B12%20slow%20ignored-yellow.svg)](.github/workflows/ci.yml)
+[![Conformance](https://img.shields.io/badge/conformance-71%20fast%20%2B12%20slow%20ignored-yellow.svg)](.github/workflows/ci.yml)
 [![Security](https://img.shields.io/badge/security-Biscuit%20Capabilities-red.svg)]()
 [![No Python](https://img.shields.io/badge/python-0%25%20(Pure%20Rust)-purple.svg)]()
 
@@ -137,23 +137,24 @@ Le projet est un monorepo Cargo structuré en **38 crates modulaires**, **2 agen
 - [`hakille-constitution`](crates/hakille-constitution) : Les 10 règles constitutionnelles machine-vérifiables, gouvernance d'amendement par quorum et batterie de tests éthiques.
 - [`hakille-design`](crates/hakille-design) : Design system Rust — marque (`brand.rs`), jetons, cartes d'action, bandes de provenance, silence et présence vocale.
 - [`hakille-ui`](crates/hakille-ui) : Indicateur de présence ambiant à 6 états (Idle/Listening/Acting/Speaking/DecisionRequired/Urgent, voir `presence.rs:90-99`), HUD Spotlight éphémère (`Ctrl+Alt+Space`, alias `Alt+Space`), sélecteur dynamique de canal (seuil bruit 65 dB), budget de silence proactif et compteur financier System 2 en direct.
-- [`hakille-ui-protocol`](crates/hakille-ui-protocol) : Protocole UI ↔ noyau versionné (messages typés, négociation de version, schéma golden `schema_snapshot.json`) ; extensions additives v1 `ShowCard`/`CardDecisionAck`, agents et Studio Média.
+- [`hakille-ui-protocol`](crates/hakille-ui-protocol) : Protocole UI ↔ noyau versionné (messages typés, négociation de version, schéma golden `schema_snapshot.json`) ; extensions additives v1 `ShowCard`/`CardDecisionAck`, agents, Studio Média et Domotique Souveraine.
 - [`hakille-ui-model`](crates/hakille-ui-model) : Modèle de snapshot et d'état de l'interface, découplé du rendu.
 - [`hakille-ui-shell`](crates/hakille-ui-shell) : Shell d'interface (vues, pont noyau ↔ UI, composition des cartes et de la présence).
 - [`hakille-ui-platform`](crates/hakille-ui-platform) : Abstraction plateforme pour fenêtres, icône de zone de notification et intégration système.
-- [`hakille-ui-desktop`](crates/hakille-ui-desktop) : Rendu desktop (scène, texte multi-script, accessibilité, runtime) sous forme d'application native ; carte d'action 720×360, Studio Média (`F5`) avec blitting RGBA natif, décision clavier/souris/AccessKit et accusé d'audit réel.
+- [`hakille-ui-desktop`](crates/hakille-ui-desktop) : Rendu desktop (scène, texte multi-script, accessibilité, runtime) sous forme d'application native ; carte d'action 720×360, Studio Média (`F5`) avec blitting RGBA natif, Domotique Souveraine (`F6`), décision clavier/souris/AccessKit et accusé d'audit réel.
 - [`hakille-metrics`](crates/hakille-metrics) : Tableau de bord des 3 métriques cardinales (Continuité, Initiative Bornée, Généralité Pratique) et détecteur de dérive des valeurs éthiques.
 - [`hakille-ipc`](crates/hakille-ipc) : Transport IPC local du démon (named pipe Windows, socket Unix).
 - [`hakille-mobile`](crates/hakille-mobile) : État du client mobile Rust et liaisons UniFFI pour les interfaces natives Android/iOS ; checkpoint v2 et suivi durable des opérations à l'issue inconnue.
 - [`hakille-mobile-gateway`](crates/hakille-mobile-gateway) : Passerelle HTTP loopback, lancée explicitement et authentifiée par un jeton distinct, vers le hub personnel. Voir [ADR-011](adr/011-mobile-native-client-and-hub.md) pour le périmètre et les limites mobiles.
 - [`hakille-spikes`](crates/hakille-spikes) : Spikes techniques isolés (arbre de rendu S1, rendu S2, accessibilité S3) utilisés pour valider l'UI avant intégration.
-- [`hakille-daemon`](crates/hakille-daemon) : Démon système exécutable orchestrant l'ensemble de la pile avec invite interactive REPL (`:gen-image`, `:gen-audio`, `:gen-video`, `:gen-story`…), sous-commandes CLI `media`, mode `--serve` IPC et cartes d'action auditées.
+- [`hakille-home`](crates/hakille-home) : Hub domotique, énergétique et spatial souverain (19 protocoles LAN — Matter 1.3, Thread/CoAP, mDNS/DNS-SD, SSDP/UPnP, MQTT v3.1.1/v5.0, Zigbee ZCL/EZSP/ZNP, Z-Wave SerialAPI, BLE GATT/BTHome/Ruuvi, KNXnet/IP, Modbus TCP/RTU, HomeKit HAP, ESPHome, Home Assistant WS/REST, Philips Hue CLIP v2, Shelly JSON-RPC, OCPP 1.6J/2.0.1 VE, SunSpec Solaire/Batterie, ONVIF/RTSP), frontière zéro-cloud `HomeLanGuard`, maintien physique 600 ms Tier 3, jumeau spatial 3D et moteur d'homéostasie énergétique (`home.redb`, panneau HUD `F6` et REPL `:home*`). Voir [docs/HOME_PROTOCOLS.md](docs/HOME_PROTOCOLS.md).
+- [`hakille-daemon`](crates/hakille-daemon) : Démon système exécutable orchestrant l'ensemble de la pile avec invite interactive REPL (`:gen-image`, `:gen-audio`, `:gen-video`, `:gen-story`, `:home*`, `:status`, `:models`, `:agents-run`…), sous-commandes CLI `media` et `home`, mode `--serve` IPC et cartes d'action auditées.
 
 ### 5. Agents Métier (`agents/` — manifests déclaratifs)
 - `mail` : Gestion des courriels sous capability déclarée `Filesystem` + `Network`.
 - `calendar` : Planification d'agenda locale.
 - `code` : Agent d'inspection et de transformation de code.
-- `home` : Gestion des actionneurs domotiques.
+- `home` : Manifeste déclaratif domotique ré-exportant `hakille-home` (aucun `.wasm` métier livré ; l'exécution LAN réelle passe par `SovereignHomeHub` dans `hakille-daemon`).
 - `wallet-readonly` : Inspection des soldes et autorisations budgétaires.
 
 > Ces crates exposent des fonctions natives et des tests unitaires ; leurs
@@ -206,7 +207,7 @@ cargo check --workspace
 # Exécuter l'intégralité des tests unitaires et d'intégration
 cargo test --workspace
 
-# Exécuter la suite de conformité formelle (78 tests : 66 fast verts + 12 slow ignorés, voir CI)
+# Exécuter la suite de conformité formelle (74 fast verts + 7 slow ignorés dans conformance, +3 slow kernel)
 cargo xtask conformance
 # Gate lente hebdo (décodage Qwen CPU réel) :
 cargo xtask conformance-slow
@@ -413,7 +414,8 @@ Pour explorer chaque sous-système en profondeur, consultez les guides dédiés 
 - 🤖 [**Modèles Fondations & Runtimes d'Inférence**](docs/MODELS.md) : Spécifications des 7 modèles, parseurs binaires GGUF v3 / Safetensors / ONNX et registre LRU VRAM.
 - 🛡️ [**Sécurité, Capabilities & Gouvernance**](docs/SECURITY_AND_GOVERNANCE.md) : Jetons Biscuit, Registre de Consentement, Journal chaîné Ed25519, Constitution et Anti-Spoofing.
 - 👁️ [**Interfaces Ambiantes & Perception**](docs/INTERFACES_AND_PERCEPTION.md) : Présence discrète, HUD Spotlight éphémère, Sélecteur de Canal, Budget de Silence, World Model et moteur vocal duplex (RVQ/VAD v1).
-- [**Guide du Développeur & Manuel d'Ingénierie**](docs/DEVELOPER_GUIDE.md) : Guide pas à pas de compilation, suite de conformance 66 fast + 12 slow, commandes CLI REPL et état réel du runtime d'agents (2 agents de référence exécutés, 5 manifests métier déclaratifs).
+- 🏠 [**Constellation Domotique Souveraine (`hakille-home`)**](docs/HOME_PROTOCOLS.md) : 19 protocoles LAN natifs (Matter, Thread/CoAP, MQTT, Zigbee, Z-Wave, BLE, KNX, Modbus, HAP, ESPHome, Home Assistant, Hue, Shelly, OCPP VE, SunSpec Solaire, ONVIF/RTSP), garde zéro-cloud `HomeLanGuard`, jumeau numérique 3D et homéostasie énergétique.
+- [**Guide du Développeur & Manuel d'Ingénierie**](docs/DEVELOPER_GUIDE.md) : Guide pas à pas de compilation, suite de conformance 74 fast + 10 slow, commandes CLI REPL (`:home*`) et état réel du runtime d'agents (2 agents de référence exécutés, 5 manifests métier déclaratifs).
 - 📋 [**Index des Décisions d'Architecture (ADRs)**](adr/) : Historique et justifications des choix techniques fondamentaux.
 
 ---

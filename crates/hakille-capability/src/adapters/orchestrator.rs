@@ -142,9 +142,34 @@ impl IntelligentToolOrchestrator {
 
         // 3. Evaluate risk tier
         let risk_tier = match tool_name.as_str() {
-            "emergency_shred" => RiskTier::Tier3CriticalExecution,
+            "emergency_shred" | "home_unlock_door" | "home_disarm_alarm" | "home_open_garage"
+            | "home_main_breaker" | "home_water_valve" => RiskTier::Tier3CriticalExecution,
+            "home_execute_command" => {
+                let action = req
+                    .arguments
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if matches!(
+                    action.as_str(),
+                    "unlock_door"
+                        | "unlock"
+                        | "open_garage"
+                        | "disarm"
+                        | "set_main_breaker"
+                        | "set_water_valve"
+                        | "stream_camera"
+                ) {
+                    RiskTier::Tier3CriticalExecution
+                } else if action == "read_state" {
+                    RiskTier::Tier0ReadOnly
+                } else {
+                    RiskTier::Tier1StateMutating
+                }
+            }
             n if n.starts_with("mcp_") => RiskTier::Tier2ExternalNetwork,
-            "vfs_write" => RiskTier::Tier1StateMutating,
+            "vfs_write" | "home_trigger_scene" => RiskTier::Tier1StateMutating,
             _ => RiskTier::Tier0ReadOnly,
         };
 

@@ -83,6 +83,11 @@ impl KernelStub for DenyAllKernel {
             | UiToKernel::MediaGalleryRequest { .. } => Err(BridgeError::DaemonRequired(
                 "noyau non branché — moteur génératif média réel requis".into(),
             )),
+            UiToKernel::HomeDevicesRequest
+            | UiToKernel::HomeDiscoverRequest { .. }
+            | UiToKernel::HomeCommandRequest { .. } => Err(BridgeError::DaemonRequired(
+                "noyau non branché — SovereignHomeHub réel requis".into(),
+            )),
         }
     }
 }

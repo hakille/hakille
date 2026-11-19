@@ -358,6 +358,16 @@ impl CognitiveOrchestrator {
             "transfers",
             "unlock",
             "unlocks",
+            "déverrouille",
+            "deverrouille",
+            "déverrouiller",
+            "deverrouiller",
+            "désarmer",
+            "desarmer",
+            "désarme",
+            "desarme",
+            "disarm",
+            "disjoncteur",
         ];
         let tokens = Self::prompt_tokens(prompt);
         tokens.iter().any(|t| TRIGGERS.contains(&t.as_str()))
@@ -366,14 +376,9 @@ impl CognitiveOrchestrator {
     /// Carte ShowCard-like pour action irréversible : construit
     /// `ExecutionPlan::new()` + 1 pas irréversible (risque auto-détecté ⇒
     /// `requires_human_confirmation`), simule (`simulate_payment` si
-    /// wallet/montant, sinon `simulate_file_mutation`), et rend le texte
-    /// `CARTE REQUISE` + pastilles coût/données/réversibilité. Zéro exécution.
-    /// Enforcement capabilities : voir [`Self::build_plan_card_authorized`] +
-    /// [`Self::verify_plan_against_authority`] (contexte validé, token expiré
-    /// refusé, `authority.verify_pinned` + couverture scope par pas). Le chemin
-    /// sans capabilities ci-dessous reste carte + `requires_human_confirmation`
-    /// (jamais d'exécution silencieuse) ; le chemin autorisé vérifie avant
-    /// de cartographier.
+    /// wallet/montant, `simulate_home_action` si domotique critique, sinon
+    /// `simulate_file_mutation`), et rend le texte `CARTE REQUISE` +
+    /// pastilles coût/données/réversibilité. Zéro exécution.
     fn build_plan_card(task_id: &str, prompt: &str) -> (ExecutionPlan, DryRunReport, String) {
         let goal: String = prompt.chars().take(140).collect();
         let tokens = Self::prompt_tokens(prompt);
@@ -411,8 +416,32 @@ impl CognitiveOrchestrator {
             "payment",
             "transfer",
         ];
+        const HOME_CRITICAL: &[&str] = &[
+            "serrure",
+            "alarme",
+            "garage",
+            "portail",
+            "disjoncteur",
+            "vanne",
+            "unlock",
+            "unlocks",
+            "disarm",
+            "déverrouille",
+            "deverrouille",
+            "déverrouiller",
+            "deverrouiller",
+            "désarmer",
+            "desarmer",
+            "désarme",
+            "desarme",
+            "door",
+            "lock",
+            "alarm",
+        ];
         let is_payment = tokens.iter().any(|t| MONEY.contains(&t.as_str()))
             || tokens.iter().any(|t| PAY_VERBS.contains(&t.as_str()));
+        let is_home_critical =
+            !is_payment && tokens.iter().any(|t| HOME_CRITICAL.contains(&t.as_str()));
         let mut plan = ExecutionPlan::new(task_id, goal.clone());
         let report = if is_payment {
             plan.add_step(
@@ -423,6 +452,14 @@ impl CognitiveOrchestrator {
             );
             let amount_cents = Self::extract_amount_cents(prompt).unwrap_or(1000);
             DryRunSimulator::simulate_payment("bénéficiaire", amount_cents, "EUR", 10_000)
+        } else if is_home_critical {
+            plan.add_step(
+                format!("Domotique critique : {}", goal),
+                CapabilityScope::Network,
+                CapabilityAction::Execute,
+                true,
+            );
+            DryRunSimulator::simulate_home_action(&goal, "lan-sovereign", "critical_command", true)
         } else {
             const DEL_SIDE: &[&str] = &[
                 "supprimer",
@@ -476,6 +513,18 @@ impl CognitiveOrchestrator {
                         .unwrap_or("?")
                 ),
                 "montant + destinataire".to_string(),
+            )
+        } else if report.action_type == "HomeExecution" {
+            (
+                "0 — action locale sans frais".to_string(),
+                format!(
+                    "appareil {}",
+                    report
+                        .diffs
+                        .first()
+                        .map(|d| d.target_resource.as_str())
+                        .unwrap_or("?")
+                ),
             )
         } else {
             (
@@ -2102,5 +2151,20 @@ mod action_card_preview_tests {
         let card = CognitiveOrchestrator::action_card_preview("transférer de l'argent à Awa")
             .expect("paiement = carte");
         assert_eq!(card.cost_cents, 1000, "même repli que le plan sec");
+    }
+
+    #[test]
+    fn home_critical_prompt_builds_network_card_without_cost() {
+        let (card, plan) =
+            CognitiveOrchestrator::action_card_with_plan("déverrouille serrure entrée")
+                .expect("action domotique critique = carte");
+        assert_eq!(card.cost_cents, 0);
+        assert!(!card.reversible);
+        assert!(card.data_exit_local);
+        assert!(card.object.contains("Domotique critique"));
+        assert_eq!(
+            plan.steps[0].required_scope,
+            hakille_core::CapabilityScope::Network
+        );
     }
 }

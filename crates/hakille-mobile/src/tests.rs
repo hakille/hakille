@@ -1515,8 +1515,8 @@ fn mobile_battery_and_shadow_sync_bindings() {
     assert_eq!(bridge.perception_fps_limit(20.0, false), 1);
     assert_eq!(bridge.perception_fps_limit(5.0, false), 0);
 
-    assert_eq!(bridge.should_offload_inference(20.0, false, true), true);
-    assert_eq!(bridge.should_offload_inference(20.0, false, false), false);
+    assert!(bridge.should_offload_inference(20.0, false, true));
+    assert!(!bridge.should_offload_inference(20.0, false, false));
 
     let battery = MobileBatteryManager::new(85.0, false);
     assert_eq!(battery.tier(), "normal");
