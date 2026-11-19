@@ -2465,10 +2465,13 @@ mod tests {
         use hakille_kernel::fabric::{CognitiveFabric, CognitiveManifest};
         use hakille_ui_protocol::{MediaGenerateRequestDto, MediaModalityDto};
 
-        let dir =
-            std::env::temp_dir().join(format!("hakille-ipc-media-test-{}", uuid::Uuid::new_v4()));
+        let test_id = uuid::Uuid::new_v4();
+        let dir = std::env::temp_dir().join(format!("hakille-ipc-media-test-{}", test_id));
         std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(not(windows))]
         let endpoint = dir.join("ipc.sock").to_string_lossy().to_string();
+        #[cfg(windows)]
+        let endpoint = format!(r"\\.\pipe\hakille-ipc-media-{}", test_id);
         let token = transport::fresh_token_hex();
 
         let listener = IpcListener::bind(&endpoint).await.unwrap();
