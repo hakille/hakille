@@ -24,6 +24,7 @@ softbuffer = "0.4"
 accesskit = "0.24"
 accesskit_winit = "0.33"
 ab_glyph = "0.2"
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 # Fenêtre en couche Win32 (WS_EX_LAYERED + clé couleur) : fond réellement

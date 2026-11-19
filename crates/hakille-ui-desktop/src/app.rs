@@ -10,18 +10,22 @@
 use crate::daemon_bridge::RealDaemonBridge;
 use crate::kernel_bridge::KernelBridge;
 use crate::renderer::{
-    CONSULT_HEIGHT, CONSULT_PAGE_LINES, ConsultLine, ConsultLineKind, ConsultView, card_scene,
-    consult_scene, hud_scene, wrapped_consult_lines,
+    CONSULT_HEIGHT, CONSULT_PAGE_LINES, ConsultLine, ConsultLineKind, ConsultView,
+    MediaStudioPreview, MediaStudioProgress, card_scene, consult_scene, hud_scene,
+    media_studio_scene, wrapped_consult_lines,
 };
 use crate::runtime::FrameBudget;
 use crate::scene::{Color, DrawCmd, Scene};
+use base64::Engine as _;
 use hakille_ui::{CostCounter, EphemeralHud, HudState, PresenceIndicator, SilenceBudgetTracker};
 use hakille_ui_model::snapshot::{EVAPORATE_MS, HUD_HEIGHT, HUD_WIDTH};
 use hakille_ui_model::{KernelEvent, StableSnapshot, UiEvent};
 use hakille_ui_protocol::{
-    ActionCard, AgentDto, JournalEntryDto, KernelToUi, MemoryRowDto, StatusDto,
+    ActionCard, AgentDto, JournalEntryDto, KernelToUi, MediaArtifactDto, MediaEngineDto,
+    MediaGenerateRequestDto, MediaJobProgressDto, MediaModalityDto, MemoryRowDto, StatusDto,
 };
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Longueur maximale de la requête HUD (octets UTF-8).
@@ -59,6 +63,8 @@ pub enum HudInput {
     /// Ouvre le panneau des agents (F4) : liste des agents réellement
     /// exécutables vs manifests déclaratifs.
     ShowAgents,
+    /// Ouvre le panneau Studio Média (F5) : moteurs génératifs, aperçu RGBA, galerie.
+    ShowMedia,
     /// Défilement des lignes du panneau (clavier, molette, accessibilité).
     ScrollPanel(i32),
     PanelStart,
@@ -71,7 +77,7 @@ pub enum HudInput {
 }
 
 /// Effets demandés à l'hôte winit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum HudAction {
     /// Démarrage/arrêt non bloquant du service vocal par l’hôte.
     SetVoiceEnabled {
@@ -113,6 +119,18 @@ pub enum HudAction {
         name: String,
         input_json: String,
     },
+    /// Studio Média (F5, additif v1) : inventaire honnête des moteurs génératifs.
+    RequestMediaEngines,
+    /// Studio Média (F5, additif v1) : galerie des artefacts locaux récents.
+    RequestMediaGallery {
+        limit: usize,
+    },
+    /// Studio Média (F5, additif v1) : demande de génération multimodale.
+    GenerateMedia(MediaGenerateRequestDto),
+    /// Studio Média (F5, additif v1) : annulation coopérative d'un job actif.
+    CancelMediaJob {
+        job_id: String,
+    },
     /// Décision explicite sur la carte en attente (jamais un effet local :
     /// le démon revérifie et audite avant tout accusé).
     ApproveCard {
@@ -139,6 +157,8 @@ pub enum PanelKind {
     Status,
     /// Liste des agents (exécutables vs déclaratifs).
     Agents,
+    /// Studio Média souverain (`F5`) : moteurs, progression, aperçu RGBA, galerie.
+    Media,
     Card,
 }
 
@@ -157,6 +177,7 @@ pub fn panel_request_action(kind: PanelKind) -> HudAction {
         },
         PanelKind::Status => HudAction::RequestStatus,
         PanelKind::Agents => HudAction::RequestAgents,
+        PanelKind::Media => HudAction::RequestMediaEngines,
         PanelKind::Card | PanelKind::Response | PanelKind::None => HudAction::Redraw,
     }
 }
@@ -322,6 +343,18 @@ pub struct HudApp {
     agents: Vec<AgentDto>,
     /// Dernière exécution d'agent rapportée par le démon (nom, sortie, durée).
     last_agent_run: Option<(String, String, u64)>,
+    /// Inventaire honnête des moteurs génératifs média (Studio Média `F5`).
+    media_engines: Vec<MediaEngineDto>,
+    /// Disponibilité réelle du muxer `ffmpeg` côté démon.
+    media_ffmpeg_available: bool,
+    /// Galerie récente des artefacts média signés Ed25519.
+    media_gallery: Vec<MediaArtifactDto>,
+    /// Progression en direct du job média actif.
+    media_progress: Option<MediaJobProgressDto>,
+    /// Dernier artefact média généré ou sélectionné dans le Studio Média.
+    media_last_artifact: Option<MediaArtifactDto>,
+    /// Pixels RGBA8 décodés pour blitting natif dans le Studio Média.
+    media_preview_pixels: Option<(u32, u32, Arc<[u8]>)>,
     /// Dernier identifiant de fait mémorisé (accusé `MemoryRemember`).
     last_remember_id: Option<String>,
     /// Confirmation de consultation (non-erreur) affichée sous la requête.
@@ -375,6 +408,12 @@ impl HudApp {
             pending_panel_request: None,
             agents: Vec::new(),
             last_agent_run: None,
+            media_engines: Vec::new(),
+            media_ffmpeg_available: false,
+            media_gallery: Vec::new(),
+            media_progress: None,
+            media_last_artifact: None,
+            media_preview_pixels: None,
             last_remember_id: None,
             data_notice: None,
             queued_queries: VecDeque::new(),
@@ -617,6 +656,48 @@ impl HudApp {
             );
             return scene;
         }
+        if self.panel == PanelKind::Media {
+            let progress = self.media_progress.as_ref().map(|p| MediaStudioProgress {
+                stage: p.stage.clone(),
+                step: p.step,
+                total_steps: p.total_steps,
+                fraction: p.fraction,
+                elapsed_ms: p.elapsed_ms,
+            });
+            let preview = self.media_preview_pixels.as_ref().map(|(w, h, px)| {
+                let (caption, badge) = match &self.media_last_artifact {
+                    Some(art) => (
+                        format!("{} · {}", art.engine_id, art.prompt_summary),
+                        if art.provenance_signed {
+                            "Ed25519 ✓ · IA synthétique".to_string()
+                        } else {
+                            "Non signé".to_string()
+                        },
+                    ),
+                    None => ("Aperçu local".to_string(), "Ed25519 ✓".to_string()),
+                };
+                MediaStudioPreview {
+                    width: *w,
+                    height: *h,
+                    pixels: Arc::clone(px),
+                    caption,
+                    provenance_badge: badge,
+                }
+            });
+            let mut scene = media_studio_scene(
+                &snap,
+                &self.consult_page(),
+                progress.as_ref(),
+                preview.as_ref(),
+                dark,
+            );
+            crate::renderer::append_voice_indicator(
+                &mut scene,
+                &self.voice_state,
+                self.voice_focused,
+            );
+            return scene;
+        }
         if self.panel != PanelKind::None {
             let mut scene = consult_scene(&snap, &self.consult_page(), dark);
             crate::renderer::append_voice_indicator(
@@ -694,7 +775,8 @@ impl HudApp {
     /// vide dit explicitement qu'il faut interroger le démon.
     pub fn consult_view(&self) -> ConsultView {
         let footer =
-            "Échap fermer  ·  F1 Journal  ·  F2 Mémoire  ·  F3 Statut  ·  F4 Agents".to_string();
+            "Échap fermer  ·  F1 Journal  ·  F2 Mémoire  ·  F3 Statut  ·  F4 Agents  ·  F5 Studio Média"
+                .to_string();
         match self.panel {
             PanelKind::Journal => {
                 let mut lines = Vec::new();
@@ -861,6 +943,95 @@ impl HudApp {
                 ConsultView {
                     title: "Agents".into(),
                     subtitle: "Exécutables (WASM réel) vs manifests déclaratifs".into(),
+                    lines,
+                    footer,
+                }
+            }
+            PanelKind::Media => {
+                let mut lines: Vec<ConsultLine> = Vec::new();
+                if let Some(err) = &self.notice {
+                    lines.push(ConsultLine::new(err.clone(), ConsultLineKind::Error));
+                }
+                if let Some(art) = &self.media_last_artifact {
+                    let sig = if art.provenance_signed {
+                        "Ed25519 ✓"
+                    } else {
+                        "non signé"
+                    };
+                    lines.push(ConsultLine::new(
+                        format!(
+                            "Dernier artefact : {:?} · {} [{}] · {sig}",
+                            art.modality, art.engine_id, art.engine_badge
+                        ),
+                        ConsultLineKind::Braise,
+                    ));
+                    lines.push(ConsultLine::new(
+                        format!(
+                            "{} ({} octets, {} ms)",
+                            art.path, art.bytes_len, art.elapsed_ms
+                        ),
+                        ConsultLineKind::Normal,
+                    ));
+                }
+                if self.media_engines.is_empty() {
+                    lines.push(ConsultLine::new(
+                        "Aucun moteur reçu. F5 interroge le démon ; aucun moteur n'est simulé.",
+                        ConsultLineKind::Muted,
+                    ));
+                } else {
+                    let ready_count = self.media_engines.iter().filter(|e| e.ready).count();
+                    lines.push(ConsultLine::new(
+                        format!(
+                            "Moteurs ({ready_count}/{} prêts · ffmpeg : {})",
+                            self.media_engines.len(),
+                            if self.media_ffmpeg_available {
+                                "détecté"
+                            } else {
+                                "absent"
+                            }
+                        ),
+                        ConsultLineKind::Strong,
+                    ));
+                    for eng in &self.media_engines {
+                        let status = if eng.ready { "PRÊT" } else { "ABSENT" };
+                        lines.push(ConsultLine::new(
+                            format!(
+                                "{} [{}] — {status} ({})",
+                                eng.id, eng.kind_badge, eng.status_detail
+                            ),
+                            if eng.ready {
+                                ConsultLineKind::Normal
+                            } else {
+                                ConsultLineKind::Muted
+                            },
+                        ));
+                    }
+                }
+                if !self.media_gallery.is_empty() {
+                    lines.push(ConsultLine::new(
+                        format!(
+                            "Galerie récente ({} artefact(s)) :",
+                            self.media_gallery.len()
+                        ),
+                        ConsultLineKind::Strong,
+                    ));
+                    for item in self.media_gallery.iter().take(6) {
+                        lines.push(ConsultLine::new(
+                            format!(
+                                "• {:?} {} · {} ({} octets)",
+                                item.modality, item.engine_id, item.prompt_summary, item.bytes_len
+                            ),
+                            ConsultLineKind::Muted,
+                        ));
+                    }
+                }
+                lines.push(ConsultLine::new(
+                    "Commandes HUD : :gen-image <prompt> · :gen-audio <prompt> · :gen-video <prompt> · :gen-story <prompt>",
+                    ConsultLineKind::Muted,
+                ));
+                ConsultView {
+                    title: "Studio Média Souverain".into(),
+                    subtitle: "Image · Audio · Vidéo · DAG multimodal — provenance Ed25519".into(),
                     lines,
                     footer,
                 }
@@ -1056,6 +1227,18 @@ impl HudApp {
                                     },
                                 }]
                             }
+                        } else if let Some(req) = parse_hud_media_command(&q) {
+                            self.hud.open_prompt();
+                            self.notice = None;
+                            self.panel = PanelKind::Media;
+                            self.panel_offset = 0;
+                            self.data_notice =
+                                Some(format!("Génération {:?} envoyée au démon…", req.modality));
+                            vec![
+                                self.resize_action(true),
+                                HudAction::GenerateMedia(req),
+                                HudAction::Redraw,
+                            ]
                         } else {
                             vec![HudAction::Submit { query: q }]
                         }
@@ -1068,6 +1251,7 @@ impl HudApp {
             HudInput::ShowMemory => self.open_panel(PanelKind::Memory),
             HudInput::ShowStatus => self.open_panel(PanelKind::Status),
             HudInput::ShowAgents => self.open_panel(PanelKind::Agents),
+            HudInput::ShowMedia => self.open_panel(PanelKind::Media),
             HudInput::ScrollPanel(delta) => self.scroll_panel(delta, None),
             HudInput::PanelStart => self.scroll_panel(0, Some(false)),
             HudInput::PanelEnd => self.scroll_panel(0, Some(true)),
@@ -1405,6 +1589,69 @@ impl HudApp {
                     Vec::new()
                 }
             }
+            KernelToUi::MediaEnginesReply {
+                engines,
+                ffmpeg_available,
+            } => {
+                let total = engines.len();
+                let ready = engines.iter().filter(|e| e.ready).count();
+                self.media_engines = engines;
+                self.media_ffmpeg_available = ffmpeg_available;
+                self.data_reply_actions(
+                    PanelKind::Media,
+                    format!("Studio Média : {ready}/{total} moteur(s) prêt(s)"),
+                )
+            }
+            KernelToUi::MediaGalleryReply { artifacts } => {
+                if self.media_preview_pixels.is_none()
+                    && let Some(first) = artifacts.first()
+                {
+                    self.media_preview_pixels = decode_preview_rgba(first.preview.as_ref());
+                    if self.media_last_artifact.is_none() {
+                        self.media_last_artifact = Some(first.clone());
+                    }
+                }
+                self.media_gallery = artifacts;
+                if self.visible {
+                    vec![HudAction::Redraw]
+                } else {
+                    self.unseen_reply = true;
+                    Vec::new()
+                }
+            }
+            KernelToUi::MediaJobProgress(progress) => {
+                self.media_progress = Some(progress);
+                if self.visible {
+                    vec![HudAction::Redraw]
+                } else {
+                    Vec::new()
+                }
+            }
+            KernelToUi::MediaJobCompleted { artifact } => {
+                self.media_progress = None;
+                self.notice = None;
+                self.media_preview_pixels = decode_preview_rgba(artifact.preview.as_ref());
+                let label = format!(
+                    "Média généré ({:?}, {}, {} ms, Ed25519 ✓)",
+                    artifact.modality, artifact.engine_id, artifact.elapsed_ms
+                );
+                self.media_last_artifact = Some(artifact.clone());
+                self.media_gallery.insert(0, artifact);
+                if self.media_gallery.len() > 24 {
+                    self.media_gallery.truncate(24);
+                }
+                self.data_reply_actions(PanelKind::Media, label)
+            }
+            KernelToUi::MediaJobFailed { error, .. } => {
+                self.media_progress = None;
+                self.notice = Some(format!("Média : {error}"));
+                if self.visible {
+                    vec![HudAction::Redraw]
+                } else {
+                    self.unseen_reply = true;
+                    Vec::new()
+                }
+            }
             msg => self.on_turn_reply(msg),
         }
     }
@@ -1507,6 +1754,9 @@ impl HudApp {
         }
         actions.push(self.resize_action(true));
         actions.push(panel_request_action(kind));
+        if kind == PanelKind::Media {
+            actions.push(HudAction::RequestMediaGallery { limit: 12 });
+        }
         actions.push(HudAction::Redraw);
         actions
     }
@@ -1721,6 +1971,61 @@ impl HudApp {
             _ => 0,
         }
     }
+}
+
+/// Analyse une commande HUD `:gen-image`, `:gen-audio`, `:gen-video` ou `:gen-story`.
+fn parse_hud_media_command(query: &str) -> Option<MediaGenerateRequestDto> {
+    let trimmed = query.trim();
+    let (modality, rest) = if let Some(r) = trimmed.strip_prefix(":gen-image ") {
+        (MediaModalityDto::Image, r)
+    } else if let Some(r) = trimmed.strip_prefix(":gen-audio ") {
+        (MediaModalityDto::Audio, r)
+    } else if let Some(r) = trimmed.strip_prefix(":gen-video ") {
+        (MediaModalityDto::Video, r)
+    } else {
+        (
+            MediaModalityDto::Composite,
+            trimmed.strip_prefix(":gen-story ")?,
+        )
+    };
+    let prompt = rest.trim();
+    if prompt.is_empty() {
+        return None;
+    }
+    Some(MediaGenerateRequestDto {
+        modality,
+        prompt: prompt.to_string(),
+        engine: "auto".to_string(),
+        width: None,
+        height: None,
+        steps: None,
+        seed: None,
+        duration_secs: None,
+        fps: None,
+        num_frames: None,
+        format: None,
+        mode: None,
+    })
+}
+
+/// Décode une vignette RGBA8 base64 reçue via IPC en vérifiant la taille exacte.
+fn decode_preview_rgba(
+    preview: Option<&hakille_ui_protocol::MediaPreviewRgbaDto>,
+) -> Option<(u32, u32, Arc<[u8]>)> {
+    let p = preview?;
+    if p.width == 0 || p.height == 0 || p.width > 512 || p.height > 512 {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&p.rgba_base64)
+        .ok()?;
+    let expected = (p.width as usize)
+        .checked_mul(p.height as usize)?
+        .checked_mul(4)?;
+    if decoded.len() != expected {
+        return None;
+    }
+    Some((p.width, p.height, Arc::from(decoded)))
 }
 
 #[cfg(test)]
@@ -2915,5 +3220,128 @@ mod tests {
         assert!(actions.contains(&HudAction::ShowWindow));
         assert!(app.notice.as_ref().unwrap().contains("Microphone absent"));
         assert!(!app.voice_enabled());
+    }
+
+    #[test]
+    fn desktop_shell_f5_media_studio_lifecycle_and_gen_commands() {
+        let mut app = shown(false);
+
+        // 1. F5 ouvre Studio Média et demande moteurs + galerie au démon.
+        let actions = app.handle(HudInput::ShowMedia);
+        assert_eq!(app.panel(), PanelKind::Media);
+        assert!(actions.contains(&HudAction::RequestMediaEngines));
+        assert!(actions.contains(&HudAction::RequestMediaGallery { limit: 12 }));
+
+        // 2. Réponse honnête des moteurs reçue du démon.
+        let reply_actions = app.on_kernel_reply(KernelToUi::MediaEnginesReply {
+            engines: vec![
+                MediaEngineDto {
+                    id: "procedural-dsp".into(),
+                    name: "Synthèse Procédurale Rust".into(),
+                    modality: MediaModalityDto::Image,
+                    kind_badge: "PROCEDURAL DSP (Rust pur)".into(),
+                    ready: true,
+                    status_detail: "CPU local".into(),
+                    is_cloud: false,
+                },
+                MediaEngineDto {
+                    id: "sd-turbo-candle".into(),
+                    name: "SD-Turbo Candle".into(),
+                    modality: MediaModalityDto::Image,
+                    kind_badge: "NEURAL LOCAL (Candle)".into(),
+                    ready: false,
+                    status_detail: "poids absents".into(),
+                    is_cloud: false,
+                },
+            ],
+            ffmpeg_available: true,
+        });
+        assert!(reply_actions.contains(&HudAction::Redraw));
+        let view = app.consult_view();
+        assert_eq!(view.title, "Studio Média Souverain");
+        assert!(view.lines.iter().any(|l| l.text.contains("procedural-dsp")));
+        assert!(
+            view.lines
+                .iter()
+                .any(|l| l.text.contains("sd-turbo-candle"))
+        );
+
+        // 3. Commande HUD `:gen-image` émet HudAction::GenerateMedia sans simuler localement.
+        type_text(&mut app, ":gen-image aurore souveraine");
+        let gen_actions = app.handle(HudInput::Enter);
+        assert!(gen_actions.iter().any(|a| matches!(
+            a,
+            HudAction::GenerateMedia(req)
+                if req.modality == MediaModalityDto::Image && req.prompt == "aurore souveraine"
+        )));
+
+        // 4. Progression temps réel + artefact complété avec miniature RGBA base64.
+        let _ = app.on_kernel_reply(KernelToUi::MediaJobProgress(MediaJobProgressDto {
+            job_id: "job-1".into(),
+            modality: MediaModalityDto::Image,
+            stage: "Débruitage".into(),
+            step: 4,
+            total_steps: 8,
+            fraction: 0.5,
+            elapsed_ms: 120,
+            message: "50%".into(),
+        }));
+        let preview_px = vec![
+            0xFFu8, 0x7A, 0x2F, 0xFF, 0xFF, 0x7A, 0x2F, 0xFF, 0xFF, 0x7A, 0x2F, 0xFF, 0xFF, 0x7A,
+            0x2F, 0xFF,
+        ];
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&preview_px);
+        let done_actions = app.on_kernel_reply(KernelToUi::MediaJobCompleted {
+            artifact: MediaArtifactDto {
+                id: "art-1".into(),
+                modality: MediaModalityDto::Image,
+                path: "/tmp/art-1.png".into(),
+                provenance_path: "/tmp/art-1.png.provenance.json".into(),
+                sha256: "abcdef0123456789".into(),
+                mime_type: "image/png".into(),
+                bytes_len: 4096,
+                engine_id: "procedural-dsp".into(),
+                engine_badge: "PROCEDURAL DSP (Rust pur)".into(),
+                prompt_summary: "aurore souveraine".into(),
+                elapsed_ms: 210,
+                provenance_signed: true,
+                created_at: "2026-11-19T00:00:00Z".into(),
+                preview: Some(hakille_ui_protocol::MediaPreviewRgbaDto {
+                    width: 2,
+                    height: 2,
+                    rgba_base64: b64,
+                }),
+            },
+        });
+        assert!(done_actions.contains(&HudAction::Redraw));
+        let scene = app.scene();
+        assert!(
+            scene.cmds.iter().any(|c| matches!(
+                c,
+                DrawCmd::ImageRgba {
+                    width: 2,
+                    height: 2,
+                    ..
+                }
+            )),
+            "la scène Studio Média doit blitter l'aperçu RGBA8 décodé"
+        );
+    }
+
+    #[test]
+    fn a11y_media_studio_panel_exposes_accessible_tree() {
+        let mut app = shown(false);
+        app.handle(HudInput::ShowMedia);
+        let mut tree = crate::a11y::build_shell_tree(&app.snapshot(), &[], &[]);
+        crate::a11y::append_consult_panel(&mut tree, &app.consult_view());
+        assert!(
+            tree.nodes.iter().any(|(id, node)| {
+                *id == crate::a11y::CONSULT_PANEL_NODE
+                    && node
+                        .label()
+                        .is_some_and(|l| l.contains("Studio Média Souverain"))
+            }),
+            "le panneau Studio Média F5 doit exposer son titre dans l'arbre AccessKit"
+        );
     }
 }

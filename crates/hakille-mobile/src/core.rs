@@ -1112,7 +1112,12 @@ impl Core {
             | KernelToUi::UserContext(_)
             | KernelToUi::EmotionUpdate(_)
             | KernelToUi::AuraRingUpdate(_)
-            | KernelToUi::MicroGestureRecognized(_) => {}
+            | KernelToUi::MicroGestureRecognized(_)
+            | KernelToUi::MediaEnginesReply { .. }
+            | KernelToUi::MediaJobProgress(_)
+            | KernelToUi::MediaJobCompleted { .. }
+            | KernelToUi::MediaJobFailed { .. }
+            | KernelToUi::MediaGalleryReply { .. } => {}
         }
         Ok(())
     }

@@ -400,6 +400,108 @@ pub enum MicroGestureEvent {
     },
 }
 
+// ============================================================================
+// DTOs Génération Multimodale Souveraine (ADR-024, Additif v1)
+// ============================================================================
+
+/// Modalité média exposée sur le fil IPC.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaModalityDto {
+    Image,
+    Video,
+    Audio,
+    Composite,
+}
+
+/// Fiche honnête d'un moteur génératif exposée au Studio Média (`F5`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct MediaEngineDto {
+    pub id: String,
+    pub name: String,
+    pub modality: MediaModalityDto,
+    /// Étiquette explicite de nature (`NEURAL LOCAL (Candle)`, `PROCEDURAL DSP`, etc.).
+    pub kind_badge: String,
+    /// `true` ssi le moteur est réellement prêt à exécuter maintenant.
+    pub ready: bool,
+    /// Détail honnête de disponibilité (périphérique ou fichiers manquants).
+    pub status_detail: String,
+    /// `true` si les données quittent la machine (cloud opt-in).
+    pub is_cloud: bool,
+}
+
+/// Requête de génération média transmise du HUD vers le démon.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MediaGenerateRequestDto {
+    pub modality: MediaModalityDto,
+    pub prompt: String,
+    #[serde(default = "default_media_engine")]
+    pub engine: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fps: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_frames: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+}
+
+fn default_media_engine() -> String {
+    "auto".to_string()
+}
+
+/// Vignette RGBA8 compacte encodée en base64 pour aperçu natif dans le HUD F5.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct MediaPreviewRgbaDto {
+    pub width: u32,
+    pub height: u32,
+    pub rgba_base64: String,
+}
+
+/// Progression temps réel d'un job média (id = 0, flux broadcast).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MediaJobProgressDto {
+    pub job_id: String,
+    pub modality: MediaModalityDto,
+    pub stage: String,
+    pub step: u32,
+    pub total_steps: u32,
+    pub fraction: f32,
+    pub elapsed_ms: u64,
+    pub message: String,
+}
+
+/// Résumé signé d'un artefact média exposé au HUD F5.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MediaArtifactDto {
+    pub id: String,
+    pub modality: MediaModalityDto,
+    pub path: String,
+    pub provenance_path: String,
+    pub sha256: String,
+    pub mime_type: String,
+    pub bytes_len: u64,
+    pub engine_id: String,
+    pub engine_badge: String,
+    pub prompt_summary: String,
+    pub elapsed_ms: u64,
+    pub provenance_signed: bool,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<MediaPreviewRgbaDto>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum UiToKernel {
     Approve {
@@ -479,6 +581,18 @@ pub enum UiToKernel {
     },
     /// Notification d'un micro-geste spatial détecté en local.
     SpatialGesture(MicroGestureEvent),
+    /// Demande la liste honnête des moteurs génératifs (Image, Vidéo, Audio).
+    MediaEnginesRequest,
+    /// Soumet une génération multimodale depuis le HUD F5 ou la barre d'entrée.
+    MediaGenerateRequest(MediaGenerateRequestDto),
+    /// Demande l'annulation coopérative d'un job média en cours.
+    MediaJobCancel {
+        job_id: String,
+    },
+    /// Demande la galerie des artefacts générés récents.
+    MediaGalleryRequest {
+        limit: usize,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -577,6 +691,27 @@ pub enum KernelToUi {
     },
     /// Accusé de micro-geste spatial reconnu.
     MicroGestureRecognized(MicroGestureEvent),
+    /// Liste honnête des moteurs génératifs disponibles/absents.
+    MediaEnginesReply {
+        engines: Vec<MediaEngineDto>,
+        ffmpeg_available: bool,
+    },
+    /// Progression temps réel d'un job média (diffusée sur id = 0).
+    MediaJobProgress(MediaJobProgressDto),
+    /// Artefact média final signé Ed25519 + vignette RGBA8.
+    MediaJobCompleted {
+        artifact: MediaArtifactDto,
+    },
+    /// Échec explicite ou annulation d'un job média (jamais de succès simulé).
+    MediaJobFailed {
+        job_id: String,
+        modality: MediaModalityDto,
+        error: String,
+    },
+    /// Galerie des artefacts générés récents.
+    MediaGalleryReply {
+        artifacts: Vec<MediaArtifactDto>,
+    },
 }
 
 /// Message UI → noyau versionné : champ `version` transporté sur le fil
@@ -1160,6 +1295,98 @@ mod tests {
             let k_bin = bincode::serialize(&k_msg).unwrap();
             let k_back_bin: KernelMessage = bincode::deserialize(&k_bin).unwrap();
             assert_eq!(k_msg, k_back_bin);
+        }
+    }
+
+    #[test]
+    fn test_media_extension_roundtrip_v1() {
+        let ui_cases = [
+            UiToKernel::MediaEnginesRequest,
+            UiToKernel::MediaGalleryRequest { limit: 12 },
+            UiToKernel::MediaJobCancel {
+                job_id: "job-42".into(),
+            },
+            UiToKernel::MediaGenerateRequest(MediaGenerateRequestDto {
+                modality: MediaModalityDto::Image,
+                prompt: "nébuleuse souveraine".into(),
+                engine: "auto".into(),
+                width: Some(512),
+                height: Some(512),
+                steps: Some(12),
+                seed: Some(7),
+                duration_secs: None,
+                fps: None,
+                num_frames: None,
+                format: Some("png".into()),
+                mode: None,
+            }),
+        ];
+        for msg in ui_cases {
+            let env = UiMessage::new(msg.clone());
+            assert!(env.check().is_ok());
+            let json = serde_json::to_string(&env).unwrap();
+            let back: UiMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.inner, msg);
+        }
+
+        let k_cases = [
+            KernelToUi::MediaEnginesReply {
+                engines: vec![MediaEngineDto {
+                    id: "procedural-dsp".into(),
+                    name: "Canvas Procédural DSP".into(),
+                    modality: MediaModalityDto::Image,
+                    kind_badge: "PROCEDURAL DSP (Rust pur)".into(),
+                    ready: true,
+                    status_detail: "CPU (DSP Rust pur)".into(),
+                    is_cloud: false,
+                }],
+                ffmpeg_available: true,
+            },
+            KernelToUi::MediaJobProgress(MediaJobProgressDto {
+                job_id: "job-42".into(),
+                modality: MediaModalityDto::Image,
+                stage: "synthèse_dsp".into(),
+                step: 3,
+                total_steps: 6,
+                fraction: 0.5,
+                elapsed_ms: 120,
+                message: "Rendu 3/6".into(),
+            }),
+            KernelToUi::MediaJobCompleted {
+                artifact: MediaArtifactDto {
+                    id: "art-1".into(),
+                    modality: MediaModalityDto::Image,
+                    path: "/tmp/a.png".into(),
+                    provenance_path: "/tmp/a.png.provenance.json".into(),
+                    sha256: "abc123".into(),
+                    mime_type: "image/png".into(),
+                    bytes_len: 1024,
+                    engine_id: "procedural-dsp".into(),
+                    engine_badge: "PROCEDURAL DSP (Rust pur)".into(),
+                    prompt_summary: "nébuleuse".into(),
+                    elapsed_ms: 150,
+                    provenance_signed: true,
+                    created_at: "2026-01-01T00:00:00Z".into(),
+                    preview: Some(MediaPreviewRgbaDto {
+                        width: 2,
+                        height: 2,
+                        rgba_base64: "AAAAAAAAAAAAAAAAAAAAAA==".into(),
+                    }),
+                },
+            },
+            KernelToUi::MediaJobFailed {
+                job_id: "job-43".into(),
+                modality: MediaModalityDto::Video,
+                error: "modèle absent".into(),
+            },
+            KernelToUi::MediaGalleryReply { artifacts: vec![] },
+        ];
+        for msg in k_cases {
+            let env = KernelMessage::new(msg.clone());
+            assert!(env.check().is_ok());
+            let json = serde_json::to_string(&env).unwrap();
+            let back: KernelMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.inner, msg);
         }
     }
 }

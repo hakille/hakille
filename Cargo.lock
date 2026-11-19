@@ -1166,6 +1166,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "ed25519-dalek",
  "hakille-agents",
  "hakille-audit",
  "hakille-auth",
@@ -1173,6 +1174,7 @@ dependencies = [
  "hakille-core",
  "hakille-inference",
  "hakille-kernel",
+ "hakille-media",
  "hakille-memory",
  "hakille-metrics",
  "hakille-perception",
@@ -2785,6 +2787,7 @@ name = "hakille-daemon"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "biscuit-auth",
  "bytes",
  "chrono",
@@ -2800,6 +2803,7 @@ dependencies = [
  "hakille-ipc",
  "hakille-kernel",
  "hakille-keystore",
+ "hakille-media",
  "hakille-memory",
  "hakille-metrics",
  "hakille-perception",
@@ -2989,6 +2993,39 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "zeroize",
+]
+
+[[package]]
+name = "hakille-media"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "chrono",
+ "ed25519-dalek",
+ "hakille-constitution",
+ "hakille-core",
+ "hakille-inference",
+ "hakille-voice",
+ "hound",
+ "image",
+ "ort",
+ "png",
+ "rand 0.8.8",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokenizers",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3295,6 +3332,7 @@ dependencies = [
  "ab_glyph",
  "accesskit 0.24.1",
  "accesskit_winit",
+ "base64 0.22.1",
  "hakille-design",
  "hakille-ipc",
  "hakille-ui",

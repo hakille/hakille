@@ -22,6 +22,9 @@ pub enum PipelineRole {
     AffectiveState,
     AgeEstimation,
     PoseEstimation,
+    ImageGeneration,
+    VideoGeneration,
+    AudioGeneration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

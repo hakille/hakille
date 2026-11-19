@@ -76,7 +76,7 @@ impl FrameInspector {
                         // Permitted in hold progress
                     }
                 }
-                DrawCmd::Shadow { .. } => {}
+                DrawCmd::Shadow { .. } | DrawCmd::ImageRgba { .. } => {}
             }
         }
     }

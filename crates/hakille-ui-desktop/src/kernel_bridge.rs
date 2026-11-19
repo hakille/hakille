@@ -77,6 +77,12 @@ impl KernelStub for DenyAllKernel {
             | UiToKernel::SpatialGesture(_) => Err(BridgeError::DaemonRequired(
                 "noyau non branché — ghost action / geste en attente".into(),
             )),
+            UiToKernel::MediaEnginesRequest
+            | UiToKernel::MediaGenerateRequest(_)
+            | UiToKernel::MediaJobCancel { .. }
+            | UiToKernel::MediaGalleryRequest { .. } => Err(BridgeError::DaemonRequired(
+                "noyau non branché — moteur génératif média réel requis".into(),
+            )),
         }
     }
 }

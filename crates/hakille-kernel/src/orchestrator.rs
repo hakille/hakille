@@ -80,6 +80,10 @@ pub struct CognitiveOrchestrator {
     pub research_backend: Option<std::sync::Arc<dyn crate::research::ResearchBackend>>,
     pub research_policy: crate::research::ResearchPolicy,
     pub last_research: Option<crate::research::ResearchReport>,
+    /// Port hexagonal de génération multimodale (`hakille-media`, ADR-024).
+    pub media_port: Option<std::sync::Arc<dyn crate::media::MediaGenerationPort>>,
+    /// Dernier reçu de génération multimodale (pour audit et mémoire SPO).
+    pub last_media_receipt: Option<crate::media::MediaGenerationReceipt>,
     /// Dernière simulation dry-run avant action irréversible, pour audit.
     pub last_simulation: Option<DryRunReport>,
     /// Dernière analyse de contradiction interne (zone limite), pour audit.
@@ -140,6 +144,8 @@ impl CognitiveOrchestrator {
             research_backend: None,
             research_policy: Default::default(),
             last_research: None,
+            media_port: None,
+            last_media_receipt: None,
             last_simulation: None,
             last_contradiction: None,
             pending_resolutions: Vec::new(),
@@ -562,6 +568,13 @@ impl CognitiveOrchestrator {
     /// le démon ne saurait plus QUOI exécuter. Cette variante expose le plan
     /// pour qu'il puisse être conservé, audité et mis en file.
     pub fn action_card_with_plan(prompt: &str) -> Option<(ActionCardPreview, ExecutionPlan)> {
+        if let Ok(Some(media_cmd)) = crate::media::MediaCommand::parse(prompt) {
+            return if media_cmd.is_cloud() {
+                Some(media_cmd.cloud_action_card())
+            } else {
+                None
+            };
+        }
         if crate::research::ResearchRequest::parse(prompt)
             .ok()
             .flatten()
@@ -1152,6 +1165,16 @@ impl CognitiveOrchestrator {
             return Ok(result);
         }
 
+        // Commandes explicites de génération multimodale (`:gen-image`,
+        // `:gen-audio`, `:gen-video`, `:gen-story`) via le port hexagonal.
+        if let Some(media_cmd) = crate::media::MediaCommand::parse(prompt)? {
+            let result = self
+                .media_turn(media_cmd, trust_level.clone(), auth)
+                .await?;
+            self.record_turn_metrics(&task_id, prompt, &result.confidence_decision);
+            return Ok(result);
+        }
+
         // --- Porte dry-run : verbe irréversible → plan + carte, ZÉRO exécution ---
         // `ExecutionPlan::new()` + 1 pas irréversible, simulation locale, puis
         // réponse `CARTE REQUISE` (pastilles coût/données/réversibilité) au lieu
@@ -1527,6 +1550,88 @@ impl CognitiveOrchestrator {
             latency_ms: elapsed,
             confidence_decision: final_decision,
             estimated_cost_cents: cost_opt,
+        })
+    }
+
+    /// Exécute un tour de génération multimodale via [`crate::media::MediaGenerationPort`],
+    /// vérifie les capabilities Biscuit v5 (fail-closed) et enregistre un triplet
+    /// SPO durable (`media:<id>`).
+    async fn media_turn(
+        &mut self,
+        cmd: crate::media::MediaCommand,
+        trust_level: TrustLevel,
+        auth: Option<(
+            &AuthorizationContext,
+            &CapabilityToken,
+            &CapabilityAuthority,
+        )>,
+    ) -> Result<OrchestratorResult> {
+        let started = Instant::now();
+        self.last_media_receipt = None;
+        self.constitution.check_action(&cmd.prompt)?;
+        crate::media::verify_media_capability(&cmd, trust_level, auth)?;
+
+        if cmd.is_cloud() {
+            let (card, _plan) = cmd.cloud_action_card();
+            let text = format!(
+                "CARTE REQUISE : {} — « {} » (coût estimé : {:.2} {}, sortie : cloud opt-in). Valider dans le HUD avant exécution.",
+                card.verb,
+                card.object,
+                card.cost_cents as f64 / 100.0,
+                card.currency
+            );
+            self.context
+                .record_interaction("Hakille", &text, vec!["hakille_response".to_string()]);
+            return Ok(OrchestratorResult {
+                response_text: text,
+                routing_used: "MediaCloudCard".into(),
+                latency_ms: started.elapsed().as_millis() as u64,
+                confidence_decision: ConfidenceDecision::ProposeAndWait,
+                estimated_cost_cents: Some(card.cost_cents),
+            });
+        }
+
+        let port = self.media_port.clone().ok_or_else(|| {
+            HakilleError::Internal(
+                "moteur génératif média non branché sur cet orchestrateur".into(),
+            )
+        })?;
+
+        self.self_model.set_state(CognitiveState::Executing);
+        let receipt = port.execute(&cmd).await?;
+
+        // Indexe l'artefact dans la mémoire souveraine (graphe SPO).
+        let subject = format!("media:{}", receipt.artifact_id);
+        let object = format!(
+            "{} [{}] → {} (sha256:{})",
+            receipt.modality,
+            receipt.engine_badge,
+            receipt.path,
+            &receipt.sha256[..receipt.sha256.len().min(16)]
+        );
+        let _ = self.remember(&subject, "generated_media", &object);
+
+        let response = format!(
+            "{}\n  Fichier : {}\n  Provenance Ed25519 : {}\n  Moteur : {} ({})\n  SHA-256 : {}\n  Durée : {} ms",
+            receipt.summary,
+            receipt.path,
+            receipt.provenance_path,
+            receipt.engine_id,
+            receipt.engine_badge,
+            receipt.sha256,
+            receipt.elapsed_ms
+        );
+        self.last_media_receipt = Some(receipt);
+        self.self_model.record_action_outcome(true);
+        self.context
+            .record_interaction("Hakille", &response, vec!["hakille_response".to_string()]);
+
+        Ok(OrchestratorResult {
+            response_text: response,
+            routing_used: format!("Media:{}", cmd.kind.as_str()),
+            latency_ms: started.elapsed().as_millis() as u64,
+            confidence_decision: ConfidenceDecision::AutoExecute,
+            estimated_cost_cents: Some(0),
         })
     }
 }

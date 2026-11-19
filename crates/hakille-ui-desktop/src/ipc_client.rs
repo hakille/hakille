@@ -161,6 +161,28 @@ impl IpcClient {
     pub fn edit_card(&self, card_id: u64) -> bool {
         self.submit(UiToKernel::Edit { card_id })
     }
+
+    /// Studio Média (F5, additif v1) : inventaire honnête des moteurs génératifs.
+    pub fn request_media_engines(&self) -> bool {
+        self.submit(UiToKernel::MediaEnginesRequest)
+    }
+
+    /// Studio Média (F5, additif v1) : galerie des artefacts locaux récents.
+    pub fn request_media_gallery(&self, limit: usize) -> bool {
+        self.submit(UiToKernel::MediaGalleryRequest { limit })
+    }
+
+    /// Studio Média (F5, additif v1) : soumet une génération Image/Audio/Vidéo/Storyboard.
+    pub fn generate_media(&self, req: hakille_ui_protocol::MediaGenerateRequestDto) -> bool {
+        self.submit(UiToKernel::MediaGenerateRequest(req))
+    }
+
+    /// Studio Média (F5, additif v1) : annulation coopérative d'un job actif.
+    pub fn cancel_media_job(&self, job_id: impl Into<String>) -> bool {
+        self.submit(UiToKernel::MediaJobCancel {
+            job_id: job_id.into(),
+        })
+    }
 }
 
 /// Fin de session côté client.

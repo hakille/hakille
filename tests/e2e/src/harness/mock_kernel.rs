@@ -93,7 +93,11 @@ impl MockKernel {
                 | UiToKernel::NotificationDismiss { .. }
                 | UiToKernel::GhostActionAccept { .. }
                 | UiToKernel::GhostActionDismiss { .. }
-                | UiToKernel::SpatialGesture(_) => {
+                | UiToKernel::SpatialGesture(_)
+                | UiToKernel::MediaEnginesRequest
+                | UiToKernel::MediaGenerateRequest(_)
+                | UiToKernel::MediaJobCancel { .. }
+                | UiToKernel::MediaGalleryRequest { .. } => {
                     return Err(
                         "daemon requis: opération refusée en mode détaché (fail-closed)".into(),
                     );
@@ -260,6 +264,21 @@ impl MockKernel {
             }
             UiToKernel::SpatialGesture(gesture) => {
                 Ok(Some(KernelToUi::MicroGestureRecognized(gesture)))
+            }
+            UiToKernel::MediaEnginesRequest => Ok(Some(KernelToUi::MediaEnginesReply {
+                engines: vec![],
+                ffmpeg_available: false,
+            })),
+            UiToKernel::MediaGenerateRequest(req) => Ok(Some(KernelToUi::MediaJobFailed {
+                job_id: "mock-media-job".into(),
+                modality: req.modality,
+                error: "moteur génératif non raccordé dans mock_kernel".into(),
+            })),
+            UiToKernel::MediaJobCancel { job_id } => Ok(Some(KernelToUi::Toast {
+                text: format!("Job média {job_id} annulé"),
+            })),
+            UiToKernel::MediaGalleryRequest { .. } => {
+                Ok(Some(KernelToUi::MediaGalleryReply { artifacts: vec![] }))
             }
         }
     }

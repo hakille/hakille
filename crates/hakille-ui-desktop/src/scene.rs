@@ -93,6 +93,13 @@ pub enum DrawCmd {
         blur: f32,
         color: Color,
     },
+    /// Aperçu bitmap RGBA8 réel (Studio Média F5 — miniature image/vidéo/onde).
+    ImageRgba {
+        rect: Rect,
+        width: u32,
+        height: u32,
+        pixels: std::sync::Arc<[u8]>,
+    },
 }
 
 /// Scène immuable — snapshot du frame, snapshotable pour golden tests.
@@ -148,6 +155,20 @@ impl Scene {
     }
     pub fn shadow(&mut self, rect: Rect, blur: f32, color: Color) {
         self.cmds.push(DrawCmd::Shadow { rect, blur, color });
+    }
+    pub fn image_rgba(
+        &mut self,
+        rect: Rect,
+        width: u32,
+        height: u32,
+        pixels: std::sync::Arc<[u8]>,
+    ) {
+        self.cmds.push(DrawCmd::ImageRgba {
+            rect,
+            width,
+            height,
+            pixels,
+        });
     }
     /// Hash déterministe pour snapshots golden (taille/DPI/thème fixés).
     pub fn fingerprint(&self) -> u64 {

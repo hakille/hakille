@@ -9,6 +9,7 @@ members = [
     "crates/hakille-kernel",
     "crates/hakille-perception",
     "crates/hakille-inference",
+    "crates/hakille-media",
     "crates/hakille-voice",
     "crates/hakille-audio",
     "crates/hakille-agents",

@@ -35,6 +35,7 @@ mod agent_runtime;
 mod host;
 mod identity;
 mod ipc;
+mod media_cli;
 mod models_cli;
 mod persistence;
 mod substrate;
@@ -70,11 +71,13 @@ fn make_cli_progress_callback() -> hakille_inference::ProgressCallback {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     tracing_subscriber::fmt()
-        .with_max_level(if args.get(1).map(String::as_str) == Some("models") {
-            tracing::Level::WARN
-        } else {
-            tracing::Level::INFO
-        })
+        .with_max_level(
+            if matches!(args.get(1).map(String::as_str), Some("models" | "media")) {
+                tracing::Level::WARN
+            } else {
+                tracing::Level::INFO
+            },
+        )
         .with_writer(io::stderr)
         .init();
     let mut eval_prompt: Option<String> = None;
@@ -105,6 +108,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return voice_cli::print_devices(&args[2..]);
     }
 
+    // Commandes CLI média souveraines (`hakille-daemon media ...`) :
+    // réutilisent exactement l'identité Ed25519 persistante du démon.
+    if args.get(1).map(String::as_str) == Some("media") {
+        let data_dir = std::env::var("HAKILLE_DATA_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|_| std::env::var("LOCALAPPDATA").map(|l| PathBuf::from(l).join("Hakille")))
+            .unwrap_or_else(|_| PathBuf::from("./hakille_data").join("Hakille"));
+        std::fs::create_dir_all(&data_dir)?;
+        let keys_dir = data_dir.join("keys");
+        std::fs::create_dir_all(&keys_dir)?;
+        let production =
+            std::env::var_os("HAKILLE_PROD").is_some_and(|v| v != "0" && !v.is_empty());
+        let history_exists = match std::fs::symlink_metadata(data_dir.join("audit.redb")) {
+            Ok(_) => true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        let (_authority, signing_keypair) = identity::load_identity(
+            hakille_keystore::OsStore::new(),
+            &keys_dir,
+            history_exists,
+            production,
+        )?;
+        media_cli::run_cli(
+            &args[2..],
+            data_dir,
+            models_dir,
+            signing_keypair.signing_key,
+        )
+        .await?;
+        return Ok(());
+    }
+
     let mut arg_idx = 1;
     while arg_idx < args.len() {
         if let Some(consumed) = voice_options.parse_flag(&args, arg_idx)? {
@@ -123,6 +159,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  voice devices               Inventaire audio, sans ouvrir le micro");
                 println!(
                     "  voice test --audio <WAV>     Diagnostic Whisper + activation sur fichier, aucune commande exécutée"
+                );
+                println!(
+                    "  media engines|image|audio|video|compose|list|verify  Moteur génératif multimodal souverain (Ed25519)"
                 );
                 println!();
                 println!("Options:");
@@ -560,6 +599,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             backend.transport_description()
         );
     }
+    let media_manager =
+        media_cli::build_media_manager(&data_dir, &models_dir, signing_keypair.signing_key.clone())
+            .map_err(io::Error::other)?;
+    orchestrator.media_port = Some(Arc::new(media_cli::DaemonMediaPort::new(Arc::clone(
+        &media_manager,
+    ))));
+    {
+        let engines = media_manager.list_engines();
+        let ready = engines.iter().filter(|e| e.availability.is_ready()).count();
+        println!(
+            "  Studio Média (hakille-media) : {}/{} moteur(s) prêts, muxer ffmpeg={}, stockage={}",
+            ready,
+            engines.len(),
+            if media_manager.ffmpeg_available() {
+                "actif (MP4/WebM)"
+            } else {
+                "absent (APNG/Y4M Rust pur)"
+            },
+            data_dir.join("media").display()
+        );
+    }
     if let Some(engine) = qwen_engine_opt {
         orchestrator.set_inference_engine(engine);
         println!(
@@ -754,6 +814,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &data_dir,
             agent_runtime_shared,
             &agent_registry,
+            Some(Arc::clone(&media_manager)),
         )
         .await;
     }
@@ -1065,6 +1126,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "  :gui-action <cmd> Plan and execute native Windows GUI desktop actions via UI-TARS"
                 );
+                println!(
+                    "  :media-engines    Inventaire honnête des moteurs génératifs (Image/Audio/Vidéo)"
+                );
+                println!(
+                    "  :gen-image <txt>  Génère une image locale signée Ed25519 [--size WxH --engine ID]"
+                );
+                println!(
+                    "  :gen-audio <txt>  Génère audio WAV 16-bit [--mode speech|music|soundscape|foley]"
+                );
+                println!(
+                    "  :gen-video <txt>  Génère vidéo [--format apng|y4m|frames|mp4|webm --fps N --frames N]"
+                );
+                println!(
+                    "  :gen-story <txt>  Storyboard multimodal complet (DAG image+voix+ambiance+vidéo+mux)"
+                );
+                println!("  :media-list       Galerie des artefacts médias générés localement");
+                println!(
+                    "  :media-verify <p> Vérifie SHA-256, signature Ed25519 et chunk PNG iTXt"
+                );
+                println!("  :media-cancel <id> Annule un job média actif");
                 println!("  :ram              Télémétrie mémoire du système hôte (alias :win-ram)");
                 println!(
                     "  :power            Alimentation et thermique du système hôte (alias :win-power)"
@@ -2915,6 +2996,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
 
+            ":media-engines" => {
+                let engines = media_manager.list_engines();
+                media_cli::print_engines_table(&engines, media_manager.ffmpeg_available());
+            }
+
+            ":media-list" => match media_manager.store().list(25) {
+                Ok(items) => media_cli::print_gallery_table(&items),
+                Err(e) => eprintln!("✗ Galerie média illisible : {e}"),
+            },
+
+            s if s.starts_with(":media-verify ") => {
+                let path_str = s.trim_start_matches(":media-verify ").trim();
+                let vk = media_manager.verifying_key();
+                match hakille_media::verify_artifact_provenance(
+                    std::path::Path::new(path_str),
+                    Some(&vk),
+                ) {
+                    Ok(report) => {
+                        println!(
+                            "✓ Provenance Ed25519 VALIDE : {}",
+                            report.artifact_path.display()
+                        );
+                        println!(
+                            "  Moteur : {} ({}) | SHA-256 : {} | PNG iTXt : {}",
+                            report.engine_id,
+                            report.engine_kind.badge_fr(),
+                            report.content_sha256,
+                            if report.embedded_png_chunk_checked {
+                                "vérifié"
+                            } else {
+                                "n/a"
+                            }
+                        );
+                    }
+                    Err(e) => eprintln!("✗ Provenance INVALIDE : {e}"),
+                }
+            }
+
+            s if s.starts_with(":media-cancel ") => {
+                let job_id = s.trim_start_matches(":media-cancel ").trim();
+                if media_manager.cancel_job(job_id) {
+                    println!("✓ Annulation demandée pour le job média '{job_id}'.");
+                } else {
+                    println!("Aucun job média actif avec l'identifiant '{job_id}'.");
+                }
+            }
+
             s if bare_command_usage(s).is_some() => {
                 if let Some(usage) = bare_command_usage(s) {
                     eprintln!("{usage}");
@@ -2923,7 +3051,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             s if s.starts_with(':')
                 && !s.starts_with(":research ")
-                && !s.starts_with(":read-web ") =>
+                && !s.starts_with(":read-web ")
+                && !s.starts_with(":gen-image ")
+                && !s.starts_with(":gen-audio ")
+                && !s.starts_with(":gen-video ")
+                && !s.starts_with(":gen-story ") =>
             {
                 println!("✗ Commande inconnue : {input}");
                 if let Some(suggestion) = suggest_command(s) {
@@ -3063,6 +3195,78 @@ async fn run_turn_core(
                     authority,
                 )
                 .await
+        } else if let Some(media_cmd) = hakille_kernel::media::MediaCommand::parse(prompt)? {
+            audit_readonly_action(
+                audit_journal,
+                "MediaGenerationRequested",
+                format!(
+                    "Génération média explicite ({}, moteur={})",
+                    media_cmd.kind.as_str(),
+                    media_cmd.engine
+                ),
+                serde_json::json!({
+                    "modality": media_cmd.kind.as_str(),
+                    "engine": media_cmd.engine,
+                    "prompt_sha256": format!("{:x}", sha2::Sha256::digest(media_cmd.prompt.as_bytes())),
+                    "resource": media_cmd.resource(),
+                }),
+            )?;
+            hakille_inference::clear_token_stream_callback();
+            let expiry = Timestamp(chrono::Utc::now() + chrono::Duration::minutes(5));
+            let nonce = uuid::Uuid::now_v7().to_string();
+            let resource = media_cmd.resource();
+            let audience = CognitiveOrchestrator::EXPECTED_AUDIENCE;
+            let token = authority.create_root_token_with_binding(
+                vec![CapabilityScope::MediaGeneration],
+                vec![hakille_core::CapabilityAction::Execute],
+                expiry.clone(),
+                Some(&resource),
+                Some(&nonce),
+                Some(audience),
+            )?;
+            let ctx = hakille_core::AuthorizationContext::new(
+                "hakille-daemon",
+                audience,
+                expiry,
+                CapabilityScope::MediaGeneration,
+                hakille_core::CapabilityAction::Execute,
+                &resource,
+                Some(hakille_core::Quota::new(1)),
+                nonce,
+                vec![],
+            )?;
+            let out = orchestrator
+                .process_user_turn_with_authorization(
+                    prompt,
+                    &TrustLevel::User,
+                    &ctx,
+                    &token,
+                    authority,
+                )
+                .await;
+            if out.is_ok()
+                && let Some(receipt) = orchestrator.last_media_receipt.clone()
+            {
+                let _ = audit_action(
+                    audit_journal,
+                    "MediaGenerationCompleted",
+                    format!(
+                        "Artefact média généré ({}, {})",
+                        receipt.modality, receipt.engine_id
+                    ),
+                    serde_json::json!({
+                        "artifact_id": receipt.artifact_id,
+                        "modality": receipt.modality,
+                        "engine_id": receipt.engine_id,
+                        "engine_badge": receipt.engine_badge,
+                        "sha256": receipt.sha256,
+                        "path": receipt.path,
+                        "provenance_path": receipt.provenance_path,
+                        "elapsed_ms": receipt.elapsed_ms,
+                    }),
+                );
+            }
+            out
         } else {
             orchestrator
                 .process_user_turn(prompt, &TrustLevel::User)
@@ -3393,6 +3597,20 @@ fn bare_command_usage(input: &str) -> Option<&'static str> {
         ":revalidate" => Some("Usage : :revalidate <key>"),
         ":heritage-erase" => Some("Usage : :heritage-erase <key_id>"),
         ":agent-install" => Some("Usage : :agent-install <chemin_vers_paquet.hap>"),
+        ":gen-image" => Some(
+            "Usage : :gen-image <prompt> [--size WxH] [--steps N] [--seed N] [--engine ID] [--format png|jpg]",
+        ),
+        ":gen-audio" => Some(
+            "Usage : :gen-audio <prompt> [--mode speech|music|soundscape|foley] [--duration S] [--voice V] [--engine ID]",
+        ),
+        ":gen-video" => Some(
+            "Usage : :gen-video <prompt> [--size WxH] [--fps N] [--frames N] [--format apng|y4m|frames|mp4|webm] [--motion M]",
+        ),
+        ":gen-story" => {
+            Some("Usage : :gen-story <thème> [--size WxH] [--fps N] [--duration S] [--seed N]")
+        }
+        ":media-verify" => Some("Usage : :media-verify <chemin_vers_artefact>"),
+        ":media-cancel" => Some("Usage : :media-cancel <job_id>"),
         _ => None,
     }
 }
@@ -3431,6 +3649,14 @@ const KNOWN_COMMANDS: &[&str] = &[
     ":research",
     ":read-web",
     ":research-trace",
+    ":media-engines",
+    ":media-list",
+    ":media-verify",
+    ":media-cancel",
+    ":gen-image",
+    ":gen-audio",
+    ":gen-video",
+    ":gen-story",
     ":status",
     ":constitution",
     ":metrics",

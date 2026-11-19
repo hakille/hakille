@@ -573,6 +573,7 @@ async fn handle_client_request(
         &std::sync::Arc<std::sync::Mutex<crate::agent_runtime::ReferenceAgentRuntime>>,
     >,
     agent_registry: &hakille_agents::AgentRegistry,
+    media_manager: Option<&std::sync::Arc<hakille_media::MediaJobManager>>,
     card_manager: &mut ActionCardManager,
     broadcast_tx: &broadcast::Sender<BroadcastEnvelope>,
 ) {
@@ -658,7 +659,8 @@ async fn handle_client_request(
                         outcome.cost_cents
                     );
 
-                    if outcome.routing_used.starts_with("Plan/Dry-run")
+                    if (outcome.routing_used.starts_with("Plan/Dry-run")
+                        || outcome.routing_used == "MediaCloudCard")
                         && let Some((preview, plan)) =
                             CognitiveOrchestrator::action_card_with_plan(&query)
                     {
@@ -1252,6 +1254,218 @@ async fn handle_client_request(
             };
             let _ = reply_tx.send(Frame::reply(id, reply)).await;
         }
+        FrameBody::Request {
+            message: UiToKernel::MediaEnginesRequest,
+        } => {
+            let (engines, ffmpeg_available) = match media_manager {
+                Some(mgr) => (
+                    mgr.list_engines()
+                        .iter()
+                        .map(crate::media_cli::engine_descriptor_to_dto)
+                        .collect(),
+                    mgr.ffmpeg_available(),
+                ),
+                None => (Vec::new(), false),
+            };
+            println!(
+                "IPC [session {session_id}]: moteurs média servis (id={id}, {} moteur(s), ffmpeg={ffmpeg_available})",
+                engines.len()
+            );
+            let _ = reply_tx
+                .send(Frame::reply(
+                    id,
+                    KernelToUi::MediaEnginesReply {
+                        engines,
+                        ffmpeg_available,
+                    },
+                ))
+                .await;
+        }
+        FrameBody::Request {
+            message: UiToKernel::MediaGalleryRequest { limit },
+        } => {
+            let reply = match media_manager {
+                Some(mgr) => match mgr.store().list(limit.min(MAX_LIST_ROWS)) {
+                    Ok(items) => KernelToUi::MediaGalleryReply {
+                        artifacts: items
+                            .iter()
+                            .map(crate::media_cli::artifact_to_dto)
+                            .collect(),
+                    },
+                    Err(e) => KernelToUi::Toast {
+                        text: format!("galerie média illisible : {e}"),
+                    },
+                },
+                None => KernelToUi::MediaGalleryReply {
+                    artifacts: Vec::new(),
+                },
+            };
+            let _ = reply_tx.send(Frame::reply(id, reply)).await;
+        }
+        FrameBody::Request {
+            message: UiToKernel::MediaJobCancel { job_id },
+        } => {
+            let text = match media_manager {
+                Some(mgr) if mgr.cancel_job(&job_id) => {
+                    format!("Annulation demandée pour le job média '{job_id}'")
+                }
+                Some(_) => format!("Aucun job média actif avec l'identifiant '{job_id}'"),
+                None => "Moteur média indisponible sur cette session".into(),
+            };
+            let _ = reply_tx
+                .send(Frame::reply(id, KernelToUi::Toast { text }))
+                .await;
+        }
+        FrameBody::Request {
+            message: UiToKernel::MediaGenerateRequest(req),
+        } => {
+            let Some(mgr) = media_manager else {
+                let _ = reply_tx
+                    .send(Frame::reply(
+                        id,
+                        KernelToUi::MediaJobFailed {
+                            job_id: "unavailable".into(),
+                            modality: req.modality,
+                            error: "moteur génératif média non initialisé sur le démon".into(),
+                        },
+                    ))
+                    .await;
+                return;
+            };
+            if req.prompt.trim().is_empty() {
+                let _ = reply_tx
+                    .send(Frame::error(
+                        id,
+                        ErrorCode::BadFrame,
+                        "prompt média vide refusé",
+                    ))
+                    .await;
+                return;
+            }
+            if let Err(e) = audit_action_with_id(
+                audit_journal,
+                "MediaGenerationRequested",
+                format!(
+                    "Génération média IPC ({:?}, moteur={})",
+                    req.modality, req.engine
+                ),
+                serde_json::json!({
+                    "session_id": session_id,
+                    "modality": format!("{:?}", req.modality),
+                    "engine": req.engine,
+                }),
+                false,
+            ) {
+                let _ = reply_tx
+                    .send(Frame::reply(
+                        id,
+                        KernelToUi::MediaJobFailed {
+                            job_id: "audit-blocked".into(),
+                            modality: req.modality,
+                            error: format!("audit indisponible — génération refusée : {e}"),
+                        },
+                    ))
+                    .await;
+                return;
+            }
+
+            presence.set_state(DaemonPresenceState::Acting);
+            let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::Presence(
+                ProtoPresenceState::Acting,
+            )));
+
+            let mut progress_rx = mgr.subscribe_progress();
+            let session_reply_tx = reply_tx.clone();
+            let gen_result = {
+                let fut = crate::media_cli::execute_ipc_generate_request(mgr, &req);
+                tokio::pin!(fut);
+                let mut progress_open = true;
+                loop {
+                    tokio::select! {
+                        res = &mut fut => break res,
+                        ev = progress_rx.recv(), if progress_open => {
+                            match ev {
+                                Ok(p) => {
+                                    let dto = crate::media_cli::progress_to_dto(&p);
+                                    let _ = session_reply_tx
+                                        .send(Frame::reply(0, KernelToUi::MediaJobProgress(dto)))
+                                        .await;
+                                }
+                                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(broadcast::error::RecvError::Closed) => progress_open = false,
+                            }
+                        }
+                    }
+                }
+            };
+
+            presence.set_state(DaemonPresenceState::Idle);
+            let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::Presence(
+                ProtoPresenceState::Idle,
+            )));
+
+            let reply = match gen_result {
+                Ok(artifact) => {
+                    let subject = format!("media:{}", artifact.id);
+                    let object = format!(
+                        "{:?} [{}] → {} (sha256:{})",
+                        artifact.modality,
+                        artifact.engine_kind.badge_fr(),
+                        artifact.path.display(),
+                        &artifact.sha256[..artifact.sha256.len().min(16)]
+                    );
+                    let _ = orchestrator.remember(&subject, "generated_media", &object);
+                    let _ = persist_memory_to(orchestrator, memory_path);
+                    let _ = audit_action_with_id(
+                        audit_journal,
+                        "MediaGenerationCompleted",
+                        format!(
+                            "Artefact média IPC généré ({:?}, {})",
+                            artifact.modality, artifact.engine_id
+                        ),
+                        serde_json::json!({
+                            "artifact_id": artifact.id.to_string(),
+                            "modality": format!("{:?}", artifact.modality),
+                            "engine_id": artifact.engine_id,
+                            "engine_badge": artifact.engine_kind.badge_fr(),
+                            "sha256": artifact.sha256,
+                            "path": artifact.path.display().to_string(),
+                            "provenance_path": artifact.provenance_path.display().to_string(),
+                            "elapsed_ms": artifact.elapsed_ms,
+                        }),
+                        false,
+                    );
+                    println!(
+                        "IPC [session {session_id}]: média généré (id={id}, {:?}, {}, {} ms)",
+                        artifact.modality, artifact.engine_id, artifact.elapsed_ms
+                    );
+                    KernelToUi::MediaJobCompleted {
+                        artifact: crate::media_cli::artifact_to_dto(&artifact),
+                    }
+                }
+                Err(error) => {
+                    let _ = audit_action_with_id(
+                        audit_journal,
+                        "MediaGenerationFailed",
+                        format!("Échec génération média IPC ({:?})", req.modality),
+                        serde_json::json!({
+                            "modality": format!("{:?}", req.modality),
+                            "error": error,
+                        }),
+                        false,
+                    );
+                    eprintln!(
+                        "IPC [session {session_id}]: génération média échouée (id={id}) — {error}"
+                    );
+                    KernelToUi::MediaJobFailed {
+                        job_id: format!("ipc-{id}"),
+                        modality: req.modality,
+                        error,
+                    }
+                }
+            };
+            let _ = reply_tx.send(Frame::reply(id, reply)).await;
+        }
         FrameBody::Request { .. } => {
             eprintln!(
                 "IPC [session {session_id}]: message non supporté (id={id}) — refus explicite"
@@ -1303,6 +1517,7 @@ pub async fn run_serve_on_listener(
         std::sync::Arc<std::sync::Mutex<crate::agent_runtime::ReferenceAgentRuntime>>,
     >,
     agent_registry: &hakille_agents::AgentRegistry,
+    media_manager: Option<std::sync::Arc<hakille_media::MediaJobManager>>,
     mut shutdown_rx: Option<tokio::sync::oneshot::Receiver<()>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (broadcast_tx, _) = broadcast::channel::<BroadcastEnvelope>(256);
@@ -1366,6 +1581,7 @@ pub async fn run_serve_on_listener(
                         data_dir,
                         agent_runtime.as_ref(),
                         agent_registry,
+                        media_manager.as_ref(),
                         &mut card_manager,
                         &broadcast_tx,
                     )
@@ -1390,6 +1606,7 @@ pub async fn run_serve_on_listener(
                         data_dir,
                         agent_runtime.as_ref(),
                         agent_registry,
+                        media_manager.as_ref(),
                         &mut card_manager,
                         &broadcast_tx,
                     )
@@ -1423,6 +1640,7 @@ pub async fn run_serve(
         std::sync::Arc<std::sync::Mutex<crate::agent_runtime::ReferenceAgentRuntime>>,
     >,
     agent_registry: &hakille_agents::AgentRegistry,
+    media_manager: Option<std::sync::Arc<hakille_media::MediaJobManager>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = hakille_ipc::transport::default_endpoint();
     let token_path = hakille_ipc::transport::default_token_path();
@@ -1460,6 +1678,7 @@ pub async fn run_serve(
         data_dir,
         agent_runtime,
         agent_registry,
+        media_manager,
         None,
     )
     .await
@@ -1978,6 +2197,7 @@ mod tests {
                 &server_dir,
                 None,
                 &registry,
+                None,
                 Some(shutdown_rx),
             )
             .await
@@ -2231,6 +2451,177 @@ mod tests {
         ));
 
         // Arrêt propre du serveur
+        let _ = shutdown_tx.send(());
+        let _ = server_task.await;
+        #[cfg(unix)]
+        let _ = std::fs::remove_file(&endpoint);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn media_ipc_engines_generate_and_gallery_roundtrip() {
+        use hakille_constitution::rules::Constitution;
+        use hakille_core::UserId;
+        use hakille_kernel::fabric::{CognitiveFabric, CognitiveManifest};
+        use hakille_ui_protocol::{MediaGenerateRequestDto, MediaModalityDto};
+
+        let dir =
+            std::env::temp_dir().join(format!("hakille-ipc-media-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let endpoint = dir.join("ipc.sock").to_string_lossy().to_string();
+        let token = transport::fresh_token_hex();
+
+        let listener = IpcListener::bind(&endpoint).await.unwrap();
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[11u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        let media_mgr =
+            crate::media_cli::build_media_manager(&dir, &dir.join("models"), signing_key.clone())
+                .unwrap();
+
+        let fabric = CognitiveFabric::new(CognitiveManifest::default());
+        let user_id = UserId(uuid::Uuid::new_v4());
+        let constitution = Constitution::default_v1();
+        let mut orchestrator = CognitiveOrchestrator::new(fabric, user_id, constitution);
+        let mut presence = PresenceIndicator::new();
+        let mut cost_counter = CostCounter::new(10_000, "EUR");
+        let mut continuity = ContinuityTracker::new();
+        let mut initiative = BoundedInitiativeTracker::new();
+        let mut generality = GeneralityTracker::new();
+        let mut audit_journal =
+            AuditJournal::new(dir.join("audit.redb").to_str().unwrap(), signing_key).unwrap();
+        let memory_path = dir.join("memory.json");
+        let mut outbox = Outbox::new();
+        let registry = hakille_agents::AgentRegistry::new();
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server_token = token.clone();
+        let server_dir = dir.clone();
+        let server_task = tokio::spawn(async move {
+            run_serve_on_listener(
+                listener,
+                server_token,
+                &mut orchestrator,
+                &mut presence,
+                &mut cost_counter,
+                &mut continuity,
+                &mut initiative,
+                &mut generality,
+                &mut audit_journal,
+                &hakille_core::CapabilityAuthority::new(),
+                &memory_path,
+                &mut outbox,
+                &server_dir,
+                None,
+                &registry,
+                Some(media_mgr),
+                Some(shutdown_rx),
+            )
+            .await
+            .unwrap();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+
+        let mut stream = transport::connect(&endpoint).await.unwrap();
+        transport::client_handshake(&mut stream, &token)
+            .await
+            .unwrap();
+        let (r, w) = tokio::io::split(stream);
+        let mut reader = BufReader::new(r);
+        let mut writer = BufWriter::new(w);
+
+        // 1. Inventaire honnête des moteurs
+        transport::write_frame(
+            &mut writer,
+            &Frame::request(1, UiToKernel::MediaEnginesRequest),
+        )
+        .await
+        .unwrap();
+        let f1 = transport::read_frame(&mut reader).await.unwrap().unwrap();
+        assert_eq!(f1.id, 1);
+        match f1.body {
+            FrameBody::Reply {
+                message: KernelToUi::MediaEnginesReply { engines, .. },
+            } => {
+                assert!(engines.len() >= 10, "inventaire complet attendu");
+                assert!(engines.iter().any(|e| e.id == "procedural-dsp" && e.ready));
+                assert!(
+                    engines
+                        .iter()
+                        .any(|e| e.id == "sd-turbo-candle" && !e.ready)
+                );
+            }
+            other => panic!("MediaEnginesReply attendu, reçu : {other:?}"),
+        }
+
+        // 2. Génération image locale via IPC + aperçu RGBA + provenance Ed25519
+        let gen_req = MediaGenerateRequestDto {
+            modality: MediaModalityDto::Image,
+            prompt: "constellation boréale souveraine".into(),
+            engine: "procedural-dsp".into(),
+            width: Some(128),
+            height: Some(128),
+            steps: Some(8),
+            seed: Some(77),
+            duration_secs: None,
+            fps: None,
+            num_frames: None,
+            format: Some("png".into()),
+            mode: None,
+        };
+        transport::write_frame(
+            &mut writer,
+            &Frame::request(2, UiToKernel::MediaGenerateRequest(gen_req)),
+        )
+        .await
+        .unwrap();
+
+        let path_str = loop {
+            let f = transport::read_frame(&mut reader).await.unwrap().unwrap();
+            if f.id == 2 {
+                match f.body {
+                    FrameBody::Reply {
+                        message: KernelToUi::MediaJobCompleted { artifact },
+                    } => {
+                        assert!(artifact.provenance_signed);
+                        assert!(artifact.preview.is_some());
+                        assert_eq!(artifact.engine_id, "procedural-dsp");
+                        break artifact.path;
+                    }
+                    other => panic!("MediaJobCompleted attendu, reçu : {other:?}"),
+                }
+            }
+        };
+        let report = hakille_media::verify_artifact_provenance(
+            std::path::Path::new(&path_str),
+            Some(&verifying_key),
+        )
+        .expect("vérification Ed25519 + PNG iTXt");
+        assert!(report.embedded_png_chunk_checked);
+
+        // 3. Galerie locale
+        transport::write_frame(
+            &mut writer,
+            &Frame::request(3, UiToKernel::MediaGalleryRequest { limit: 10 }),
+        )
+        .await
+        .unwrap();
+        loop {
+            let f = transport::read_frame(&mut reader).await.unwrap().unwrap();
+            if f.id == 3 {
+                match f.body {
+                    FrameBody::Reply {
+                        message: KernelToUi::MediaGalleryReply { artifacts },
+                    } => {
+                        assert_eq!(artifacts.len(), 1);
+                        assert_eq!(artifacts[0].path, path_str);
+                        break;
+                    }
+                    other => panic!("MediaGalleryReply attendu, reçu : {other:?}"),
+                }
+            }
+        }
+
         let _ = shutdown_tx.send(());
         let _ = server_task.await;
         #[cfg(unix)]

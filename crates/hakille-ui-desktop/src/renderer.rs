@@ -236,6 +236,12 @@ impl SoftwareRenderer {
                     color,
                     text,
                 } => canvas.draw_glyph_run(*x, *y, *size, *weight, *color, text),
+                DrawCmd::ImageRgba {
+                    rect,
+                    width,
+                    height,
+                    pixels,
+                } => canvas.blit_rgba_rounded(rect, *width, *height, pixels),
             }
         }
         px
@@ -351,6 +357,73 @@ impl Canvas<'_> {
                 });
             }
             pen += scaled.h_advance(gid);
+        }
+    }
+
+    /// Blit d'une miniature RGBA8 avec interpolation bilinéaire et découpe SDF arrondie.
+    fn blit_rgba_rounded(&mut self, rect: &Rect, src_w: u32, src_h: u32, pixels: &[u8]) {
+        if src_w == 0 || src_h == 0 || rect.w <= 0.0 || rect.h <= 0.0 {
+            return;
+        }
+        let expected = (src_w as usize)
+            .saturating_mul(src_h as usize)
+            .saturating_mul(4);
+        if pixels.len() < expected {
+            return;
+        }
+        let x0 = (rect.x - 1.0).floor().max(0.0) as i32;
+        let y0 = (rect.y - 1.0).floor().max(0.0) as i32;
+        let x1 = ((rect.x + rect.w + 1.0).ceil()).min(self.w as f32) as i32;
+        let y1 = ((rect.y + rect.h + 1.0).ceil()).min(self.h as f32) as i32;
+        let sw = src_w as f32;
+        let sh = src_h as f32;
+
+        for y in y0..y1 {
+            let py = y as f32 + 0.5;
+            let v = ((py - rect.y) / rect.h).clamp(0.0, 1.0) * (sh - 1.0).max(0.0);
+            let sy0 = (v.floor() as u32).min(src_h - 1);
+            let sy1 = (sy0 + 1).min(src_h - 1);
+            let fy = v - sy0 as f32;
+
+            for x in x0..x1 {
+                let px = x as f32 + 0.5;
+                let d = rounded_rect_sdf(rect, px, py);
+                let cov = (0.5 - d).clamp(0.0, 1.0);
+                if cov <= 0.0 {
+                    continue;
+                }
+                let u = ((px - rect.x) / rect.w).clamp(0.0, 1.0) * (sw - 1.0).max(0.0);
+                let sx0 = (u.floor() as u32).min(src_w - 1);
+                let sx1 = (sx0 + 1).min(src_w - 1);
+                let fx = u - sx0 as f32;
+
+                let sample = |sx: u32, sy: u32| -> [f32; 4] {
+                    let idx = ((sy as usize) * (src_w as usize) + (sx as usize)) * 4;
+                    [
+                        pixels[idx] as f32,
+                        pixels[idx + 1] as f32,
+                        pixels[idx + 2] as f32,
+                        pixels[idx + 3] as f32,
+                    ]
+                };
+                let c00 = sample(sx0, sy0);
+                let c10 = sample(sx1, sy0);
+                let c01 = sample(sx0, sy1);
+                let c11 = sample(sx1, sy1);
+                let mut ch = [0u8; 4];
+                for k in 0..4 {
+                    let top = c00[k] * (1.0 - fx) + c10[k] * fx;
+                    let bot = c01[k] * (1.0 - fx) + c11[k] * fx;
+                    ch[k] = (top * (1.0 - fy) + bot * fy + 0.5).clamp(0.0, 255.0) as u8;
+                }
+                let color = Color {
+                    r: ch[0],
+                    g: ch[1],
+                    b: ch[2],
+                    a: ch[3],
+                };
+                self.blend(x, y, color, cov);
+            }
         }
     }
 }
@@ -1059,6 +1132,207 @@ pub fn card_scene(
     s
 }
 
+/// Aperçu bitmap réel et badge de provenance pour le panneau Studio Média (F5).
+#[derive(Debug, Clone)]
+pub struct MediaStudioPreview {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: std::sync::Arc<[u8]>,
+    pub caption: String,
+    pub provenance_badge: String,
+}
+
+/// Progression en direct d'un job média (image, audio, vidéo, storyboard).
+#[derive(Debug, Clone)]
+pub struct MediaStudioProgress {
+    pub stage: String,
+    pub step: u32,
+    pub total_steps: u32,
+    pub fraction: f32,
+    pub elapsed_ms: u64,
+}
+
+/// Scène Studio Média (`F5`) : barre HUD 64 px + panneau 720×360 combinant
+/// progression temps réel, miniature RGBA8 réelle (image/vidéo/onde audio),
+/// badge Ed25519 et inventaire honnête des moteurs + galerie locale.
+pub fn media_studio_scene(
+    snap: &hakille_ui_model::StableSnapshot,
+    view: &ConsultView,
+    progress: Option<&MediaStudioProgress>,
+    preview: Option<&MediaStudioPreview>,
+    theme_dark: bool,
+) -> Scene {
+    let p = hud_palette(theme_dark);
+    let grid = ty::LAYOUT_GRID_PT_BASE as f32;
+    let radius = ty::LAYOUT_RADIUS_CARD as f32;
+    let strong_weight = ty::TYPE_BODY_STRONG_WEIGHT as u16;
+    let w = HUD_WIDTH as f32;
+    let panel_top = HUD_HEIGHT as f32 + grid;
+    let panel = Rect::new(
+        grid,
+        panel_top,
+        w - 2.0 * grid,
+        CONSULT_HEIGHT as f32 - panel_top - grid,
+    )
+    .rounded(radius);
+
+    let mut s = hud_scene(snap, theme_dark);
+    s.height = CONSULT_HEIGHT;
+
+    s.shadow(
+        Rect::new(
+            panel.x + grid * 2.0,
+            panel.y + grid * 2.0,
+            (panel.w - grid * 4.0).max(0.0),
+            (panel.h - grid * 4.0).max(0.0),
+        ),
+        grid * 4.0,
+        Color::rgb(0, 0, 0).with_alpha(if theme_dark { 150 } else { 70 }),
+    );
+    s.fill(panel, Color::from_hex(p.line));
+    s.fill(
+        Rect::new(panel.x + 1.0, panel.y + 1.0, panel.w - 2.0, panel.h - 2.0)
+            .rounded((radius - 1.0).max(0.0)),
+        Color::from_hex(p.surface1),
+    );
+
+    let left = panel.x + grid * 2.0;
+    let right = panel.x + panel.w - grid * 2.0;
+    let full_width = (right - left).max(1.0);
+    let text1 = Color::from_hex(p.text1);
+    let text2 = Color::from_hex(p.text2);
+    let braise = Color::from_hex(p.braise);
+    let error = Color::from_hex(0xFF5A5A);
+
+    s.text_weighted(
+        left,
+        panel.y + 28.0,
+        18.0,
+        strong_weight,
+        text1,
+        ellipsize(&view.title, full_width, |t| {
+            measure_ui_text_weighted(t, 18.0, strong_weight)
+        }),
+    );
+    s.text(
+        left,
+        panel.y + 48.0,
+        12.0,
+        text2,
+        ellipsize(&view.subtitle, full_width, |t| measure_ui_text(t, 12.0)),
+    );
+    s.fill(
+        Rect::new(left, panel.y + 60.0, full_width, 1.0),
+        Color::from_hex(p.line),
+    );
+
+    let mut content_top = panel.y + 82.0;
+    let footer_y = panel.y + panel.h - 16.0;
+
+    // Barre de progression temps réel si un job média est en cours.
+    if let Some(prog) = progress {
+        let frac = prog.fraction.clamp(0.0, 1.0);
+        let track = Rect::new(left, panel.y + 68.0, full_width, 6.0).rounded(3.0);
+        s.fill(track, Color::from_hex(p.line));
+        let fill_w = (full_width * frac).max(6.0).min(full_width);
+        s.fill(
+            Rect::new(left, panel.y + 68.0, fill_w, 6.0).rounded(3.0),
+            braise,
+        );
+        let prog_label = format!(
+            "{} · étape {}/{} · {:.0}% ({} ms)",
+            prog.stage,
+            prog.step,
+            prog.total_steps.max(1),
+            frac * 100.0,
+            prog.elapsed_ms
+        );
+        s.text(
+            left,
+            panel.y + 88.0,
+            11.0,
+            braise,
+            ellipsize(&prog_label, full_width, |t| measure_ui_text(t, 11.0)),
+        );
+        content_top = panel.y + 106.0;
+    }
+
+    // Colonne droite : miniature RGBA8 réelle + badge Ed25519 si un aperçu est disponible.
+    let text_col_width = if let Some(prev) = preview {
+        let thumb_size = 152.0;
+        let thumb_x = right - thumb_size;
+        let thumb_y = content_top - 10.0;
+        let frame_rect = Rect::new(
+            thumb_x - 2.0,
+            thumb_y - 2.0,
+            thumb_size + 4.0,
+            thumb_size + 4.0,
+        )
+        .rounded(10.0);
+        s.fill(frame_rect, Color::from_hex(p.line));
+        let img_rect = Rect::new(thumb_x, thumb_y, thumb_size, thumb_size).rounded(8.0);
+        s.image_rgba(
+            img_rect,
+            prev.width,
+            prev.height,
+            std::sync::Arc::clone(&prev.pixels),
+        );
+        s.text_weighted(
+            thumb_x,
+            thumb_y + thumb_size + 14.0,
+            11.0,
+            strong_weight,
+            braise,
+            ellipsize(&prev.provenance_badge, thumb_size, |t| {
+                measure_ui_text_weighted(t, 11.0, strong_weight)
+            }),
+        );
+        s.text(
+            thumb_x,
+            thumb_y + thumb_size + 28.0,
+            10.0,
+            text2,
+            ellipsize(&prev.caption, thumb_size, |t| measure_ui_text(t, 10.0)),
+        );
+        (thumb_x - left - 16.0).max(160.0)
+    } else {
+        full_width
+    };
+
+    // Colonne gauche : inventaire honnête des moteurs + galerie / statut.
+    let line_height = 20.0;
+    let max_lines = (((footer_y - 16.0 - content_top) / line_height).floor()).max(0.0) as usize;
+    let mut y = content_top;
+    let mut rendered = 0usize;
+    for line in &view.lines {
+        if rendered >= max_lines {
+            break;
+        }
+        let (color, weight) = match line.kind {
+            ConsultLineKind::Normal => (text1, WEIGHT_NORMAL),
+            ConsultLineKind::Muted => (text2, WEIGHT_NORMAL),
+            ConsultLineKind::Strong => (text1, strong_weight),
+            ConsultLineKind::Error => (error, strong_weight),
+            ConsultLineKind::Braise => (braise, strong_weight),
+        };
+        let text = ellipsize(&line.text, text_col_width, |t| {
+            measure_ui_text_weighted(t, 13.0, weight)
+        });
+        s.text_weighted(left, y, 13.0, weight, color, text);
+        y += line_height;
+        rendered += 1;
+    }
+
+    s.text(
+        left,
+        footer_y,
+        10.0,
+        text2,
+        ellipsize(&view.footer, full_width, |t| measure_ui_text(t, 10.0)),
+    );
+    s
+}
+
 fn truncate_chars(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
@@ -1122,6 +1396,7 @@ mod tests {
                 | DrawCmd::Ring { color, .. }
                 | DrawCmd::Shadow { color, .. }
                 | DrawCmd::GlyphRun { color, .. } => *color,
+                DrawCmd::ImageRgba { .. } => return false,
             };
             color.a > 0 && (color.r, color.g, color.b) == (expected.r, expected.g, expected.b)
         })
@@ -1540,5 +1815,65 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn renderer_media_studio_scene_blits_rgba_thumbnail_and_progress() {
+        let snap = snapshot_with_state(2, false);
+        let view = ConsultView {
+            title: "Studio Média Souverain".into(),
+            subtitle: "Image · Audio · Vidéo · DAG multimodal — provenance Ed25519".into(),
+            lines: vec![
+                ConsultLine::new("procedural-dsp — PRÊT", ConsultLineKind::Strong),
+                ConsultLine::new("sd-turbo-candle — ABSENT", ConsultLineKind::Muted),
+            ],
+            footer: "Échap fermer · F5 Studio Média".into(),
+        };
+        let progress = MediaStudioProgress {
+            stage: "Débruitage".into(),
+            step: 6,
+            total_steps: 12,
+            fraction: 0.5,
+            elapsed_ms: 420,
+        };
+        // Vignette 4×4 rouge/vert/bleu/orange saturée pour vérifier le blitting RGBA réel.
+        let mut pixels = vec![0u8; 4 * 4 * 4];
+        for px in pixels.chunks_exact_mut(4) {
+            px.copy_from_slice(&[0xFF, 0x7A, 0x2F, 0xFF]);
+        }
+        let preview = MediaStudioPreview {
+            width: 4,
+            height: 4,
+            pixels: std::sync::Arc::from(pixels),
+            caption: "procedural-dsp · aurore".into(),
+            provenance_badge: "Ed25519 ✓ · IA synthétique".into(),
+        };
+        let scene = media_studio_scene(&snap, &view, Some(&progress), Some(&preview), true);
+        assert_eq!(scene.width, HUD_WIDTH);
+        assert_eq!(scene.height, CONSULT_HEIGHT);
+        assert!(
+            scene.cmds.iter().any(|c| matches!(
+                c,
+                DrawCmd::ImageRgba {
+                    width: 4,
+                    height: 4,
+                    ..
+                }
+            )),
+            "la scène Studio Média doit contenir la commande DrawCmd::ImageRgba"
+        );
+        let mut renderer = SoftwareRenderer::new(HUD_WIDTH, CONSULT_HEIGHT, true);
+        let rgba = renderer.paint(&scene);
+        // Au centre de la miniature (colonne droite), le pixel peint doit porter la teinte braise blittee.
+        let sample_x = (HUD_WIDTH - 16 - 76) as usize;
+        let sample_y = 240usize;
+        let idx = (sample_y * HUD_WIDTH as usize + sample_x) * 4;
+        assert!(
+            rgba[idx] > 200 && rgba[idx + 1] > 90,
+            "pixels RGBA blités attendus dans la miniature (r={}, g={}, b={})",
+            rgba[idx],
+            rgba[idx + 1],
+            rgba[idx + 2]
+        );
     }
 }

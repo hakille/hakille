@@ -5,6 +5,7 @@ pub mod contradiction;
 pub mod curiosity;
 pub mod fabric;
 pub mod instructions;
+pub mod media;
 pub mod memory;
 pub mod orchestrator;
 pub mod planner;

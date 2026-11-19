@@ -311,6 +311,7 @@ impl ConfidenceDecayEngine {
             CapabilityScope::Spatial => 0.40,
             CapabilityScope::CognitiveInference => 0.70,
             CapabilityScope::Notification => 0.50,
+            CapabilityScope::MediaGeneration => 0.50,
         }
     }
 
