@@ -183,6 +183,7 @@ name = "agent-home"
 version = "0.1.0"
 dependencies = [
  "hakille-core",
+ "hakille-home",
  "serde",
  "serde_json",
 ]
@@ -1172,12 +1173,17 @@ dependencies = [
  "hakille-auth",
  "hakille-constitution",
  "hakille-core",
+ "hakille-home",
  "hakille-inference",
+ "hakille-ipc",
  "hakille-kernel",
  "hakille-media",
  "hakille-memory",
+ "hakille-mesh",
  "hakille-metrics",
+ "hakille-mobile",
  "hakille-perception",
+ "hakille-spatial",
  "hakille-substrate",
  "hakille-substrate-linux",
  "hakille-substrate-macos",
@@ -2799,6 +2805,7 @@ dependencies = [
  "hakille-constitution",
  "hakille-core",
  "hakille-design",
+ "hakille-home",
  "hakille-inference",
  "hakille-ipc",
  "hakille-kernel",
@@ -2893,6 +2900,42 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "hakille-home"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "biscuit-auth",
+ "bytes",
+ "chacha20poly1305",
+ "chrono",
+ "ed25519-dalek",
+ "hakille-core",
+ "hakille-memory",
+ "hakille-mesh",
+ "hakille-spatial",
+ "hex",
+ "hkdf",
+ "hmac",
+ "proptest",
+ "rand 0.8.8",
+ "redb",
+ "reqwest",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
  "uuid",
 ]
 

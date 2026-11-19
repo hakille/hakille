@@ -458,6 +458,90 @@ impl Core {
                     true,
                 )
             }
+            MobileAction::LoadHomeDevices {} => {
+                (UiToKernel::HomeDevicesRequest, "load_home_devices", false)
+            }
+            MobileAction::DiscoverHome { protocol } => {
+                if let Some(proto) = &protocol {
+                    text(proto, 64, false)?;
+                }
+                (
+                    UiToKernel::HomeDiscoverRequest { protocol },
+                    "discover_home",
+                    false,
+                )
+            }
+            MobileAction::SendHomeCommand {
+                device_id,
+                action,
+                params_json,
+                confirm_hold_ms,
+            } => {
+                if self.is_guest_active() {
+                    return Err("Action domotique interdite en mode invité éphémère".into());
+                }
+                text(&device_id, 128, false)?;
+                text(&action, 64, false)?;
+                if !params_json.trim().is_empty() {
+                    text(&params_json, MAX_DRAFT_BYTES, false)?;
+                    serde_json::from_str::<serde_json::Value>(&params_json)
+                        .map_err(|_| "Paramètres domotiques JSON invalides")?;
+                }
+                let normalized_action = action.trim().to_ascii_lowercase().replace('-', "_");
+                let is_tier3_action = matches!(
+                    normalized_action.as_str(),
+                    "unlock"
+                        | "unlock_door"
+                        | "open_garage"
+                        | "disarm"
+                        | "disarm_alarm"
+                        | "set_alarm"
+                        | "alarm"
+                        | "set_water_valve"
+                        | "water_valve"
+                        | "set_main_breaker"
+                        | "main_breaker"
+                        | "stream_camera"
+                ) || self
+                    .snapshot
+                    .home_devices
+                    .iter()
+                    .find(|d| d.id == device_id)
+                    .is_some_and(|d| {
+                        d.is_critical
+                            && normalized_action != "read_state"
+                            && normalized_action != "read"
+                    });
+
+                if is_tier3_action && confirm_hold_ms.unwrap_or(0) < HOLD_MS {
+                    return Err(
+                        "Action domotique critique Tier 3 : maintien physique continu >= 600 ms requis".into(),
+                    );
+                }
+                let final_params = if let Some(ms) = confirm_hold_ms {
+                    let mut val = if params_json.trim().is_empty() {
+                        serde_json::json!({})
+                    } else {
+                        serde_json::from_str::<serde_json::Value>(&params_json)
+                            .unwrap_or_else(|_| serde_json::json!({}))
+                    };
+                    if let Some(obj) = val.as_object_mut() {
+                        obj.insert("hold_confirmed_ms".into(), serde_json::json!(ms));
+                    }
+                    val.to_string()
+                } else {
+                    params_json
+                };
+                (
+                    UiToKernel::HomeCommandRequest {
+                        device_id,
+                        action,
+                        params_json: final_params,
+                    },
+                    "home_command",
+                    true,
+                )
+            }
             MobileAction::BeginApproval { card_id } => {
                 self.card_available(card_id)?;
                 self.snapshot.approval = Some(ApprovalState {
@@ -1108,6 +1192,26 @@ impl Core {
                     self.snapshot.privacy_guard = Some(alert.clone());
                 }
             },
+            KernelToUi::HomeDevicesReply {
+                devices,
+                protocols,
+                energy,
+            } => {
+                self.snapshot.home_devices = devices.clone();
+                self.snapshot.home_protocols = protocols.clone();
+                self.snapshot.home_energy = Some(energy.clone());
+            }
+            KernelToUi::HomeCommandReply {
+                device_id,
+                executed_on_wire,
+                summary,
+                receipt_sha256,
+            } => {
+                let sha = receipt_sha256.as_deref().unwrap_or("aucun-sha256");
+                self.snapshot.last_home_receipt = Some(format!(
+                    "[{device_id}] wire={executed_on_wire} sha256={sha} — {summary}"
+                ));
+            }
             KernelToUi::MemoryRememberAck { .. }
             | KernelToUi::UserContext(_)
             | KernelToUi::EmotionUpdate(_)
@@ -1409,6 +1513,19 @@ fn terminal_matches(request: &UiToKernel, message: &KernelToUi) -> bool {
         (UiToKernel::MemoryForget { .. }, KernelToUi::Toast { .. }) => true,
         (UiToKernel::MemoryForget { .. }, KernelToUi::HudReply { .. }) => true,
         (UiToKernel::MemoryForget { .. }, KernelToUi::JournalAppended { .. }) => true,
+        (UiToKernel::HomeDevicesRequest, KernelToUi::HomeDevicesReply { .. }) => true,
+        (
+            UiToKernel::HomeDiscoverRequest { .. },
+            KernelToUi::HomeDevicesReply { .. } | KernelToUi::HomeCommandReply { .. },
+        ) => true,
+        (
+            UiToKernel::HomeCommandRequest { device_id, .. },
+            KernelToUi::HomeCommandReply {
+                device_id: reply_id,
+                ..
+            },
+        ) => device_id == reply_id,
+        (UiToKernel::HomeCommandRequest { .. }, KernelToUi::ShowCard(_)) => true,
         _ => false,
     }
 }
@@ -1528,6 +1645,43 @@ fn validate_message(message: &KernelToUi) -> Result<(), String> {
                 | hakille_ui_protocol::PrivacyGuardTrigger::EphemeralTtlPurged => {}
             }
         }
+        KernelToUi::HomeDevicesReply {
+            devices,
+            protocols,
+            energy,
+        } => {
+            if devices.len() > 500 {
+                return Err("Liste d'appareils domotiques supérieure à 500 entrées".into());
+            }
+            if protocols.len() > 64 {
+                return Err("Catalogue de protocoles domotiques supérieur à 64 entrées".into());
+            }
+            for d in devices {
+                for value in [
+                    &d.id,
+                    &d.name,
+                    &d.room,
+                    &d.protocol,
+                    &d.category,
+                    &d.endpoint,
+                ] {
+                    text(value, 512, false)?;
+                }
+            }
+            text(&energy.verdict, 4096, true)?;
+        }
+        KernelToUi::HomeCommandReply {
+            device_id,
+            summary,
+            receipt_sha256,
+            ..
+        } => {
+            text(device_id, 128, false)?;
+            text(summary, 4096, false)?;
+            if let Some(sha) = receipt_sha256 {
+                text(sha, 128, false)?;
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -1536,6 +1690,8 @@ fn validate_message(message: &KernelToUi) -> Result<(), String> {
 #[cfg(test)]
 mod boundary_tests {
     use super::*;
+    use hakille_ui_protocol::{HomeDeviceDto, HomeEnergyDto, HomeProtocolStatusDto};
+
     #[test]
     fn request_id_never_uses_reserved_barrier_or_wraps() {
         let mut core = Core::default();
@@ -1559,5 +1715,132 @@ mod boundary_tests {
         );
         assert_eq!(core.next_id, u64::MAX);
         assert!(core.snapshot.pending.is_none());
+    }
+
+    #[test]
+    fn mobile_home_control_enforces_guest_pass_and_600ms_tier3_hold() {
+        let mut core = Core::default();
+        let now = Instant::now();
+        core.dispatch(
+            MobileAction::SetHub {
+                hub_id: "hub-foyer".into(),
+            },
+            now,
+        )
+        .unwrap();
+
+        // 1. Chargement de la constellation domotique -> snapshot mis à jour
+        let req = core
+            .dispatch(MobileAction::LoadHomeDevices {}, now)
+            .unwrap()
+            .unwrap();
+        let reply = Frame::reply(
+            req.id,
+            KernelToUi::HomeDevicesReply {
+                devices: vec![HomeDeviceDto {
+                    id: "serrure-entree".into(),
+                    name: "Serrure Entrée".into(),
+                    room: "entree".into(),
+                    protocol: "matter".into(),
+                    category: "door_lock".into(),
+                    endpoint: "192.168.1.25:5540".into(),
+                    status: "en-ligne".into(),
+                    summary: "verrouillé".into(),
+                    power_w: 0.5,
+                    pose_3d: [1.0, 1.2, 0.0],
+                    is_critical: true,
+                }],
+                protocols: vec![HomeProtocolStatusDto {
+                    protocol: "matter".into(),
+                    display_name: "Matter 1.3".into(),
+                    transport_mode: "UDP :5540".into(),
+                    default_port: Some(5540),
+                    honesty_note: "LAN uniquement".into(),
+                }],
+                energy: HomeEnergyDto {
+                    solar_w: 2400.0,
+                    load_w: 1100.0,
+                    ev_w: 0.0,
+                    hvac_w: 400.0,
+                    net_grid_w: -1300.0,
+                    battery_soc_pct: Some(72.0),
+                    self_consumption_pct: 46.0,
+                    measured_devices: 2,
+                    verdict: "Surplus solaire disponible".into(),
+                },
+            },
+        );
+        core.receive_stream_frame(req.id, reply).unwrap();
+        assert_eq!(core.snapshot.home_devices.len(), 1);
+        assert_eq!(core.snapshot.home_protocols.len(), 1);
+        assert!(core.snapshot.home_energy.is_some());
+
+        // 2. Mode Invité bloque toute mutation domotique
+        core.dispatch(
+            MobileAction::StartGuestPass {
+                name: "Invité".into(),
+                power: "lecture".into(),
+                duration_secs: Some(600),
+            },
+            now,
+        )
+        .unwrap();
+        assert!(
+            core.dispatch(
+                MobileAction::SendHomeCommand {
+                    device_id: "serrure-entree".into(),
+                    action: "unlock_door".into(),
+                    params_json: "{}".into(),
+                    confirm_hold_ms: Some(650),
+                },
+                now,
+            )
+            .is_err()
+        );
+        core.dispatch(MobileAction::RevokeGuestPass {}, now)
+            .unwrap();
+
+        // 3. Tier 3 refusé à 599 ms, autorisé à 600 ms
+        assert!(
+            core.dispatch(
+                MobileAction::SendHomeCommand {
+                    device_id: "serrure-entree".into(),
+                    action: "unlock_door".into(),
+                    params_json: "{}".into(),
+                    confirm_hold_ms: Some(599),
+                },
+                now,
+            )
+            .is_err()
+        );
+
+        let cmd_frame = core
+            .dispatch(
+                MobileAction::SendHomeCommand {
+                    device_id: "serrure-entree".into(),
+                    action: "unlock_door".into(),
+                    params_json: "{}".into(),
+                    confirm_hold_ms: Some(600),
+                },
+                now,
+            )
+            .unwrap()
+            .unwrap();
+        let cmd_reply = Frame::reply(
+            cmd_frame.id,
+            KernelToUi::HomeCommandReply {
+                device_id: "serrure-entree".into(),
+                executed_on_wire: true,
+                summary: "Serrure déverrouillée sur LAN".into(),
+                receipt_sha256: Some("abc123def456".into()),
+            },
+        );
+        core.receive_stream_frame(cmd_frame.id, cmd_reply).unwrap();
+        assert!(
+            core.snapshot
+                .last_home_receipt
+                .as_deref()
+                .is_some_and(|r| r.contains("abc123def456"))
+        );
     }
 }

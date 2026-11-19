@@ -740,6 +740,43 @@ impl DesktopApp {
                         self.apply(actions, event_loop);
                     }
                 }
+                HudAction::RequestHome => {
+                    let sent = self
+                        .ipc
+                        .as_ref()
+                        .is_some_and(|ipc| ipc.request_home_devices());
+                    if !sent {
+                        let actions = self.core.on_panel_request_failed(PanelKind::Home);
+                        self.apply(actions, event_loop);
+                    }
+                }
+                HudAction::RequestHomeDiscover { protocol } => {
+                    let sent = self
+                        .ipc
+                        .as_ref()
+                        .is_some_and(|ipc| ipc.request_home_discover(protocol.clone()));
+                    if !sent {
+                        let actions = self.core.on_ipc_unavailable("découverte domotique LAN");
+                        self.apply(actions, event_loop);
+                    }
+                }
+                HudAction::SendHomeCommand {
+                    device_id,
+                    action,
+                    params_json,
+                } => {
+                    let sent = self.ipc.as_ref().is_some_and(|ipc| {
+                        ipc.send_home_command(
+                            device_id.clone(),
+                            action.clone(),
+                            params_json.clone(),
+                        )
+                    });
+                    if !sent {
+                        let actions = self.core.on_ipc_unavailable("commande domotique");
+                        self.apply(actions, event_loop);
+                    }
+                }
                 HudAction::Quit => event_loop.exit(),
             }
         }
@@ -1125,6 +1162,7 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                             Key::Named(NamedKey::F3) => inputs.push(HudInput::ShowStatus),
                             Key::Named(NamedKey::F4) => inputs.push(HudInput::ShowAgents),
                             Key::Named(NamedKey::F5) => inputs.push(HudInput::ShowMedia),
+                            Key::Named(NamedKey::F6) => inputs.push(HudInput::ShowHome),
                             Key::Named(NamedKey::PageDown) => {
                                 inputs.push(HudInput::ScrollPanel(CONSULT_PAGE_LINES as i32))
                             }

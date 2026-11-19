@@ -21,8 +21,9 @@ use hakille_ui::{CostCounter, EphemeralHud, HudState, PresenceIndicator, Silence
 use hakille_ui_model::snapshot::{EVAPORATE_MS, HUD_HEIGHT, HUD_WIDTH};
 use hakille_ui_model::{KernelEvent, StableSnapshot, UiEvent};
 use hakille_ui_protocol::{
-    ActionCard, AgentDto, JournalEntryDto, KernelToUi, MediaArtifactDto, MediaEngineDto,
-    MediaGenerateRequestDto, MediaJobProgressDto, MediaModalityDto, MemoryRowDto, StatusDto,
+    ActionCard, AgentDto, HomeDeviceDto, HomeEnergyDto, HomeProtocolStatusDto, JournalEntryDto,
+    KernelToUi, MediaArtifactDto, MediaEngineDto, MediaGenerateRequestDto, MediaJobProgressDto,
+    MediaModalityDto, MemoryRowDto, StatusDto,
 };
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -65,6 +66,8 @@ pub enum HudInput {
     ShowAgents,
     /// Ouvre le panneau Studio Média (F5) : moteurs génératifs, aperçu RGBA, galerie.
     ShowMedia,
+    /// Ouvre le panneau domotique souveraine & constellation IoT (F6).
+    ShowHome,
     /// Défilement des lignes du panneau (clavier, molette, accessibilité).
     ScrollPanel(i32),
     PanelStart,
@@ -131,6 +134,18 @@ pub enum HudAction {
     CancelMediaJob {
         job_id: String,
     },
+    /// Demande de l'état domotique réel (appareils, 19 protocoles, énergie).
+    RequestHome,
+    /// Déclenche une découverte réseau LAN réelle (mDNS / SSDP / ONVIF).
+    RequestHomeDiscover {
+        protocol: Option<String>,
+    },
+    /// Envoie une commande domotique au hub souverain (validation Tier 3 côté démon).
+    SendHomeCommand {
+        device_id: String,
+        action: String,
+        params_json: String,
+    },
     /// Décision explicite sur la carte en attente (jamais un effet local :
     /// le démon revérifie et audite avant tout accusé).
     ApproveCard {
@@ -159,6 +174,8 @@ pub enum PanelKind {
     Agents,
     /// Studio Média souverain (`F5`) : moteurs, progression, aperçu RGBA, galerie.
     Media,
+    /// Constellation domotique & bilan énergétique LAN (19 protocoles, `F6`).
+    Home,
     Card,
 }
 
@@ -178,6 +195,7 @@ pub fn panel_request_action(kind: PanelKind) -> HudAction {
         PanelKind::Status => HudAction::RequestStatus,
         PanelKind::Agents => HudAction::RequestAgents,
         PanelKind::Media => HudAction::RequestMediaEngines,
+        PanelKind::Home => HudAction::RequestHome,
         PanelKind::Card | PanelKind::Response | PanelKind::None => HudAction::Redraw,
     }
 }
@@ -355,6 +373,14 @@ pub struct HudApp {
     media_last_artifact: Option<MediaArtifactDto>,
     /// Pixels RGBA8 décodés pour blitting natif dans le Studio Média.
     media_preview_pixels: Option<(u32, u32, Arc<[u8]>)>,
+    /// Appareils domotiques réels associés dans le hub souverain (`F6`).
+    home_devices: Vec<HomeDeviceDto>,
+    /// Catalogue des 19 protocoles domotiques & énergie rapportés par le démon.
+    home_protocols: Vec<HomeProtocolStatusDto>,
+    /// Bilan énergétique réel mesuré sur les capteurs/onduleurs associés.
+    home_energy: Option<HomeEnergyDto>,
+    /// Dernier reçu ou résumé de commande domotique rapporté par le démon.
+    last_home_receipt: Option<String>,
     /// Dernier identifiant de fait mémorisé (accusé `MemoryRemember`).
     last_remember_id: Option<String>,
     /// Confirmation de consultation (non-erreur) affichée sous la requête.
@@ -414,6 +440,10 @@ impl HudApp {
             media_progress: None,
             media_last_artifact: None,
             media_preview_pixels: None,
+            home_devices: Vec::new(),
+            home_protocols: Vec::new(),
+            home_energy: None,
+            last_home_receipt: None,
             last_remember_id: None,
             data_notice: None,
             queued_queries: VecDeque::new(),
@@ -775,7 +805,7 @@ impl HudApp {
     /// vide dit explicitement qu'il faut interroger le démon.
     pub fn consult_view(&self) -> ConsultView {
         let footer =
-            "Échap fermer  ·  F1 Journal  ·  F2 Mémoire  ·  F3 Statut  ·  F4 Agents  ·  F5 Studio Média"
+            "Échap fermer  ·  F1 Journal  ·  F2 Mémoire  ·  F3 Statut  ·  F4 Agents  ·  F5 Studio Média  ·  F6 Domotique"
                 .to_string();
         match self.panel {
             PanelKind::Journal => {
@@ -1036,6 +1066,132 @@ impl HudApp {
                     footer,
                 }
             }
+            PanelKind::Home => {
+                let mut lines: Vec<ConsultLine> = Vec::new();
+                if let Some(energy) = &self.home_energy {
+                    lines.push(ConsultLine::new(
+                        format!(
+                            "Homéostasie énergétique — Solaire {:.0} W · Charge {:.0} W · VE {:.0} W · CVC {:.0} W",
+                            energy.solar_w, energy.load_w, energy.ev_w, energy.hvac_w
+                        ),
+                        ConsultLineKind::Strong,
+                    ));
+                    let bat = energy
+                        .battery_soc_pct
+                        .map(|p| format!("{p:.0}%"))
+                        .unwrap_or_else(|| "n/d".into());
+                    lines.push(ConsultLine::new(
+                        format!(
+                            "Réseau net {:.0} W · Batterie {bat} · Autoconsommation {:.0}% · {} capteur(s)",
+                            energy.net_grid_w,
+                            energy.self_consumption_pct,
+                            energy.measured_devices
+                        ),
+                        ConsultLineKind::Normal,
+                    ));
+                    if !energy.verdict.is_empty() {
+                        lines.push(ConsultLine::new(
+                            format!("Arbitrage : {}", energy.verdict),
+                            ConsultLineKind::Muted,
+                        ));
+                    }
+                } else {
+                    lines.push(ConsultLine::new(
+                        "Aucune télémétrie énergétique reçue. F6 interroge le hub ; aucune valeur simulée.",
+                        ConsultLineKind::Muted,
+                    ));
+                }
+
+                lines.push(ConsultLine::new(String::new(), ConsultLineKind::Muted));
+                if self.home_devices.is_empty() {
+                    lines.push(ConsultLine::new(
+                        "Aucun appareil associé. Tapez :home-discover ou appairez un nœud LAN.",
+                        ConsultLineKind::Muted,
+                    ));
+                } else {
+                    lines.push(ConsultLine::new(
+                        format!("Appareils associés ({}) :", self.home_devices.len()),
+                        ConsultLineKind::Strong,
+                    ));
+                    for dev in &self.home_devices {
+                        let criticite = if dev.is_critical {
+                            " [CRITIQUE · maintien 600 ms]"
+                        } else {
+                            ""
+                        };
+                        lines.push(ConsultLine::new(
+                            format!(
+                                "{} [{}] · {} · {} ({:.0} W){}",
+                                dev.name,
+                                dev.room,
+                                dev.protocol,
+                                dev.status,
+                                dev.power_w,
+                                criticite
+                            ),
+                            if dev.is_critical {
+                                ConsultLineKind::Braise
+                            } else {
+                                ConsultLineKind::Normal
+                            },
+                        ));
+                        lines.push(ConsultLine::new(
+                            format!(
+                                "  id={} · {} · pos=({:.1},{:.1},{:.1}) · {}",
+                                dev.id,
+                                dev.endpoint,
+                                dev.pose_3d[0],
+                                dev.pose_3d[1],
+                                dev.pose_3d[2],
+                                dev.summary
+                            ),
+                            ConsultLineKind::Muted,
+                        ));
+                    }
+                }
+
+                if let Some(receipt) = &self.last_home_receipt {
+                    lines.push(ConsultLine::new(
+                        format!("Dernier ordre filaire : {receipt}"),
+                        ConsultLineKind::Normal,
+                    ));
+                }
+
+                if !self.home_protocols.is_empty() {
+                    lines.push(ConsultLine::new(String::new(), ConsultLineKind::Muted));
+                    lines.push(ConsultLine::new(
+                        format!(
+                            "Protocoles LAN supportés ({}) — aucun pont simulé :",
+                            self.home_protocols.len()
+                        ),
+                        ConsultLineKind::Strong,
+                    ));
+                    for proto in &self.home_protocols {
+                        let port = proto
+                            .default_port
+                            .map(|p| format!(":{p}"))
+                            .unwrap_or_else(|| " (série/BLE)".into());
+                        lines.push(ConsultLine::new(
+                            format!(
+                                "{} [{}]{port} — {}",
+                                proto.display_name, proto.transport_mode, proto.honesty_note
+                            ),
+                            ConsultLineKind::Muted,
+                        ));
+                    }
+                }
+
+                ConsultView {
+                    title: "Domotique souveraine & Constellation IoT".into(),
+                    subtitle: format!(
+                        "{} appareil(s) · {} protocole(s) LAN (zéro cloud imposé)",
+                        self.home_devices.len(),
+                        self.home_protocols.len()
+                    ),
+                    lines,
+                    footer,
+                }
+            }
             PanelKind::Response | PanelKind::None => {
                 let aux = self.aux_notice();
                 let lines = match &aux {
@@ -1093,6 +1249,21 @@ impl HudApp {
     /// Dernier statut reçu du démon (`StatusRequest`).
     pub fn last_status(&self) -> Option<&StatusDto> {
         self.last_status.as_ref()
+    }
+
+    /// Appareils domotiques reçus du hub souverain (`F5`).
+    pub fn home_devices(&self) -> &[HomeDeviceDto] {
+        &self.home_devices
+    }
+
+    /// Bilan énergétique reçu du hub souverain (`F5`).
+    pub fn home_energy(&self) -> Option<&HomeEnergyDto> {
+        self.home_energy.as_ref()
+    }
+
+    /// Catalogue des protocoles domotiques exposés par le démon.
+    pub fn home_protocols(&self) -> &[HomeProtocolStatusDto] {
+        &self.home_protocols
     }
 
     /// Dernier identifiant de fait mémorisé (accusé `MemoryRemember`).
@@ -1206,6 +1377,38 @@ impl HudApp {
                         let q = query.trim().to_string();
                         if q.is_empty() {
                             Vec::new()
+                        } else if q == ":home" {
+                            self.hud.open_prompt();
+                            self.open_panel(PanelKind::Home)
+                        } else if q == ":home-discover" || q.starts_with(":home-discover ") {
+                            let proto = q
+                                .strip_prefix(":home-discover")
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .map(ToOwned::to_owned);
+                            self.hud.open_prompt();
+                            vec![HudAction::RequestHomeDiscover { protocol: proto }]
+                        } else if let Some(rest) = q.strip_prefix(":home-cmd ") {
+                            let mut parts = rest.splitn(3, ' ');
+                            let device_id = parts.next().unwrap_or_default().trim().to_string();
+                            let action = parts.next().unwrap_or_default().trim().to_string();
+                            let params_json = parts.next().unwrap_or("{}").trim().to_string();
+                            if device_id.is_empty() || action.is_empty() {
+                                self.notice =
+                                    Some("usage : :home-cmd <device_id> <action> [json]".into());
+                                vec![HudAction::Redraw]
+                            } else {
+                                self.hud.open_prompt();
+                                vec![HudAction::SendHomeCommand {
+                                    device_id,
+                                    action,
+                                    params_json: if params_json.is_empty() {
+                                        "{}".to_string()
+                                    } else {
+                                        params_json
+                                    },
+                                }]
+                            }
                         } else if let Some(rest) = q.strip_prefix(":agent ") {
                             // Commande LOCALE : exécution d'un agent WASM réel
                             // via le démon (`:agent <nom> <json>`). Le HUD
@@ -1252,6 +1455,7 @@ impl HudApp {
             HudInput::ShowStatus => self.open_panel(PanelKind::Status),
             HudInput::ShowAgents => self.open_panel(PanelKind::Agents),
             HudInput::ShowMedia => self.open_panel(PanelKind::Media),
+            HudInput::ShowHome => self.open_panel(PanelKind::Home),
             HudInput::ScrollPanel(delta) => self.scroll_panel(delta, None),
             HudInput::PanelStart => self.scroll_panel(0, Some(false)),
             HudInput::PanelEnd => self.scroll_panel(0, Some(true)),
@@ -1645,6 +1849,46 @@ impl HudApp {
             KernelToUi::MediaJobFailed { error, .. } => {
                 self.media_progress = None;
                 self.notice = Some(format!("Média : {error}"));
+                if self.visible {
+                    vec![HudAction::Redraw]
+                } else {
+                    self.unseen_reply = true;
+                    Vec::new()
+                }
+            }
+            KernelToUi::HomeDevicesReply {
+                devices,
+                protocols,
+                energy,
+            } => {
+                let dev_count = devices.len();
+                let proto_count = protocols.len();
+                self.home_devices = devices;
+                self.home_protocols = protocols;
+                self.home_energy = Some(energy);
+                self.data_reply_actions(
+                    PanelKind::Home,
+                    format!("domotique : {dev_count} appareil(s) · {proto_count} protocole(s) LAN"),
+                )
+            }
+            KernelToUi::HomeCommandReply {
+                device_id,
+                executed_on_wire,
+                summary,
+                receipt_sha256,
+            } => {
+                let sha_short = receipt_sha256
+                    .as_deref()
+                    .map(|s| format!(" [sha256 {}…]", &s[..s.len().min(10)]))
+                    .unwrap_or_default();
+                let state_tag = if executed_on_wire {
+                    "ordre filaire"
+                } else {
+                    "non exécuté"
+                };
+                let formatted = format!("{device_id} ({state_tag}) : {summary}{sha_short}");
+                self.last_home_receipt = Some(formatted.clone());
+                self.data_notice = Some(formatted);
                 if self.visible {
                     vec![HudAction::Redraw]
                 } else {
@@ -3343,5 +3587,161 @@ mod tests {
             }),
             "le panneau Studio Média F5 doit exposer son titre dans l'arbre AccessKit"
         );
+    }
+
+    fn sample_home_reply() -> KernelToUi {
+        KernelToUi::HomeDevicesReply {
+            devices: vec![
+                HomeDeviceDto {
+                    id: "lock-entry".into(),
+                    name: "Serrure Entrée".into(),
+                    room: "Entrée".into(),
+                    protocol: "Matter".into(),
+                    category: "SmartLock".into(),
+                    endpoint: "192.168.1.40:5540".into(),
+                    status: "Online".into(),
+                    summary: "Verrouillée".into(),
+                    power_w: 1.2,
+                    pose_3d: [0.0, 1.1, 2.0],
+                    is_critical: true,
+                },
+                HomeDeviceDto {
+                    id: "solar-1".into(),
+                    name: "Onduleur SunSpec".into(),
+                    room: "Garage".into(),
+                    protocol: "SunSpecSolar".into(),
+                    category: "SolarInverter".into(),
+                    endpoint: "192.168.1.50:502".into(),
+                    status: "Online".into(),
+                    summary: "Production PV active".into(),
+                    power_w: -4200.0,
+                    pose_3d: [3.2, 1.5, -1.0],
+                    is_critical: false,
+                },
+            ],
+            protocols: vec![HomeProtocolStatusDto {
+                protocol: "Matter".into(),
+                display_name: "Matter (TLV/CASE)".into(),
+                transport_mode: "UdpLan".into(),
+                default_port: Some(5540),
+                honesty_note: "Appareil Matter LAN requis".into(),
+            }],
+            energy: HomeEnergyDto {
+                solar_w: 4200.0,
+                load_w: 1800.0,
+                ev_w: 2100.0,
+                hvac_w: 450.0,
+                net_grid_w: -300.0,
+                battery_soc_pct: Some(78.0),
+                self_consumption_pct: 92.0,
+                measured_devices: 2,
+                verdict: "Surplus solaire orienté vers le VE".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn renderer_home_constellation_view_renders_with_tokens() {
+        let mut app = shown(false);
+        let actions = app.handle(HudInput::ShowHome);
+        assert!(actions.contains(&HudAction::RequestHome));
+        assert_eq!(app.panel(), PanelKind::Home);
+
+        // Sans données reçues, aucun appareil n'est inventé.
+        let empty_view = app.consult_view();
+        assert!(
+            empty_view
+                .lines
+                .iter()
+                .any(|l| l.text.contains("Aucun appareil associé")),
+            "{:?}",
+            empty_view.lines
+        );
+
+        let actions = app.on_kernel_reply(sample_home_reply());
+        assert!(actions.contains(&HudAction::Redraw));
+        assert_eq!(app.home_devices().len(), 2);
+        assert!(app.home_energy().is_some());
+        assert_eq!(app.home_protocols().len(), 1);
+
+        let view = app.consult_view();
+        let joined: String = view
+            .lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("Solaire 4200 W"), "{joined}");
+        assert!(joined.contains("Serrure Entrée"), "{joined}");
+        assert!(joined.contains("Matter (TLV/CASE)"), "{joined}");
+
+        let scene = app.scene();
+        assert_eq!(scene.height, CONSULT_HEIGHT);
+        assert!(scene.cmds.iter().any(|cmd| matches!(
+            cmd,
+            DrawCmd::GlyphRun { text, .. } if text.contains("Domotique souveraine")
+        )));
+    }
+
+    #[test]
+    fn a11y_home_panel_interactive_labels_non_empty() {
+        let mut app = shown(false);
+        app.on_kernel_reply(sample_home_reply());
+        let snap = app.snapshot();
+        let mut tree = crate::a11y::build_shell_tree(&snap, &[], &[]);
+        crate::a11y::append_voice_controls(&mut tree, app.voice_state(), app.voice_enabled());
+        crate::a11y::append_consult_panel(&mut tree, &app.consult_view());
+        assert!(
+            crate::a11y::audit_interactive_labels(&tree).is_empty(),
+            "tout nœud interactif doit avoir un label non vide"
+        );
+        let has_home_container = tree.nodes.iter().any(|(nid, node)| {
+            *nid == crate::a11y::CONSULT_PANEL_NODE
+                && node
+                    .label()
+                    .is_some_and(|l| l.contains("Domotique souveraine"))
+        });
+        assert!(has_home_container);
+    }
+
+    #[test]
+    fn desktop_shell_home_f5_and_commands_flow() {
+        let mut app = shown(false);
+        type_text(&mut app, ":home-discover mqtt");
+        let actions = app.handle(HudInput::Enter);
+        assert_eq!(
+            actions,
+            vec![HudAction::RequestHomeDiscover {
+                protocol: Some("mqtt".to_string())
+            }]
+        );
+        assert_eq!(app.snapshot().hud_query, "");
+
+        type_text(&mut app, ":home-cmd lock-entry unlock {\"code\":\"0\"}");
+        let actions = app.handle(HudInput::Enter);
+        assert_eq!(
+            actions,
+            vec![HudAction::SendHomeCommand {
+                device_id: "lock-entry".to_string(),
+                action: "unlock".to_string(),
+                params_json: "{\"code\":\"0\"}".to_string(),
+            }]
+        );
+
+        let actions = app.on_kernel_reply(KernelToUi::HomeCommandReply {
+            device_id: "lock-entry".into(),
+            executed_on_wire: true,
+            summary: "Déverrouillé".into(),
+            receipt_sha256: Some("abcdef0123456789".repeat(4)),
+        });
+        assert!(actions.contains(&HudAction::Redraw));
+        let notice = app.aux_notice().expect("reçu filaire affiché");
+        assert!(notice.text.contains("ordre filaire"));
+        assert!(notice.text.contains("Déverrouillé"));
+
+        type_text(&mut app, ":home");
+        let actions = app.handle(HudInput::Enter);
+        assert!(actions.contains(&HudAction::RequestHome));
+        assert_eq!(app.panel(), PanelKind::Home);
     }
 }

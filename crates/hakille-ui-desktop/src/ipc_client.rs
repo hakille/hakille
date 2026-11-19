@@ -183,6 +183,30 @@ impl IpcClient {
             job_id: job_id.into(),
         })
     }
+
+    /// Liste les appareils domotiques, protocoles LAN et bilan énergétique (additif v1).
+    pub fn request_home_devices(&self) -> bool {
+        self.submit(UiToKernel::HomeDevicesRequest)
+    }
+
+    /// Déclenche une découverte réseau LAN réelle (mDNS / SSDP / ONVIF).
+    pub fn request_home_discover(&self, protocol: Option<String>) -> bool {
+        self.submit(UiToKernel::HomeDiscoverRequest { protocol })
+    }
+
+    /// Envoie une commande domotique au hub souverain (les actions Tier 3 exigent confirmation).
+    pub fn send_home_command(
+        &self,
+        device_id: impl Into<String>,
+        action: impl Into<String>,
+        params_json: impl Into<String>,
+    ) -> bool {
+        self.submit(UiToKernel::HomeCommandRequest {
+            device_id: device_id.into(),
+            action: action.into(),
+            params_json: params_json.into(),
+        })
+    }
 }
 
 /// Fin de session côté client.
