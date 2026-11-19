@@ -8,9 +8,12 @@
 
 use hakille_inference::{
     ModelStatus,
-    facemesh_onnx::{FACEMESH_POINTS_COUNT, FaceMeshIrisSession},
+    facemesh_onnx::{
+        FACEMESH_POINTS_COUNT, FaceMeshIrisSession, compute_facial_metrics,
+        generate_canonical_landmarks,
+    },
     hsemotion_onnx::HSEmotionSession,
-    pose_onnx::PoseSession,
+    pose_onnx::{PoseSession, calculate_neck_angle, generate_canonical_seated_skeleton},
     ssrnet_onnx::{SSRNetSession, build_age_result},
 };
 use hakille_spatial::PostureKind;
@@ -35,23 +38,12 @@ fn test_m3_concurrent_inference_deadlock_free() {
         let handle = thread::spawn(move || {
             let dummy_frame = vec![((t * 30) % 255) as u8; 320 * 240 * 3];
 
-            // 1. FaceMesh
-            let fm_res = fm.infer(&dummy_frame, 320, 240).expect("facemesh infer ok");
-            assert_eq!(fm_res.landmarks.len(), FACEMESH_POINTS_COUNT);
-
-            // 2. HSEmotion
-            let em_res = em
-                .infer(&dummy_frame, 320, 240)
-                .expect("hsemotion infer ok");
-            assert!(em_res.confidence > 0.0);
-
-            // 3. SSR-Net
-            let sn_res = sn.infer(&dummy_frame, 320, 240).expect("ssrnet infer ok");
-            assert!(sn_res.confidence > 0.0);
-
-            // 4. Pose
-            let ps_res = ps.infer(&dummy_frame, 320, 240).expect("pose infer ok");
-            assert_eq!(ps_res.skeleton.joints.len(), 17);
+            // Sans artefact ONNX, les 4 sessions doivent refuser honnêtement (zéro simulation silencieuse)
+            // et sans aucun deadlock ni panique sous concurrence.
+            assert!(fm.infer(&dummy_frame, 320, 240).is_err());
+            assert!(em.infer(&dummy_frame, 320, 240).is_err());
+            assert!(sn.infer(&dummy_frame, 320, 240).is_err());
+            assert!(ps.infer(&dummy_frame, 320, 240).is_err());
         });
 
         handles.push(handle);
@@ -70,35 +62,21 @@ fn test_m3_adversarial_degraded_inputs() {
     let ssrnet = SSRNetSession::open_or_simulated(None);
     let pose = PoseSession::open_or_simulated(None);
 
-    // Image totalement noire (0 lumens)
-    let black_frame = vec![0u8; 192 * 192 * 3];
-    assert!(facemesh.infer(&black_frame, 192, 192).is_ok());
-    assert!(hsemotion.infer(&black_frame, 192, 192).is_ok());
-    assert!(ssrnet.infer(&black_frame, 192, 192).is_ok());
-    assert!(pose.infer(&black_frame, 192, 192).is_ok());
+    // Sans artefact ONNX, toutes les entrées (y compris noires/blanches/extrêmes/vides)
+    // doivent retourner Err proprement sans jamais paniquer ni fabriquer d'estimation.
+    for (w, h, fill) in [
+        (192, 192, 0u8),
+        (224, 224, 255u8),
+        (1000, 20, 128u8),
+        (20, 1000, 128u8),
+    ] {
+        let frame = vec![fill; w * h * 3];
+        assert!(facemesh.infer(&frame, w, h).is_err());
+        assert!(hsemotion.infer(&frame, w, h).is_err());
+        assert!(ssrnet.infer(&frame, w, h).is_err());
+        assert!(pose.infer(&frame, w, h).is_err());
+    }
 
-    // Image totalement blanche (255 saturation)
-    let white_frame = vec![255u8; 224 * 224 * 3];
-    assert!(facemesh.infer(&white_frame, 224, 224).is_ok());
-    assert!(hsemotion.infer(&white_frame, 224, 224).is_ok());
-    assert!(ssrnet.infer(&white_frame, 224, 224).is_ok());
-    assert!(pose.infer(&white_frame, 224, 224).is_ok());
-
-    // Ratios d'aspect extrêmes (bandeau horizontal 1000 x 20)
-    let wide_frame = vec![128u8; 1000 * 20 * 3];
-    assert!(facemesh.infer(&wide_frame, 1000, 20).is_ok());
-    assert!(hsemotion.infer(&wide_frame, 1000, 20).is_ok());
-    assert!(ssrnet.infer(&wide_frame, 1000, 20).is_ok());
-    assert!(pose.infer(&wide_frame, 1000, 20).is_ok());
-
-    // Ratios d'aspect extrêmes (colonne verticale 20 x 1000)
-    let tall_frame = vec![128u8; 20 * 1000 * 3];
-    assert!(facemesh.infer(&tall_frame, 20, 1000).is_ok());
-    assert!(hsemotion.infer(&tall_frame, 20, 1000).is_ok());
-    assert!(ssrnet.infer(&tall_frame, 20, 1000).is_ok());
-    assert!(pose.infer(&tall_frame, 20, 1000).is_ok());
-
-    // Entrées invalides -> erreur explicite, pas de panic
     assert!(facemesh.infer(&[], 0, 0).is_err());
     assert!(hsemotion.infer(&[], 0, 0).is_err());
     assert!(ssrnet.infer(&[], 0, 0).is_err());
@@ -122,7 +100,7 @@ fn test_m3_rule_7_constitutional_minor_protection_spectrum() {
     ];
 
     for (age, expected_minor) in test_ages {
-        let res = build_age_result(age, 0.90, ModelStatus::Simulated);
+        let res = build_age_result(age, 0.90, ModelStatus::Real);
         assert_eq!(
             res.is_minor, expected_minor,
             "Âge {} ans attendu mineur={} mais obtenu={}",
@@ -139,16 +117,13 @@ fn test_m3_rule_7_constitutional_minor_protection_spectrum() {
 
 #[test]
 fn test_m3_biometric_facial_and_posture_consistency() {
-    let facemesh = FaceMeshIrisSession::open_or_simulated(None);
-    let pose = PoseSession::open_or_simulated(None);
-
-    let dummy_img = vec![128u8; 640 * 480 * 3];
-    let fm_out = facemesh
-        .infer(&dummy_img, 640, 480)
-        .expect("facemesh infer");
-    let pose_out = pose.infer(&dummy_img, 640, 480).expect("pose infer");
+    let landmarks = generate_canonical_landmarks(640.0, 480.0);
+    let fm_out = compute_facial_metrics(landmarks, ModelStatus::Real);
+    let skeleton = generate_canonical_seated_skeleton(640.0, 480.0);
+    let neck_angle_deg = calculate_neck_angle(&skeleton);
 
     // 1. EAR dans les bornes physiologiques humaines [0.05, 0.50]
+    assert!(fm_out.landmarks.len() == FACEMESH_POINTS_COUNT);
     assert!(fm_out.left_ear >= 0.05 && fm_out.left_ear <= 0.50);
     assert!(fm_out.right_ear >= 0.05 && fm_out.right_ear <= 0.50);
 
@@ -159,7 +134,7 @@ fn test_m3_biometric_facial_and_posture_consistency() {
     assert!(fm_out.ipd_distance > 10.0 && fm_out.ipd_distance < 640.0);
 
     // 4. Squelette COCO 17 points valide
-    assert_eq!(pose_out.skeleton.joints.len(), 17);
-    assert_eq!(pose_out.posture, PostureKind::Seated);
-    assert!(pose_out.neck_angle_deg >= 0.0 && pose_out.neck_angle_deg <= 90.0);
+    assert_eq!(skeleton.joints.len(), 17);
+    assert_eq!(skeleton.posture, PostureKind::Seated);
+    assert!((0.0..=90.0).contains(&neck_angle_deg));
 }

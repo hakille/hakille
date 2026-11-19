@@ -93,7 +93,11 @@ impl ShoulderSurfingDetector {
     }
 
     /// Classify gaze direction based on 3D head pose angles.
+    /// Fail-closed : angles non finis (`NaN`/`Inf`) → `Indeterminate`.
     pub fn classify_gaze(&self, yaw_deg: f32, pitch_deg: f32) -> GazeDirection {
+        if !yaw_deg.is_finite() || !pitch_deg.is_finite() {
+            return GazeDirection::Indeterminate;
+        }
         if yaw_deg.abs() <= self.gaze_yaw_threshold_deg
             && pitch_deg >= self.gaze_pitch_min_deg
             && pitch_deg <= self.gaze_pitch_max_deg
@@ -111,7 +115,11 @@ impl ShoulderSurfingDetector {
 
     /// Estimate observer distance in meters via relative face area.
     pub fn estimate_distance(&self, face_area: f32, total_frame_area: f32) -> f32 {
-        if total_frame_area <= 0.0 || face_area <= 0.0 {
+        if !total_frame_area.is_finite()
+            || !face_area.is_finite()
+            || total_frame_area <= 0.0
+            || face_area <= 0.0
+        {
             return 2.0;
         }
         let area_ratio = (face_area / total_frame_area).clamp(1e-5, 1.0);
@@ -120,6 +128,7 @@ impl ShoulderSurfingDetector {
     }
 
     /// Evaluate candidate faces: `(bbox(x, y, w, h), yaw_deg, pitch_deg, confidence)`
+    #[allow(clippy::type_complexity)]
     pub fn evaluate_candidates(
         &self,
         faces: &[((f32, f32, f32, f32), f32, f32, f32)],
@@ -127,37 +136,51 @@ impl ShoulderSurfingDetector {
         frame_height: u32,
         primary_user_index: Option<usize>,
     ) -> ShoulderSurfingAssessment {
-        let total_area = (frame_width.max(1) * frame_height.max(1)) as f32;
+        let total_area = (u64::from(frame_width.max(1)) * u64::from(frame_height.max(1))) as f32;
         let mut observers = Vec::new();
 
+        let mut non_finite_threat = 0usize;
         for (idx, &(bbox, yaw, pitch, confidence)) in faces.iter().enumerate() {
             if Some(idx) == primary_user_index {
+                continue;
+            }
+            if !bbox.2.is_finite() || !bbox.3.is_finite() || bbox.2 <= 0.0 || bbox.3 <= 0.0 {
                 continue;
             }
 
             let face_area = bbox.2 * bbox.3;
             let area_ratio = face_area / total_area;
-            if area_ratio < self.min_face_area_ratio {
+            if !area_ratio.is_finite() || area_ratio < self.min_face_area_ratio {
                 continue;
             }
 
             let gaze = self.classify_gaze(yaw, pitch);
+            if !yaw.is_finite() || !pitch.is_finite() {
+                non_finite_threat += 1;
+            }
             let estimated_distance_m = self.estimate_distance(face_area, total_area);
+            let safe_conf = if confidence.is_finite() {
+                confidence.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
 
             observers.push(ThirdPartyObserver {
                 bbox,
                 estimated_distance_m,
-                head_yaw_deg: yaw,
-                head_pitch_deg: pitch,
+                head_yaw_deg: if yaw.is_finite() { yaw } else { 0.0 },
+                head_pitch_deg: if pitch.is_finite() { pitch } else { 0.0 },
                 gaze,
-                confidence: confidence.clamp(0.0, 1.0),
+                confidence: safe_conf,
             });
         }
 
+        // Fail-closed : observateur tiers regardant l'écran OU angles non finis (NaN/Inf).
         let threat_count = observers
             .iter()
-            .filter(|o| o.gaze == GazeDirection::ScreenFocused)
-            .count();
+            .filter(|o| matches!(o.gaze, GazeDirection::ScreenFocused))
+            .count()
+            + non_finite_threat;
         let is_threat = threat_count > 0;
 
         let now_ms = std::time::SystemTime::now()

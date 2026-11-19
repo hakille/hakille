@@ -37,6 +37,10 @@ pub struct MoshiEngine {
     user_hangover: usize,
     /// Le système parlait-il au pas précédent (réponse non silencieuse) ?
     was_system_speaking: bool,
+    /// Cache PCM de la réponse synthétisée pour streamer tranche par tranche de 80 ms.
+    cached_synth_text: Option<String>,
+    cached_synth_pcm: Vec<f32>,
+    cached_synth_offset: usize,
 }
 
 impl MoshiEngine {
@@ -49,6 +53,9 @@ impl MoshiEngine {
             system_voice: FormantVoice::new(SYSTEM_VOICE_F0, 1.0),
             user_hangover: 0,
             was_system_speaking: false,
+            cached_synth_text: None,
+            cached_synth_pcm: Vec::new(),
+            cached_synth_offset: 0,
         }
     }
 
@@ -100,6 +107,9 @@ impl MoshiEngine {
             system_voice: FormantVoice::new(SYSTEM_VOICE_F0, 1.0),
             user_hangover: 0,
             was_system_speaking: false,
+            cached_synth_text: None,
+            cached_synth_pcm: Vec::new(),
+            cached_synth_offset: 0,
         }
     }
 
@@ -111,6 +121,9 @@ impl MoshiEngine {
         self.user_hangover = 0;
         self.was_system_speaking = false;
         self.rag_context = None;
+        self.cached_synth_text = None;
+        self.cached_synth_pcm.clear();
+        self.cached_synth_offset = 0;
     }
 
     pub fn codec(&self) -> &MimiCodec {
@@ -125,10 +138,16 @@ impl MoshiEngine {
     /// VRAIMENT le synthétiseur formantique au prochain pas.
     pub fn inject_context(&mut self, rag_context: impl Into<String>) {
         self.rag_context = Some(rag_context.into());
+        self.cached_synth_text = None;
+        self.cached_synth_pcm.clear();
+        self.cached_synth_offset = 0;
     }
 
     pub fn clear_context(&mut self) {
         self.rag_context = None;
+        self.cached_synth_text = None;
+        self.cached_synth_pcm.clear();
+        self.cached_synth_offset = 0;
     }
 
     pub fn response_text(&self) -> &str {
@@ -171,10 +190,25 @@ impl MoshiEngine {
             Some(format!("Réponse : {}", response_text))
         };
 
-        // 4. Texte → formantique → VRAI RVQ (encode) → reconstruction.
-        //    Un pas = une trame Mimi (80 ms) : premiers 1920 échantillons.
-        let synth = synthesize(&response_text, &self.system_voice);
-        let sys_frame: Vec<f32> = pad_or_trim(&synth);
+        // 4. Texte → formantique mis en cache par énoncé → stream par tranches
+        //    de 80 ms (1920 échantillons) sans re-synthétiser toute la phrase à chaque pas.
+        if self.cached_synth_text.as_deref() != Some(response_text.as_str()) {
+            self.cached_synth_pcm = synthesize(&response_text, &self.system_voice);
+            self.cached_synth_text = Some(response_text);
+            self.cached_synth_offset = 0;
+        }
+        let sys_slice = if self.cached_synth_offset < self.cached_synth_pcm.len() {
+            let end =
+                (self.cached_synth_offset + SAMPLES_PER_FRAME).min(self.cached_synth_pcm.len());
+            let slice = &self.cached_synth_pcm[self.cached_synth_offset..end];
+            if !user_interrupted {
+                self.cached_synth_offset = end;
+            }
+            slice
+        } else {
+            &[]
+        };
+        let sys_frame: Vec<f32> = pad_or_trim(sys_slice);
         let sys_tokens = self.codec.encode_frame(&sys_frame)?;
         let audio_samples = self.codec.decode_frame(&sys_tokens)?;
 
@@ -183,9 +217,6 @@ impl MoshiEngine {
             audio_samples.iter().map(|x| x * x).sum::<f32>() / audio_samples.len().max(1) as f32;
         self.was_system_speaking = sys_energy > 1e-8;
 
-        // Anti-écho honnête v1 : si l'utilisateur parle, on n'émet pas la
-        // réponse par-dessus (on la garde pour le pas suivant via le contexte
-        // conservé) — mais on retourne quand même les tokens calculés.
         let _ = user_active;
 
         Ok(MoshiStepOutput {

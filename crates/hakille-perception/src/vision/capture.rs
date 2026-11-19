@@ -182,9 +182,11 @@ impl FrameBufferPool {
         }
     }
 
-    /// Recycle un tampon en le remettant dans le réservoir après effacement sécurisé.
+    /// Recycle un tampon en le remettant dans le réservoir après effacement sécurisé
+    /// de l'intégralité de sa capacité allouée (Règle 8).
     pub fn recycle(&self, mut buffer: Vec<u8>) {
-        // Règle 8 : effacer les données de pixels avant toute réutilisation
+        let cap = buffer.capacity();
+        buffer.resize(cap, 0);
         secure_zeroize(&mut buffer);
         buffer.clear();
 
@@ -269,16 +271,15 @@ pub fn yuyv_to_rgb24(
     width: u32,
     height: u32,
 ) -> Result<(), VideoIngestionError> {
-    let num_pixels =
-        (width as usize)
-            .checked_mul(height as usize)
-            .ok_or(VideoIngestionError::EmptyFrame {
-                width,
-                height,
-                data_len: src.len(),
-            })?;
-    let expected_src = num_pixels.checked_mul(2).unwrap_or(0);
-    let expected_dst = num_pixels.checked_mul(3).unwrap_or(0);
+    let num_pixels = (width as usize).checked_mul(height as usize).ok_or(
+        VideoIngestionError::UnsupportedFormat("Débordement dimensions YUYV".into()),
+    )?;
+    let expected_src = num_pixels
+        .checked_mul(2)
+        .ok_or_else(|| VideoIngestionError::UnsupportedFormat("Débordement taille YUYV".into()))?;
+    let expected_dst = num_pixels
+        .checked_mul(3)
+        .ok_or_else(|| VideoIngestionError::UnsupportedFormat("Débordement taille RGB24".into()))?;
 
     if src.len() < expected_src || dst.len() < expected_dst {
         return Err(VideoIngestionError::BufferUnderflow {
@@ -330,16 +331,15 @@ pub fn rgba_to_rgb24(
     width: u32,
     height: u32,
 ) -> Result<(), VideoIngestionError> {
-    let num_pixels =
-        (width as usize)
-            .checked_mul(height as usize)
-            .ok_or(VideoIngestionError::EmptyFrame {
-                width,
-                height,
-                data_len: src.len(),
-            })?;
-    let expected_src = num_pixels.checked_mul(4).unwrap_or(0);
-    let expected_dst = num_pixels.checked_mul(3).unwrap_or(0);
+    let num_pixels = (width as usize).checked_mul(height as usize).ok_or(
+        VideoIngestionError::UnsupportedFormat("Débordement dimensions RGBA".into()),
+    )?;
+    let expected_src = num_pixels
+        .checked_mul(4)
+        .ok_or_else(|| VideoIngestionError::UnsupportedFormat("Débordement taille RGBA".into()))?;
+    let expected_dst = num_pixels
+        .checked_mul(3)
+        .ok_or_else(|| VideoIngestionError::UnsupportedFormat("Débordement taille RGB24".into()))?;
 
     if src.len() < expected_src || dst.len() < expected_dst {
         return Err(VideoIngestionError::BufferUnderflow {
@@ -352,9 +352,11 @@ pub fn rgba_to_rgb24(
     }
 
     for (s, d) in src
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .take(num_pixels)
-        .zip(dst.chunks_exact_mut(3).take(num_pixels))
+        .zip(dst.as_chunks_mut::<3>().0.iter_mut().take(num_pixels))
     {
         d[0] = s[0];
         d[1] = s[1];
@@ -371,16 +373,15 @@ pub fn bgra_to_rgb24(
     width: u32,
     height: u32,
 ) -> Result<(), VideoIngestionError> {
-    let num_pixels =
-        (width as usize)
-            .checked_mul(height as usize)
-            .ok_or(VideoIngestionError::EmptyFrame {
-                width,
-                height,
-                data_len: src.len(),
-            })?;
-    let expected_src = num_pixels.checked_mul(4).unwrap_or(0);
-    let expected_dst = num_pixels.checked_mul(3).unwrap_or(0);
+    let num_pixels = (width as usize).checked_mul(height as usize).ok_or(
+        VideoIngestionError::UnsupportedFormat("Débordement dimensions BGRA".into()),
+    )?;
+    let expected_src = num_pixels
+        .checked_mul(4)
+        .ok_or_else(|| VideoIngestionError::UnsupportedFormat("Débordement taille BGRA".into()))?;
+    let expected_dst = num_pixels
+        .checked_mul(3)
+        .ok_or_else(|| VideoIngestionError::UnsupportedFormat("Débordement taille RGB24".into()))?;
 
     if src.len() < expected_src || dst.len() < expected_dst {
         return Err(VideoIngestionError::BufferUnderflow {
@@ -393,9 +394,11 @@ pub fn bgra_to_rgb24(
     }
 
     for (s, d) in src
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .take(num_pixels)
-        .zip(dst.chunks_exact_mut(3).take(num_pixels))
+        .zip(dst.as_chunks_mut::<3>().0.iter_mut().take(num_pixels))
     {
         d[0] = s[2]; // R
         d[1] = s[1]; // G
@@ -405,11 +408,13 @@ pub fn bgra_to_rgb24(
     Ok(())
 }
 
-/// Décode une trame MJPEG / JPEG vers RGB24 dans un tampon pré-alloué.
+/// Décode une trame MJPEG / JPEG vers RGB24 dans un tampon pré-alloué,
+/// avec limites strictes anti-bombe mémoire (`image::Limits`).
 pub fn decode_mjpeg_to_rgb24(
     mjpeg_data: &[u8],
     dst: &mut Vec<u8>,
 ) -> Result<(u32, u32), VideoIngestionError> {
+    const MAX_MJPEG_BYTES: usize = 32 * 1024 * 1024;
     if mjpeg_data.is_empty() {
         return Err(VideoIngestionError::EmptyFrame {
             width: 0,
@@ -417,8 +422,22 @@ pub fn decode_mjpeg_to_rgb24(
             data_len: 0,
         });
     }
+    if mjpeg_data.len() > MAX_MJPEG_BYTES {
+        return Err(VideoIngestionError::JpegDecodeError(
+            "Trame MJPEG supérieure au plafond de 32 Mio".into(),
+        ));
+    }
 
-    let img = image::load_from_memory_with_format(mjpeg_data, image::ImageFormat::Jpeg)
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(128 * 1024 * 1024);
+
+    let mut reader =
+        image::ImageReader::with_format(std::io::Cursor::new(mjpeg_data), image::ImageFormat::Jpeg);
+    reader.limits(limits);
+    let img = reader
+        .decode()
         .map_err(|e| VideoIngestionError::JpegDecodeError(e.to_string()))?;
 
     let (w, h) = (img.width(), img.height());

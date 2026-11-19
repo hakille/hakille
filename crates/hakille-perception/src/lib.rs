@@ -253,6 +253,11 @@ mod tests {
     #[test]
     fn test_environmental_privacy_arbitration() {
         let mut world_model = WorldModel::new("ConferenceRoom");
+        // Fail-closed : sans observation capteur, l'environnement n'est pas déclaré privé.
+        assert!(!world_model.is_private_environment());
+
+        // Observation d'un unique utilisateur présent -> environnement privé confirmé.
+        world_model.update_visual_presence(true, true, 1, 0.7, "IndoorAdequate");
         assert!(world_model.is_private_environment());
 
         // Introduce multiple people in room

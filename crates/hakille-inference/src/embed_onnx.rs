@@ -332,7 +332,7 @@ fn mean_pool_normalize(shape: &[i64], values: &[f32], mask: &[i64]) -> Result<Ve
         return Err(ort_err("pooling", "masque vide"));
     }
     let mut mean = vec![0.0f64; MINILM_DIM];
-    for (row, &attended) in values.chunks_exact(MINILM_DIM).zip(mask) {
+    for (row, &attended) in values.as_chunks::<MINILM_DIM>().0.iter().zip(mask) {
         if attended == 1 {
             for (sum, value) in mean.iter_mut().zip(row) {
                 *sum += f64::from(*value);

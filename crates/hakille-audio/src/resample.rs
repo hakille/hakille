@@ -23,10 +23,16 @@ pub fn downmix_to_mono(interleaved: &[f32], channels: u16) -> Vec<f32> {
     out
 }
 
+/// Ratio maximal de suréchantillonnage autorisé (protection anti-OOM).
+const MAX_UPSAMPLE_RATIO: f64 = 64.0;
+/// Nombre maximal d'échantillons produits en une passe (~256 Mio en f32).
+const MAX_RESAMPLE_OUTPUT_SAMPLES: usize = 64_000_000;
+
 /// Rééchantillonne `input` (mono) de `from_rate` vers `to_rate` par interpolation
 /// linéaire. Le signal en fin de buffer est prolongé par le dernier échantillon.
 ///
-/// Renvoie un buffer vide si l'entrée est vide ou si une fréquence est nulle.
+/// Renvoie un buffer vide si l'entrée est vide, si une fréquence est nulle,
+/// ou si le ratio/volume demandé dépasse les bornes de sécurité.
 pub fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if input.is_empty() || from_rate == 0 || to_rate == 0 {
         return Vec::new();
@@ -34,8 +40,16 @@ pub fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> 
     if from_rate == to_rate {
         return input.to_vec();
     }
+    let upsample_ratio = to_rate as f64 / from_rate as f64;
+    if !upsample_ratio.is_finite() || upsample_ratio > MAX_UPSAMPLE_RATIO {
+        return Vec::new();
+    }
+    let out_len_f = (input.len() as f64 * upsample_ratio).round();
+    if !out_len_f.is_finite() || out_len_f < 0.0 || out_len_f > MAX_RESAMPLE_OUTPUT_SAMPLES as f64 {
+        return Vec::new();
+    }
     let ratio = from_rate as f64 / to_rate as f64;
-    let out_len = (input.len() as f64 * to_rate as f64 / from_rate as f64).round() as usize;
+    let out_len = out_len_f as usize;
     let last = input.len() - 1;
     let mut out = Vec::with_capacity(out_len);
     for i in 0..out_len {

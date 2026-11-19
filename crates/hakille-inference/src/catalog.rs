@@ -362,13 +362,14 @@ impl ModelCatalog {
                     primary_url: "https://github.com/google/mediapipe/raw/master/mediapipe/modules/face_landmark/face_landmark_with_attention.onnx".to_string(),
                     fallback_url: None,
                     size_bytes: 3_800_000,
-                    sha256_checksum: Some("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2".to_string()),
+                    // Honnêteté : aucun artefact ONNX officiel vérifié publié ; aucun SHA-256 factice.
+                    sha256_checksum: None,
                     is_essential: false,
                 },
                 auxiliary_artifacts: vec![],
                 expected_ram_mb: 25,
                 expected_vram_mb: 0,
-                description: "Extraction sub-pixel de 478 repères faciaux 3D et centres d'iris pour calcul EAR, MAR et distance inter-pupillaire IPD.".to_string(),
+                description: "Extraction sub-pixel de 478 repères faciaux 3D et centres d'iris (optionnel, checksum SHA-256 non vérifié — provisionnement manuel requis).".to_string(),
             },
 
             // 12. HSEmotion MTL (8 discrete emotions + Valence/Arousal)
@@ -385,13 +386,14 @@ impl ModelCatalog {
                     primary_url: "https://github.com/HSE-asavchenko/face-emotion-recognition/raw/main/models/affectnet_emotions/enet_b0_8_va_mtl.onnx".to_string(),
                     fallback_url: None,
                     size_bytes: 4_100_000,
-                    sha256_checksum: Some("b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3".to_string()),
+                    // Honnêteté : checksum non vérifié en catalogue, jamais de empreinte fabriquée.
+                    sha256_checksum: None,
                     is_essential: false,
                 },
                 auxiliary_artifacts: vec![],
                 expected_ram_mb: 30,
                 expected_vram_mb: 0,
-                description: "Classification conjointe d'émotions 8 classes et régression 2D Valence / Arousal sur recadrage facial.".to_string(),
+                description: "Classification conjointe d'émotions 8 classes et régression 2D Valence / Arousal (optionnel, checksum SHA-256 non vérifié).".to_string(),
             },
 
             // 13. SSR-Net (Soft Stagewise Regression Age Estimation)
@@ -408,13 +410,14 @@ impl ModelCatalog {
                     primary_url: "https://github.com/shamangary/SSR-Net/raw/master/ssrnet_age.onnx".to_string(),
                     fallback_url: None,
                     size_bytes: 320_000,
-                    sha256_checksum: Some("c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4".to_string()),
+                    // Honnêteté : checksum non vérifié en catalogue, jamais d'empreinte factice.
+                    sha256_checksum: None,
                     is_essential: false,
                 },
                 auxiliary_artifacts: vec![],
                 expected_ram_mb: 10,
                 expected_vram_mb: 0,
-                description: "Estimation d'âge biologique rapide (< 1 ms CPU) intégrée à la protection des mineurs (Règle Constitutionnelle 7).".to_string(),
+                description: "Estimation d'âge biologique rapide (< 1 ms CPU) intégrée à la protection des mineurs (Règle 7 — optionnel, checksum SHA-256 non vérifié ; aucun repli simulé).".to_string(),
             },
 
             // 14. RTMPose-t (17-keypoint COCO Skeleton & Posture)
@@ -431,13 +434,14 @@ impl ModelCatalog {
                     primary_url: "https://github.com/open-mmlab/mmpose/raw/main/rtmpose_tiny.onnx".to_string(),
                     fallback_url: None,
                     size_bytes: 3_800_000,
-                    sha256_checksum: Some("d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5".to_string()),
+                    // Honnêteté : checksum non vérifié en catalogue, jamais d'empreinte factice.
+                    sha256_checksum: None,
                     is_essential: false,
                 },
                 auxiliary_artifacts: vec![],
                 expected_ram_mb: 25,
                 expected_vram_mb: 0,
-                description: "Extraction d'articulations 17 points COCO et analyse posturale (angle cou, affaissement rachidien).".to_string(),
+                description: "Extraction d'articulations 17 points COCO et analyse posturale (optionnel, checksum SHA-256 non vérifié).".to_string(),
             },
         ]
     }
@@ -469,7 +473,20 @@ mod artifact_metadata_tests {
             for artifact in std::iter::once(entry.primary_artifact).chain(entry.auxiliary_artifacts)
             {
                 artifact.validate().unwrap();
-                assert!(artifact.sha256_checksum.is_some());
+                if artifact.is_essential {
+                    assert!(
+                        artifact.sha256_checksum.is_some(),
+                        "artefact essentiel {} sans SHA-256",
+                        artifact.filename
+                    );
+                }
+                if let Some(hash) = &artifact.sha256_checksum {
+                    assert!(
+                        !hash.contains("a1b2c3d4e5f6"),
+                        "checksum factice interdit sur {}",
+                        artifact.filename
+                    );
+                }
                 assert!(filenames.insert(artifact.filename));
             }
         }

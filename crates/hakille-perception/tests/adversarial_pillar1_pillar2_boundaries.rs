@@ -2,10 +2,10 @@
 //!
 //! Evaluates exact numerical and timing boundaries:
 //! - Pillar 1: |Yaw| = 28.0° vs 28.1°, extreme distances, rapid blink 79ms vs 80ms, 451ms vs 450ms,
-//!             inter-blink interval 651ms vs 650ms, bilateral blink injection.
+//!   inter-blink interval 651ms vs 650ms, bilateral blink injection.
 //! - Pillar 2: 499ms dwell vs 500ms dwell, micro-saccade jitter exceeding 100ms,
-//!             micro-nod pitch excursions <3.0° and >12.0°, torso slouching Delta Y = 10.1mm vs 9.9mm,
-//!             gesture validity expiration at 1201ms.
+//!   micro-nod pitch excursions <3.0° and >12.0°, torso slouching Delta Y = 10.1mm vs 9.9mm,
+//!   gesture validity expiration at 1201ms.
 
 use hakille_inference::ModelStatus;
 use hakille_inference::models::facemesh::{CanonicalPnPPoints, FaceMeshOutput};
@@ -157,7 +157,7 @@ fn test_pillar1_extreme_distances_and_dimensions() {
 
     // Extreme giant frame area
     let d_extreme = detector.estimate_distance(100.0, 100_000.0 * 100_000.0);
-    assert!(d_extreme >= 0.4 && d_extreme <= 5.0);
+    assert!((0.4..=5.0).contains(&d_extreme));
 }
 
 // -----------------------------------------------------------------------------

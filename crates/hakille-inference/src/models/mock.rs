@@ -6,7 +6,7 @@
 /// Génère une image RGB unie de dimensions données.
 pub fn synthetic_blank_rgb(width: usize, height: usize, r: u8, g: u8, b: u8) -> Vec<u8> {
     let mut buf = vec![0u8; width * height * 3];
-    for chunk in buf.chunks_exact_mut(3) {
+    for chunk in buf.as_chunks_mut::<3>().0 {
         chunk[0] = r;
         chunk[1] = g;
         chunk[2] = b;

@@ -163,41 +163,53 @@ impl FaceMeshIrisSession {
             ));
         }
 
-        if let Some(session_mutex) = &self.session {
-            // Forward réel ONNX
-            let tensor_data = preprocess_image_to_chw(
-                rgb_data,
-                width,
-                height,
-                FACEMESH_INPUT_WIDTH,
-                FACEMESH_INPUT_HEIGHT,
-            );
-            let input_tensor = Tensor::<f32>::from_array((
-                [1usize, 3usize, FACEMESH_INPUT_HEIGHT, FACEMESH_INPUT_WIDTH],
-                tensor_data,
-            ))
-            .map_err(|e| ort_err("input_tensor", e))?;
+        let Some(session_mutex) = &self.session else {
+            return Err(HakilleError::InferenceError(
+                "FaceMeshIris::infer: modèle ONNX facemesh_iris.onnx absent — repères simulés refusés (contrat d'honnêteté)".into(),
+            ));
+        };
 
-            let mut session = session_mutex
-                .lock()
-                .map_err(|_| ort_err("lock", "mutex empoisonné"))?;
-            let outputs = session
-                .run(ort::inputs![input_tensor])
-                .map_err(|e| ort_err("forward", e))?;
-
-            // Extrait les coordonnées des repères [1, 478, 3] ou [1, 1434]
-            let (_shape, values) = outputs[0]
-                .try_extract_tensor::<f32>()
-                .map_err(|e| ort_err("extract_output", e))?;
-
-            let landmarks = parse_landmarks(values, width as f32, height as f32)?;
-            let output = compute_facial_metrics(landmarks, ModelStatus::Real);
-            return Ok(output);
+        let expected_bytes = width
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(3))
+            .ok_or_else(|| {
+                HakilleError::InferenceError("FaceMeshIris::infer: dimensions débordantes".into())
+            })?;
+        if rgb_data.len() < expected_bytes {
+            return Err(HakilleError::InferenceError(format!(
+                "FaceMeshIris::infer: tampon RGB trop court ({} < {expected_bytes})",
+                rgb_data.len()
+            )));
         }
 
-        // Mode simulation canonique géométrique déterministe
-        let landmarks = generate_canonical_landmarks(width as f32, height as f32);
-        let output = compute_facial_metrics(landmarks, ModelStatus::Simulated);
+        // Forward réel ONNX
+        let tensor_data = preprocess_image_to_chw(
+            rgb_data,
+            width,
+            height,
+            FACEMESH_INPUT_WIDTH,
+            FACEMESH_INPUT_HEIGHT,
+        );
+        let input_tensor = Tensor::<f32>::from_array((
+            [1usize, 3usize, FACEMESH_INPUT_HEIGHT, FACEMESH_INPUT_WIDTH],
+            tensor_data,
+        ))
+        .map_err(|e| ort_err("input_tensor", e))?;
+
+        let mut session = session_mutex
+            .lock()
+            .map_err(|_| ort_err("lock", "mutex empoisonné"))?;
+        let outputs = session
+            .run(ort::inputs![input_tensor])
+            .map_err(|e| ort_err("forward", e))?;
+
+        // Extrait les coordonnées des repères [1, 478, 3] ou [1, 1434]
+        let (_shape, values) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| ort_err("extract_output", e))?;
+
+        let landmarks = parse_landmarks(values, width as f32, height as f32)?;
+        let output = compute_facial_metrics(landmarks, ModelStatus::Real);
         Ok(output)
     }
 }
@@ -257,7 +269,7 @@ fn parse_landmarks(values: &[f32], width: f32, height: f32) -> Result<Vec<Point3
 }
 
 /// Calcule les métriques biométriques (EAR, MAR, IPD) à partir des points de repère.
-fn compute_facial_metrics(landmarks: Vec<Point3D>, status: ModelStatus) -> FaceMeshOutput {
+pub fn compute_facial_metrics(landmarks: Vec<Point3D>, status: ModelStatus) -> FaceMeshOutput {
     // Calcul de l'EAR gauche et droit
     let left_ear = if landmarks.len() >= FACEMESH_POINTS_COUNT {
         calculate_ear(&landmarks, &LEFT_EYE_INDICES)
@@ -394,10 +406,10 @@ pub fn generate_canonical_landmarks(w: f32, h: f32) -> Vec<Point3D> {
     // Iris gauche (468..=472) centré sur x = cx - w * 0.0375, y = cy - h * 0.06
     let iris_l_x = cx - w * 0.0375;
     let iris_l_y = cy - h * 0.06;
-    for k in 468..=472 {
-        let sub_angle = ((k - 468) as f32) / 5.0 * std::f32::consts::TAU;
+    for (idx, pt) in pts[468..=472].iter_mut().enumerate() {
+        let sub_angle = (idx as f32) / 5.0 * std::f32::consts::TAU;
         let r = w * 0.006;
-        pts[k] = Point3D::new(
+        *pt = Point3D::new(
             iris_l_x + r * sub_angle.cos(),
             iris_l_y + r * sub_angle.sin(),
             0.02,
@@ -407,10 +419,10 @@ pub fn generate_canonical_landmarks(w: f32, h: f32) -> Vec<Point3D> {
     // Iris droit (473..=477) centré sur x = cx + w * 0.0375, y = cy - h * 0.06
     let iris_r_x = cx + w * 0.0375;
     let iris_r_y = cy - h * 0.06;
-    for k in 473..=477 {
-        let sub_angle = ((k - 473) as f32) / 5.0 * std::f32::consts::TAU;
+    for (idx, pt) in pts[473..=477].iter_mut().enumerate() {
+        let sub_angle = (idx as f32) / 5.0 * std::f32::consts::TAU;
         let r = w * 0.006;
-        pts[k] = Point3D::new(
+        *pt = Point3D::new(
             iris_r_x + r * sub_angle.cos(),
             iris_r_y + r * sub_angle.sin(),
             0.02,
@@ -425,17 +437,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_facemesh_simulated_pipeline() {
+    fn test_facemesh_missing_model_refuses_simulated_output_and_metrics_compute() {
         let session = FaceMeshIrisSession::open_or_simulated(None);
         assert_eq!(session.status(), ModelStatus::Simulated);
 
         let dummy_rgb = vec![128u8; 640 * 480 * 3];
-        let output = session
+        let err = session
             .infer(&dummy_rgb, 640, 480)
-            .expect("inférence valide");
+            .expect_err("modèle absent : aucun repère simulé autorisé");
+        assert!(err.to_string().contains("absent"));
 
+        // Vérification directe des métriques géométriques pures.
+        let landmarks = generate_canonical_landmarks(640.0, 480.0);
+        let output = compute_facial_metrics(landmarks, ModelStatus::Real);
         assert_eq!(output.landmarks.len(), 478);
-        assert_eq!(output.status, ModelStatus::Simulated);
         assert!(
             output.left_ear > 0.20,
             "EAR oeil ouvert nominal > 0.20 : {}",
