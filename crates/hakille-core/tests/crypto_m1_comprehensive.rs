@@ -247,7 +247,7 @@ fn test_f06_fuzzy_extractor_noise_resilience_and_rejection() {
     assert_eq!(master_key.as_bytes(), recovered_exact.as_bytes());
 
     // Reproduction with noise <= 20%
-    let mut quantized_probe = FuzzyExtractor::quantize(&embedding);
+    let mut quantized_probe = FuzzyExtractor::quantize_salted(&embedding, &salt).unwrap();
     let total_bits = hakille_core::crypto::fuzzy::CODEWORD_BITS;
     let num_flips_18_percent = (total_bits as f32 * 0.18) as usize;
 
@@ -262,7 +262,7 @@ fn test_f06_fuzzy_extractor_noise_resilience_and_rejection() {
     assert_eq!(master_key.as_bytes(), recovered_noisy.as_bytes());
 
     // Excessive noise (> 35%) must be rejected
-    let mut noisy_probe_excess = FuzzyExtractor::quantize(&embedding);
+    let mut noisy_probe_excess = FuzzyExtractor::quantize_salted(&embedding, &salt).unwrap();
     let num_flips_38_percent = (total_bits as f32 * 0.38) as usize;
     for i in 0..num_flips_38_percent {
         let bit_idx = (i * 2) % total_bits;

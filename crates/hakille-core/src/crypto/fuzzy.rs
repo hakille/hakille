@@ -54,23 +54,27 @@ impl FuzzyExtractor {
     }
 
     /// Quantize a continuous biometric embedding into discrete binary representation
-    /// using pseudo-random hyperplane projections (Locality-Sensitive Hashing).
-    pub fn quantize(embedding: &[f32]) -> Vec<u8> {
-        let mut bits = vec![0u8; CODEWORD_BYTES];
-        if embedding.is_empty() {
-            return bits;
+    /// using per-enrollment salted hyperplane projections (empêche la corrélation inter-enrôlements).
+    pub fn quantize_salted(embedding: &[f32], salt: &[u8; 32]) -> Result<Vec<u8>, CryptoError> {
+        if embedding.is_empty()
+            || embedding.iter().any(|x| !x.is_finite())
+            || embedding.iter().all(|&x| x == 0.0)
+        {
+            return Err(CryptoError::BiometricQuantizationError(
+                "Embedding biométrique vide, nul ou non fini refusé".to_string(),
+            ));
         }
 
+        let mut bits = vec![0u8; CODEWORD_BYTES];
         let dim = embedding.len();
-        // Deterministic PRNG seed for reproducible hyperplane projection
         let mut seed = [0u8; 32];
         let mut hasher = Sha256::new();
-        hasher.update(b"hakille:fuzzy:hyperplanes:v1:");
-        hasher.update(dim.to_le_bytes());
+        hasher.update(b"hakille:fuzzy:hyperplanes:v2:");
+        hasher.update(salt);
+        hasher.update((dim as u64).to_le_bytes());
         seed.copy_from_slice(&hasher.finalize());
 
         for bit_idx in 0..CODEWORD_BITS {
-            // Compute projection onto hyperplane bit_idx
             let mut dot_product = 0.0f32;
             let num_chunks = dim.div_ceil(32);
 
@@ -90,14 +94,19 @@ impl FuzzyExtractor {
                 }
             }
 
-            if dot_product >= 0.0 {
+            if dot_product > 0.0 {
                 let byte_pos = bit_idx / 8;
                 let bit_pos = bit_idx % 8;
                 bits[byte_pos] |= 1 << bit_pos;
             }
         }
 
-        bits
+        Ok(bits)
+    }
+
+    /// Quantization héritée sans sel (conservée pour compatibilité ; préférer `quantize_salted`).
+    pub fn quantize(embedding: &[f32]) -> Vec<u8> {
+        Self::quantize_salted(embedding, &[0u8; 32]).unwrap_or_else(|_| vec![0u8; CODEWORD_BYTES])
     }
 
     /// Calculate Hamming distance between two binary byte slices
@@ -109,8 +118,8 @@ impl FuzzyExtractor {
     }
 
     /// Encode 32-byte secret R into interleaved repetition codeword
-    fn encode_secret(r: &[u8; 32]) -> Vec<u8> {
-        let mut codeword = vec![0u8; CODEWORD_BYTES];
+    fn encode_secret(r: &[u8; 32]) -> zeroize::Zeroizing<Vec<u8>> {
+        let mut codeword = zeroize::Zeroizing::new(vec![0u8; CODEWORD_BYTES]);
         for secret_bit_idx in 0..SECRET_BITS {
             let secret_byte = secret_bit_idx / 8;
             let secret_bit = (r[secret_byte] >> (secret_bit_idx % 8)) & 1;
@@ -126,8 +135,8 @@ impl FuzzyExtractor {
     }
 
     /// Decode candidate codeword via majority voting across replicas
-    fn decode_codeword(codeword: &[u8]) -> [u8; 32] {
-        let mut r = [0u8; 32];
+    fn decode_codeword(codeword: &[u8]) -> zeroize::Zeroizing<[u8; 32]> {
+        let mut r = zeroize::Zeroizing::new([0u8; 32]);
         for secret_bit_idx in 0..SECRET_BITS {
             let mut ones_count = 0;
             for rep in 0..REPETITION_FACTOR {
@@ -136,7 +145,6 @@ impl FuzzyExtractor {
                 ones_count += bit as usize;
             }
 
-            // Majority voting
             if ones_count > REPETITION_FACTOR / 2 {
                 let secret_byte = secret_bit_idx / 8;
                 let secret_bit = secret_bit_idx % 8;
@@ -152,11 +160,11 @@ impl FuzzyExtractor {
         biometric: &[f32],
         salt: &[u8; 32],
     ) -> Result<(MasterKey, BiometricCommitmentRecord), CryptoError> {
-        let w = Self::quantize(biometric);
+        let w = zeroize::Zeroizing::new(Self::quantize_salted(biometric, salt)?);
 
         // Generate uniformly random 32-byte secret R
-        let mut r_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut r_bytes);
+        let mut r_bytes = zeroize::Zeroizing::new([0u8; 32]);
+        OsRng.fill_bytes(&mut *r_bytes);
 
         // Encode R into error-correcting codeword C_R
         let c_r = Self::encode_secret(&r_bytes);
@@ -169,7 +177,7 @@ impl FuzzyExtractor {
 
         // Compute cryptographic commitment C = SHA-256(R || Salt)
         let mut hasher = Sha256::new();
-        hasher.update(r_bytes);
+        hasher.update(*r_bytes);
         hasher.update(salt);
         let mut commitment = [0u8; 32];
         commitment.copy_from_slice(&hasher.finalize());
@@ -180,7 +188,7 @@ impl FuzzyExtractor {
             commitment,
         };
 
-        Ok((MasterKey::new(r_bytes), record))
+        Ok((MasterKey::new(*r_bytes), record))
     }
 
     /// Rep(B', Record) -> MasterKey
@@ -195,7 +203,7 @@ impl FuzzyExtractor {
             ));
         }
 
-        let w_prime = Self::quantize(probe);
+        let w_prime = zeroize::Zeroizing::new(Self::quantize_salted(probe, &record.salt)?);
         self.reproduce_from_bits(&w_prime, record)
     }
 
@@ -205,6 +213,8 @@ impl FuzzyExtractor {
         w_prime: &[u8],
         record: &BiometricCommitmentRecord,
     ) -> Result<MasterKey, CryptoError> {
+        use subtle::ConstantTimeEq;
+
         if w_prime.len() != CODEWORD_BYTES || record.helper_data.len() != CODEWORD_BYTES {
             return Err(CryptoError::BiometricQuantizationError(
                 "Invalid bit vector length for fuzzy reproduction".to_string(),
@@ -212,7 +222,7 @@ impl FuzzyExtractor {
         }
 
         // C'_R = w' XOR P
-        let mut candidate_codeword = vec![0u8; CODEWORD_BYTES];
+        let mut candidate_codeword = zeroize::Zeroizing::new(vec![0u8; CODEWORD_BYTES]);
         for i in 0..CODEWORD_BYTES {
             candidate_codeword[i] = w_prime[i] ^ record.helper_data[i];
         }
@@ -224,18 +234,18 @@ impl FuzzyExtractor {
         let reconstructed_codeword = Self::encode_secret(&r_prime);
         let error_bits = Self::hamming_distance(&candidate_codeword, &reconstructed_codeword);
         let error_rate = error_bits as f32 / CODEWORD_BITS as f32;
-        if error_rate > self.noise_threshold {
+        if !error_rate.is_finite() || error_rate > self.noise_threshold {
             return Err(CryptoError::BiometricVerificationFailed);
         }
 
-        // Verify cryptographic commitment C' == C
+        // Verify cryptographic commitment C' == C en temps constant
         let mut hasher = Sha256::new();
-        hasher.update(r_prime);
+        hasher.update(*r_prime);
         hasher.update(record.salt);
         let check_commitment = hasher.finalize();
 
-        if check_commitment.as_slice() == record.commitment {
-            Ok(MasterKey::new(r_prime))
+        if bool::from(check_commitment.as_slice().ct_eq(&record.commitment)) {
+            Ok(MasterKey::new(*r_prime))
         } else {
             Err(CryptoError::BiometricVerificationFailed)
         }
@@ -266,8 +276,8 @@ mod tests {
 
         let (master_key, record) = extractor.generate_commitment(&embedding, &salt).unwrap();
 
-        // Quantize original embedding
-        let mut w = FuzzyExtractor::quantize(&embedding);
+        // Quantize original embedding avec le sel de l'enrôlement
+        let mut w = FuzzyExtractor::quantize_salted(&embedding, &salt).unwrap();
 
         // Perturb exactly 15% of the total bits uniformly
         let total_bits = CODEWORD_BITS;
@@ -289,7 +299,7 @@ mod tests {
 
         let (_master_key, record) = extractor.generate_commitment(&embedding, &salt).unwrap();
 
-        let mut w = FuzzyExtractor::quantize(&embedding);
+        let mut w = FuzzyExtractor::quantize_salted(&embedding, &salt).unwrap();
         // Perturb 40% of the bits
         let total_bits = CODEWORD_BITS;
         let bits_to_flip = (total_bits as f32 * 0.40) as usize;
@@ -302,6 +312,22 @@ mod tests {
         assert_eq!(
             result.unwrap_err(),
             CryptoError::BiometricVerificationFailed
+        );
+    }
+
+    #[test]
+    fn test_fuzzy_extractor_rejects_zero_and_nan_embeddings() {
+        let extractor = FuzzyExtractor::default();
+        let salt = [0x44; 32];
+        assert!(
+            extractor
+                .generate_commitment(&vec![0.0; 128], &salt)
+                .is_err()
+        );
+        assert!(
+            extractor
+                .generate_commitment(&[f32::NAN; 128], &salt)
+                .is_err()
         );
     }
 }

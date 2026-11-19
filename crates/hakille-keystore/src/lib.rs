@@ -141,16 +141,21 @@ impl MemoryStore {
     /// Force l'echec de toutes les operations (simule un keychain casse).
     /// `None` = retour au comportement normal.
     pub fn inject_error(&self, reason: Option<String>) {
-        self.inner
+        let mut guard = self
+            .inner
             .lock()
-            .expect("keystore memory lock")
-            .injected_error = reason;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.injected_error = reason;
     }
 }
 
 impl SecretStore for MemoryStore {
     fn get_secret(&self, service: &str, user: &str) -> Result<Option<Vec<u8>>, KeystoreError> {
-        let guard = self.inner.lock().expect("keystore memory lock");
+        let guard = self.inner.lock().map_err(|_| KeystoreError::Keychain {
+            service: service.to_string(),
+            user: user.to_string(),
+            reason: "verrou MemoryStore empoisonné".to_string(),
+        })?;
         if let Some(reason) = guard.injected_error.clone() {
             return Err(KeystoreError::Keychain {
                 service: service.to_string(),
@@ -165,7 +170,11 @@ impl SecretStore for MemoryStore {
     }
 
     fn set_secret(&self, service: &str, user: &str, secret: &[u8]) -> Result<(), KeystoreError> {
-        let mut guard = self.inner.lock().expect("keystore memory lock");
+        let mut guard = self.inner.lock().map_err(|_| KeystoreError::Keychain {
+            service: service.to_string(),
+            user: user.to_string(),
+            reason: "verrou MemoryStore empoisonné".to_string(),
+        })?;
         if let Some(reason) = guard.injected_error.clone() {
             return Err(KeystoreError::Keychain {
                 service: service.to_string(),
@@ -181,7 +190,11 @@ impl SecretStore for MemoryStore {
     }
 
     fn delete(&self, service: &str, user: &str) -> Result<(), KeystoreError> {
-        let mut guard = self.inner.lock().expect("keystore memory lock");
+        let mut guard = self.inner.lock().map_err(|_| KeystoreError::Keychain {
+            service: service.to_string(),
+            user: user.to_string(),
+            reason: "verrou MemoryStore empoisonné".to_string(),
+        })?;
         if let Some(reason) = guard.injected_error.clone() {
             return Err(KeystoreError::Keychain {
                 service: service.to_string(),
@@ -380,27 +393,55 @@ impl<S: SecretStore> KeyRegistry<S> {
         self.load_or_create(&versioned_user(JOURNAL_SIGNING_BASE, 1))
     }
 
-    /// Pivote chaque base vers `*-v2`.
+    /// Détecte la version la plus élevée présente (1..=64) pour une base donnée.
+    fn latest_version(&self, base: &str) -> Result<Option<u32>, KeystoreError> {
+        let mut latest = None;
+        for version in 1u32..=64 {
+            let user = versioned_user(base, version);
+            if self.store.get_secret(&self.service, &user)?.is_some() {
+                latest = Some(version);
+            } else if latest.is_some() {
+                break;
+            }
+        }
+        Ok(latest)
+    }
+
+    /// Pivote chaque base de la version courante `vN` vers `v(N+1)` (ex. `v1 → v2 → v3…`)
+    /// sans jamais écraser la version précédente durant la fenêtre transitoire.
     ///
     /// # Fenetre transitoire documentee
     ///
-    /// 1. v1 DOIT exister et etre valide (sinon `MissingBaseline` : on ne
-    ///    pivote jamais a partir de rien, ce serait une creation deguisee).
-    /// 2. v2 est genere (alea OS frais), ecrit, **relu et compare octet a
+    /// 1. La version courante `vN` DOIT exister et etre valide (sinon `MissingBaseline` :
+    ///    on ne pivote jamais a partir de rien, ce serait une creation deguisee).
+    /// 2. `v(N+1)` est genere (alea OS frais), ecrit, **relu et compare octet a
     ///    octet** (`verified_dual_read`, sinon `VerificationFailed`).
-    /// 3. v1 est relue a son tour : les deux versions coexistent en lecture
+    /// 3. `vN` est relue a son tour : les deux versions coexistent en lecture
     ///    le temps que les consommateurs (autorite Biscuit, journal) basculent.
-    /// 4. v1 n'est JAMAIS supprimee ici : la suppression est un acte explicite
-    ///    ulterieur (`revoke()`), quand l'operateur confirme que plus aucun
-    ///    token/journal ne depend de v1. TODO : ajouter
-    ///    `finalize_rotation()` qui refuse de supprimer v1 tant qu'un token
-    ///    v1 est encore verifiable (suivi : table de migration boot).
+    /// 4. Les versions precedentes ne sont JAMAIS supprimees ici : la suppression
+    ///    est un acte explicite ulterieur (`revoke()`), quand l'operateur confirme
+    ///    que plus aucun token/journal n'en depend.
     pub fn rotate(&self) -> Result<RotationReport, KeystoreError> {
         let mut entries = Vec::new();
         for base in [CAPABILITY_ROOT_BASE, JOURNAL_SIGNING_BASE] {
-            let previous_user = versioned_user(base, 1);
-            let current_user = versioned_user(base, 2);
-            // 1. Socle v1 obligatoire.
+            let prev_ver = match self.latest_version(base)? {
+                Some(v) => v,
+                None => {
+                    return Err(KeystoreError::MissingBaseline {
+                        user: versioned_user(base, 1),
+                    });
+                }
+            };
+            let next_ver =
+                prev_ver
+                    .checked_add(1)
+                    .ok_or_else(|| KeystoreError::VerificationFailed {
+                        user: versioned_user(base, prev_ver),
+                        reason: "version overflow during rotation".to_string(),
+                    })?;
+            let previous_user = versioned_user(base, prev_ver);
+            let current_user = versioned_user(base, next_ver);
+            // 1. Socle courant obligatoire et valide.
             let baseline = match self.store.get_secret(&self.service, &previous_user)? {
                 Some(buf) => Self::checked_seed(&previous_user, buf)?,
                 None => {
@@ -410,7 +451,7 @@ impl<S: SecretStore> KeyRegistry<S> {
                 }
             };
             drop(baseline);
-            // 2. v2 frais + persistance + relecture comparee.
+            // 2. Nouvelle version fraîche + persistance + relecture comparée.
             let fresh = Self::generate_seed()?;
             self.store
                 .set_secret(&self.service, &current_user, &fresh[..])?;
@@ -419,25 +460,26 @@ impl<S: SecretStore> KeyRegistry<S> {
                 None => {
                     return Err(KeystoreError::VerificationFailed {
                         user: current_user,
-                        reason: "v2 vanished right after set_secret".to_string(),
+                        reason: "new key version vanished right after set_secret".to_string(),
                     });
                 }
             };
             if *reread != *fresh {
                 return Err(KeystoreError::VerificationFailed {
                     user: current_user,
-                    reason: "v2 read-back differs from generated seed".to_string(),
+                    reason: "new key version read-back differs from generated seed".to_string(),
                 });
             }
-            // 3. v1 toujours lisible (coexistence transitoire).
-            let v1_still_there = match self.store.get_secret(&self.service, &previous_user)? {
+            // 3. Version précédente toujours lisible (coexistence transitoire).
+            let prev_still_there = match self.store.get_secret(&self.service, &previous_user)? {
                 Some(buf) => Self::checked_seed(&previous_user, buf).is_ok(),
                 None => false,
             };
-            if !v1_still_there {
+            if !prev_still_there {
                 return Err(KeystoreError::VerificationFailed {
                     user: previous_user,
-                    reason: "v1 unreadable during transitional window".to_string(),
+                    reason: "previous key version unreadable during transitional window"
+                        .to_string(),
                 });
             }
             entries.push(RotatedEntry {
@@ -450,12 +492,13 @@ impl<S: SecretStore> KeyRegistry<S> {
         Ok(RotationReport { entries })
     }
 
-    /// Supprime v1+v2 des deux bases (`delete_credential`, idempotent).
-    /// La premiere erreur backend interrompe et est renvoyee explicitement.
+    /// Supprime toutes les versions actives (au moins v1+v2) des deux bases (`delete_credential`).
+    /// La premiere erreur backend interrompt et est renvoyee explicitement.
     pub fn revoke(&self) -> Result<RevocationReport, KeystoreError> {
         let mut removed_users = Vec::new();
         for base in [CAPABILITY_ROOT_BASE, JOURNAL_SIGNING_BASE] {
-            for version in [1u32, 2u32] {
+            let max_ver = self.latest_version(base)?.unwrap_or(2).max(2);
+            for version in 1u32..=max_ver {
                 let user = versioned_user(base, version);
                 self.store.delete(&self.service, &user)?;
                 removed_users.push(user);

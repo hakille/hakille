@@ -152,10 +152,21 @@ fn read_existing(path: &Path) -> Result<Option<Vec<u8>>, KeystoreError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(io_error(e)),
     };
-    if !file.metadata().map_err(io_error)?.is_file() {
+    let meta = file.metadata().map_err(io_error)?;
+    if !meta.is_file() {
         return Err(KeystoreError::FileFallback(
             "repli non régulier refusé".into(),
         ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(KeystoreError::FileFallback(format!(
+                "permissions trop permissives ({mode:04o}, 0600 requis)"
+            )));
+        }
     }
     let mut raw = Vec::new();
     file.take((FILE_LEN + 1) as u64)
@@ -345,10 +356,30 @@ mod tests {
         legacy[..8].copy_from_slice(b"ANRKEY01");
         legacy[8..12].copy_from_slice(&1u32.to_be_bytes());
         std::fs::write(&path, &legacy).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let error = load_or_create_encrypted_file_impl(&path, b"password", false).unwrap_err();
         assert!(error.to_string().contains("migration explicite"));
         assert!(rotate_encrypted_file_impl(&path, b"password", b"new", false).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), legacy);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn overly_permissive_key_file_is_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key.enc");
+        let _seed = load_or_create_encrypted_file_impl(&path, b"password", false).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let err = load_or_create_encrypted_file_impl(&path, b"password", false).unwrap_err();
+        assert!(
+            err.to_string().contains("0600"),
+            "erreur attendue mentionnant 0600, obtenu : {err}"
+        );
     }
 
     #[test]
