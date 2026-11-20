@@ -91,7 +91,7 @@ impl SelfModel {
                 t
             ),
             (CognitiveState::Executing, Some(t)) => {
-                format!("Exécution d'une action dans le bac à sable : '{}'", t)
+                format!("Traitement d'une action validée en cours : '{}'", t)
             }
             (CognitiveState::Hesitating { reason_code }, _) => {
                 let why = self

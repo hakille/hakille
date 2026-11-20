@@ -100,47 +100,66 @@ impl DecayEngine {
         preserve_history: bool,
         fallback_rate: f64,
     ) -> DecayReport {
+        if !cutoff_weight.is_finite() || !fallback_rate.is_finite() {
+            return DecayReport {
+                nodes_decayed: 0,
+                nodes_removed: 0,
+                nodes_faded: 0,
+                min_weight: 0.0,
+                avg_weight: 0.0,
+            };
+        }
+        let cutoff = cutoff_weight.clamp(0.0, 1.0);
         let now = chrono::Utc::now();
         let fallback = fallback_rate.max(0.0);
         let mut decayed: u64 = 0;
         let mut to_fade = Vec::new();
 
         for id in graph.ids() {
-            if let Some(t) = graph.get_mut(&id) {
+            let prev_decayed = graph.last_decayed_at(&id).cloned();
+            let should_stamp = if let Some(t) = graph.get_mut(&id) {
                 if Self::should_exclude(t) {
-                    continue;
-                }
-                let dt_secs = (now - t.metadata.last_activated.0)
-                    .num_milliseconds()
-                    .max(0) as f64
-                    / 1000.0;
-                let lambda = if t.metadata.decay_rate == 0.0 {
-                    fallback
+                    false
+                } else if preserve_history && Self::is_faded(t.metadata.weight, cutoff) {
+                    // Déjà fané (tombstone logique) : ne plus re-compter ni dégrader.
+                    false
                 } else {
-                    t.metadata.decay_rate.max(0.0)
-                };
-                let before = t.metadata.weight;
-                let after = before * (-lambda * dt_secs).exp();
-                // Mise à jour en place + recalage de référence sur `now` :
-                // la décroissance est mesurée depuis la dernière activation,
-                // et on ré-ancre t0 pour éviter tout double-comptage.
-                t.metadata.weight = after;
-                t.metadata.last_activated = Timestamp(now);
-                if (before - after).abs() > 1e-12 {
-                    decayed += 1;
+                    let ref_ts = prev_decayed
+                        .as_ref()
+                        .filter(|d| d.0 >= t.metadata.last_activated.0)
+                        .unwrap_or(&t.metadata.last_activated);
+                    let dt_secs = (now - ref_ts.0).num_milliseconds().max(0) as f64 / 1000.0;
+                    let lambda = if t.metadata.decay_rate == 0.0 {
+                        fallback
+                    } else {
+                        t.metadata.decay_rate.max(0.0)
+                    };
+                    let before = t.metadata.weight;
+                    let after = (before * (-lambda * dt_secs).exp()).clamp(0.0, 1.0);
+                    t.metadata.weight = after;
+                    if (before - after).abs() > 1e-12 {
+                        decayed += 1;
+                    }
+                    if after < cutoff {
+                        to_fade.push(id.clone());
+                    }
+                    true
                 }
-                if after < cutoff_weight {
-                    to_fade.push(id);
-                }
+            } else {
+                false
+            };
+            if should_stamp {
+                graph.set_last_decayed_at(id, Timestamp(now));
             }
         }
 
         let (removed, faded) = if preserve_history {
-            // Pas de suppression : fane + tombstone logique.
+            // Pas de suppression : fane + tombstone logique (sans écraser `last_activated`).
             for id in &to_fade {
                 if let Some(t) = graph.get_mut(id) {
-                    t.metadata.weight = cutoff_weight;
+                    t.metadata.weight = cutoff;
                 }
+                graph.set_last_decayed_at(id.clone(), Timestamp(now));
             }
             (0u64, to_fade.len() as u64)
         } else {
@@ -409,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn test_last_activated_updated_no_double_count() {
+    fn test_last_decayed_prevents_double_count_and_preserves_last_activated() {
         let mut graph = KnowledgeGraph::new();
         let t = faded_candidate();
         let id = t.id.clone();
@@ -418,10 +437,15 @@ mod tests {
 
         let engine = DecayEngine::new(0.0);
         engine.apply(&mut graph, 0.0);
+        // `last_activated` ne doit PAS être écrasé (pour préserver la politique GC 30j).
         let after_ts = graph.get(&id).unwrap().metadata.last_activated.0;
+        assert_eq!(
+            after_ts, before_ts,
+            "last_activated ne doit pas être écrasé par la décroissance"
+        );
         assert!(
-            after_ts > before_ts,
-            "last_activated doit être recalé sur now"
+            graph.last_decayed_at(&id).is_some_and(|d| d.0 > before_ts),
+            "last_decayed_at doit être recalé sur now"
         );
 
         // Second passage immédiat : quasi plus rien à dégrader.
@@ -432,6 +456,29 @@ mod tests {
             (w1 - w2).abs() < 1e-6,
             "sans recalage, le 2e passage re-dégraderait (double-comptage)"
         );
+    }
+
+    #[test]
+    fn test_faded_triplet_purged_by_gc_30d_and_not_recounted() {
+        let mut graph = KnowledgeGraph::new();
+        let mut t = faded_candidate();
+        t.metadata.last_activated = Timestamp(chrono::Utc::now() - chrono::Duration::days(31));
+        let id = t.id.clone();
+        graph.insert(t);
+
+        let r1 = DecayEngine::apply_decay(&mut graph, 0.05);
+        assert_eq!(r1.nodes_faded, 1);
+        assert!(graph.contains(&id));
+
+        // Un second passage ne doit ni re-compter ni dégrader un tombstone déjà fané.
+        let r2 = DecayEngine::apply_decay(&mut graph, 0.05);
+        assert_eq!(r2.nodes_faded, 0);
+        assert_eq!(r2.nodes_decayed, 0);
+
+        // Le GC 30 jours doit réellement purger le tombstone (last_activated intact).
+        let purged = DecayEngine::gc_faded_older_than_30d(&mut graph, 0.05);
+        assert_eq!(purged, 1);
+        assert!(!graph.contains(&id));
     }
 
     #[test]

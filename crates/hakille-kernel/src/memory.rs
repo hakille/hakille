@@ -293,27 +293,54 @@ impl CognitiveOrchestrator {
                 }
             }
         }
-        if let Err(error) = self.apply_scheduled_decay() {
-            tracing::warn!("Échec de la décroissance mémoire planifiée : {error}");
+        // Une seule transaction checkpoint par tour : si la maintenance de décroissance
+        // est due, on l'applique avant l'unique `checkpoint_memory()` avec rollback RAM
+        // en cas d'échec de persistance, et `mark_run()` seulement après commit réussi.
+        let now = chrono::Utc::now();
+        let decay_due = self.decay_scheduler.should_run_at(now);
+        let graph_before = decay_due.then(|| self.memory_graph.clone());
+        if decay_due {
+            let cutoff = self.decay_scheduler.cutoff;
+            if cutoff.is_finite() && (0.0..=1.0).contains(&cutoff) {
+                let _ = hakille_memory::prune_cognitive_signals(&mut self.memory_graph, cutoff);
+                let _ = hakille_memory::DecayEngine::apply_decay(&mut self.memory_graph, cutoff);
+            } else {
+                tracing::warn!(cutoff, "Seuil de décroissance planifiée invalide — ignoré");
+            }
         }
         let persistence = self.checkpoint_memory();
+        if persistence.is_err()
+            && let Some(prev) = graph_before
+        {
+            self.memory_graph = prev;
+        } else if decay_due {
+            self.decay_scheduler.mark_run_at(now);
+        }
         self.last_episode = self.active_episode.take();
         persistence
     }
 
     /// Exécute un cycle complet de décroissance exponentielle et de purge cognitive.
     ///
-    /// 1. Purge physiquement les signaux cognitifs personnels (`prune_cognitive_signals`) :
+    /// 1. Valide strictement `cutoff ∈ [0.0, 1.0]` (fini) avant toute mutation.
+    /// 2. Purge physiquement les signaux cognitifs personnels (`prune_cognitive_signals`) :
     ///    ceux dont le poids passe sous `cutoff` sont supprimés sans tombstone (anti-surveillance).
-    /// 2. Applique la décroissance exponentielle aux faits ordinaires (`apply_decay`),
+    /// 3. Applique la décroissance exponentielle aux faits ordinaires (`apply_decay`),
     ///    en fanant au seuil `cutoff` pour préserver l'historique (tombstones logiques).
-    /// 3. Met à jour l'horodatage d'exécution du planificateur (`decay_scheduler.mark_run`).
-    /// 4. Si des nœuds ont été dégradés, fanés ou purgés, persiste un checkpoint mémoire.
+    /// 4. Si des nœuds ont été dégradés, fanés ou purgés, persiste un checkpoint mémoire
+    ///    et restaure `memory_graph` en cas d'échec (rollback RAM atomique).
+    /// 5. Met à jour `decay_scheduler.mark_run_at(now)` uniquement après commit réussi.
     pub fn run_decay_maintenance(&mut self, cutoff: f64) -> Result<hakille_memory::DecayReport> {
+        if !cutoff.is_finite() || !(0.0..=1.0).contains(&cutoff) {
+            return Err(HakilleError::Internal(format!(
+                "seuil de décroissance mémoire invalide (attendu fini dans [0, 1]) : {cutoff}"
+            )));
+        }
+        let now = chrono::Utc::now();
+        let graph_before = self.memory_graph.clone();
         let cognitive_report =
             hakille_memory::prune_cognitive_signals(&mut self.memory_graph, cutoff);
         let decay_report = hakille_memory::DecayEngine::apply_decay(&mut self.memory_graph, cutoff);
-        self.decay_scheduler.mark_run();
 
         let total_decayed = cognitive_report.nodes_decayed + decay_report.nodes_decayed;
         let total_removed = cognitive_report.nodes_removed + decay_report.nodes_removed;
@@ -327,9 +354,13 @@ impl CognitiveOrchestrator {
             avg_weight: decay_report.avg_weight,
         };
 
-        if report.nodes_decayed > 0 || report.nodes_removed > 0 || report.nodes_faded > 0 {
-            self.checkpoint_memory()?;
+        if (report.nodes_decayed > 0 || report.nodes_removed > 0 || report.nodes_faded > 0)
+            && let Err(err) = self.checkpoint_memory()
+        {
+            self.memory_graph = graph_before;
+            return Err(err);
         }
+        self.decay_scheduler.mark_run_at(now);
 
         Ok(report)
     }
@@ -411,18 +442,43 @@ impl CognitiveOrchestrator {
         }
         if let Some(journal) = &self.memory_journal {
             let exclude = self.active_episode.as_ref().map(|e| e.id.as_str());
-            let mut episodes =
-                journal.recall_episodes("", 3, &self.recall_policy.partition, exclude)?;
-            for episode in
-                journal.recall_episodes(query, 4, &self.recall_policy.partition, exclude)?
-            {
-                if !episodes.iter().any(|e| e.id == episode.id) {
-                    episodes.push(episode);
+            // Les épisodes récents automatiques excluent les traces web externes afin
+            // d'empêcher toute injection de prompt persistante dans des tours sans lien.
+            let mut episodes: Vec<MemoryEpisode> = journal
+                .recall_episodes("", 3, &self.recall_policy.partition, exclude)?
+                .into_iter()
+                .filter(|e| e.tool_trace.is_none())
+                .collect();
+            if !query.trim().is_empty() {
+                for episode in
+                    journal.recall_episodes(query, 4, &self.recall_policy.partition, exclude)?
+                {
+                    if !episodes.iter().any(|e| e.id == episode.id) {
+                        episodes.push(episode);
+                    }
                 }
             }
             // Ordre chronologique pour conserver les corrections et les rôles.
             episodes.sort_by(|a, b| a.id.cmp(&b.id));
             for episode in episodes {
+                // Pour les épisodes contenant des traces d'outils web externes, ne jamais
+                // réinjecter le corps brut non fiable des pages dans le prompt d'un tour
+                // ultérieur : seules les métadonnées de provenance sont exposées.
+                if let Some(trace) = episode.tool_trace.clone()
+                    && let Ok(research) =
+                        serde_json::from_value::<crate::research::ResearchReport>(trace)
+                {
+                    for source in research.sources.iter().take(2) {
+                        append(format!(
+                            "[source web archivée ; épisode {} ; consultée le {} ; contenu externe non réinjecté — utiliser :read-web pour relire] {} — {}",
+                            episode.id,
+                            source.page.retrieved_at.0,
+                            source.page.title,
+                            source.page.url,
+                        ));
+                    }
+                    continue;
+                }
                 let mut text = episode_excerpt(&episode, query);
                 // Même si la question ne matche que l'ancienne valeur, joindre
                 // la valeur actuellement active à l'extrait historique.
@@ -468,21 +524,6 @@ impl CognitiveOrchestrator {
                     }
                 }
                 append(text);
-                if let Some(trace) = episode.tool_trace.clone()
-                    && let Ok(research) =
-                        serde_json::from_value::<crate::research::ResearchReport>(trace)
-                {
-                    for source in research.sources.iter().take(2) {
-                        append(format!(
-                            "[source web archivée ; épisode {} ; consultée le {} ; contenu externe, ne prouve pas l'état actuel] {} — {} : {}",
-                            episode.id,
-                            source.page.retrieved_at.0,
-                            source.page.title,
-                            source.page.url,
-                            source.page.text.chars().take(600).collect::<String>()
-                        ));
-                    }
-                }
             }
         } else {
             for entry in self
@@ -498,7 +539,7 @@ impl CognitiveOrchestrator {
                 if entry
                     .tags
                     .iter()
-                    .any(|tag| tag == "untrusted" || tag == "guest")
+                    .any(|tag| tag == "untrusted" || tag == "guest" || tag == "research_response")
                 {
                     continue;
                 }
@@ -519,7 +560,10 @@ impl CognitiveOrchestrator {
             return;
         }
         let statement = prompt.trim();
-        if statement.contains('?') || statement.contains(['"', '«', '»', '\n']) {
+        if statement.starts_with(':')
+            || statement.contains('?')
+            || statement.contains(['"', '«', '»', '\n'])
+        {
             return;
         }
         let trimmed = |text: &str| {
@@ -530,36 +574,53 @@ impl CognitiveOrchestrator {
         };
 
         // Permet les salutations de politesse en tête ("Bonjour, ...", "Salut ! ...")
+        // avec frontière de mot stricte ("Hibou s'appelle Max" ≠ "Hi" + "bou").
         let mut intro_text = statement;
-        let lower = intro_text.to_lowercase();
         for greeting in ["bonjour", "bonsoir", "salut", "coucou", "hello", "hi"] {
-            if let Some(after) = lower.strip_prefix(greeting) {
-                let trimmed_after = after.trim_start_matches(|c: char| {
-                    c.is_whitespace() || c == ',' || c == '!' || c == '.'
-                });
-                let stripped_bytes = lower.len() - trimmed_after.len();
-                if intro_text.is_char_boundary(stripped_bytes) {
-                    intro_text = &intro_text[stripped_bytes..];
+            if intro_text
+                .get(..greeting.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(greeting))
+            {
+                let after = &intro_text[greeting.len()..];
+                if after.is_empty()
+                    || after.starts_with(|c: char| {
+                        c.is_whitespace() || c == ',' || c == '!' || c == '.' || c == ';'
+                    })
+                {
+                    intro_text = after.trim_start_matches(|c: char| {
+                        c.is_whitespace() || c == ',' || c == '!' || c == '.' || c == ';'
+                    });
+                    break;
                 }
-                break;
             }
         }
+        let lower = statement.to_lowercase();
         let lower_intro = intro_text.to_lowercase();
 
         for prefix in ["je m'appelle ", "mon nom est "] {
-            if lower_intro.starts_with(prefix) {
+            if intro_text
+                .get(..prefix.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+            {
                 let raw = &intro_text[prefix.len()..];
-                let name_clause = raw.split(" et ").next().unwrap_or(raw);
-                let name_clause = name_clause
+                let (name_part, rest_opt) = match raw
+                    .as_bytes()
+                    .windows(4)
+                    .position(|w| w.eq_ignore_ascii_case(b" et "))
+                {
+                    Some(idx) => (&raw[..idx], Some(&raw[idx + 4..])),
+                    None => (raw, None),
+                };
+                let name_clause = name_part
                     .split([',', ';', '.', '!'])
                     .next()
-                    .unwrap_or(name_clause);
+                    .unwrap_or(name_part);
                 let name = trimmed(name_clause);
                 if !name.is_empty() && name.split_whitespace().count() <= 6 {
                     self.remember("Utilisateur", "nom", &name);
                 }
-                // Si une proposition d'intérêt ou de préférence suit " et " (ex: "et j'adore Rust")
-                if let Some((_, rest)) = raw.split_once(" et ") {
+                // Si une proposition d'intérêt ou de préférence suit " et " (insensible à la casse)
+                if let Some(rest) = rest_opt {
                     let rest_trimmed = rest.trim();
                     let rest_lower = rest_trimmed.to_lowercase();
                     for interest_prefix in ["j'adore ", "j'aime ", "je préfère ", "je prefere "] {
@@ -653,6 +714,11 @@ impl CognitiveOrchestrator {
         }
         self.pending_resolutions
             .retain(|(_, new)| &new.id != incoming_id);
+        const MAX_MEMORY_REVISIONS: usize = 512;
+        if self.memory_revisions.len() >= MAX_MEMORY_REVISIONS {
+            let overflow = self.memory_revisions.len() + 1 - MAX_MEMORY_REVISIONS;
+            self.memory_revisions.drain(..overflow);
+        }
         self.memory_revisions.push(hakille_memory::FactRevision {
             existing: pair.0,
             incoming: pair.1,
@@ -701,6 +767,7 @@ impl CognitiveOrchestrator {
         &mut self,
         triplet: hakille_memory::Triplet,
     ) -> InsertResult {
+        const MAX_MEMORY_REVISIONS: usize = 512;
         let candidates: Vec<_> = self
             .memory_graph
             .query(&hakille_memory::TriplePattern {
@@ -717,6 +784,10 @@ impl CognitiveOrchestrator {
                 .into_iter()
                 .filter(|t| !self.memory_graph.contains(&t.id))
             {
+                if self.memory_revisions.len() >= MAX_MEMORY_REVISIONS {
+                    let overflow = self.memory_revisions.len() + 1 - MAX_MEMORY_REVISIONS;
+                    self.memory_revisions.drain(..overflow);
+                }
                 self.memory_revisions.push(hakille_memory::FactRevision {
                     existing,
                     incoming: triplet.clone(),
@@ -1261,7 +1332,7 @@ mod tests {
         let mut orch = orchestrator();
         orch.open_memory(&dir.db(), None).unwrap();
 
-        // 1. Insertion d'un fait utilisateur ordinaire (decay_rate: 0.01)
+        // 1. Insertion d'un fait utilisateur permanent (PERMANENT_FACT_DECAY_RATE = 1e-7 s⁻¹)
         let fact_id = match orch.remember("Marie", "aime", "la musique") {
             InsertResult::Inserted(id) => id,
             other => panic!("{other:?}"),
@@ -1272,24 +1343,31 @@ mod tests {
         let emo_id = emo.id.clone();
         orch.insert_memory_triplet(emo);
 
-        // Simulation de 10 heures d'inactivité pour les deux triplets
-        let past = hakille_core::Timestamp(chrono::Utc::now() - chrono::Duration::hours(10));
+        // Simulation de 10 heures d'inactivité : le signal cognitif doit être purgé,
+        // mais le fait utilisateur permanent doit survivre (> 0.99).
+        let ten_hours_ago =
+            hakille_core::Timestamp(chrono::Utc::now() - chrono::Duration::hours(10));
         if let Some(t) = orch.memory_graph.get_mut(&fact_id) {
-            t.metadata.last_activated = past.clone();
+            t.metadata.last_activated = ten_hours_ago.clone();
         }
         if let Some(t) = orch.memory_graph.get_mut(&emo_id) {
-            t.metadata.last_activated = past;
+            t.metadata.last_activated = ten_hours_ago;
         }
 
-        // Exécution de la maintenance de décroissance (cutoff 0.05)
-        let report = orch.run_decay_maintenance(0.05).unwrap();
-
-        // Le signal cognitif passe sous 0.05 et est physiquement supprimé (anti-surveillance)
-        assert_eq!(report.nodes_removed, 1);
+        let report_10h = orch.run_decay_maintenance(0.05).unwrap();
+        assert_eq!(report_10h.nodes_removed, 1);
         assert!(!orch.memory_graph.contains(&emo_id));
+        assert_eq!(report_10h.nodes_faded, 0);
+        assert!(orch.memory_graph.get(&fact_id).unwrap().metadata.weight > 0.99);
 
-        // Le fait ordinaire passe sous 0.05 mais est fané (conservé comme tombstone logique à cutoff)
-        assert_eq!(report.nodes_faded, 1);
+        // Simulation de 400 jours d'inactivité sur le fait permanent : il fane
+        // et reste conservé comme tombstone logique à cutoff (0.05), durable au redémarrage.
+        let ancient = hakille_core::Timestamp(chrono::Utc::now() - chrono::Duration::days(400));
+        if let Some(t) = orch.memory_graph.get_mut(&fact_id) {
+            t.metadata.last_activated = ancient;
+        }
+        let report_ancient = orch.run_decay_maintenance(0.05).unwrap();
+        assert_eq!(report_ancient.nodes_faded, 1);
         assert!(orch.memory_graph.contains(&fact_id));
         let fact_after = orch.memory_graph.get(&fact_id).unwrap();
         assert!((fact_after.metadata.weight - 0.05).abs() < 1e-6);

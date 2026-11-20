@@ -137,6 +137,88 @@ impl DryRunSimulator {
             ),
         }
     }
+
+    /// Simulation honnête d'un paiement lorsque le solde réel n'est pas connecté :
+    /// n'invente jamais un solde de 100,00 EUR et exige une confirmation explicite.
+    pub fn simulate_payment_unverified_balance(
+        recipient: &str,
+        amount_cents: u64,
+        currency: &str,
+    ) -> DryRunReport {
+        let amount_formatted = format!("{:.2} {}", amount_cents as f64 / 100.0, currency);
+        let diff = SimulatedDiff {
+            target_resource: format!("Wallet / {}", recipient),
+            state_before: "Solde non connecté (non mesuré)".to_string(),
+            state_after: format!(
+                "Débit proposé de {} (solde réel non vérifié)",
+                amount_formatted
+            ),
+            estimated_impact: format!(
+                "Transfert proposé de {} vers {}",
+                amount_formatted, recipient
+            ),
+            is_destructive: false,
+        };
+        DryRunReport {
+            action_type: "WalletPayment".to_string(),
+            simulation_successful: true,
+            diffs: vec![diff],
+            warning: Some(format!(
+                "Solde réel non vérifié : confirmation humaine obligatoire avant tout paiement de {} vers '{}'.",
+                amount_formatted, recipient
+            )),
+            human_readable_preview: format!(
+                "Simulation : proposition de virement de {} vers '{}' (solde réel non connecté).",
+                amount_formatted, recipient
+            ),
+        }
+    }
+
+    /// Simulation honnête d'une mutation de fichier dont la taille actuelle n'a pas
+    /// été mesurée sur disque (aucune taille inventée).
+    pub fn simulate_file_mutation_unmeasured(path: &str, is_deletion: bool) -> DryRunReport {
+        let diff = SimulatedDiff {
+            target_resource: path.to_string(),
+            state_before: "Taille actuelle non mesurée".to_string(),
+            state_after: if is_deletion {
+                "Supprimé (irréversible)".to_string()
+            } else {
+                "Modifié (taille cible non mesurée)".to_string()
+            },
+            estimated_impact: if is_deletion {
+                "Suppression définitive du fichier".to_string()
+            } else {
+                "Écriture / remplacement du contenu".to_string()
+            },
+            is_destructive: is_deletion,
+        };
+        DryRunReport {
+            action_type: if is_deletion {
+                "FileDelete".to_string()
+            } else {
+                "FileWrite".to_string()
+            },
+            simulation_successful: true,
+            diffs: vec![diff],
+            warning: if is_deletion {
+                Some("Suppression irréversible : validation explicite obligatoire.".to_string())
+            } else {
+                Some(
+                    "Taille et cible non inspectées sur disque : validation explicite recommandée."
+                        .to_string(),
+                )
+            },
+            human_readable_preview: format!(
+                "Simulation : {} sur '{}' (taille sur disque non mesurée).",
+                if is_deletion {
+                    "suppression"
+                } else {
+                    "modification"
+                },
+                path
+            ),
+        }
+    }
 }
 
 #[cfg(test)]

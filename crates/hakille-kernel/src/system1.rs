@@ -112,17 +112,17 @@ impl System1Engine {
     /// Estimation d'entropie System 1, documentée comme `1 − confiance
     /// heuristique` (mission 5) : faute de logits du modèle local, on approxime
     /// l'incertitude par des indices linguistiques observables.
-    /// - requête courte affirmative ⇒ 0.25 (confiant, fast-path) ;
-    /// - interrogative OU longue (> 100 caractères) ⇒ 0.45 (incertain) ;
-    /// - interrogative ET longue ⇒ 0.65 (très incertain, routage System 2).
+    /// - requête courte affirmative ⇒ 0.25 (confiant, fast-path S1) ;
+    /// - interrogative OU longue (> 100 caractères) ⇒ 0.45 (incertain, S1) ;
+    /// - interrogative ET longue ⇒ 0.78 (> seuil 0.75, bascule réelle vers System 2).
     ///
     /// Heuristique assumée en attendant les log-probabilités réelles du moteur
-    /// GGUF ; seuils alignés sur `RoutingPolicy.entropy_threshold` (0.75).
+    /// GGUF ; calibrée sur `RoutingPolicy.entropy_threshold` (0.75).
     pub fn entropy_estimate(&self, prompt: &str) -> f64 {
         let interrogative = prompt.contains('?');
-        let long = prompt.len() > 100;
+        let long = prompt.chars().count() > 100;
         match (interrogative, long) {
-            (true, true) => 0.65,
+            (true, true) => 0.78,
             (true, false) | (false, true) => 0.45,
             (false, false) => 0.25,
         }

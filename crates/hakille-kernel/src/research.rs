@@ -210,20 +210,39 @@ impl ResearchReport {
         text
     }
     /// Validation des références, PAS une preuve d'implication sémantique.
+    /// Seules les balises `[S...]` dont le caractère suivant est un chiffre (ou `]`)
+    /// sont traitées comme citations — `[System]`, `[Step 1]`, `[Source]` ne
+    /// déclenchent plus de faux positifs.
     pub fn verify_citations(&self, answer: &str) -> std::result::Result<(), String> {
         let mut found = false;
-        for rest in answer.split("[S").skip(1) {
-            let Some((number, _)) = rest.split_once(']') else {
-                return Err("citation incomplète".into());
-            };
-            if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) {
-                return Err("citation mal formée".into());
+        let bytes = answer.as_bytes();
+        let mut i = 0usize;
+        while i + 2 <= bytes.len() {
+            if bytes[i] == b'[' && bytes[i + 1] == b'S' {
+                let after = &answer[i + 2..];
+                let Some(first_ch) = after.chars().next() else {
+                    return Err("citation incomplète".into());
+                };
+                // Ignorer les libellés non numériques comme `[System]` ou `[Step 1]`.
+                if first_ch.is_ascii_alphabetic() {
+                    i += 2;
+                    continue;
+                }
+                let Some((number, _)) = after.split_once(']') else {
+                    return Err("citation incomplète".into());
+                };
+                if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit()) {
+                    return Err("citation mal formée".into());
+                }
+                let id = format!("S{number}");
+                if !self.sources.iter().any(|s| s.id == id) {
+                    return Err(format!("source {id} non lue"));
+                }
+                found = true;
+                i += 2 + number.len() + 1;
+                continue;
             }
-            let id = format!("S{number}");
-            if !self.sources.iter().any(|s| s.id == id) {
-                return Err(format!("source {id} non lue"));
-            }
-            found = true;
+            i += 1;
         }
         if !found {
             return Err("aucune citation de page lue".into());
@@ -258,23 +277,28 @@ pub async fn run_research(
 ) -> Result<ResearchReport> {
     policy.validate()?;
     let audience = crate::orchestrator::CognitiveOrchestrator::EXPECTED_AUDIENCE;
-    let authorize = || -> Result<()> {
-        context.authorize(token, authority, audience)?;
-        crate::providers::require_network_capability_with_context(
-            authority,
-            Some(token),
-            context,
-            audience,
-        )?;
-        if context.resource != request.resource() {
+    let mut auth_ctx = context.clone();
+    let expected_resource = request.resource();
+    let check_precondition = |ctx: &AuthorizationContext| -> Result<()> {
+        if ctx.resource != expected_resource {
             return Err(HakilleError::CapabilityDenied(
                 "autorisation liée à une autre recherche".into(),
             ));
         }
+        // Vérification stricte sans consommer le quota (liaisons cryptographiques
+        // `resource`, `token_aud`, `token_nonce` obligatoires dans le jeton Biscuit).
+        let mut dry = ctx.clone();
+        dry.authorize_strict(token, authority, audience)?;
+        crate::providers::require_network_capability_with_context(
+            authority,
+            Some(token),
+            ctx,
+            audience,
+        )?;
         Ok(())
     };
-    authorize()?;
-    let max_calls = context.quota.as_ref().map_or(policy.max_calls, |q| {
+    check_precondition(&auth_ctx)?;
+    let max_calls = auth_ctx.quota.as_ref().map_or(policy.max_calls, |q| {
         policy.max_calls.min(q.remaining as usize)
     });
     let deadline = Instant::now() + Duration::from_millis(policy.total_ms);
@@ -310,7 +334,7 @@ pub async fn run_research(
         if tool == "read" && report.sources.len() >= policy.max_pages {
             break;
         }
-        authorize()?;
+        check_precondition(&auth_ctx)?;
         report.attempts.push(ToolAttempt {
             tool: tool.into(),
             input: input.clone(),
@@ -320,9 +344,9 @@ pub async fn run_research(
             error: None,
         });
         record(&report)?;
-        // Le commit peut prendre du temps : l'autorisation et l'échéance
-        // doivent encore être valides au moment précis de l'effet réseau.
-        if let Err(error) = authorize() {
+        // Le commit peut prendre du temps : l'autorisation stricte (consommant 1 unité
+        // de quota) et l'échéance doivent encore être valides au moment précis de l'effet réseau.
+        if let Err(error) = auth_ctx.authorize_strict(token, authority, audience) {
             let attempt = report.attempts.last_mut().expect("appel enregistré");
             attempt.status = ToolStatus::Failed;
             attempt.error = Some(ToolFailure::permanent(format!(
@@ -392,8 +416,14 @@ pub async fn run_research(
                 } else if !report.sources.iter().any(|s| s.page.url == page.url) {
                     page.title = page.title.chars().take(200).collect();
                     page.truncated |= page.text.chars().count() > policy.max_excerpt_chars;
-                    page.text =
-                        relevant_excerpt(&page.text, request.value(), policy.max_excerpt_chars);
+                    page.text = match &request {
+                        ResearchRequest::Read(_) => {
+                            page.text.chars().take(policy.max_excerpt_chars).collect()
+                        }
+                        ResearchRequest::Search(q) => {
+                            relevant_excerpt(&page.text, q, policy.max_excerpt_chars)
+                        }
+                    };
                     let id = format!("S{}", report.sources.len() + 1);
                     report.sources.push(ResearchSource { id, page });
                 }
@@ -548,6 +578,8 @@ impl crate::orchestrator::CognitiveOrchestrator {
             }
         } else {
             self.record_research(&report)?;
+            self.self_model
+                .set_state(crate::self_model::CognitiveState::Standby);
             return Err(HakilleError::Internal(format!(
                 "Recherche échouée : aucune page n'a pu être lue.\n{}",
                 report.sources_text()
@@ -556,6 +588,8 @@ impl crate::orchestrator::CognitiveOrchestrator {
         response.push_str("\n\n");
         response.push_str(&report.sources_text());
         self.record_research(&report)?;
+        self.self_model
+            .set_state(crate::self_model::CognitiveState::Standby);
         self.context
             .record_interaction("Hakille", &response, vec!["research_response".into()]);
         Ok(crate::orchestrator::OrchestratorResult {

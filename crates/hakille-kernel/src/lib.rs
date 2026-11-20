@@ -326,7 +326,7 @@ mod tests {
             .expect("turn failed");
         assert!(!res.response_text.is_empty());
         assert!(!orch.working_memory.task_id.is_empty());
-        assert_eq!(orch.self_model.current_state, CognitiveState::Executing);
+        assert_eq!(orch.self_model.current_state, CognitiveState::Standby);
         // `query_current_activity` exposée via `current_activity()`.
         assert!(!orch.current_activity().is_empty());
 

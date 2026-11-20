@@ -244,8 +244,10 @@ impl TaskStore {
             .collect()
     }
 
-    /// Persiste tout le store en redb (écrase à l'identique, idempotent).
+    /// Persiste tout le store en redb (écrase à l'identique et purge les clés
+    /// supprimées en RAM afin d'éviter toute résurrection au rechargement).
     pub fn save_to_db(&self, db: &redb::Database) -> hakille_core::Result<()> {
+        use redb::ReadableTable;
         let txn = db
             .begin_write()
             .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?;
@@ -253,6 +255,24 @@ impl TaskStore {
             let mut table = txn
                 .open_table(TASKS_TABLE)
                 .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?;
+            let stale: Vec<Vec<u8>> = table
+                .iter()
+                .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?
+                .filter_map(|item| {
+                    item.ok().and_then(|(k, _)| {
+                        let key = k.value();
+                        let keep = std::str::from_utf8(key)
+                            .ok()
+                            .is_some_and(|s| self.tasks.contains_key(s));
+                        (!keep).then(|| key.to_vec())
+                    })
+                })
+                .collect();
+            for key in stale {
+                table
+                    .remove(key.as_slice())
+                    .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?;
+            }
             for (id, task) in &self.tasks {
                 let bytes = bincode::serialize(task)
                     .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?;

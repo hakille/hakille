@@ -156,9 +156,29 @@ impl GraphCuriosityScanner {
     }
 
     /// Scan knowledge graph and identify missing connections or follow-up opportunities.
+    /// Filtre par niveau de confiance (`User`/`System` uniquement) afin qu'un
+    /// contenu `Guest`/`Untrusted` ne génère jamais de relance proactive.
     pub fn scan_for_curiosity_inquiries(graph: &KnowledgeGraph) -> Vec<CuriosityInquiry> {
+        Self::scan_for_curiosity_inquiries_in_partition(graph, None)
+    }
+
+    /// Variante filtrée par partition active (et `TrustLevel::User | System`).
+    pub fn scan_for_curiosity_inquiries_in_partition(
+        graph: &KnowledgeGraph,
+        active_partition: Option<&hakille_memory::ContextPartition>,
+    ) -> Vec<CuriosityInquiry> {
         let mut inquiries = Vec::new();
-        let triplets = graph.all_triplets();
+        let triplets: Vec<_> = graph
+            .all_triplets()
+            .into_iter()
+            .filter(|t| {
+                matches!(
+                    t.metadata.trust_level,
+                    hakille_core::TrustLevel::User | hakille_core::TrustLevel::System
+                ) && active_partition
+                    .is_none_or(|p| hakille_memory::retrieval::visible(&t.metadata.context, p))
+            })
+            .collect();
 
         // 1. Check if graph has few facts (bootstrap phase)
         if triplets.len() < 5 {
@@ -175,42 +195,76 @@ impl GraphCuriosityScanner {
             });
         }
 
-        // 2. Identify isolated topics or entities with only 1 link
+        // 2. Identify project/objective items without deadline (max 3 follow-ups)
+        let mut followups = 0usize;
         for t in &triplets {
-            if let hakille_memory::NodeValue::Text(ref text) = t.object
-                && (text.to_lowercase().contains("projet")
-                    || text.to_lowercase().contains("objectif"))
-            {
-                inquiries.push(CuriosityInquiry {
-                    inquiry_id: format!("inq-followup-{}", t.id.0),
-                    question_prompt: format!(
-                        "Tu avais mentionné '{}' : y a-t-il une échéance particulière à suivre ?",
-                        text
-                    ),
-                    topic_area: "Planification".to_string(),
-                    rationale: "Objectif détecté sans date limite explicite liée dans le graphe"
-                        .to_string(),
-                    generated_at: Timestamp::now(),
-                    priority: 0.75,
-                });
-                break;
+            if let hakille_memory::NodeValue::Text(ref text) = t.object {
+                let lower = text.to_lowercase();
+                if lower.contains("projet") || lower.contains("objectif") {
+                    inquiries.push(CuriosityInquiry {
+                        inquiry_id: format!("inq-followup-{}", t.id.0),
+                        question_prompt: format!(
+                            "Tu avais mentionné '{}' : y a-t-il une échéance particulière à suivre ?",
+                            text
+                        ),
+                        topic_area: "Planification".to_string(),
+                        rationale:
+                            "Objectif détecté sans date limite explicite liée dans le graphe"
+                                .to_string(),
+                        generated_at: Timestamp::now(),
+                        priority: 0.75,
+                    });
+                    followups += 1;
+                    if followups >= 3 {
+                        break;
+                    }
+                }
             }
         }
 
         inquiries
     }
 
+    /// Variante partitionnée de `scan_and_stage`.
+    pub fn scan_and_stage_in_partition(
+        &mut self,
+        graph: &KnowledgeGraph,
+        active_partition: &hakille_memory::ContextPartition,
+    ) -> Vec<CuriosityInquiry> {
+        let inquiries =
+            Self::scan_for_curiosity_inquiries_in_partition(graph, Some(active_partition));
+        self.stage_inquiries(inquiries)
+    }
+
     /// Mode `using_graph_orphans` (§28d) : scanne les sujets du graphe qui
     /// n'ont fait l'objet d'aucune question récente et propose une relance
     /// ciblée par sujet orphelin (max 3, triés par libellé pour déterminisme).
-    /// `recent_topics` : libellés ou mots-clés déjà abordés (insensible à la
-    /// casse, sous-chaîne dans les deux sens). Ne modifie pas le graphe.
     pub fn using_graph_orphans(
         graph: &KnowledgeGraph,
         recent_topics: &[String],
     ) -> Vec<CuriosityInquiry> {
+        Self::using_graph_orphans_in_partition(graph, None, recent_topics)
+    }
+
+    /// Variante filtrée par partition active et `TrustLevel::User | System`.
+    pub fn using_graph_orphans_in_partition(
+        graph: &KnowledgeGraph,
+        active_partition: Option<&hakille_memory::ContextPartition>,
+        recent_topics: &[String],
+    ) -> Vec<CuriosityInquiry> {
         let mut labels: Vec<String> = Vec::new();
         for t in graph.all_triplets() {
+            if !matches!(
+                t.metadata.trust_level,
+                hakille_core::TrustLevel::User | hakille_core::TrustLevel::System
+            ) {
+                continue;
+            }
+            if active_partition
+                .is_some_and(|p| !hakille_memory::retrieval::visible(&t.metadata.context, p))
+            {
+                continue;
+            }
             if let Some(label) = graph.subject_label(&t.subject)
                 && !labels.iter().any(|l| l == label)
             {

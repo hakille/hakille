@@ -1,42 +1,42 @@
 //! Tier edge : persistance locale redb (`EdgeStore`).
 //!
-//! Honnêteté documentée (ne pas "améliorer" ces commentaires en
-//! affirmations de performance non mesurées) :
-//! - redb n'offre PAS de prefix-scan natif : `query_via_index` itère la
-//!   table d'index et filtre par préfixe — complexité O(N) bornée au tier
-//!   edge. Le routage SPO/POS/OSP choisit la table la plus sélective mais
-//!   ne change pas la complexité asymptotique.
-//! - CHIFRAGE : les CLÉS d'index SPO/POS/OSP sont stockées EN CLAIR
-//!   (sujet / prédicat / objet lisibles sur disque) pour permettre le scan
-//!   par préfixe. Seules les VALEURS (`ID_TABLE`) sont chiffrées quand une
-//!   clé est fournie (ChaCha20-Poly1305 via `hakille-core`).
-//!   TODO(chiffrement) : index chiffré interrogeable (ex. hachage
-//!   déterministe du préfixe + nonce), rotation de clé, `crypto_erase`
-//!   côté `heritage`.
+//! Honnêteté documentée :
+//! - Mode non chiffré (`encryption_key == None`) : les index `SPO`/`POS`/`OSP`
+//!   sont écrits en clair (log `tracing::warn!` à chaque écriture) et interrogés
+//!   par scan de plage `table.range(prefix..)`.
+//! - Mode chiffré (`encryption_key == Some(_)`) — ADR-012 :
+//!   - Séparation cryptographique HKDF-SHA256 (`hakille_core::derive_subkeys`)
+//!     en deux sous-clés distinctes zéroisées (`K_mem` pour XChaCha20-Poly1305,
+//!     `K_bindex` pour HMAC-SHA256).
+//!   - `ID_TABLE` stocke uniquement des `XChaChaBlob` (nonce 24 octets + AAD liée
+//!     à `id_to_triplet` / `triplet.id` / `SCHEMA_VERSION`).
+//!   - **Aucune table `SPO`/`POS`/`OSP` en clair n'est écrite** : les requêtes
+//!     indexées passent par `BLIND_EXACT_TABLE` / `BLIND_PREFIX_TABLE` (HMAC-SHA256)
+//!     avec témoin authentifié `KEY_CHECK_KEY` dans `META_TABLE` (refus fail-closed
+//!     en cas de mauvaise clé).
 //! - `batch_store` = UNE seule transaction redb ⇒ atomique (tout ou rien).
-//! - `flush` = no-op documenté : chaque `commit()` redb est déjà durable ;
-//!   `Database::compact` exigerait `&mut self`, incompatible avec le
-//!   partage via `Arc<Database>`.
-//! - Version de schéma `SCHEMA_VERSION` vérifiée à la construction
-//!   (`try_new` strict ; `new` best-effort + log pour compatibilité).
+//! - `flush` = no-op documenté : chaque `commit()` redb est déjà durable.
+//! - Version de schéma `SCHEMA_VERSION` vérifiée à la construction (`try_new` strict).
 
 use crate::storage::GraphStorage;
 use crate::triplet::{TriplePattern, Triplet};
 use async_trait::async_trait;
-use hakille_core::{HakilleError, TripletId, decrypt_at_rest, encrypt_at_rest};
+use hakille_core::{
+    AadBinding, HakilleError, MasterKey, TripletId, XChaChaBlob, XChaChaCipher, derive_subkeys,
+};
 use redb::{Database, ReadableTable, ReadableTableMetadata, TableDefinition};
 use std::sync::Arc;
+use zeroize::Zeroizing;
 
 pub const SPO_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("spo");
 pub const POS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("pos");
 pub const OSP_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("osp");
 pub const ID_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("id_to_triplet");
-/// Table méta : stocke la version du schéma (clé `SCHEMA_VERSION_KEY`).
+/// Table méta : stocke la version du schéma (`SCHEMA_VERSION_KEY`) et le
+/// témoin de clé chiffrée (`KEY_CHECK_KEY`).
 pub const META_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("hakille_meta");
 /// Table embeddings : `id_triplet (bincode) → embedding (bincode Vec<f32>)`.
-/// Dimension de production verrouillée : 384 (voir `vector::EMBEDDING_DIM).
-/// Stockage en clair (vecteurs non sensibles par eux-mêmes) ; les triplets
-/// restent chiffrés via `ID_TABLE` quand une clé est fournie.
+/// Dimension de production verrouillée : 384 (voir `vector::EMBEDDING_DIM`).
 pub const EMBEDDINGS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("id_to_embedding");
 /// Table d'index aveugle exacte (ADR-012 §3) : `token_exact (32 octets HMAC) → Vec<TripletId> (bincode)`.
 pub const BLIND_EXACT_TABLE: TableDefinition<&[u8; 32], &[u8]> =
@@ -50,14 +50,17 @@ pub const BLIND_PREFIX_TABLE: TableDefinition<&[u8; 32], &[u8]> =
 /// manuelle requise — aucun upgrade silencieux).
 pub const SCHEMA_VERSION: u32 = 1;
 const SCHEMA_VERSION_KEY: &[u8] = b"hakille:schema_version";
+const KEY_CHECK_KEY: &[u8] = b"hakille:key_check_v2";
+const KEY_CHECK_PLAINTEXT: &[u8] = b"hakille:edge:key-verified:v2";
+const KEY_CHECK_AAD: &[u8] = b"hakille:meta:key_check:v2";
 
 pub struct EdgeStore {
     pub db: Arc<Database>,
-    /// Clé de chiffrement au repos (32 octets). Si `None`, les valeurs sont
-    /// stockées en clair (avec `tracing::warn!` à chaque `store`).
-    encryption_key: Option<[u8; 32]>,
-    /// Clé d'indexation aveugle dérivée pour les tables `BLIND_EXACT_TABLE` et
-    /// `BLIND_PREFIX_TABLE` (ADR-012 §3), effacée de la mémoire à la destruction.
+    /// Sous-clé HKDF de chiffrement au repos (`K_mem`, XChaCha20-Poly1305),
+    /// zéroisée à la destruction.
+    encryption_key: Option<Zeroizing<[u8; 32]>>,
+    /// Sous-clé HKDF d'indexation aveugle (`K_bindex`, HMAC-SHA256), dérivée
+    /// indépendamment de `K_mem` (ADR-012 §3) et zéroisée à la destruction.
     blind_key: Option<crate::blind_index::BlindIndexKey>,
 }
 
@@ -114,6 +117,44 @@ fn ensure_schema_version(db: &Database) -> hakille_core::Result<()> {
     Ok(())
 }
 
+fn triplet_aad(id: &TripletId) -> Vec<u8> {
+    AadBinding::new(
+        "default",
+        "default",
+        "id_to_triplet",
+        &id.0.to_string(),
+        SCHEMA_VERSION,
+    )
+    .to_bytes()
+}
+
+fn derive_edge_keys(
+    master_bytes: [u8; 32],
+) -> (Zeroizing<[u8; 32]>, crate::blind_index::BlindIndexKey) {
+    let master = MasterKey::new(master_bytes);
+    let hierarchy = derive_subkeys(&master);
+    (
+        Zeroizing::new(*hierarchy.memory_key()),
+        crate::blind_index::BlindIndexKey::new(*hierarchy.blind_index_key()),
+    )
+}
+
+fn triplet_matches_prefix(triplet: &Triplet, normalized_prefix: &str) -> bool {
+    let matches_text = |text: &str| {
+        let norm = crate::blind_index::normalize(text);
+        norm.starts_with(normalized_prefix)
+            || norm
+                .split_whitespace()
+                .any(|w| w.starts_with(normalized_prefix))
+    };
+    if matches_text(&triplet.subject.0.to_string())
+        || matches_text(&triplet.predicate.0.to_string())
+    {
+        return true;
+    }
+    node_value_text(&triplet.object).is_some_and(|obj| matches_text(&obj))
+}
+
 impl EdgeStore {
     /// Construit sans vérifier strictement le schéma : en cas d'échec de
     /// vérification, une erreur est loggée (`tracing::error!`) et le store
@@ -143,20 +184,118 @@ impl EdgeStore {
         })
     }
 
-    /// Construit avec chiffrement au repos (`hakille-core` ChaCha20-Poly1305) et indexation aveugle (ADR-012).
+    /// Construit avec chiffrement au repos (XChaCha20-Poly1305 + AAD) et indexation
+    /// aveugle (HMAC-SHA256) sur deux sous-clés HKDF distinctes (ADR-012).
     pub fn with_encryption_key(mut self, key: [u8; 32]) -> Self {
-        self.encryption_key = Some(key);
-        self.blind_key = Some(crate::blind_index::BlindIndexKey::new(key));
+        let (k_mem, k_blind) = derive_edge_keys(key);
+        self.encryption_key = Some(k_mem);
+        self.blind_key = Some(k_blind);
         self
     }
 
     pub fn set_encryption_key(&mut self, key: Option<[u8; 32]>) {
-        self.encryption_key = key;
-        self.blind_key = key.map(crate::blind_index::BlindIndexKey::new);
+        match key {
+            Some(raw) => {
+                let (k_mem, k_blind) = derive_edge_keys(raw);
+                self.encryption_key = Some(k_mem);
+                self.blind_key = Some(k_blind);
+            }
+            None => {
+                self.encryption_key = None;
+                self.blind_key = None;
+            }
+        }
     }
 
     pub fn has_encryption(&self) -> bool {
         self.encryption_key.is_some()
+    }
+
+    /// Vérifie le témoin cryptographique `KEY_CHECK_KEY` en lecture (fail-closed :
+    /// une mauvaise clé ou une absence de clé sur une base chiffrée retourne `Err`).
+    fn verify_key_check_read(&self, read_txn: &redb::ReadTransaction) -> hakille_core::Result<()> {
+        let meta = match read_txn.open_table(META_TABLE) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(()),
+            Err(e) => {
+                return Err(HakilleError::StorageError(format!(
+                    "EdgeStore: open hakille_meta (key_check): {e}"
+                )));
+            }
+        };
+        let Some(raw) = meta.get(KEY_CHECK_KEY).map_err(|e| {
+            HakilleError::StorageError(format!("EdgeStore: lecture key_check: {e}"))
+        })?
+        else {
+            return Ok(());
+        };
+        let Some(ref key) = self.encryption_key else {
+            return Err(HakilleError::StorageError(
+                "EdgeStore: base chiffrée — clé de chiffrement requise".to_string(),
+            ));
+        };
+        let blob: XChaChaBlob = bincode::deserialize(raw.value()).map_err(|e| {
+            HakilleError::StorageError(format!("EdgeStore: key_check corrompu: {e}"))
+        })?;
+        let plain = XChaChaCipher::decrypt(&blob, key, KEY_CHECK_AAD).map_err(|_| {
+            HakilleError::StorageError(
+                "EdgeStore: clé de chiffrement invalide (échec d'authentification)".to_string(),
+            )
+        })?;
+        if plain.as_slice() != KEY_CHECK_PLAINTEXT {
+            return Err(HakilleError::StorageError(
+                "EdgeStore: témoin de clé invalide".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Initialise ou vérifie le témoin de clé dans une transaction d'écriture.
+    fn ensure_key_check_write(
+        &self,
+        write_txn: &redb::WriteTransaction,
+    ) -> hakille_core::Result<()> {
+        let mut meta = write_txn.open_table(META_TABLE).map_err(|e| {
+            HakilleError::StorageError(format!("EdgeStore: open hakille_meta (write): {e}"))
+        })?;
+        let existing = meta
+            .get(KEY_CHECK_KEY)
+            .map_err(|e| HakilleError::StorageError(format!("EdgeStore: get key_check: {e}")))?
+            .map(|g| g.value().to_vec());
+        match (existing, self.encryption_key.as_ref()) {
+            (Some(raw), Some(key)) => {
+                let blob: XChaChaBlob = bincode::deserialize(&raw).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore: key_check corrompu: {e}"))
+                })?;
+                let plain = XChaChaCipher::decrypt(&blob, key, KEY_CHECK_AAD).map_err(|_| {
+                    HakilleError::StorageError(
+                        "EdgeStore: clé de chiffrement incompatible avec la base existante"
+                            .to_string(),
+                    )
+                })?;
+                if plain.as_slice() != KEY_CHECK_PLAINTEXT {
+                    return Err(HakilleError::StorageError(
+                        "EdgeStore: témoin de clé invalide".to_string(),
+                    ));
+                }
+            }
+            (Some(_), None) => {
+                return Err(HakilleError::StorageError(
+                    "EdgeStore: écriture en clair refusée sur une base chiffrée".to_string(),
+                ));
+            }
+            (None, Some(key)) => {
+                let blob = XChaChaCipher::encrypt(KEY_CHECK_PLAINTEXT, key, KEY_CHECK_AAD)
+                    .map_err(|e| HakilleError::Internal(e.to_string()))?;
+                let bytes =
+                    bincode::serialize(&blob).map_err(|e| HakilleError::Internal(e.to_string()))?;
+                meta.insert(KEY_CHECK_KEY, bytes.as_slice()).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore: insert key_check: {e}"))
+                })?;
+            }
+            (None, None) => {}
+        }
+        Ok(())
     }
 
     /// Recherche aveugle exacte selon ADR-012 : recherche O(1) par HMAC-SHA256
@@ -174,6 +313,7 @@ impl EdgeStore {
         let read_txn = self.db.begin_read().map_err(|e| {
             HakilleError::StorageError(format!("EdgeStore::query_blind_exact: begin_read: {e}"))
         })?;
+        self.verify_key_check_read(&read_txn)?;
         let table = match read_txn.open_table(BLIND_EXACT_TABLE) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
@@ -186,7 +326,11 @@ impl EdgeStore {
         let ids: Vec<TripletId> = match table.get(&token).map_err(|e| {
             HakilleError::StorageError(format!("EdgeStore::query_blind_exact: get: {e}"))
         })? {
-            Some(entry) => bincode::deserialize(entry.value()).unwrap_or_default(),
+            Some(entry) => bincode::deserialize(entry.value()).map_err(|e| {
+                HakilleError::StorageError(format!(
+                    "EdgeStore::query_blind_exact: bucket corrompu: {e}"
+                ))
+            })?,
             None => return Ok(Vec::new()),
         };
         let mut triplets = Vec::with_capacity(ids.len());
@@ -198,8 +342,9 @@ impl EdgeStore {
         Ok(triplets)
     }
 
-    /// Recherche aveugle par préfixe selon ADR-012 : longueur bornée [3, 8],
-    /// recherche O(1) par HMAC-SHA256 dans `BLIND_PREFIX_TABLE`.
+    /// Recherche aveugle par préfixe selon ADR-012 : longueur indexée bornée [3, 8],
+    /// recherche O(1) par HMAC-SHA256 dans `BLIND_PREFIX_TABLE`, puis re-filtrage
+    /// exact en mémoire après déchiffrement si `prefix` dépasse 8 caractères.
     pub async fn query_blind_prefix(&self, prefix: &str) -> hakille_core::Result<Vec<Triplet>> {
         let bkey = match self.blind_key {
             Some(ref k) => k,
@@ -218,12 +363,19 @@ impl EdgeStore {
                 crate::blind_index::DEFAULT_MIN_PREFIX_LEN
             )));
         }
-        let bounded_len = char_len.min(crate::blind_index::DEFAULT_MAX_PREFIX_LEN);
-        let prefix_slice: String = norm.chars().take(bounded_len).collect();
+        let mut bounded_len = char_len.min(crate::blind_index::DEFAULT_MAX_PREFIX_LEN);
+        let chars: Vec<char> = norm.chars().collect();
+        while bounded_len > crate::blind_index::DEFAULT_MIN_PREFIX_LEN
+            && chars[bounded_len - 1].is_whitespace()
+        {
+            bounded_len -= 1;
+        }
+        let prefix_slice: String = chars[..bounded_len].iter().collect();
         let token = crate::blind_index::prefix_token(bkey, &prefix_slice, bounded_len);
         let read_txn = self.db.begin_read().map_err(|e| {
             HakilleError::StorageError(format!("EdgeStore::query_blind_prefix: begin_read: {e}"))
         })?;
+        self.verify_key_check_read(&read_txn)?;
         let table = match read_txn.open_table(BLIND_PREFIX_TABLE) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
@@ -236,12 +388,18 @@ impl EdgeStore {
         let ids: Vec<TripletId> = match table.get(&token).map_err(|e| {
             HakilleError::StorageError(format!("EdgeStore::query_blind_prefix: get: {e}"))
         })? {
-            Some(entry) => bincode::deserialize(entry.value()).unwrap_or_default(),
+            Some(entry) => bincode::deserialize(entry.value()).map_err(|e| {
+                HakilleError::StorageError(format!(
+                    "EdgeStore::query_blind_prefix: bucket corrompu: {e}"
+                ))
+            })?,
             None => return Ok(Vec::new()),
         };
         let mut triplets = Vec::with_capacity(ids.len());
         for id in ids {
-            if let Some(t) = self.load(&id).await? {
+            if let Some(t) = self.load(&id).await?
+                && (char_len <= bounded_len || triplet_matches_prefix(&t, &norm))
+            {
                 triplets.push(t);
             }
         }
@@ -348,43 +506,54 @@ impl EdgeStore {
             return Ok(false);
         };
         let id_bytes = bincode::serialize(id).map_err(|e| HakilleError::Internal(e.to_string()))?;
-        let spo = spo_key(&t)?;
-        let pos = pos_key(&t)?;
-        let osp = osp_key(&t)?;
         let write_txn = self.db.begin_write().map_err(|e| {
             HakilleError::StorageError(format!("EdgeStore::delete: begin_write: {e}"))
         })?;
         {
+            self.ensure_key_check_write(&write_txn)?;
             let mut id_table = write_txn.open_table(ID_TABLE).map_err(|e| {
                 HakilleError::StorageError(format!("EdgeStore::delete: open id: {e}"))
             })?;
             id_table.remove(id_bytes.as_slice()).map_err(|e| {
                 HakilleError::StorageError(format!("EdgeStore::delete: remove id: {e}"))
             })?;
-            let mut spo_table = write_txn.open_table(SPO_TABLE).map_err(|e| {
-                HakilleError::StorageError(format!("EdgeStore::delete: open spo: {e}"))
-            })?;
-            spo_table.remove(spo.as_slice()).map_err(|e| {
-                HakilleError::StorageError(format!("EdgeStore::delete: remove spo: {e}"))
-            })?;
-            let mut pos_table = write_txn.open_table(POS_TABLE).map_err(|e| {
-                HakilleError::StorageError(format!("EdgeStore::delete: open pos: {e}"))
-            })?;
-            pos_table.remove(pos.as_slice()).map_err(|e| {
-                HakilleError::StorageError(format!("EdgeStore::delete: remove pos: {e}"))
-            })?;
-            let mut osp_table = write_txn.open_table(OSP_TABLE).map_err(|e| {
-                HakilleError::StorageError(format!("EdgeStore::delete: open osp: {e}"))
-            })?;
-            osp_table.remove(osp.as_slice()).map_err(|e| {
-                HakilleError::StorageError(format!("EdgeStore::delete: remove osp: {e}"))
-            })?;
 
-            if let Some(ref bkey) = self.blind_key
-                && let Ok(mut exact_table) = write_txn.open_table(BLIND_EXACT_TABLE)
-                && let Ok(mut prefix_table) = write_txn.open_table(BLIND_PREFIX_TABLE)
-            {
-                deindex_triplet_blind(&mut exact_table, &mut prefix_table, bkey, &t)?;
+            // Purge de l'embedding éventuellement associé (jamais de vecteur orphelin).
+            if let Ok(mut emb_table) = write_txn.open_table(EMBEDDINGS_TABLE) {
+                emb_table.remove(id_bytes.as_slice()).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::delete: remove embedding: {e}"))
+                })?;
+            }
+
+            if let Some(ref bkey) = self.blind_key {
+                // Mode chiffré : désindexation des tables aveugles uniquement (aucune table SPO/POS/OSP).
+                if let Ok(mut exact_table) = write_txn.open_table(BLIND_EXACT_TABLE)
+                    && let Ok(mut prefix_table) = write_txn.open_table(BLIND_PREFIX_TABLE)
+                {
+                    deindex_triplet_blind(&mut exact_table, &mut prefix_table, bkey, &t)?;
+                }
+            } else {
+                let spo = spo_key(&t)?;
+                let pos = pos_key(&t)?;
+                let osp = osp_key(&t)?;
+                let mut spo_table = write_txn.open_table(SPO_TABLE).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::delete: open spo: {e}"))
+                })?;
+                spo_table.remove(spo.as_slice()).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::delete: remove spo: {e}"))
+                })?;
+                let mut pos_table = write_txn.open_table(POS_TABLE).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::delete: open pos: {e}"))
+                })?;
+                pos_table.remove(pos.as_slice()).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::delete: remove pos: {e}"))
+                })?;
+                let mut osp_table = write_txn.open_table(OSP_TABLE).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::delete: open osp: {e}"))
+                })?;
+                osp_table.remove(osp.as_slice()).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::delete: remove osp: {e}"))
+                })?;
             }
         }
         write_txn
@@ -398,7 +567,8 @@ impl EdgeStore {
             bincode::serialize(triplet).map_err(|e| HakilleError::Internal(e.to_string()))?;
         match self.encryption_key {
             Some(ref key) => {
-                let blob = encrypt_at_rest(&plain, key)
+                let aad = triplet_aad(&triplet.id);
+                let blob = XChaChaCipher::encrypt(&plain, key, &aad)
                     .map_err(|e| HakilleError::Internal(e.to_string()))?;
                 bincode::serialize(&blob).map_err(|e| HakilleError::Internal(e.to_string()))
             }
@@ -406,14 +576,23 @@ impl EdgeStore {
         }
     }
 
-    fn decode_value(&self, bytes: &[u8]) -> hakille_core::Result<Triplet> {
+    fn decode_value_for_id(&self, id: &TripletId, bytes: &[u8]) -> hakille_core::Result<Triplet> {
         match self.encryption_key {
             Some(ref key) => {
-                let blob: hakille_core::EncryptedBlob = bincode::deserialize(bytes)
+                let blob: XChaChaBlob = bincode::deserialize(bytes)
                     .map_err(|e| HakilleError::Internal(e.to_string()))?;
-                let plain = decrypt_at_rest(&blob, key)
+                let aad = triplet_aad(id);
+                let plain = XChaChaCipher::decrypt(&blob, key, &aad)
                     .map_err(|e| HakilleError::Internal(e.to_string()))?;
-                bincode::deserialize(&plain).map_err(|e| HakilleError::Internal(e.to_string()))
+                let triplet: Triplet = bincode::deserialize(&plain)
+                    .map_err(|e| HakilleError::Internal(e.to_string()))?;
+                if &triplet.id != id {
+                    return Err(HakilleError::StorageError(
+                        "EdgeStore: incohérence d'identifiant entre clé ID_TABLE et triplet déchiffré"
+                            .to_string(),
+                    ));
+                }
+                Ok(triplet)
             }
             None => bincode::deserialize(bytes).map_err(|e| HakilleError::Internal(e.to_string())),
         }
@@ -440,7 +619,9 @@ fn add_triplet_id_to_blind_table(
         .get(token)
         .map_err(|e| HakilleError::StorageError(e.to_string()))?
     {
-        Some(entry) => bincode::deserialize(entry.value()).unwrap_or_default(),
+        Some(entry) => bincode::deserialize(entry.value()).map_err(|e| {
+            HakilleError::StorageError(format!("EdgeStore: bucket blind corrompu à l'ajout: {e}"))
+        })?,
         None => Vec::new(),
     };
     if !ids.contains(id) {
@@ -463,7 +644,11 @@ fn remove_triplet_id_from_blind_table(
         .get(token)
         .map_err(|e| HakilleError::StorageError(e.to_string()))?
     {
-        Some(entry) => bincode::deserialize(entry.value()).ok(),
+        Some(entry) => Some(bincode::deserialize(entry.value()).map_err(|e| {
+            HakilleError::StorageError(format!(
+                "EdgeStore: bucket blind corrompu à la suppression: {e}"
+            ))
+        })?),
         None => None,
     };
     if let Some(mut ids) = existing
@@ -471,7 +656,9 @@ fn remove_triplet_id_from_blind_table(
     {
         ids.swap_remove(pos);
         if ids.is_empty() {
-            let _ = table.remove(token);
+            table
+                .remove(token)
+                .map_err(|e| HakilleError::StorageError(e.to_string()))?;
         } else {
             let encoded =
                 bincode::serialize(&ids).map_err(|e| HakilleError::Internal(e.to_string()))?;
@@ -652,63 +839,87 @@ impl GraphStorage for EdgeStore {
     async fn store(&self, triplet: &Triplet) -> hakille_core::Result<()> {
         if self.encryption_key.is_none() {
             tracing::warn!(
-                "EdgeStore::store en clair (aucune clé de chiffrement fournie) — voir TODO(chiffrement)"
+                "EdgeStore::store en clair (aucune clé de chiffrement fournie) — activez with_encryption_key()"
             );
         }
         let id_bytes =
             bincode::serialize(&triplet.id).map_err(|e| HakilleError::Internal(e.to_string()))?;
         let triplet_bytes = self.encode_value(triplet)?;
-        // Les 3 index sont écrits dans la même transaction ACID que la
-        // valeur : fini les tables SPO/POS/OSP mortes (mission 8).
-        let spo = spo_key(triplet)?;
-        let pos = pos_key(triplet)?;
-        let osp = osp_key(triplet)?;
 
         let write_txn = self.db.begin_write().map_err(|e| {
             HakilleError::StorageError(format!("EdgeStore::store: begin_write: {e}"))
         })?;
         {
+            self.ensure_key_check_write(&write_txn)?;
             let mut id_table = write_txn.open_table(ID_TABLE).map_err(|e| {
                 HakilleError::StorageError(format!("EdgeStore::store: open id: {e}"))
             })?;
+            let previous_bytes = id_table
+                .get(id_bytes.as_slice())
+                .map_err(|e| HakilleError::StorageError(format!("EdgeStore::store: get old: {e}")))?
+                .map(|g| g.value().to_vec());
+            let previous = match previous_bytes {
+                Some(raw) => Some(self.decode_value_for_id(&triplet.id, &raw)?),
+                None => None,
+            };
+
             id_table
                 .insert(id_bytes.as_slice(), triplet_bytes.as_slice())
                 .map_err(|e| {
                     HakilleError::StorageError(format!("EdgeStore::store: insert id: {e}"))
                 })?;
-            let mut spo_table = write_txn.open_table(SPO_TABLE).map_err(|e| {
-                HakilleError::StorageError(format!("EdgeStore::store: open spo: {e}"))
-            })?;
-            spo_table
-                .insert(spo.as_slice(), id_bytes.as_slice())
-                .map_err(|e| {
-                    HakilleError::StorageError(format!("EdgeStore::store: insert spo: {e}"))
-                })?;
-            let mut pos_table = write_txn.open_table(POS_TABLE).map_err(|e| {
-                HakilleError::StorageError(format!("EdgeStore::store: open pos: {e}"))
-            })?;
-            pos_table
-                .insert(pos.as_slice(), id_bytes.as_slice())
-                .map_err(|e| {
-                    HakilleError::StorageError(format!("EdgeStore::store: insert pos: {e}"))
-                })?;
-            let mut osp_table = write_txn.open_table(OSP_TABLE).map_err(|e| {
-                HakilleError::StorageError(format!("EdgeStore::store: open osp: {e}"))
-            })?;
-            osp_table
-                .insert(osp.as_slice(), id_bytes.as_slice())
-                .map_err(|e| {
-                    HakilleError::StorageError(format!("EdgeStore::store: insert osp: {e}"))
-                })?;
 
             if let Some(ref bkey) = self.blind_key {
+                // Mode chiffré : AUCUNE table SPO/POS/OSP en clair n'est écrite sur disque.
                 let mut exact_table = write_txn.open_table(BLIND_EXACT_TABLE).map_err(|e| {
                     HakilleError::StorageError(format!("EdgeStore::store: open blind_exact: {e}"))
                 })?;
                 let mut prefix_table = write_txn.open_table(BLIND_PREFIX_TABLE).map_err(|e| {
                     HakilleError::StorageError(format!("EdgeStore::store: open blind_prefix: {e}"))
                 })?;
+                if let Some(ref old) = previous {
+                    deindex_triplet_blind(&mut exact_table, &mut prefix_table, bkey, old)?;
+                }
                 index_triplet_blind(&mut exact_table, &mut prefix_table, bkey, triplet)?;
+            } else {
+                let spo = spo_key(triplet)?;
+                let pos = pos_key(triplet)?;
+                let osp = osp_key(triplet)?;
+                let mut spo_table = write_txn.open_table(SPO_TABLE).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::store: open spo: {e}"))
+                })?;
+                let mut pos_table = write_txn.open_table(POS_TABLE).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::store: open pos: {e}"))
+                })?;
+                let mut osp_table = write_txn.open_table(OSP_TABLE).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::store: open osp: {e}"))
+                })?;
+                if let Some(ref old) = previous {
+                    spo_table.remove(spo_key(old)?.as_slice()).map_err(|e| {
+                        HakilleError::StorageError(format!("EdgeStore::store: remove old spo: {e}"))
+                    })?;
+                    pos_table.remove(pos_key(old)?.as_slice()).map_err(|e| {
+                        HakilleError::StorageError(format!("EdgeStore::store: remove old pos: {e}"))
+                    })?;
+                    osp_table.remove(osp_key(old)?.as_slice()).map_err(|e| {
+                        HakilleError::StorageError(format!("EdgeStore::store: remove old osp: {e}"))
+                    })?;
+                }
+                spo_table
+                    .insert(spo.as_slice(), id_bytes.as_slice())
+                    .map_err(|e| {
+                        HakilleError::StorageError(format!("EdgeStore::store: insert spo: {e}"))
+                    })?;
+                pos_table
+                    .insert(pos.as_slice(), id_bytes.as_slice())
+                    .map_err(|e| {
+                        HakilleError::StorageError(format!("EdgeStore::store: insert pos: {e}"))
+                    })?;
+                osp_table
+                    .insert(osp.as_slice(), id_bytes.as_slice())
+                    .map_err(|e| {
+                        HakilleError::StorageError(format!("EdgeStore::store: insert osp: {e}"))
+                    })?;
             }
         }
         write_txn
@@ -718,16 +929,14 @@ impl GraphStorage for EdgeStore {
     }
 
     /// Stocke un lot en UNE seule transaction redb ⇒ atomique : soit tous
-    /// les triplets sont persistés (avec leurs 3 index), soit aucun
-    /// (échec avant ou pendant le `commit`, y compris pré-encodage —
-    /// toute erreur de sérialisation avorte AVANT l'ouverture en écriture).
+    /// les triplets sont persistés (avec leurs index), soit aucun.
     async fn batch_store(&self, triplets: Vec<Triplet>) -> hakille_core::Result<()> {
         if triplets.is_empty() {
             return Ok(());
         }
         if self.encryption_key.is_none() {
             tracing::warn!(
-                "EdgeStore::batch_store en clair (aucune clé de chiffrement fournie) — voir TODO(chiffrement)"
+                "EdgeStore::batch_store en clair (aucune clé de chiffrement fournie) — activez with_encryption_key()"
             );
         }
         // Pré-encodage TOTAL avant toute écriture : une erreur ici ne
@@ -737,29 +946,29 @@ impl GraphStorage for EdgeStore {
             let id_bytes =
                 bincode::serialize(&t.id).map_err(|e| HakilleError::Internal(e.to_string()))?;
             let triplet_bytes = self.encode_value(t)?;
-            let spo = spo_key(t)?;
-            let pos = pos_key(t)?;
-            let osp = osp_key(t)?;
-            rows.push((id_bytes, triplet_bytes, spo, pos, osp));
+            rows.push((id_bytes, triplet_bytes));
         }
 
         let write_txn = self.db.begin_write().map_err(|e| {
             HakilleError::StorageError(format!("EdgeStore::batch_store: begin_write: {e}"))
         })?;
         {
+            self.ensure_key_check_write(&write_txn)?;
             let mut id_table = write_txn.open_table(ID_TABLE).map_err(|e| {
                 HakilleError::StorageError(format!("EdgeStore::batch_store: open id: {e}"))
             })?;
-            let mut spo_table = write_txn.open_table(SPO_TABLE).map_err(|e| {
-                HakilleError::StorageError(format!("EdgeStore::batch_store: open spo: {e}"))
-            })?;
-            let mut pos_table = write_txn.open_table(POS_TABLE).map_err(|e| {
-                HakilleError::StorageError(format!("EdgeStore::batch_store: open pos: {e}"))
-            })?;
-            let mut osp_table = write_txn.open_table(OSP_TABLE).map_err(|e| {
-                HakilleError::StorageError(format!("EdgeStore::batch_store: open osp: {e}"))
-            })?;
-            for (id_bytes, triplet_bytes, spo, pos, osp) in &rows {
+
+            let mut replaced: Vec<Triplet> = Vec::new();
+            for (t, (id_bytes, triplet_bytes)) in triplets.iter().zip(rows.iter()) {
+                let prev = id_table
+                    .get(id_bytes.as_slice())
+                    .map_err(|e| {
+                        HakilleError::StorageError(format!("EdgeStore::batch_store: get old: {e}"))
+                    })?
+                    .map(|g| g.value().to_vec());
+                if let Some(raw) = prev {
+                    replaced.push(self.decode_value_for_id(&t.id, &raw)?);
+                }
                 id_table
                     .insert(id_bytes.as_slice(), triplet_bytes.as_slice())
                     .map_err(|e| {
@@ -767,30 +976,10 @@ impl GraphStorage for EdgeStore {
                             "EdgeStore::batch_store: insert id: {e}"
                         ))
                     })?;
-                spo_table
-                    .insert(spo.as_slice(), id_bytes.as_slice())
-                    .map_err(|e| {
-                        HakilleError::StorageError(format!(
-                            "EdgeStore::batch_store: insert spo: {e}"
-                        ))
-                    })?;
-                pos_table
-                    .insert(pos.as_slice(), id_bytes.as_slice())
-                    .map_err(|e| {
-                        HakilleError::StorageError(format!(
-                            "EdgeStore::batch_store: insert pos: {e}"
-                        ))
-                    })?;
-                osp_table
-                    .insert(osp.as_slice(), id_bytes.as_slice())
-                    .map_err(|e| {
-                        HakilleError::StorageError(format!(
-                            "EdgeStore::batch_store: insert osp: {e}"
-                        ))
-                    })?;
             }
 
             if let Some(ref bkey) = self.blind_key {
+                // Mode chiffré : tables aveugles uniquement, zéro SPO/POS/OSP en clair.
                 let mut exact_table = write_txn.open_table(BLIND_EXACT_TABLE).map_err(|e| {
                     HakilleError::StorageError(format!(
                         "EdgeStore::batch_store: open blind_exact: {e}"
@@ -801,8 +990,64 @@ impl GraphStorage for EdgeStore {
                         "EdgeStore::batch_store: open blind_prefix: {e}"
                     ))
                 })?;
+                for old in &replaced {
+                    deindex_triplet_blind(&mut exact_table, &mut prefix_table, bkey, old)?;
+                }
                 for t in &triplets {
                     index_triplet_blind(&mut exact_table, &mut prefix_table, bkey, t)?;
+                }
+            } else {
+                let mut spo_table = write_txn.open_table(SPO_TABLE).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::batch_store: open spo: {e}"))
+                })?;
+                let mut pos_table = write_txn.open_table(POS_TABLE).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::batch_store: open pos: {e}"))
+                })?;
+                let mut osp_table = write_txn.open_table(OSP_TABLE).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::batch_store: open osp: {e}"))
+                })?;
+                for old in &replaced {
+                    spo_table.remove(spo_key(old)?.as_slice()).map_err(|e| {
+                        HakilleError::StorageError(format!(
+                            "EdgeStore::batch_store: remove old spo: {e}"
+                        ))
+                    })?;
+                    pos_table.remove(pos_key(old)?.as_slice()).map_err(|e| {
+                        HakilleError::StorageError(format!(
+                            "EdgeStore::batch_store: remove old pos: {e}"
+                        ))
+                    })?;
+                    osp_table.remove(osp_key(old)?.as_slice()).map_err(|e| {
+                        HakilleError::StorageError(format!(
+                            "EdgeStore::batch_store: remove old osp: {e}"
+                        ))
+                    })?;
+                }
+                for (t, (id_bytes, _)) in triplets.iter().zip(rows.iter()) {
+                    let spo = spo_key(t)?;
+                    let pos = pos_key(t)?;
+                    let osp = osp_key(t)?;
+                    spo_table
+                        .insert(spo.as_slice(), id_bytes.as_slice())
+                        .map_err(|e| {
+                            HakilleError::StorageError(format!(
+                                "EdgeStore::batch_store: insert spo: {e}"
+                            ))
+                        })?;
+                    pos_table
+                        .insert(pos.as_slice(), id_bytes.as_slice())
+                        .map_err(|e| {
+                            HakilleError::StorageError(format!(
+                                "EdgeStore::batch_store: insert pos: {e}"
+                            ))
+                        })?;
+                    osp_table
+                        .insert(osp.as_slice(), id_bytes.as_slice())
+                        .map_err(|e| {
+                            HakilleError::StorageError(format!(
+                                "EdgeStore::batch_store: insert osp: {e}"
+                            ))
+                        })?;
                 }
             }
         }
@@ -848,6 +1093,7 @@ impl GraphStorage for EdgeStore {
             .db
             .begin_read()
             .map_err(|e| HakilleError::StorageError(format!("EdgeStore::load: begin_read: {e}")))?;
+        self.verify_key_check_read(&read_txn)?;
         let id_table = match read_txn.open_table(ID_TABLE) {
             Ok(t) => t,
             // Base fraîche : table jamais créée ⇒ rien à charger (pas d'erreur).
@@ -862,7 +1108,7 @@ impl GraphStorage for EdgeStore {
             .get(id_bytes.as_slice())
             .map_err(|e| HakilleError::StorageError(format!("EdgeStore::load: get: {e}")))?
         {
-            let triplet = self.decode_value(entry.value())?;
+            let triplet = self.decode_value_for_id(id, entry.value())?;
             Ok(Some(triplet))
         } else {
             Ok(None)
@@ -870,24 +1116,9 @@ impl GraphStorage for EdgeStore {
     }
 
     async fn query(&self, pattern: &TriplePattern) -> hakille_core::Result<Vec<Triplet>> {
-        // Routage honnête vers l'index le plus sélectif (mission 8) :
-        // - sujet (+prédicat) ⇒ SPO par préfixe s[+p] ;
-        // - prédicat seul ⇒ POS par préfixe p ;
-        // - objet seul ⇒ OSP par préfixe o.
-        // Nota : redb n'offre pas de prefix-scan natif ; on itère la table
-        // index et on filtre par préfixe — O(N) borné au tier edge, documenté
-        // comme tel.
         match self.query_via_index(pattern).await {
-            // Chemin indexé nominal.
             Some(Ok(hits)) => Ok(hits),
-            // Erreur redb / corruption / déchiffrement : PROPAGÉE telle
-            // quelle. (Avant : avalée silencieusement puis masquée par un
-            // fallback scan aveugle qui pouvait retourner un résultat
-            // partiel ou vide sans signaler la panne.)
             Some(Err(e)) => Err(e),
-            // Pas d'index sélectif (pattern vide) ou base fraîche (tables
-            // d'index absentes) : fallback scan+filtre O(N), légitime et
-            // loggé via `tracing::warn!`.
             None => {
                 tracing::warn!(
                     "EdgeStore::query: aucun index sélectif — fallback scan+filtre O(N) sur id_to_triplet"
@@ -912,6 +1143,7 @@ impl GraphStorage for EdgeStore {
         let read_txn = self.db.begin_read().map_err(|e| {
             HakilleError::StorageError(format!("EdgeStore::all_triplets: begin_read: {e}"))
         })?;
+        self.verify_key_check_read(&read_txn)?;
         let id_table = match read_txn.open_table(ID_TABLE) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
@@ -925,10 +1157,13 @@ impl GraphStorage for EdgeStore {
         for item in id_table.iter().map_err(|e| {
             HakilleError::StorageError(format!("EdgeStore::all_triplets: iter: {e}"))
         })? {
-            let (_k, v) = item.map_err(|e| {
+            let (k, v) = item.map_err(|e| {
                 HakilleError::StorageError(format!("EdgeStore::all_triplets: lecture entrée: {e}"))
             })?;
-            let triplet = self.decode_value(v.value())?;
+            let id: TripletId = bincode::deserialize(k.value()).map_err(|e| {
+                HakilleError::StorageError(format!("EdgeStore::all_triplets: clé id invalide: {e}"))
+            })?;
+            let triplet = self.decode_value_for_id(&id, v.value())?;
             results.push(triplet);
         }
         Ok(results)
@@ -936,27 +1171,103 @@ impl GraphStorage for EdgeStore {
 }
 
 impl EdgeStore {
-    /// Chemin indexé.
-    /// - `None` : aucun index sélectif (pattern vide) OU base fraîche
-    ///   (table d'index jamais créée) → l'appelant retombe sur le scan
-    ///   avec `warn!` (fallback légitime).
-    /// - `Some(Ok)` : hits via l'index.
-    /// - `Some(Err)` : erreur redb / corruption / déchiffrement réelle →
-    ///   PROPAGÉE, jamais convertie en fallback silencieux.
-    ///
-    /// Chaque `.ok()?` historique (qui confondait "pas d'index" et "erreur
-    /// redb") est remplacé par une gestion explicite `Result` → `Option`
-    /// avec log quand le fallback est légitime.
+    /// Chemin indexé :
+    /// - En mode chiffré : interrogation O(1) via `BLIND_EXACT_TABLE` (HMAC-SHA256)
+    ///   après vérification fail-closed du témoin `KEY_CHECK_KEY`.
+    /// - En mode clair : interrogation par plage sur `SPO`/`POS`/`OSP`.
     async fn query_via_index(
         &self,
         pattern: &TriplePattern,
     ) -> Option<hakille_core::Result<Vec<Triplet>>> {
+        let read_txn = match self.db.begin_read() {
+            Ok(t) => t,
+            Err(e) => {
+                return Some(Err(HakilleError::StorageError(format!(
+                    "EdgeStore::query_via_index: begin_read: {e}"
+                ))));
+            }
+        };
+        if let Err(e) = self.verify_key_check_read(&read_txn) {
+            return Some(Err(e));
+        }
+
+        // Mode chiffré : routage via `BLIND_EXACT_TABLE` (jamais de SPO/POS/OSP en clair).
+        if let Some(ref bkey) = self.blind_key {
+            let token = if let Some(ref s) = pattern.subject {
+                crate::blind_index::exact_token(bkey, &s.0.to_string())
+            } else if let Some(ref p) = pattern.predicate {
+                crate::blind_index::exact_token(bkey, &p.0.to_string())
+            } else {
+                let obj = pattern.object.as_ref()?;
+                let text = node_value_text(obj)?;
+                crate::blind_index::exact_token(bkey, &text)
+            };
+            let table = match read_txn.open_table(BLIND_EXACT_TABLE) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return None,
+                Err(e) => {
+                    return Some(Err(HakilleError::StorageError(format!(
+                        "EdgeStore::query_via_index(blind): open_table: {e}"
+                    ))));
+                }
+            };
+            let ids: Vec<TripletId> = match table.get(&token) {
+                Ok(Some(entry)) => match bincode::deserialize(entry.value()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Some(Err(HakilleError::StorageError(format!(
+                            "EdgeStore::query_via_index(blind): bucket corrompu: {e}"
+                        ))));
+                    }
+                },
+                Ok(None) => return Some(Ok(Vec::new())),
+                Err(e) => {
+                    return Some(Err(HakilleError::StorageError(format!(
+                        "EdgeStore::query_via_index(blind): get: {e}"
+                    ))));
+                }
+            };
+            let id_table = match read_txn.open_table(ID_TABLE) {
+                Ok(t) => t,
+                Err(e) => {
+                    return Some(Err(HakilleError::StorageError(format!(
+                        "EdgeStore::query_via_index(blind): open id_to_triplet: {e}"
+                    ))));
+                }
+            };
+            let mut out = Vec::new();
+            for id in &ids {
+                let id_b = match bincode::serialize(id) {
+                    Ok(b) => b,
+                    Err(e) => return Some(Err(HakilleError::Internal(e.to_string()))),
+                };
+                match id_table.get(id_b.as_slice()) {
+                    Err(e) => {
+                        return Some(Err(HakilleError::StorageError(format!(
+                            "EdgeStore::query_via_index(blind): get id: {e}"
+                        ))));
+                    }
+                    Ok(None) => continue,
+                    Ok(Some(entry)) => {
+                        let triplet = match self.decode_value_for_id(id, entry.value()) {
+                            Ok(t) => t,
+                            Err(e) => return Some(Err(e)),
+                        };
+                        if pattern_matches(pattern, &triplet) {
+                            out.push(triplet);
+                        }
+                    }
+                }
+            }
+            return Some(Ok(out));
+        }
+
         enum Index {
             Spo,
             Pos,
             Osp,
         }
-        // 1. Sélection de l'index + préfixe.
+        // Mode clair : sélection de l'index SPO/POS/OSP + préfixe.
         let (index, index_name, prefix): (Index, &'static str, Vec<u8>) =
             if let Some(ref s) = pattern.subject {
                 let mut p = s.0.as_bytes().to_vec();
@@ -965,34 +1276,15 @@ impl EdgeStore {
                 }
                 (Index::Spo, "spo", p)
             } else if let Some(ref pred) = pattern.predicate {
-                // POS sans sujet : préfixe prédicat seul.
                 (Index::Pos, "pos", pred.0.as_bytes().to_vec())
-            } else if let Some(ref obj) = pattern.object {
-                // OSP sans sujet ni prédicat : préfixe objet sérialisé.
-                // Échec de sérialisation ⇒ erreur réelle (un objet non
-                // sérialisable n'aurait jamais pu être stocké) : propagée,
-                // jamais avalée.
+            } else {
+                let obj = pattern.object.as_ref()?;
                 match object_bytes_for_value(obj) {
                     Ok(b) => (Index::Osp, "osp", b),
                     Err(e) => return Some(Err(e)),
                 }
-            } else {
-                // Pattern vide : aucun index sélectif (fallback légitime).
-                return None;
             };
 
-        // 2. Transaction de lecture : tout échec est propagé.
-        let read_txn = match self.db.begin_read() {
-            Ok(t) => t,
-            Err(e) => {
-                return Some(Err(HakilleError::StorageError(format!(
-                    "EdgeStore::query_via_index({index_name}): begin_read: {e}"
-                ))));
-            }
-        };
-
-        // 3. Ouverture de l'index : table absente (base fraîche) ⇒ `None`
-        //    + warn (fallback légitime) ; toute autre erreur ⇒ propagée.
         let table = match index {
             Index::Spo => read_txn.open_table(SPO_TABLE),
             Index::Pos => read_txn.open_table(POS_TABLE),
@@ -1013,16 +1305,11 @@ impl EdgeStore {
             }
         };
 
-        // 4. Collecte des ids par préfixe (scan+filtre O(N) — redb sans
-        //    prefix-scan natif, voir doc module). Erreur ⇒ propagée.
         let id_bytes_list = match collect_with_prefix(&table, &prefix) {
             Ok(ids) => ids,
             Err(e) => return Some(Err(e)),
         };
 
-        // 5. Table ID : si l'index existe, elle doit exister (écritures
-        //    atomiques sur les 4 tables) — absence = corruption ⇒ propagée
-        //    (et non retombée en scan aveugle).
         let id_table = match read_txn.open_table(ID_TABLE) {
             Ok(t) => t,
             Err(e) => {
@@ -1034,6 +1321,14 @@ impl EdgeStore {
 
         let mut out = Vec::new();
         for id_b in &id_bytes_list {
+            let id: TripletId = match bincode::deserialize(id_b.as_slice()) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Some(Err(HakilleError::StorageError(format!(
+                        "EdgeStore::query_via_index({index_name}): id invalide: {e}"
+                    ))));
+                }
+            };
             let entry = match id_table.get(id_b.as_slice()) {
                 Err(e) => {
                     return Some(Err(HakilleError::StorageError(format!(
@@ -1041,8 +1336,6 @@ impl EdgeStore {
                     ))));
                 }
                 Ok(None) => {
-                    // Index fantôme (id référencé mais triplet absent) :
-                    // incohérence signalée, requête poursuivie sur le reste.
                     tracing::warn!(
                         "EdgeStore::query_via_index({index_name}): index fantôme — id sans triplet, entrée ignorée"
                     );
@@ -1050,9 +1343,7 @@ impl EdgeStore {
                 }
                 Ok(Some(entry)) => entry,
             };
-            // Échec de décodage (corruption, mauvaise clé de chiffrement)
-            // ⇒ propagé : retourner une liste partielle serait un mensonge.
-            let triplet = match self.decode_value(entry.value()) {
+            let triplet = match self.decode_value_for_id(&id, entry.value()) {
                 Ok(t) => t,
                 Err(e) => return Some(Err(e)),
             };
@@ -1192,7 +1483,7 @@ mod tests {
         let db = redb::Database::create(dir.join("plain.redb")).unwrap();
         let plain = EdgeStore::new(Arc::new(db));
         let bytes = plain.encode_value(&t).unwrap();
-        let back = plain.decode_value(&bytes).unwrap();
+        let back = plain.decode_value_for_id(&t.id, &bytes).unwrap();
         assert_eq!(back, t);
 
         let db2 = redb::Database::create(dir.join("enc.redb")).unwrap();
@@ -1201,8 +1492,11 @@ mod tests {
         let enc_bytes = enc.encode_value(&t).unwrap();
         // Chiffré ⇒ différent du clair bincode.
         assert_ne!(enc_bytes, bytes);
-        let back2 = enc.decode_value(&enc_bytes).unwrap();
+        let back2 = enc.decode_value_for_id(&t.id, &enc_bytes).unwrap();
         assert_eq!(back2, t);
+        // Épissage vers un autre TripletId ⇒ refusé par l'AAD XChaCha20-Poly1305.
+        let other_id = hakille_core::TripletId(uuid::Uuid::from_u128(0x9999));
+        assert!(enc.decode_value_for_id(&other_id, &enc_bytes).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1475,29 +1769,75 @@ mod tests {
         assert_eq!(hits_prefix_albert[0].id, t3.id);
 
         // 3. Invariant Zero-Knowledge sur disque :
-        // Aucun terme en clair ("Marie", "Curie", "Albert") dans les clés blind
-        let read_txn = db.begin_read().expect("begin_read");
-        let exact_table = read_txn
-            .open_table(BLIND_EXACT_TABLE)
-            .expect("open blind_exact");
-        for item in exact_table.iter().expect("iter") {
-            let (token_key, _) = item.expect("entry");
-            assert_eq!(token_key.value().len(), 32);
-            let raw_key = token_key.value();
-            assert!(!raw_key.windows(5).any(|w| w == b"Marie" || w == b"marie"));
-            assert!(!raw_key.windows(5).any(|w| w == b"Curie" || w == b"curie"));
+        // Aucune table en clair SPO/POS/OSP ne doit exister en mode chiffré.
+        for plain_table in [SPO_TABLE, POS_TABLE, OSP_TABLE] {
+            assert!(
+                !table_exists(&db, plain_table),
+                "aucune table d'index en clair SPO/POS/OSP ne doit être créée en mode chiffré"
+            );
         }
-        drop(read_txn);
 
-        // 4. Suppression et désindexation
+        // 4. Préfixe > 8 caractères : re-filtrage exact après déchiffrement (0 faux positif)
+        let t4 = sample_triplet_with(104, 0xDD, "anticonstitutionnel");
+        let t5 = sample_triplet_with(105, 0xEE, "anticonstitutif");
+        block_on(store.batch_store(vec![t4.clone(), t5.clone()])).expect("batch long prefix");
+        let long_hits = block_on(store.query_blind_prefix("anticonstitution")).expect("long");
+        assert_eq!(long_hits.len(), 1);
+        assert_eq!(long_hits[0].id, t4.id);
+
+        // 5. Écrasement d'un triplet existant : les anciens jetons aveugles doivent être purgés.
+        let t3_updated = sample_triplet_with(103, 0xCC, "Niels Bohr");
+        block_on(store.store(&t3_updated)).expect("overwrite t3");
+        assert!(
+            block_on(store.query_blind_exact("Albert Einstein"))
+                .expect("old exact")
+                .is_empty()
+        );
+        assert_eq!(
+            block_on(store.query_blind_exact("Niels Bohr"))
+                .expect("new exact")
+                .len(),
+            1
+        );
+
+        // 6. Suppression et désindexation (y compris embedding associé)
+        store
+            .save_embedding(&t1.id, &vec![0.1f32; crate::vector::EMBEDDING_DIM])
+            .expect("save_embedding");
         let deleted = block_on(store.delete_returning(&t1.id)).expect("delete_returning");
         assert!(deleted);
+        assert!(
+            store
+                .load_embedding(&t1.id)
+                .expect("load_embedding")
+                .is_none()
+        );
 
         let hits_after = block_on(store.query_blind_exact("Marie Curie"))
             .expect("query_blind_exact after delete");
         assert!(hits_after.is_empty());
 
+        // 7. Scan binaire brut du fichier `.redb` sur disque : ZÉRO occurrence en clair !
         drop(store);
+        drop(db);
+        let raw_disk = std::fs::read(dir.join("test.redb")).expect("lecture fichier redb brut");
+        for secret in [
+            b"Marie".as_slice(),
+            b"marie".as_slice(),
+            b"Curie".as_slice(),
+            b"curie".as_slice(),
+            b"Albert".as_slice(),
+            b"Einstein".as_slice(),
+            b"Niels".as_slice(),
+            b"Bohr".as_slice(),
+            b"anticonstitution".as_slice(),
+        ] {
+            assert!(
+                !raw_disk.windows(secret.len()).any(|w| w == secret),
+                "fuite en clair détectée sur le disque .redb pour {:?}",
+                String::from_utf8_lossy(secret)
+            );
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }

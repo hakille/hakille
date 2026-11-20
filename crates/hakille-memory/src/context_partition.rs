@@ -72,9 +72,9 @@ impl ContextManager {
 }
 
 /// Contrôle d'accès lecture : un triplet est visible depuis `active` si sa
-/// partition égale l'active, ou — quand `include_shared` vaut `true`
-/// (défaut d'usage) — si l'un des deux côtés est `Shared` (espace commun
-/// lisible de partout, et réciproquement l'espace `Shared` voit tout).
+/// partition égale l'active, ou — quand `include_shared` vaut `true` — si le
+/// triplet appartient à l'espace commun `Shared` (aligné sur `retrieval::visible` :
+/// sélectionner `Shared` n'ouvre jamais `Personal` ni `Professional`).
 pub fn is_visible(
     triplet_partition: &ContextPartition,
     active: &ContextPartition,
@@ -83,12 +83,7 @@ pub fn is_visible(
     if triplet_partition == active {
         return true;
     }
-    if include_shared
-        && (*triplet_partition == ContextPartition::Shared || *active == ContextPartition::Shared)
-    {
-        return true;
-    }
-    false
+    include_shared && *triplet_partition == ContextPartition::Shared
 }
 
 #[cfg(test)]
@@ -162,9 +157,14 @@ mod tests {
             &ContextPartition::Personal,
             false
         ));
-        // L'espace Shared voit tout quand include_shared=true.
-        assert!(is_visible(
+        // L'espace Shared ne doit JAMAIS lire les partitions privées (Personal/Professional).
+        assert!(!is_visible(
             &ContextPartition::Personal,
+            &ContextPartition::Shared,
+            true
+        ));
+        assert!(!is_visible(
+            &ContextPartition::Professional,
             &ContextPartition::Shared,
             true
         ));

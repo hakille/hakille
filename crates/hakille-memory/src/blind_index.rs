@@ -1,7 +1,13 @@
 //! Indexation Aveugle Déterministe (HMAC-SHA256 Blind Indexing) selon ADR-012.
 //!
 //! Permet d'indexer et d'interroger la mémoire épisodique et sémantique sur disque
-//! sans stocker de termes en clair et sans fuite de fréquence de mots-clés.
+//! sans stocker de termes en clair.
+//!
+//! Honnêteté cryptographique (contrat d'honnêteté) :
+//! Un index aveugle HMAC-SHA256 déterministe protège la confidentialité des
+//! chaînes en clair au repos, mais révèle par construction l'égalité et la
+//! fréquence des jetons identiques (deux triplets partageant le même terme
+//! normalisé produisent le même jeton HMAC).
 //!
 //! Principes mathématiques (ADR-012 §3) :
 //! 1. Normalisation Unicode stricte du terme en clair :
@@ -153,6 +159,11 @@ fn add_term_prefixes(
 
     let upper = chars.len().min(max_len);
     for len in min_len..=upper {
+        // Évite d'indexer une tranche coupée sur un espace terminal (dont la
+        // normalisation réduirait la longueur réelle en incohérence avec `len`).
+        if chars[len - 1].is_whitespace() {
+            continue;
+        }
         let prefix_str: String = chars[..len].iter().collect();
         let tok = prefix_token(key, &prefix_str, len);
         if seen.insert(tok) {
