@@ -95,6 +95,10 @@ impl System1Engine {
         self.inference_engine = Some(engine);
     }
 
+    pub fn has_inference_engine(&self) -> bool {
+        self.inference_engine.is_some()
+    }
+
     /// Timeout LLM configurable (chaînable).
     pub fn with_llm_timeout(mut self, timeout_ms: u64) -> Self {
         self.llm_timeout_ms = timeout_ms;

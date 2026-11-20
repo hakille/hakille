@@ -3,21 +3,24 @@
 //! Les autres plateformes disposent de crates expérimentales, mais pas encore
 //! d'un hôte de démon validé. Leur point d'entrée refuse explicitement le boot.
 
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 pub use hakille_substrate_linux::{
     LinuxComputeBackend as HostCompute, LinuxSubstrate as HostSubstrate,
 };
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 pub use hakille_substrate_macos::{
     MacosComputeBackend as HostCompute, MacosSubstrate as HostSubstrate,
 };
-#[cfg(target_os = "windows")]
+#[cfg(all(test, target_os = "windows"))]
 pub use hakille_substrate_windows::{
     WindowsComputeBackend as HostCompute, WindowsSubstrate as HostSubstrate,
 };
 
 /// La racine de l'autorité est épinglée avant toute opération à effet.
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[cfg(all(
+    test,
+    any(target_os = "linux", target_os = "macos", target_os = "windows")
+))]
 pub fn create_host(root: biscuit_auth::PublicKey) -> (HostSubstrate, HostCompute) {
     (
         HostSubstrate::new().with_trusted_root(root),

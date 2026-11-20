@@ -90,7 +90,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut provider_arg: Option<String> = None;
     let mut serve_mode = false;
     let mut speak_enabled = false;
-    let mut listen_mode = false;
     let mut substrate_override: Option<String> = None;
     let mut voice_options = voice_cli::VoiceOptions::default();
 
@@ -211,9 +210,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 arg_idx += 1;
             }
             "--budget" if arg_idx + 1 < args.len() => {
-                if let Ok(b) = args[arg_idx + 1].parse::<u64>() {
-                    daily_budget_cents = b;
-                }
+                daily_budget_cents = args[arg_idx + 1].parse::<u64>().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "--budget attend un entier >= 0 en centimes, reçu : '{}'",
+                            args[arg_idx + 1]
+                        ),
+                    )
+                })?;
                 arg_idx += 1;
             }
             "--models-dir" if arg_idx + 1 < args.len() => {
@@ -234,14 +239,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--speak" => {
                 speak_enabled = true;
             }
-            "--listen" => {
-                listen_mode = true;
-            }
             "--substrate" if arg_idx + 1 < args.len() => {
                 substrate_override = Some(args[arg_idx + 1].clone());
                 arg_idx += 1;
             }
-            _ => {}
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "option ou commande CLI inconnue ou incomplète : '{other}' (voir --help)"
+                    ),
+                )
+                .into());
+            }
         }
         arg_idx += 1;
     }
@@ -464,20 +474,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let camera_cap = authority.create_root_token(
         vec![CapabilityScope::Camera, CapabilityScope::Sensor],
-        vec![hakille_core::CapabilityAction::Read],
-        Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
-    )?;
-    #[cfg(target_os = "windows")]
-    let gui_input_cap = authority.create_root_token(
-        vec![CapabilityScope::GuiInput],
-        vec![
-            hakille_core::CapabilityAction::Execute,
-            hakille_core::CapabilityAction::Write,
-        ],
-        Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
-    )?;
-    let screen_cap = authority.create_root_token(
-        vec![CapabilityScope::Sensor],
         vec![hakille_core::CapabilityAction::Read],
         Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
     )?;
@@ -1915,7 +1911,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // intention n'est produite et rien n'est exécuté — le REPL,
                 // lui, reste vivant.
                 'gui_action: {
-                    let capture = match substrate.capture_screen(&screen_cap).await {
+                    let screen_cap_token = match authority.create_root_token(
+                        vec![CapabilityScope::Sensor],
+                        vec![hakille_core::CapabilityAction::Read],
+                        Timestamp(chrono::Utc::now() + chrono::Duration::minutes(5)),
+                    ) {
+                        Ok(token) => token,
+                        Err(e) => {
+                            eprintln!("  Jeton Sensor impossible : {e} — aucune action exécutée.");
+                            break 'gui_action;
+                        }
+                    };
+                    let gui_input_token = match authority.create_root_token(
+                        vec![CapabilityScope::GuiInput],
+                        vec![
+                            hakille_core::CapabilityAction::Execute,
+                            hakille_core::CapabilityAction::Write,
+                        ],
+                        Timestamp(chrono::Utc::now() + chrono::Duration::minutes(5)),
+                    ) {
+                        Ok(token) => token,
+                        Err(e) => {
+                            eprintln!(
+                                "  Jeton GuiInput impossible : {e} — aucune action exécutée."
+                            );
+                            break 'gui_action;
+                        }
+                    };
+                    let capture = match substrate.capture_screen(&screen_cap_token).await {
                         Ok(c) => c,
                         Err(e) => {
                             eprintln!(
@@ -1944,7 +1967,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .execute_intention(
                                 &substrate,
                                 intent,
-                                &gui_input_cap,
+                                &gui_input_token,
                                 screen_w,
                                 screen_h,
                             )
@@ -2064,17 +2087,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             ":status" => {
+                let data_badge = provider_registry.data_exit(0).badge();
+                let llm_state = if orchestrator.system1.has_inference_engine() {
+                    "prêt sur disque"
+                } else {
+                    "artefact absent (voir models download)"
+                };
                 println!("Status:");
                 println!("  Presence: {:?}", presence.state());
                 println!("  Tier: {:?}", manifest.tier);
-                println!(
-                    "  Données: Local (pastille §8 — aucun appel réseau hors fournisseur choisi)"
-                );
+                println!("  Données: {data_badge}");
                 println!("  File d'envoi: {} en attente (voir :outbox)", outbox.len());
                 println!("  Memory Triplets: {}", orchestrator.memory_graph.len());
                 println!("  Cost Spent: {}", cost_counter.formatted_total());
                 println!(
-                    "  LLM: Qwen 0.5B Q4_K_M (timeout {} ms — override HAKILLE_QWEN_TIMEOUT_MS)",
+                    "  LLM: Qwen 0.5B Q4_K_M [{llm_state}] (timeout {} ms — override HAKILLE_QWEN_TIMEOUT_MS)",
                     orchestrator.system1.llm_timeout_ms()
                 );
             }
@@ -2095,22 +2122,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  Nombre de dilemmes éthiques : {}", dilemmes);
             }
             ":metrics" => {
+                let continuity_rate = continuity_tracker.continuity_rate();
+                let initiative_rate = bounded_initiative.compliance_rate();
+                let generality_score = generality_tracker.generality_score();
+                let confidence_rate = orchestrator.self_model.rolling_confidence.clamp(0.0, 1.0);
+                let live_vector = [
+                    continuity_rate,
+                    initiative_rate,
+                    generality_score.clamp(0.0, 1.0),
+                    confidence_rate,
+                    1.0,
+                ];
                 println!("North-Star Metrics:");
-                println!(
-                    "  Continuity Rate: {:.2}%",
-                    continuity_tracker.continuity_rate() * 100.0
-                );
+                println!("  Continuity Rate: {:.2}%", continuity_rate * 100.0);
                 println!(
                     "  Bounded Initiative Compliance: {:.2}%",
-                    bounded_initiative.compliance_rate() * 100.0
+                    initiative_rate * 100.0
                 );
-                println!(
-                    "  Practical Generality Score: {:.4}",
-                    generality_tracker.generality_score()
-                );
-                if let Some(drift) =
-                    drift_detector.evaluate_current_vector(&[1.0, 1.0, 1.0, 1.0, 1.0])
-                {
+                println!("  Practical Generality Score: {:.4}", generality_score);
+                if let Some(drift) = drift_detector.evaluate_current_vector(&live_vector) {
                     println!("  Ethics Drift Alert: {}", drift.description);
                 } else {
                     println!("  Ethics Drift Status: Nominal (No drift detected)");
@@ -2242,16 +2272,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("Usage : :agent-install <chemin_vers_paquet.hap>");
                 } else if let Some(runtime) = agent_runtime.as_mut() {
                     let path = PathBuf::from(path_str);
-                    match hakille_agents::HakilleAgentPackage::from_file(&path) {
+                    let trusted_keys = [signing_keypair.verifying_key];
+                    match hakille_agents::HakilleAgentPackage::from_file(&path, &trusted_keys) {
                         Err(e) => {
-                            eprintln!("Paquet .hap invalide ou corrompu ({path_str}) : {e}");
+                            eprintln!(
+                                "Paquet .hap invalide, non approuvé ou corrompu ({path_str}) : {e}"
+                            );
                         }
-                        Ok(pkg) => match runtime.install_package(&pkg) {
+                        Ok(pkg) => match runtime.install_package(&pkg, &trusted_keys) {
                             Err(e) => {
                                 eprintln!("Échec de l'installation du paquet : {e}");
                             }
                             Ok(verified) => {
-                                let _ = agent_registry.register(verified.manifest.clone());
+                                if let Err(reg_err) = agent_registry.register_verified(
+                                    verified.manifest.clone(),
+                                    None,
+                                    true,
+                                ) {
+                                    eprintln!(
+                                        "Avertissement : enregistrement dans le registre refusé : {reg_err}"
+                                    );
+                                }
                                 println!(
                                     "Agent '{}' ({}) installé et vérifié avec succès.",
                                     verified.manifest.id, verified.manifest.name
@@ -2260,7 +2301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 println!("  Description : {}", verified.manifest.description);
                                 println!("  SHA-256 WASM : {}", verified.wasm_sha256_hex);
                                 println!(
-                                    "  Signature développeur Ed25519 : vérifiée mathématiquement"
+                                    "  Signature développeur Ed25519 : vérifiée contre clé épinglée"
                                 );
                                 println!("  Auto-test bac à sable : passé avec succès");
                                 println!(
@@ -3690,7 +3731,6 @@ const KNOWN_COMMANDS: &[&str] = &[
     ":screen",
     ":tray",
     ":win-ram",
-    ":power",
     ":win-power",
     ":win-screen",
     ":win-tray",

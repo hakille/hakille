@@ -53,11 +53,24 @@ pub struct AgentRun {
     pub output_sha256: String,
 }
 
+/// Identifiants d'agents réservés (référence + manifestes métier déclaratifs)
+/// qui ne peuvent jamais être écrasés par un paquet `.hap` externe.
+pub const RESERVED_AGENT_IDS: &[&str] = &[
+    "echo-agent",
+    "count-agent",
+    "agent-mail",
+    "agent-calendar",
+    "agent-code",
+    "agent-home",
+    "agent-wallet-readonly",
+];
+
 /// Runtime prêt à exécuter les agents de référence.
 #[derive(Debug)]
 pub struct ReferenceAgentRuntime {
     pub dir: PathBuf,
     pub self_test_duration_ms: u128,
+    sandbox: AgentSandbox,
     loaded: Vec<LoadedReferenceAgent>,
 }
 
@@ -101,40 +114,9 @@ impl ReferenceAgentRuntime {
         Ok(Self {
             dir,
             self_test_duration_ms: started.elapsed().as_millis(),
+            sandbox,
             loaded,
         })
-    }
-
-    /// Matérialise et charge également les 5 agents métier sandboxés (mail, calendar, code, home, wallet-readonly).
-    #[allow(dead_code)]
-    pub fn provision_with_business_agents(data_dir: &Path) -> Result<Self, AgentError> {
-        let mut runtime = Self::provision(data_dir)?;
-        let business_artifacts = hakille_agents::materialize_business_agents(&runtime.dir)?;
-        let sandbox = AgentSandbox::new()?;
-        for artifact in business_artifacts {
-            let bytes = fs::read(&artifact.path).map_err(|e| AgentError::ArtifactIo {
-                path: artifact.path.display().to_string(),
-                message: e.to_string(),
-            })?;
-            let actual = sha256_hex(&bytes);
-            if actual != artifact.sha256 {
-                return Err(AgentError::ArtifactHashMismatch {
-                    path: artifact.path.display().to_string(),
-                    expected: artifact.sha256,
-                    actual,
-                });
-            }
-            let mut agent = sandbox.load(&artifact.name, &bytes)?;
-            let output = agent.run(SELF_TEST_INPUT, run_limits())?;
-            serde_json::from_str::<serde_json::Value>(&output).map_err(|e| {
-                AgentError::InvalidOutput {
-                    agent: artifact.name.clone(),
-                    message: format!("auto-test non JSON : {e}"),
-                }
-            })?;
-            runtime.loaded.push(loaded_agent(artifact, agent));
-        }
-        Ok(runtime)
     }
 
     /// Agents chargés (ordre de matérialisation stable).
@@ -188,30 +170,47 @@ impl ReferenceAgentRuntime {
 
     /// Installe et charge dynamiquement un paquet scellé `.hap` (Hakille Agent Package).
     ///
-    /// Vérifie en fail-closed :
+    /// Vérifie en fail-closed AVANT toute écriture sur disque :
     /// 1. L'intégrité binaire SHA-256
-    /// 2. La signature développeur Ed25519
-    /// 3. La stricte conformité du manifeste
-    /// 4. L'auto-test en bac à sable Wasmtime (AEl minimal)
+    /// 2. La signature développeur Ed25519 contre les clés publiques épinglées (`trusted_keys`)
+    /// 3. La stricte conformité du manifeste et l'absence de collision avec un ID réservé
+    /// 4. L'auto-test en bac à sable Wasmtime partagé (AEl minimal)
     pub fn install_package(
         &mut self,
         package: &hakille_agents::HakilleAgentPackage,
+        trusted_keys: &[ed25519_dalek::VerifyingKey],
     ) -> Result<hakille_agents::VerifiedAgentPackage, AgentError> {
-        let (path, verified) =
+        let verified =
             package
-                .install_into(&self.dir)
+                .unpack_and_verify(trusted_keys)
                 .map_err(|e| AgentError::InvalidModule {
                     agent: "package".to_string(),
                     message: e.to_string(),
                 })?;
 
-        let sandbox = AgentSandbox::new()?;
-        let mut agent = sandbox.load(&verified.manifest.id, &verified.wasm_bytes)?;
+        if RESERVED_AGENT_IDS.contains(&verified.manifest.id.as_str()) {
+            return Err(AgentError::InvalidModule {
+                agent: verified.manifest.id,
+                message: "identifiant d'agent réservé — écrasement interdit".to_string(),
+            });
+        }
+
+        // Auto-test en RAM avec le bac à sable partagé AVANT d'écrire sur disque
+        let mut agent = self
+            .sandbox
+            .load(&verified.manifest.id, &verified.wasm_bytes)?;
         let output = agent.run(SELF_TEST_INPUT, run_limits())?;
         serde_json::from_str::<serde_json::Value>(&output).map_err(|e| {
             AgentError::InvalidOutput {
                 agent: verified.manifest.id.clone(),
                 message: format!("auto-test du paquet non JSON : {e}"),
+            }
+        })?;
+
+        let (path, verified) = package.install_into(&self.dir, trusted_keys).map_err(|e| {
+            AgentError::InvalidModule {
+                agent: verified.manifest.id.clone(),
+                message: e.to_string(),
             }
         })?;
 
@@ -312,30 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn provisions_and_runs_business_agents_in_sandbox() {
-        let dir = tempfile::tempdir().expect("répertoire temporaire");
-        let mut runtime = ReferenceAgentRuntime::provision_with_business_agents(dir.path())
-            .expect("provisionnement avec agents métier");
-        assert_eq!(runtime.agents().len(), 7); // 2 de référence + 5 métier
-
-        for name in [
-            "agent-mail",
-            "agent-calendar",
-            "agent-code",
-            "agent-home",
-            "agent-wallet-readonly",
-        ] {
-            let res = runtime
-                .run(name, r#"{"probe":true}"#)
-                .expect("exécution métier");
-            assert_eq!(res.agent, name);
-            let val: serde_json::Value = serde_json::from_str(&res.output).unwrap();
-            assert_eq!(val["status"], "ready");
-        }
-    }
-
-    #[test]
-    fn installs_and_runs_signed_hap_package_dynamically() {
+    fn installs_and_runs_signed_hap_package_dynamically_with_pinned_keys() {
         use ed25519_dalek::SigningKey;
         use hakille_agents::HakilleAgentPackage;
 
@@ -364,10 +340,24 @@ mod tests {
         "#;
 
         let signing_key = SigningKey::from_bytes(&[123u8; 32]);
+        let trusted = [signing_key.verifying_key()];
+        let untrusted = [SigningKey::from_bytes(&[77u8; 32]).verifying_key()];
         let pkg =
             HakilleAgentPackage::pack(manifest_toml, &wasm_bytes, &signing_key).expect("pack .hap");
 
-        let verified = runtime.install_package(&pkg).expect("installation .hap");
+        // Clé absente du trousseau épinglé → refus sans écriture disque
+        assert!(runtime.install_package(&pkg, &untrusted).is_err());
+        assert_eq!(runtime.agents().len(), 2);
+
+        // Tentative d'écrasement d'un ID réservé (`echo-agent`) → refus fail-closed
+        let hijack_toml = manifest_toml.replace("custom-echo-plugin", "echo-agent");
+        let hijack_pkg =
+            HakilleAgentPackage::pack(hijack_toml, &wasm_bytes, &signing_key).expect("pack");
+        assert!(runtime.install_package(&hijack_pkg, &trusted).is_err());
+
+        let verified = runtime
+            .install_package(&pkg, &trusted)
+            .expect("installation .hap avec clé épinglée");
         assert_eq!(verified.manifest.id, "custom-echo-plugin");
         assert_eq!(runtime.agents().len(), 3);
 

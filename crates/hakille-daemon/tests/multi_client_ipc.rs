@@ -74,13 +74,14 @@ async fn start_daemon_server() -> DaemonHarness {
         let endpoint_ready = std::path::Path::new(&endpoint).exists();
         #[cfg(windows)]
         let endpoint_ready = true;
-        if endpoint_ready && token_file.exists() {
-            if let Ok(t) = std::fs::read_to_string(&token_file) {
-                let trimmed = t.trim().to_string();
-                if !trimmed.is_empty() {
-                    token = trimmed;
-                    break;
-                }
+        if endpoint_ready
+            && token_file.exists()
+            && let Ok(t) = std::fs::read_to_string(&token_file)
+        {
+            let trimmed = t.trim().to_string();
+            if !trimmed.is_empty() {
+                token = trimmed;
+                break;
             }
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -261,7 +262,8 @@ async fn test_concurrent_clients_and_mutual_card_resolution() {
         other => panic!("ShowCard attendu sur Mobile, reçu : {other:?}"),
     }
 
-    // 5. RÉSOLUTION MUTUELLE : Mobile décide et approuve la carte (id=202)
+    // 5. RÉSOLUTION MUTUELLE : Mobile respecte le maintien 600 ms puis approuve la carte (id=202)
+    tokio::time::sleep(Duration::from_millis(610)).await;
     let approve_req = Frame::request(202, UiToKernel::Approve { card_id });
     transport::write_frame(&mut mobile_writer, &approve_req)
         .await

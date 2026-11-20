@@ -99,7 +99,14 @@ impl BicameralEngine {
         Self::new(BicameralConfig::default())
     }
 
-    /// Exécute un arbitrage dialectique bayésien complet sur une proposition d'action.
+    /// Exécute un arbitrage dialectique bayésien déterministe en Rust natif sur une
+    /// proposition d'action (sans simulation d'exécution WASM).
+    ///
+    /// - Validation fail-closed : toute valeur `NaN` ou non finie dans `prior_soundness`,
+    ///   `arguments` ou `risks` déclenche un `DialecticVerdict::Vetoed` immédiat.
+    /// - Tout risque `is_critical_cloud_leak` déclenche un veto souverain immédiat.
+    /// - `fuel_consumed` reflète le coût déterministe des propositions et risques
+    ///   réellement évalués à chaque palier (borné par `fuel_budget_per_turn`).
     pub fn arbitrate(
         &self,
         action_intent: &str,
@@ -107,13 +114,37 @@ impl BicameralEngine {
         arguments: &[CatalystArgument],
         risks: &[SkepticRisk],
     ) -> BicameralSynthesis {
+        let has_non_finite = !prior_soundness.is_finite()
+            || arguments
+                .iter()
+                .any(|a| !a.weight.is_finite() || !a.confidence.is_finite())
+            || risks
+                .iter()
+                .any(|r| !r.severity.is_finite() || !r.confidence.is_finite());
+        if has_non_finite {
+            return BicameralSynthesis {
+                verdict: DialecticVerdict::Vetoed,
+                prior_confidence: 0.0,
+                posterior_confidence: 0.0,
+                consensus_action: action_intent.to_string(),
+                catalyst_score: 0.0,
+                skeptic_score: 1.0,
+                turns: Vec::new(),
+                total_fuel_consumed: 0,
+                veto_reason: Some(
+                    "Violation fail-closed : paramètre non fini (NaN/Inf) détecté".into(),
+                ),
+            };
+        }
+
         let p0 = prior_soundness.clamp(0.05, 0.95);
         let mut turns = Vec::new();
         let mut total_fuel = 0u64;
 
         // 1. Analyse fail-closed des risques rédhibitoires (Règle d'or de Souveraineté)
-        for risk in risks {
+        for (idx, risk) in risks.iter().enumerate() {
             if risk.is_critical_cloud_leak {
+                let eval_cost = ((idx + 1) as u64).saturating_mul(64);
                 return BicameralSynthesis {
                     verdict: DialecticVerdict::Vetoed,
                     prior_confidence: p0,
@@ -123,58 +154,79 @@ impl BicameralEngine {
                     skeptic_score: 1.0,
                     turns: vec![DialecticTurn {
                         turn_index: 1,
-                        catalyst_thesis: "Proposition initiale soumise".into(),
+                        catalyst_thesis: format!("Proposition initiale : {action_intent}"),
                         skeptic_antithesis: format!(
                             "VETO IMMÉDIAT : Risque de fuite cloud détecté ({})",
                             risk.vulnerability
                         ),
                         synthesis_delta: Some("Rejet souverain strict sans négociation".into()),
-                        fuel_consumed: 120,
+                        fuel_consumed: eval_cost,
                     }],
-                    total_fuel_consumed: 120,
+                    total_fuel_consumed: eval_cost,
                     veto_reason: Some(format!("Violation fail-closed : {}", risk.vulnerability)),
                 };
             }
         }
 
-        // 2. Déroulement des tours dialectiques avec consommation de carburant
+        // 2. Évaluation déterministe des paliers dialectiques sur les arguments/risques réels
         let num_turns = self.config.max_turns.max(1);
-        let fuel_per_turn = (self.config.fuel_budget_per_turn / (num_turns as u64)).max(100);
+        let fuel_per_turn = (self.config.fuel_budget_per_turn / (num_turns as u64)).max(1);
 
         for i in 1..=num_turns {
-            let turn_fuel = (fuel_per_turn as f32 * (0.8 + 0.1 * (i as f32))) as u64;
-            total_fuel += turn_fuel;
+            let arg_summary = arguments
+                .get(i - 1)
+                .or_else(|| arguments.last())
+                .map(|a| {
+                    format!(
+                        "[{}] {} (w={:.2}, c={:.2})",
+                        a.benefit_category, a.claim, a.weight, a.confidence
+                    )
+                })
+                .unwrap_or_else(|| "aucun argument catalyseur".to_string());
+            let risk_summary = risks
+                .get(i - 1)
+                .or_else(|| risks.last())
+                .map(|r| {
+                    format!(
+                        "{} (s={:.2}, c={:.2}, irrév={})",
+                        r.vulnerability, r.severity, r.confidence, r.is_irreversible
+                    )
+                })
+                .unwrap_or_else(|| "aucun risque sceptique".to_string());
 
-            let c_text = format!(
-                "Tour {}: Défense de l'action '{}' basée sur {} arguments",
-                i,
-                action_intent,
-                arguments.len()
-            );
-            let s_text = format!(
-                "Tour {}: Contre-analyse de robustesse portant sur {} risques identifiés",
-                i,
-                risks.len()
-            );
+            // Coût d'évaluation déterministe proportionnel aux éléments inspectés
+            let turn_fuel = ((arguments.len() + risks.len()).max(1) as u64)
+                .saturating_mul(64)
+                .min(fuel_per_turn);
+            total_fuel = total_fuel.saturating_add(turn_fuel);
 
             turns.push(DialecticTurn {
                 turn_index: i,
-                catalyst_thesis: c_text,
-                skeptic_antithesis: s_text,
-                synthesis_delta: Some(format!("Rapprochement itératif palier {}", i)),
+                catalyst_thesis: format!("Palier {i} ({action_intent}) : {arg_summary}"),
+                skeptic_antithesis: format!("Palier {i} : {risk_summary}"),
+                synthesis_delta: Some(format!(
+                    "Évaluation bayésienne palier {i}/{num_turns} ({} argument(s), {} risque(s))",
+                    arguments.len(),
+                    risks.len()
+                )),
                 fuel_consumed: turn_fuel,
             });
         }
 
         // 3. Calcul bayésien de vraisemblance (Likelihood Ratios)
-        // Score Catalyseur : somme pondérée des arguments
-        let c_sum: f32 = arguments.iter().map(|a| a.weight * a.confidence).sum();
+        let c_sum: f32 = arguments
+            .iter()
+            .map(|a| a.weight.clamp(0.0, 1.0) * a.confidence.clamp(0.0, 1.0))
+            .sum();
         let l_c = 1.0 + c_sum;
 
-        // Score Sceptique : pénalité proportionnelle à la sévérité et confiance des risques
         let s_sum: f32 = risks
             .iter()
-            .map(|r| r.severity * r.confidence * (if r.is_irreversible { 2.0 } else { 1.0 }))
+            .map(|r| {
+                r.severity.clamp(0.0, 1.0)
+                    * r.confidence.clamp(0.0, 1.0)
+                    * (if r.is_irreversible { 2.0 } else { 1.0 })
+            })
             .sum();
         let l_s = 1.0 + s_sum;
 

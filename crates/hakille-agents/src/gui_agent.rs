@@ -419,7 +419,7 @@ impl UiTarsAgent {
         }
         // 1. Luminance mesurée.
         let mut gray = Vec::with_capacity(n);
-        for px in rgba.chunks_exact(4).take(n) {
+        for px in rgba.as_chunks::<4>().0.iter().take(n) {
             gray.push(
                 (0.299 * px[0] as f32 + 0.587 * px[1] as f32 + 0.114 * px[2] as f32)
                     .round()

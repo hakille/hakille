@@ -1,6 +1,5 @@
 use hakille_core::{
     Ed25519Signature, Ed25519VerifyingKey, HakilleError, KeyPair, Result, Signature, Timestamp,
-    VerifyEd25519,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -212,7 +211,7 @@ impl InterAgentMessage {
             Err(_) => return false,
         };
         match Ed25519Signature::from_slice(&self.signature.0) {
-            Ok(sig) => verifying_key.verify(&bytes, &sig).is_ok(),
+            Ok(sig) => verifying_key.verify_strict(&bytes, &sig).is_ok(),
             Err(_) => false,
         }
     }
