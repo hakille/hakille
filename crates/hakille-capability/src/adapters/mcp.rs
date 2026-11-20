@@ -98,6 +98,39 @@ impl DuplexTransport {
     }
 }
 
+/// Maximum line length permitted for an incoming MCP JSON-RPC frame (16 MiB).
+pub const MAX_MCP_LINE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Maximum number of non-correlating or empty lines skipped while awaiting a response.
+pub const MAX_MCP_SKIPPED_FRAMES: usize = 256;
+
+async fn read_bounded_line<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> Result<Option<String>, CapabilityError> {
+    use tokio::io::AsyncReadExt;
+    let mut line = String::new();
+    let mut limited = reader.take((MAX_MCP_LINE_BYTES + 1) as u64);
+    match limited.read_line(&mut line).await {
+        Ok(0) => Ok(None),
+        Ok(n) => {
+            if n > MAX_MCP_LINE_BYTES && !line.ends_with('\n') {
+                return Err(CapabilityError::Transport(format!(
+                    "MCP JSON-RPC line exceeded maximum frame size of {} bytes",
+                    MAX_MCP_LINE_BYTES
+                )));
+            }
+            if line.ends_with('\n') {
+                line.pop();
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+            }
+            Ok(Some(line))
+        }
+        Err(e) => Err(CapabilityError::Transport(e.to_string())),
+    }
+}
+
 #[async_trait]
 impl McpTransportStream for DuplexTransport {
     async fn send_line(&mut self, line: &str) -> Result<(), CapabilityError> {
@@ -117,20 +150,7 @@ impl McpTransportStream for DuplexTransport {
     }
 
     async fn read_line(&mut self) -> Result<Option<String>, CapabilityError> {
-        let mut line = String::new();
-        match self.reader.read_line(&mut line).await {
-            Ok(0) => Ok(None),
-            Ok(_) => {
-                if line.ends_with('\n') {
-                    line.pop();
-                    if line.ends_with('\r') {
-                        line.pop();
-                    }
-                }
-                Ok(Some(line))
-            }
-            Err(e) => Err(CapabilityError::Transport(e.to_string())),
-        }
+        read_bounded_line(&mut self.reader).await
     }
 }
 
@@ -191,20 +211,7 @@ impl McpTransportStream for StdioTransport {
     }
 
     async fn read_line(&mut self) -> Result<Option<String>, CapabilityError> {
-        let mut line = String::new();
-        match self.reader.read_line(&mut line).await {
-            Ok(0) => Ok(None),
-            Ok(_) => {
-                if line.ends_with('\n') {
-                    line.pop();
-                    if line.ends_with('\r') {
-                        line.pop();
-                    }
-                }
-                Ok(Some(line))
-            }
-            Err(e) => Err(CapabilityError::Transport(e.to_string())),
-        }
+        read_bounded_line(&mut self.reader).await
     }
 }
 
@@ -262,12 +269,19 @@ impl McpClientAdapter {
         let mut lock = self.transport.lock().await;
         lock.send_line(&raw_req).await?;
 
+        let mut skipped = 0usize;
         loop {
             let line = lock.read_line().await?.ok_or_else(|| {
                 CapabilityError::Transport("MCP server closed connection unexpectedly".to_string())
             })?;
 
             if line.trim().is_empty() {
+                skipped += 1;
+                if skipped > MAX_MCP_SKIPPED_FRAMES {
+                    return Err(CapabilityError::Transport(
+                        "MCP server sent too many non-correlating or empty frames".to_string(),
+                    ));
+                }
                 continue;
             }
 
@@ -283,6 +297,13 @@ impl McpClientAdapter {
                     });
                 }
                 return Ok(resp.result.unwrap_or(Value::Null));
+            }
+
+            skipped += 1;
+            if skipped > MAX_MCP_SKIPPED_FRAMES {
+                return Err(CapabilityError::Transport(
+                    "MCP server exceeded maximum non-correlating response frames".to_string(),
+                ));
             }
         }
     }

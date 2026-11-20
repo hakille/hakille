@@ -78,10 +78,26 @@ impl KalmanConfidenceTracker {
         half_life_seconds: f32,
     ) -> Self {
         Self {
-            estimate: initial_estimate.clamp(0.0, 1.0),
-            error_covariance: initial_p.max(1e-6),
-            process_noise_q: process_noise_q.max(0.0),
-            half_life_seconds: half_life_seconds.max(1.0),
+            estimate: if initial_estimate.is_finite() {
+                initial_estimate.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            error_covariance: if initial_p.is_finite() {
+                initial_p.max(1e-6)
+            } else {
+                1.0
+            },
+            process_noise_q: if process_noise_q.is_finite() {
+                process_noise_q.max(0.0)
+            } else {
+                0.001
+            },
+            half_life_seconds: if half_life_seconds.is_finite() {
+                half_life_seconds.max(1.0)
+            } else {
+                180.0
+            },
         }
     }
 
@@ -92,6 +108,11 @@ impl KalmanConfidenceTracker {
 
     /// Predict step (time update): models exponential confidence decay and uncertainty diffusion.
     pub fn predict(&mut self, dt_seconds: f32) {
+        if !dt_seconds.is_finite() {
+            self.estimate = 0.0;
+            self.error_covariance = 1.0;
+            return;
+        }
         if dt_seconds <= 0.0 {
             return;
         }
@@ -109,6 +130,11 @@ impl KalmanConfidenceTracker {
 
     /// Correct step (measurement update): fuses new observation z_k with variance R_k.
     pub fn update(&mut self, observation: f32, measurement_variance_r: f32) -> f32 {
+        if !observation.is_finite() || !measurement_variance_r.is_finite() {
+            self.estimate = 0.0;
+            self.error_covariance = 1.0;
+            return 0.0;
+        }
         let z = observation.clamp(0.0, 1.0);
         let r = measurement_variance_r.max(1e-4);
 
@@ -144,6 +170,9 @@ pub struct BayesianMultimodalCombiner;
 impl BayesianMultimodalCombiner {
     /// Combines prior confidence tau with multimodal evidence signals using Bayesian log-odds update.
     pub fn combine_log_odds(prior_tau: f32, signals: &[MultimodalSignal]) -> f32 {
+        if !prior_tau.is_finite() {
+            return 0.0;
+        }
         if signals.is_empty() {
             return prior_tau.clamp(0.0, 1.0);
         }
@@ -153,6 +182,9 @@ impl BayesianMultimodalCombiner {
         let mut log_odds = (clamped_prior / (1.0 - clamped_prior)).ln();
 
         for s in signals {
+            if !s.score.is_finite() || !s.weight.is_finite() {
+                return 0.0;
+            }
             let score = s.score.clamp(0.01, 0.99);
             let weight = s.weight.clamp(0.0, 2.0);
             // Likelihood ratio LR = P(signal | genuine) / P(signal | impostor)
@@ -182,7 +214,11 @@ impl Default for ContinuousMultimodalFusion {
 
 impl ContinuousMultimodalFusion {
     pub fn new(initial_confidence: f32) -> Self {
-        let clamped = initial_confidence.clamp(0.0, 1.0);
+        let clamped = if initial_confidence.is_finite() {
+            initial_confidence.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         Self {
             current_confidence: clamped,
             kalman_tracker: KalmanConfidenceTracker::new(clamped, 0.10, 0.001, 180.0),
@@ -192,6 +228,9 @@ impl ContinuousMultimodalFusion {
     /// Fuse multimodal weak signals into a unified confidence score tau in [0.0, 1.0]
     /// Preserves exact temporal smoothing formulation (60% new observation + 40% history).
     pub fn fuse_signals(&mut self, signals: &[MultimodalSignal]) -> f32 {
+        if !self.current_confidence.is_finite() {
+            self.current_confidence = 0.0;
+        }
         if signals.is_empty() {
             return self.current_confidence;
         }
@@ -200,6 +239,14 @@ impl ContinuousMultimodalFusion {
         let mut total_weight = 0.0f32;
 
         for s in signals {
+            if !s.score.is_finite() || !s.weight.is_finite() {
+                self.current_confidence = 0.0;
+                self.kalman_tracker.estimate = 0.0;
+                return 0.0;
+            }
+            if s.weight <= 0.0 {
+                continue;
+            }
             let clamped_score = s.score.clamp(0.0, 1.0);
             weighted_sum += clamped_score * s.weight;
             total_weight += s.weight;
@@ -235,7 +282,11 @@ impl ContinuousMultimodalFusion {
     /// Instantly clamps tau to min(tau, 0.40) and elevates Kalman error covariance to 0.35,
     /// demanding an active re-authentication challenge before any privilege re-escalation.
     pub fn enforce_shoulder_surfing_shield(&mut self) -> f32 {
-        if self.current_confidence > 0.40 {
+        if !self.current_confidence.is_finite() {
+            self.current_confidence = 0.0;
+            self.kalman_tracker.estimate = 0.0;
+            self.kalman_tracker.error_covariance = 0.35;
+        } else if self.current_confidence > 0.40 {
             self.current_confidence = 0.40;
             self.kalman_tracker.estimate = 0.40;
             self.kalman_tracker.error_covariance = 0.35;
@@ -271,7 +322,11 @@ impl Default for ConfidenceDecayEngine {
 impl ConfidenceDecayEngine {
     pub fn new(half_life_seconds: f32) -> Self {
         Self {
-            half_life_seconds: half_life_seconds.max(1.0),
+            half_life_seconds: if half_life_seconds.is_finite() {
+                half_life_seconds.max(1.0)
+            } else {
+                180.0
+            },
         }
     }
 
@@ -282,8 +337,11 @@ impl ConfidenceDecayEngine {
 
     /// Calculate temporal confidence decay: tau(t) = tau_0 * exp(-lambda * t) = tau_0 * (0.5)^(elapsed / half_life)
     pub fn apply_decay(&self, initial_tau: f32, elapsed_seconds: i64) -> f32 {
+        if !initial_tau.is_finite() {
+            return 0.0;
+        }
         if elapsed_seconds <= 0 {
-            return initial_tau;
+            return initial_tau.clamp(0.0, 1.0);
         }
         // Fail-closed timeout after 15 minutes (900 seconds) of zero fresh presence
         if elapsed_seconds >= 900 {
@@ -317,13 +375,13 @@ impl ConfidenceDecayEngine {
 
     /// Check if privilege step-up authentication is needed for target scope
     pub fn step_up_required(&self, current_tau: f32, scope: &CapabilityScope) -> bool {
-        current_tau < Self::required_threshold_for_scope(scope)
+        !current_tau.is_finite() || current_tau < Self::required_threshold_for_scope(scope)
     }
 
     /// Returns the required authentication step-up mechanism if current confidence is insufficient
     pub fn evaluate_step_up(&self, current_tau: f32, scope: &CapabilityScope) -> StepUpRequirement {
         let req = Self::required_threshold_for_scope(scope);
-        if current_tau >= req {
+        if current_tau.is_finite() && current_tau >= req {
             return StepUpRequirement::None;
         }
 
@@ -355,7 +413,7 @@ impl ConfidenceDecayEngine {
         scope: &CapabilityScope,
     ) -> Result<(), HakilleError> {
         let req = Self::required_threshold_for_scope(scope);
-        if current_tau < req {
+        if !current_tau.is_finite() || current_tau < req {
             return Err(HakilleError::CapabilityDenied(format!(
                 "Privilege step-up required: current confidence {:.2} is below required threshold {:.2} for scope {:?}",
                 current_tau, req, scope

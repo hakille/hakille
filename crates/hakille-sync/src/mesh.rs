@@ -7,11 +7,18 @@
 use crate::crdt::CrdtSync;
 use crate::replication::{ReplicationDelta, ReplicationEngine};
 use chrono::{DateTime, Utc};
-use hakille_core::{HakilleError, Result};
+use hakille_core::{
+    Ed25519Signature, Ed25519VerifyingKey, HakilleError, KeyPair, Result, decrypt_at_rest,
+    encrypt_at_rest,
+};
 use hakille_substrate::mesh::{EncryptedMeshFrame, MeshSubstrate};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashSet, VecDeque};
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
+
+/// Maximum number of frame IDs retained in the deduplication set before pruning.
+pub const MAX_SEEN_FRAME_IDS: usize = 16384;
 
 /// Target entity subject to cryptographic revocation
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -56,9 +63,101 @@ impl SignedRevocationNotice {
         }
     }
 
-    /// Verifies presence of a valid signature and authorized authority
+    /// Canonical domain-separated payload covered by the authority's Ed25519 signature.
+    pub fn canonical_signing_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(128);
+        buf.extend_from_slice(b"hakille-mesh-revocation-v1:");
+        buf.extend_from_slice(self.notice_id.as_bytes());
+        buf.extend_from_slice(&(self.authority_did.len() as u64).to_le_bytes());
+        buf.extend_from_slice(self.authority_did.as_bytes());
+        buf.extend_from_slice(&self.revoked_at.timestamp_millis().to_le_bytes());
+        match &self.revoked_target {
+            RevocationTarget::Did(did) => {
+                buf.push(1);
+                buf.extend_from_slice(&(did.len() as u64).to_le_bytes());
+                buf.extend_from_slice(did.as_bytes());
+            }
+            RevocationTarget::CapabilityDigest(digest) => {
+                buf.push(2);
+                buf.extend_from_slice(digest);
+            }
+            RevocationTarget::TokenCommitment(commitment) => {
+                buf.push(3);
+                buf.extend_from_slice(commitment);
+            }
+            RevocationTarget::DeviceSession(session_id) => {
+                buf.push(4);
+                buf.extend_from_slice(session_id.as_bytes());
+            }
+        }
+        buf
+    }
+
+    /// Creates a revocation notice signed with a real Ed25519 `KeyPair`.
+    /// Encodes the 96-byte `(verifying_key || signature)` bundle in `ed25519_signature`.
+    pub fn new_signed(
+        revoked_target: RevocationTarget,
+        authority_did: impl Into<String>,
+        signing_key: &KeyPair,
+    ) -> Self {
+        let mut notice = Self {
+            notice_id: Uuid::new_v4(),
+            revoked_target,
+            authority_did: authority_did.into(),
+            revoked_at: Utc::now(),
+            ed25519_signature: Vec::new(),
+        };
+        let sig = signing_key.sign(&notice.canonical_signing_bytes());
+        let mut bundle = Vec::with_capacity(96);
+        bundle.extend_from_slice(&signing_key.verifying_key.to_bytes());
+        bundle.extend_from_slice(&sig.0);
+        notice.ed25519_signature = bundle;
+        notice
+    }
+
+    /// Verifies the revocation notice against an explicit pinned `Ed25519VerifyingKey`.
+    pub fn verify_with_public_key(&self, verifying_key: &Ed25519VerifyingKey) -> bool {
+        if self.authority_did.trim().is_empty() {
+            return false;
+        }
+        let sig_slice = match self.ed25519_signature.len() {
+            64 => &self.ed25519_signature[..],
+            96 => {
+                if &self.ed25519_signature[0..32] != verifying_key.as_bytes().as_slice() {
+                    return false;
+                }
+                &self.ed25519_signature[32..96]
+            }
+            _ => return false,
+        };
+        let Ok(sig) = Ed25519Signature::from_slice(sig_slice) else {
+            return false;
+        };
+        verifying_key
+            .verify_strict(&self.canonical_signing_bytes(), &sig)
+            .is_ok()
+    }
+
+    /// Verifies presence of a valid signature and authorized authority.
+    /// If `ed25519_signature` is a 96-byte `(pubkey || sig)` bundle, cryptographically
+    /// verifies `verify_strict` against the embedded key.
     pub fn verify_signature(&self) -> bool {
-        !self.ed25519_signature.is_empty() && !self.authority_did.is_empty()
+        if self.ed25519_signature.is_empty() || self.authority_did.trim().is_empty() {
+            return false;
+        }
+        if self.ed25519_signature.len() == 96 {
+            let Ok(pk_bytes) = <[u8; 32]>::try_from(&self.ed25519_signature[0..32]) else {
+                return false;
+            };
+            let Ok(vk) = Ed25519VerifyingKey::from_bytes(&pk_bytes) else {
+                return false;
+            };
+            if vk.is_weak() {
+                return false;
+            }
+            return self.verify_with_public_key(&vk);
+        }
+        true
     }
 }
 
@@ -88,6 +187,10 @@ pub struct MeshGossipEngine {
     pub outbox_queue: VecDeque<MeshPayload>,
     /// History of accepted CRDT replication deltas
     pub received_crdt_deltas: Vec<ReplicationDelta>,
+    /// Optional pinned Ed25519 verifying keys for revocation authorities (`authority_did -> key`)
+    trusted_authorities: HashMap<String, Ed25519VerifyingKey>,
+    /// Optional 32-byte symmetric AEAD key for frame confidentiality
+    mesh_encryption_key: Option<[u8; 32]>,
 }
 
 impl MeshGossipEngine {
@@ -98,7 +201,32 @@ impl MeshGossipEngine {
             seen_frame_ids: HashSet::new(),
             outbox_queue: VecDeque::new(),
             received_crdt_deltas: Vec::new(),
+            trusted_authorities: HashMap::new(),
+            mesh_encryption_key: None,
         }
+    }
+
+    /// Configures a symmetric 32-byte ChaCha20-Poly1305 key for wire frame encryption.
+    pub fn with_mesh_key(mut self, key: [u8; 32]) -> Self {
+        self.mesh_encryption_key = Some(key);
+        self
+    }
+
+    /// Pins a trusted Ed25519 public key for a revocation authority DID.
+    /// Once at least one authority is pinned, `handle_revocation` strictly requires
+    /// a valid Ed25519 signature from a pinned authority.
+    pub fn register_trusted_authority(
+        &mut self,
+        authority_did: impl Into<String>,
+        public_key: [u8; 32],
+    ) -> Result<()> {
+        let vk = Ed25519VerifyingKey::from_bytes(&public_key)
+            .map_err(|e| HakilleError::CryptoError(e.to_string()))?;
+        if vk.is_weak() {
+            return Err(HakilleError::AuthenticationFailed);
+        }
+        self.trusted_authorities.insert(authority_did.into(), vk);
+        Ok(())
     }
 
     /// Process received revocation: verifies authority, stores in CRL, and forwards to peers.
@@ -106,7 +234,14 @@ impl MeshGossipEngine {
     /// Returns `true` if the revocation was newly registered, or `false` if already known
     /// (strictly idempotent to prevent broadcast storming).
     pub fn handle_revocation(&mut self, notice: SignedRevocationNotice) -> bool {
-        if !notice.verify_signature() {
+        if !self.trusted_authorities.is_empty() {
+            let Some(vk) = self.trusted_authorities.get(&notice.authority_did) else {
+                return false;
+            };
+            if !notice.verify_with_public_key(vk) {
+                return false;
+            }
+        } else if !notice.verify_signature() {
             return false;
         }
 
@@ -168,6 +303,23 @@ impl MeshGossipEngine {
         }
     }
 
+    fn compute_frame_integrity_tag(
+        sender_ephemeral_pubkey: &[u8; 32],
+        recipient_filter: &[u8; 16],
+        ciphertext: &[u8],
+    ) -> [u8; 16] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"hakille-mesh-frame-integrity-v1:");
+        hasher.update(sender_ephemeral_pubkey);
+        hasher.update(recipient_filter);
+        hasher.update((ciphertext.len() as u64).to_le_bytes());
+        hasher.update(ciphertext);
+        let digest = hasher.finalize();
+        let mut tag = [0u8; 16];
+        tag.copy_from_slice(&digest[..16]);
+        tag
+    }
+
     /// Encodes a MeshPayload into an EncryptedMeshFrame for wire transmission
     pub fn encode_frame(
         &self,
@@ -178,25 +330,29 @@ impl MeshGossipEngine {
         let serialized = serde_json::to_vec(payload)
             .map_err(|e| HakilleError::SerializationError(e.to_string()))?;
 
-        // 16-byte integrity tag computed over payload bytes
-        let mut tag = [0u8; 16];
-        if serialized.len() >= 16 {
-            tag.copy_from_slice(&serialized[..16]);
+        let wire_bytes = if let Some(ref key) = self.mesh_encryption_key {
+            let blob = encrypt_at_rest(&serialized, key)?;
+            serde_json::to_vec(&blob)
+                .map_err(|e| HakilleError::SerializationError(e.to_string()))?
         } else {
-            tag[..serialized.len()].copy_from_slice(&serialized);
-        }
+            serialized
+        };
+
+        let filter_bytes = recipient_filter.unwrap_or([0u8; 16]);
+        let tag =
+            Self::compute_frame_integrity_tag(&sender_ephemeral_pubkey, &filter_bytes, &wire_bytes);
 
         let frame = match recipient_filter {
             Some(filter) => EncryptedMeshFrame::new_unicast(
                 sender_ephemeral_pubkey,
                 filter,
-                serialized,
+                wire_bytes,
                 tag,
                 5, // default hop limit
             ),
             None => EncryptedMeshFrame::new_broadcast(
                 sender_ephemeral_pubkey,
-                serialized,
+                wire_bytes,
                 tag,
                 5, // default hop limit
             ),
@@ -206,13 +362,43 @@ impl MeshGossipEngine {
     }
 
     /// Decodes an EncryptedMeshFrame into a MeshPayload, deduplicating seen frames
+    /// and verifying the 16-byte integrity tag (and ChaCha20-Poly1305 AEAD when a mesh key is configured).
     pub fn decode_frame(&mut self, frame: &EncryptedMeshFrame) -> Result<Option<MeshPayload>> {
         // Frame deduplication: drop already processed frames
-        if !self.seen_frame_ids.insert(frame.frame_id) {
+        if self.seen_frame_ids.contains(&frame.frame_id) {
             return Ok(None);
         }
+        if self.seen_frame_ids.len() >= MAX_SEEN_FRAME_IDS {
+            self.seen_frame_ids.clear();
+        }
+        self.seen_frame_ids.insert(frame.frame_id);
 
-        let payload: MeshPayload = serde_json::from_slice(&frame.ciphertext)
+        // Verify 16-byte integrity tag in constant time
+        let filter_bytes = frame.recipient_filter.unwrap_or([0u8; 16]);
+        let expected_tag = Self::compute_frame_integrity_tag(
+            &frame.sender_ephemeral_pubkey,
+            &filter_bytes,
+            &frame.ciphertext,
+        );
+        let mut diff = 0u8;
+        for (a, b) in expected_tag.iter().zip(frame.tag.iter()) {
+            diff |= a ^ b;
+        }
+        if diff != 0 {
+            return Err(HakilleError::CryptoError(
+                "Échec de vérification d'intégrité de la trame maillée (tag invalide)".into(),
+            ));
+        }
+
+        let plaintext = if let Some(ref key) = self.mesh_encryption_key {
+            let blob: hakille_core::EncryptedBlob = serde_json::from_slice(&frame.ciphertext)
+                .map_err(|e| HakilleError::SerializationError(e.to_string()))?;
+            decrypt_at_rest(&blob, key)?
+        } else {
+            frame.ciphertext.clone()
+        };
+
+        let payload: MeshPayload = serde_json::from_slice(&plaintext)
             .map_err(|e| HakilleError::SerializationError(e.to_string()))?;
 
         Ok(Some(payload))

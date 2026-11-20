@@ -147,11 +147,28 @@ impl Outbox {
             .collect()
     }
 
-    /// Persiste la file en JSON (reprise après redémarrage).
+    /// Persiste la file en JSON par écriture atomique (reprise après redémarrage).
     pub fn save_to_file(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+        let path = path.as_ref();
         let bytes = serde_json::to_vec_pretty(&self.entries)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        std::fs::write(path.as_ref(), bytes)
+        let tmp_path = path.with_extension(format!("json.tmp.{}", uuid::Uuid::new_v4().simple()));
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&tmp_path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+            }
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&tmp_path, path)
     }
 
     /// Charge la file depuis un JSON écrit par [`Self::save_to_file`].

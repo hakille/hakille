@@ -5,7 +5,6 @@ use hakille_auth::biohash::*;
 use hakille_auth::face::*;
 use hakille_auth::face_liveness::*;
 use hakille_auth::gdpr::*;
-use hakille_auth::guest::*;
 use hakille_auth::household::*;
 use hakille_auth::minor::*;
 use hakille_auth::multimodal::*;
@@ -14,8 +13,8 @@ use hakille_core::capability::CapabilityScope;
 use uuid::Uuid;
 
 /// 1. Multi-Tenancy (Household/Minor) + Biometric Face Auth + Minor Protection:
-/// Ambient camera captures face; system matches Child Leo; logs in under Minor profile;
-/// Constitutional minor invariants enforce NoWallet and strict content filter.
+///    Ambient camera captures face; system matches Child Leo; logs in under Minor profile;
+///    Constitutional minor invariants enforce NoWallet and strict content filter.
 #[test]
 fn test_auth_tier3_pairwise_01_household_biometric_face_minor_guard() {
     let detector = ScrfdDetector::default();
@@ -64,8 +63,8 @@ fn test_auth_tier3_pairwise_01_household_biometric_face_minor_guard() {
 }
 
 /// 2. Passive Anti-Spoofing (F16) + Active Liveness (F17) + Step-Up Escalation (F21):
-/// Passive liveness score yields indeterminate/borderline result; triggers active gaze challenge;
-/// upon active success, continuous confidence elevates from 0.50 to 0.95, granting Wallet capability.
+///    Passive liveness score yields indeterminate/borderline result; triggers active gaze challenge;
+///    upon active success, continuous confidence elevates from 0.50 to 0.95, granting Wallet capability.
 #[test]
 fn test_auth_tier3_pairwise_02_passive_active_liveness_stepup() {
     let passive_classifier = MiniFasNetClassifier::new(0.90);
@@ -85,7 +84,7 @@ fn test_auth_tier3_pairwise_02_passive_active_liveness_stepup() {
     for i in 0..(100 * 100 * 3) {
         crop.push(((i as f32 * 0.08).sin() * 20.0 + 128.0) as u8);
     }
-    let passive_verdict = passive_classifier.evaluate_crop(&crop, 100, 100);
+    let _passive_verdict = passive_classifier.evaluate_crop(&crop, 100, 100);
 
     // Borderline passive confidence (< 0.90) triggers active challenge
     let now = 2000;
@@ -124,11 +123,11 @@ fn test_auth_tier3_pairwise_02_passive_active_liveness_stepup() {
 }
 
 /// 3. Continuous Multimodal Fusion (F20) + Confidence Decay (F21) + Wallet Gating (F21):
-/// Face and voice weak signals continually refresh confidence tau >= 0.90;
-/// silence for 10 minutes decays tau below threshold; Wallet operation is locked.
+///    Face and voice weak signals continually refresh confidence tau >= 0.90;
+///    silence for 10 minutes decays tau below threshold; Wallet operation is locked.
 #[test]
 fn test_auth_tier3_pairwise_03_continuous_fusion_decay_wallet_gating() {
-    let mut fusion = ContinuousMultimodalFusion::new(0.92);
+    let fusion = ContinuousMultimodalFusion::new(0.92);
     let decay_engine = ConfidenceDecayEngine::new(120.0); // 2 minute half-life
 
     // Wallet is authorized when active
@@ -149,8 +148,8 @@ fn test_auth_tier3_pairwise_03_continuous_fusion_decay_wallet_gating() {
 }
 
 /// 4. Biometric Biohashing (F18) + GDPR Crypto-Shredding (F19) + Keystore:
-/// User enrolls with revocable biometric salt; upon GDPR right-to-erasure request,
-/// the salt is shredded, making probe matching against stored biohash permanently impossible.
+///    User enrolls with revocable biometric salt; upon GDPR right-to-erasure request,
+///    the salt is shredded, making probe matching against stored biohash permanently impossible.
 #[test]
 fn test_auth_tier3_pairwise_04_biohash_gdpr_crypto_shredding() {
     let mut gdpr = GdprConsentEngine::new();
@@ -186,8 +185,8 @@ fn test_auth_tier3_pairwise_04_biohash_gdpr_crypto_shredding() {
 }
 
 /// 5. Active EAR Blink Challenge + Voice Liveness Classifier + Multimodal Fusion:
-/// Fusing optical active face blink detection and acoustic voice liveness checks
-/// into unified multimodal presence confidence.
+///    Fusing optical active face blink detection and acoustic voice liveness checks
+///    into unified multimodal presence confidence.
 #[test]
 fn test_auth_tier3_pairwise_05_active_blink_voice_liveness_fusion() {
     let active_face = ActiveLivenessEngine::default();

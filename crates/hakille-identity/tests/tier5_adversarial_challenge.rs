@@ -41,7 +41,7 @@ fn test_tier5_adversarial_agent_passport_direct_depth_overflow_rejected() {
         let res = AgentFactory::issue_passport(
             agent_did.clone(),
             principal_did.clone(),
-            tenant_id.clone(),
+            tenant_id,
             3600,
             10_000,
             500,
@@ -76,7 +76,7 @@ fn test_tier5_adversarial_agent_passport_cascade_depth_boundary_enforcement() {
     let p1 = AgentFactory::issue_passport(
         d1_did.clone(),
         root_did,
-        tenant_id.clone(),
+        tenant_id,
         3600,
         100_000,
         10_000,
@@ -421,7 +421,7 @@ fn test_tier5_adversarial_rule7_access_engine_complete_matrix() {
                     base_role: role.to_string(),
                     confidence_score: conf,
                     device_tier: tier,
-                    tenant_id: tenant_id.clone(),
+                    tenant_id,
                     scope: CapabilityScope::Wallet,
                     action: CapabilityAction::Execute,
                     resource: "wallet_99".to_string(),

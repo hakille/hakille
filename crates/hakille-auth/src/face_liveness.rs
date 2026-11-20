@@ -425,6 +425,9 @@ impl ActiveLivenessEngine {
         }
 
         let r = num / (den_p.sqrt() * den_t.sqrt());
+        if !r.is_finite() || r <= 0.0 {
+            return Ok(false);
+        }
         let r_squared = r * r;
         Ok(r_squared >= 0.85)
     }

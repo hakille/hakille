@@ -671,16 +671,16 @@ impl FuzzyExtractor {
             c[i] = seed[i % 4];
         }
 
-        let r: [u8; 32] = Sha256::digest(seed).into();
+        let mut salt = [0u8; 16];
+        OsRng.fill_bytes(&mut salt);
+
+        let r: [u8; 32] = HkdfSubkeyTree::hmac_sha256(&salt, &seed);
 
         // Helper syndrome P = b ^ c
         let mut syndrome = vec![0u8; 32];
         for (i, (b_byte, c_byte)) in b.iter().zip(c.iter()).enumerate() {
             syndrome[i] = b_byte ^ c_byte;
         }
-
-        let mut salt = [0u8; 16];
-        OsRng.fill_bytes(&mut salt);
 
         let mut hasher = Sha256::new();
         hasher.update(r);
@@ -741,7 +741,7 @@ impl FuzzyExtractor {
             return Err(HakilleError::AuthenticationFailed);
         }
 
-        let recovered_r: [u8; 32] = Sha256::digest(recovered_seed).into();
+        let recovered_r: [u8; 32] = HkdfSubkeyTree::hmac_sha256(&helper.salt, &recovered_seed);
 
         // Verify commitment: Hash(R' || salt) == Commitment
         let mut hasher = Sha256::new();
@@ -837,8 +837,8 @@ mod tests {
 
         // 6 errors (dist > 4) -> fails
         let mut probe_fail = sample.clone();
-        for i in 0..6 {
-            probe_fail[i] = -0.5;
+        for val in probe_fail.iter_mut().take(6) {
+            *val = -0.5;
         }
         let res_fail = fe.reproduce(&probe_fail, &helper, &commit);
         assert!(res_fail.is_err());

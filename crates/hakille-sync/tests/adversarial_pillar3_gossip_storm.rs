@@ -7,7 +7,7 @@
 //! - Massive concurrent burst of 500 distinct revocations mixed with duplicates (eventual consistency & CRL integrity)
 
 use chrono::Utc;
-use hakille_substrate::mesh::{EncryptedMeshFrame, InMemoryMeshSubstrate, MeshSubstrate};
+use hakille_substrate::mesh::{EncryptedMeshFrame, InMemoryMeshSubstrate};
 use hakille_sync::crdt::CrdtSync;
 use hakille_sync::mesh::{MeshGossipEngine, MeshPayload, RevocationTarget, SignedRevocationNotice};
 use uuid::Uuid;

@@ -121,17 +121,86 @@ pub struct DiscoveredTool {
 /// Hybrid discovery engine combining structured security filters with semantic vector ranking.
 pub struct CapabilityDiscoveryEngine {
     registry: UniversalCapabilityRegistry,
+    root_public_key: Option<hakille_core::PinnedRootPublicKey>,
 }
 
 impl CapabilityDiscoveryEngine {
     /// Creates a new discovery engine over the universal capability registry.
     pub fn new(registry: UniversalCapabilityRegistry) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            root_public_key: None,
+        }
+    }
+
+    /// Creates a new discovery engine with a pinned Biscuit root public key for cryptographic token pre-filtering.
+    pub fn with_root_public_key(
+        registry: UniversalCapabilityRegistry,
+        root_public_key: hakille_core::PinnedRootPublicKey,
+    ) -> Self {
+        Self {
+            registry,
+            root_public_key: Some(root_public_key),
+        }
     }
 
     /// Returns a reference to the underlying capability registry.
     pub fn registry(&self) -> &UniversalCapabilityRegistry {
         &self.registry
+    }
+
+    fn token_allows_scope(
+        &self,
+        token: &CapabilityToken,
+        scope: &hakille_core::CapabilityScope,
+    ) -> bool {
+        use hakille_core::CapabilityAction;
+        let candidate_actions = [
+            CapabilityAction::Read,
+            CapabilityAction::Write,
+            CapabilityAction::Execute,
+            CapabilityAction::Admin,
+        ];
+        if let Some(ref root_pk) = self.root_public_key {
+            return candidate_actions.iter().any(|act| {
+                crate::security::BiscuitVerifier::verify_token(token, root_pk, scope, act.clone())
+                    .is_ok()
+                    || crate::security::BiscuitVerifier::verify_token(
+                        token,
+                        root_pk,
+                        &hakille_core::CapabilityScope::FullSystem,
+                        act.clone(),
+                    )
+                    .is_ok()
+            });
+        }
+
+        let s = scope.datalog_name();
+        let now_ts = chrono::Utc::now().timestamp();
+        for act in &candidate_actions {
+            let a = format!("{:?}", act).to_lowercase();
+            for check_scope in [s, "fullsystem"] {
+                if let Ok(mut auth) = token.biscuit.authorizer()
+                    && auth.add_fact(format!("time({now_ts})").as_str()).is_ok()
+                    && auth
+                        .add_fact(format!("operation(\"{check_scope}\", \"{a}\")").as_str())
+                        .is_ok()
+                    && auth
+                        .add_check(format!("check if right(\"{check_scope}\", \"{a}\")").as_str())
+                        .is_ok()
+                    && auth.allow().is_ok()
+                {
+                    let limits = biscuit_auth::AuthorizerLimits {
+                        max_time: std::time::Duration::from_millis(200),
+                        ..Default::default()
+                    };
+                    if auth.authorize_with_limits(limits).is_ok() {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Executes the two-phase discovery and budget optimization pipeline.
@@ -145,11 +214,18 @@ impl CapabilityDiscoveryEngine {
         // Phase 1: Structured Pre-Filtering
         let mut candidates = Vec::new();
         for cap in active_capabilities {
-            // Scope check: If caller token provided, verify validity
-            if let Some(token) = &query.caller_token
-                && token.is_expired()
-            {
-                continue;
+            // Scope check: If caller token provided, verify expiration AND required capability scopes
+            if let Some(token) = &query.caller_token {
+                if token.is_expired() {
+                    continue;
+                }
+                if !cap
+                    .scopes_required
+                    .iter()
+                    .all(|req_scope| self.token_allows_scope(token, req_scope))
+                {
+                    continue;
+                }
             }
 
             // CapabilityType filter
@@ -321,11 +397,17 @@ pub fn infer_tool_risk(tool: &CanonicalToolDefinition) -> RiskTier {
         || name.contains("bash")
         || name.contains("delete")
         || name.contains("destroy")
+        || name.contains("shred")
+        || name.contains("purge")
+        || name.contains("wipe")
+        || name.contains("poweroff")
+        || name.contains("reboot")
         || name.contains("rm")
         || name.contains("sudo")
         || desc.contains("financial")
         || desc.contains("transfer")
         || desc.contains("biometric")
+        || desc.contains("shredding")
     {
         RiskTier::Tier3CriticalExecution
     } else if name.contains("http")

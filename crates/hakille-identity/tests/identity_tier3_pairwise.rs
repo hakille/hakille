@@ -10,9 +10,9 @@ use rand::rngs::OsRng;
 use uuid::Uuid;
 
 /// 1. Multi-Tenancy (F08, F13) + Biometric Auth (F06) + Biscuit Capabilities (F11):
-/// An employee in Enterprise subsidiary "Avionics" authenticates via fuzzy extractor,
-/// mints an attenuated Biscuit token for local filesystem reads, and verifies the token
-/// cannot breach the cross-tenant firewall into sibling subsidiary "Commercial".
+///    An employee in Enterprise subsidiary "Avionics" authenticates via fuzzy extractor,
+///    mints an attenuated Biscuit token for local filesystem reads, and verifies the token
+///    cannot breach the cross-tenant firewall into sibling subsidiary "Commercial".
 #[test]
 fn test_tier3_pairwise_01_multitenancy_biometrics_biscuit_firewall() {
     let mut firewall = CrossTenantFirewall::new();
@@ -57,8 +57,8 @@ fn test_tier3_pairwise_01_multitenancy_biometrics_biscuit_firewall() {
 }
 
 /// 2. Shamir Secret Recovery (F05) + Digital Twilight (F22) + Blind Indexing (F04):
-/// Deceased user enters digital twilight; trustees submit 3-of-5 Shamir shares to
-/// reconstruct master key, and use HMAC blind indexing to recover estate documents.
+///    Deceased user enters digital twilight; trustees submit 3-of-5 Shamir shares to
+///    reconstruct master key, and use HMAC blind indexing to recover estate documents.
 #[test]
 fn test_tier3_pairwise_02_shamir_twilight_blind_index() {
     let master_secret = [0x5cu8; 32];
@@ -117,8 +117,8 @@ fn test_tier3_pairwise_02_shamir_twilight_blind_index() {
 }
 
 /// 3. Continuous Multimodal Fusion (F10) + Minor Protection (F08, F12) + Agent Delegation (F12):
-/// Autonomous agent acting on behalf of a minor dependent has continuous access evaluated;
-/// agent is strictly blocked from wallet operations via Constitutional Rule 7.
+///    Autonomous agent acting on behalf of a minor dependent has continuous access evaluated;
+///    agent is strictly blocked from wallet operations via Constitutional Rule 7.
 #[test]
 fn test_tier3_pairwise_03_continuous_fusion_minor_agent_delegation() {
     let mut engine = AccessEngine::new();
@@ -161,8 +161,8 @@ fn test_tier3_pairwise_03_continuous_fusion_minor_agent_delegation() {
 }
 
 /// 4. SSI Verifiable Credentials (F07) + Zanzibar ReBAC (F09) + GDPR Crypto-Shredding (F22):
-/// User presents W3C VC to claim team membership in ReBAC; after crypto-shredding,
-/// the user's keys are shredded and cascade access is severed.
+///    User presents W3C VC to claim team membership in ReBAC; after crypto-shredding,
+///    the user's keys are shredded and cascade access is severed.
 #[test]
 fn test_tier3_pairwise_04_vc_rebac_crypto_shredding() {
     let issuer_key = SigningKey::generate(&mut OsRng);
@@ -194,7 +194,7 @@ fn test_tier3_pairwise_04_vc_rebac_crypto_shredding() {
         "core-ai",
         "lead",
         "user",
-        &user_id.0.to_string(),
+        user_id.0.to_string(),
     ));
     assert!(rebac.has_direct_relation("team", "core-ai", "lead", "user", &user_id.0.to_string()));
 
@@ -225,14 +225,14 @@ fn test_tier3_pairwise_04_vc_rebac_crypto_shredding() {
         "core-ai",
         "lead",
         "user",
-        &user_id.0.to_string(),
+        user_id.0.to_string(),
     ));
     assert!(!rebac.has_direct_relation("team", "core-ai", "lead", "user", &user_id.0.to_string()));
 }
 
 /// 5. ReBAC (F09) + Subkey Tree (F02) + XChaCha AEAD (F03):
-/// Hierarchical entity graph derives subkeys per partition, encrypts node data with
-/// AAD binding to parent/child relation, verifying integrity across hierarchy.
+///    Hierarchical entity graph derives subkeys per partition, encrypts node data with
+///    AAD binding to parent/child relation, verifying integrity across hierarchy.
 #[test]
 fn test_tier3_pairwise_05_rebac_subkey_tree_xchacha_aad() {
     let mut rebac = RebacEngine::new();

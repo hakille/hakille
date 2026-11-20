@@ -2692,7 +2692,7 @@ dependencies = [
 name = "hakille-auth"
 version = "0.1.0"
 dependencies = [
- "async-trait",
+ "biscuit-auth",
  "chacha20poly1305",
  "chrono",
  "hakille-core",
@@ -2703,7 +2703,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 1.0.69",
- "tokio",
  "tracing",
  "uuid",
  "zeroize",
@@ -2750,7 +2749,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
- "tracing",
 ]
 
 [[package]]
@@ -2895,16 +2893,12 @@ dependencies = [
 name = "hakille-identity"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "bincode",
  "biscuit-auth",
  "chacha20poly1305",
  "chrono",
  "ed25519-dalek",
  "hakille-core",
- "hakille-keystore",
  "rand 0.8.8",
- "redb",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3295,6 +3289,7 @@ dependencies = [
  "hakille-substrate",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.21",
  "tokio",
  "tracing",

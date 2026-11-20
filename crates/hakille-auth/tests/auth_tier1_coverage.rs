@@ -3,7 +3,6 @@
 //! Requirements: At least 5 distinct test cases per feature (9 features x 5 = 45 test cases).
 
 use hakille_auth::biohash::*;
-use hakille_auth::continuous::*;
 use hakille_auth::face::*;
 use hakille_auth::face_liveness::*;
 use hakille_auth::gdpr::*;
@@ -334,7 +333,7 @@ fn test_f18_biohash_revocable_salt_generates_uncorrelated_template() {
     let dist = engine.hamming_distance(&d_orig, &d_rev);
     // Orthogonal random projections yield Hamming distance ~ 0.50 (uncorrelated)
     assert!(
-        dist >= 0.40 && dist <= 0.60,
+        (0.40..=0.60).contains(&dist),
         "Revoked salt must produce uncorrelated biohash: {}",
         dist
     );
@@ -514,7 +513,7 @@ fn test_f20_multimodal_fusion_temporal_smoothing() {
     }];
     let fused = engine.fuse_signals(&signals);
     // Smoothing retains historical confidence (0.6 * 0.40 + 0.4 * 0.90 = 0.60)
-    assert!(fused >= 0.55 && fused <= 0.65);
+    assert!((0.55..=0.65).contains(&fused));
 }
 
 #[test]

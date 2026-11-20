@@ -39,6 +39,7 @@ impl Decision {
 
 pub struct AccessEngine {
     pub rebac: RebacEngine,
+    pub firewall: crate::firewall::CrossTenantFirewall,
 }
 
 impl Default for AccessEngine {
@@ -51,16 +52,40 @@ impl AccessEngine {
     pub fn new() -> Self {
         Self {
             rebac: RebacEngine::new(),
+            firewall: crate::firewall::CrossTenantFirewall::new(),
         }
+    }
+
+    fn subject_has_minor_relation(&self, subject_type: &str, subject_id: &str) -> bool {
+        self.rebac
+            .find_relations_for_subject(subject_type, subject_id)
+            .iter()
+            .any(|t| {
+                let rel = t.relation.to_lowercase();
+                rel == "minor_member" || rel == "minor" || rel == "child" || rel == "dependent"
+            })
     }
 
     /// Multi-engine evaluation: ReBAC && RBAC && ABAC
     pub fn check_permission(&self, ctx: &AuthContext, tuple: &RelationTuple) -> Decision {
-        // Validate continuous confidence score in [0.0, 1.0]
-        if ctx.confidence_score.is_nan() || !(0.0..=1.0).contains(&ctx.confidence_score) {
+        // Validate continuous confidence score is finite and in [0.0, 1.0]
+        if !ctx.confidence_score.is_finite() || !(0.0..=1.0).contains(&ctx.confidence_score) {
             return Decision::Deny(format!(
                 "ABAC rejection: invalid continuous confidence score ({:.2} must be within [0.0, 1.0])",
                 ctx.confidence_score
+            ));
+        }
+
+        // Correlate AuthContext.subject with RelationTuple subject so an attacker cannot
+        // pass another user's RelationTuple to bypass ReBAC.
+        let qualified_subject = format!("{}:{}", tuple.subject_type, tuple.subject_id);
+        if !ctx.subject.is_empty()
+            && ctx.subject != qualified_subject
+            && ctx.subject != tuple.subject_id
+        {
+            return Decision::Deny(format!(
+                "ReBAC subject mismatch: context subject '{}' does not match tuple subject '{}'",
+                ctx.subject, qualified_subject
             ));
         }
 
@@ -83,10 +108,16 @@ impl AccessEngine {
             ));
         }
 
-        // 2. RBAC check (Base role compatibility and minor protection Rule 7)
-        let is_guest = ctx.base_role.eq_ignore_ascii_case("Guest");
-        let is_minor =
-            ctx.base_role.to_lowercase().contains("minor") || ctx.base_role == "Dependent";
+        // 2. RBAC check (Base role compatibility and minor protection Rule 7,
+        // cross-checked against ReBAC minor_member/dependent tuples)
+        let role_lower = ctx.base_role.trim().to_lowercase();
+        let is_guest = role_lower == "guest" || tuple.relation.eq_ignore_ascii_case("guest");
+        let is_minor = role_lower.contains("minor")
+            || role_lower.contains("child")
+            || role_lower.contains("dependent")
+            || role_lower.contains("mineur")
+            || role_lower.contains("enfant")
+            || self.subject_has_minor_relation(&tuple.subject_type, &tuple.subject_id);
 
         if is_guest
             && matches!(
@@ -142,6 +173,22 @@ impl AccessEngine {
         }
 
         Decision::Allow
+    }
+
+    /// Cross-tenant evaluation enforcing CrossTenantFirewall before ReBAC && RBAC && ABAC.
+    pub fn check_cross_tenant_permission(
+        &self,
+        ctx: &AuthContext,
+        target_tenant: &TenantId,
+        tuple: &RelationTuple,
+    ) -> Decision {
+        if let Err(e) = self
+            .firewall
+            .check_cross_tenant_access(&ctx.tenant_id, target_tenant)
+        {
+            return Decision::Deny(e.to_string());
+        }
+        self.check_permission(ctx, tuple)
     }
 
     /// Unified 4-pillar evaluation: ReBAC && RBAC && ABAC && Biscuit capability verification

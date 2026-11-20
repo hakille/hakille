@@ -133,7 +133,7 @@ impl RedbZkStore {
     }
 
     /// Trigger digital twilight: transitions user to grace, releases recovery shares,
-    /// and crypto-shreds designated private journal partition salts.
+    /// zeroizes encrypted profile payload, purges biometric commitments, and crypto-shreds salts.
     pub fn trigger_digital_twilight(&mut self, user_id: &UserId) -> Result<(), HakilleError> {
         let user = self
             .users_table
@@ -142,6 +142,11 @@ impl RedbZkStore {
 
         user.state = AccountStatus::DigitalTwilightGrace;
         user.updated_at = Utc::now();
+        user.encrypted_profile_blob.ciphertext.fill(0);
+        user.encrypted_profile_blob.tag.fill(0);
+
+        self.bio_commitments
+            .retain(|_, rec| &rec.user_id != user_id);
 
         // Crypto-shred private journal keys
         self.shredded_salts.insert(user_id.clone());
@@ -213,6 +218,27 @@ impl RedbZkStore {
             self.spo_blind_table.remove(token);
         }
         vault.intimate_partition_blind_tokens.clear();
+        self.shredded_vault_intimate_partitions.insert(*vault_id);
+        Ok(())
+    }
+
+    /// Shreds all partitions (legal and intimate) of a vault from the store
+    pub fn shred_vault_all_partitions(&mut self, vault_id: &Uuid) -> Result<(), HakilleError> {
+        let vault = self
+            .vaults_table
+            .get_mut(vault_id)
+            .ok_or(HakilleError::CapabilityDenied(
+                "Vault not found in store".into(),
+            ))?;
+
+        for token in &vault.intimate_partition_blind_tokens {
+            self.spo_blind_table.remove(token);
+        }
+        for token in &vault.legal_partition_blind_tokens {
+            self.spo_blind_table.remove(token);
+        }
+        vault.intimate_partition_blind_tokens.clear();
+        vault.legal_partition_blind_tokens.clear();
         self.shredded_vault_intimate_partitions.insert(*vault_id);
         Ok(())
     }

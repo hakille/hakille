@@ -35,6 +35,8 @@ pub struct NativeTool {
 #[derive(Clone, Default)]
 pub struct NativeToolsAdapter {
     tools: HashMap<String, NativeTool>,
+    vault_keys: Arc<std::sync::Mutex<HashMap<String, [u8; 32]>>>,
+    shredded_vaults: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl NativeToolsAdapter {
@@ -42,7 +44,24 @@ impl NativeToolsAdapter {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            vault_keys: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            shredded_vaults: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         }
+    }
+
+    /// Registers an in-memory vault encryption key for deterministic cryptographic shredding tests/operations.
+    pub fn register_vault_key(&self, vault_id: impl Into<String>, key: [u8; 32]) {
+        if let Ok(mut guard) = self.vault_keys.lock() {
+            guard.insert(vault_id.into(), key);
+        }
+    }
+
+    /// Returns `true` if `vault_id` has been cryptographically shredded in this adapter instance.
+    pub fn is_vault_shredded(&self, vault_id: &str) -> bool {
+        self.shredded_vaults
+            .lock()
+            .map(|g| g.contains(vault_id))
+            .unwrap_or(false)
     }
 
     /// Creates an adapter pre-populated with standard system and cognitive tools.
@@ -95,6 +114,9 @@ impl NativeToolsAdapter {
                 let op = args.get("op").and_then(|v| v.as_str()).ok_or("Missing 'op'")?;
                 let a = args.get("a").and_then(|v| v.as_f64()).ok_or("Missing 'a'")?;
                 let b = args.get("b").and_then(|v| v.as_f64()).ok_or("Missing 'b'")?;
+                if !a.is_finite() || !b.is_finite() {
+                    return Err("Non-finite operands rejected".to_string());
+                }
 
                 let res = match op {
                     "add" => a + b,
@@ -108,6 +130,10 @@ impl NativeToolsAdapter {
                     }
                     _ => return Err(format!("Unsupported operator '{op}'")),
                 };
+
+                if !res.is_finite() {
+                    return Err("Arithmetic overflow produced non-finite result".to_string());
+                }
 
                 Ok(json!({ "result": res }))
             },
@@ -133,12 +159,35 @@ impl NativeToolsAdapter {
                     .get("path")
                     .and_then(|v| v.as_str())
                     .ok_or("Missing 'path'")?;
-                if path.contains("..") || path.starts_with('/') || path.starts_with('\\') {
+                if path.trim().is_empty()
+                    || path.contains("..")
+                    || path.starts_with('/')
+                    || path.starts_with('\\')
+                    || path.contains(':')
+                    || path.contains('\0')
+                {
                     return Err("Path traversal forbidden: '..' not permitted".to_string());
                 }
                 let std_path = std::path::Path::new(path);
                 if !std_path.exists() {
                     return Err(format!("File not found: '{path}'"));
+                }
+                let sym_meta = std::fs::symlink_metadata(std_path)
+                    .map_err(|e| format!("Cannot read symlink metadata: {e}"))?;
+                if sym_meta.file_type().is_symlink() {
+                    return Err(
+                        "Path traversal forbidden: symlinks not permitted in VFS".to_string()
+                    );
+                }
+                if let (Ok(canon_cwd), Ok(canon_target)) = (
+                    std::env::current_dir().and_then(|d| d.canonicalize()),
+                    std_path.canonicalize(),
+                ) && !canon_target.starts_with(&canon_cwd)
+                {
+                    return Err(
+                        "Path traversal forbidden: resolved path escapes workspace root"
+                            .to_string(),
+                    );
                 }
                 let meta = std::fs::metadata(std_path)
                     .map_err(|e| format!("Cannot read file metadata: {e}"))?;
@@ -157,6 +206,8 @@ impl NativeToolsAdapter {
         );
 
         // 4. Critical Action (Tier 3 CriticalExecution)
+        let vault_keys_ref = Arc::clone(&adapter.vault_keys);
+        let shredded_ref = Arc::clone(&adapter.shredded_vaults);
         adapter.register_tool(
             CanonicalToolDefinition::new(
                 "emergency_shred",
@@ -172,11 +223,17 @@ impl NativeToolsAdapter {
             ),
             RiskTier::Tier3CriticalExecution,
             Some(CapabilityScope::FullSystem),
-            |args| {
+            move |args| {
+                use rand::RngCore;
+                use zeroize::Zeroize;
+
                 let vault_id = args
                     .get("vault_id")
                     .and_then(|v| v.as_str())
                     .ok_or("Missing 'vault_id'")?;
+                if vault_id.trim().is_empty() {
+                    return Err("Invalid 'vault_id': cannot be empty".to_string());
+                }
                 let confirm = args
                     .get("confirm")
                     .and_then(|v| v.as_bool())
@@ -184,9 +241,30 @@ impl NativeToolsAdapter {
                 if !confirm {
                     return Err("Shredding aborted: explicit confirm=true required".to_string());
                 }
+
+                // Overwrite and zeroize the vault key in RAM
+                let mut ephemeral_entropy = [0u8; 32];
+                rand::rngs::OsRng.fill_bytes(&mut ephemeral_entropy);
+                let mut had_registered_key = false;
+                if let Ok(mut keys) = vault_keys_ref.lock() {
+                    if let Some(key_slot) = keys.get_mut(vault_id) {
+                        key_slot.copy_from_slice(&ephemeral_entropy);
+                        key_slot.zeroize();
+                        had_registered_key = true;
+                    }
+                    keys.remove(vault_id);
+                }
+                ephemeral_entropy.zeroize();
+
+                if let Ok(mut shredded) = shredded_ref.lock() {
+                    shredded.insert(vault_id.to_string());
+                }
+
                 Ok(json!({
                     "shredded_vault": vault_id,
                     "entropy_overwritten": true,
+                    "registered_key_zeroized": had_registered_key,
+                    "scope": "in_memory_vault_key_register",
                     "status": "purged"
                 }))
             },
@@ -258,17 +336,25 @@ impl CapabilityExecutor for NativeToolsAdapter {
             .get(&call.tool_name)
             .ok_or_else(|| CapabilityError::ToolNotFound(call.tool_name.clone()))?;
 
-        // Guard execution in panic-safe boundary
+        // Guard execution in panic-safe blocking task boundary so synchronous I/O cannot starve Tokio
         let handler = Arc::clone(&tool.handler);
         let args = call.arguments.clone();
         let call_id = call.call_id.clone();
+        let tool_name = call.tool_name.clone();
         let risk_tier = tool.risk_tier;
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || handler(args)));
+        let join_res = tokio::task::spawn_blocking(move || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || handler(args)))
+        })
+        .await
+        .map_err(|e| CapabilityError::ExecutionFailed {
+            tool_name: tool_name.clone(),
+            message: format!("Native tool blocking task failed: {e}"),
+        })?;
 
         let metadata = ExecutionMetadata::new(0, risk_tier);
 
-        match result {
+        match join_res {
             Ok(Ok(val)) => Ok(CanonicalToolResult::success(
                 call_id,
                 vec![CanonicalContentBlock::text(
@@ -278,7 +364,7 @@ impl CapabilityExecutor for NativeToolsAdapter {
             )),
             Ok(Err(err_msg)) => Ok(CanonicalToolResult::error(call_id, err_msg, metadata)),
             Err(_) => Err(CapabilityError::ExecutionFailed {
-                tool_name: call.tool_name.clone(),
+                tool_name,
                 message: "Native tool execution panicked inside boundary".to_string(),
             }),
         }

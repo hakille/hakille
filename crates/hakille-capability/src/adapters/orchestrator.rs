@@ -140,13 +140,21 @@ impl IntelligentToolOrchestrator {
             .await
             .ok_or_else(|| CapabilityError::ToolNotFound(tool_name.clone()))?;
 
-        // 3. Evaluate risk tier
-        let risk_tier = match tool_name.as_str() {
+        // 3. Evaluate risk tier (combines explicit tool mapping, semantic tool risk inference, and capability runtime floor)
+        let explicit_tier = match tool_name.as_str() {
             "emergency_shred" => RiskTier::Tier3CriticalExecution,
             n if n.starts_with("mcp_") => RiskTier::Tier2ExternalNetwork,
             "vfs_write" => RiskTier::Tier1StateMutating,
             _ => RiskTier::Tier0ReadOnly,
         };
+        let inferred_tier = crate::discovery::infer_tool_risk(&def);
+        let type_floor = match descriptor.capability_type {
+            crate::types::CapabilityType::McpStdio
+            | crate::types::CapabilityType::McpSse
+            | crate::types::CapabilityType::Rest => RiskTier::Tier2ExternalNetwork,
+            _ => RiskTier::Tier0ReadOnly,
+        };
+        let risk_tier = explicit_tier.max(inferred_tier).max(type_floor);
 
         // 4. Biscuit verification if required and root key present
         if let Some(root_key) = &self.root_public_key {

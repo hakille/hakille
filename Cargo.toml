@@ -104,9 +104,13 @@ opt-level = 3
 [profile.dev.package.tokenizers]
 opt-level = 3
 
-# Le catalogue contient plusieurs Go : garder les SHA-256 obligatoires sans
-# ralentir chaque ouverture de modèles avec une boucle cryptographique debug.
+# Le catalogue contient plusieurs Go : garder les SHA-256 et vérifications Ed25519
+# obligatoires sans ralentir les tests debug avec une boucle arithmétique non optimisée.
 [profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.ed25519-dalek]
 opt-level = 3
 
 

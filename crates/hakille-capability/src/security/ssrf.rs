@@ -56,29 +56,70 @@ impl AntiSsrfValidator {
     /// Fail-closed guarantee: If ANY resolved IP belongs to a blocked subnet, the entire request
     /// is rejected immediately, preventing multi-homed DNS rebinding exploits.
     pub async fn resolve_and_validate(host: &str) -> Result<IpAddr, SsrfError> {
-        let authority = host
-            .trim_start_matches("http://")
-            .trim_start_matches("https://")
-            .split('/')
-            .next()
-            .unwrap_or(host);
-
-        let clean_host = if authority.starts_with('[') {
-            if let Some(close_bracket) = authority.find(']') {
-                &authority[1..close_bracket]
-            } else {
-                authority
-            }
-        } else if authority.parse::<IpAddr>().is_ok() {
-            authority
+        let trimmed = host.trim();
+        let without_scheme = if let Some(rest) = trimmed.strip_prefix("http://") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("https://") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("HTTP://") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("HTTPS://") {
+            rest
         } else {
-            authority.split(':').next().unwrap_or(authority)
+            trimmed
         };
 
-        // Check if clean_host is a literal IP address
+        // Isolate authority up to the first path/query/fragment/backslash separator
+        let authority = without_scheme
+            .split(['/', '?', '#', '\\'])
+            .next()
+            .unwrap_or(without_scheme);
+
+        // Defend against RFC 3986 userinfo confusion (`http://public.com:80@127.0.0.1/`):
+        // always inspect the target host after the last `@`, AND reject `@` even if the target
+        // host would otherwise look public.
+        let has_userinfo = authority.contains('@');
+        let host_port_part = authority.rsplit('@').next().unwrap_or(authority);
+
+        let clean_host = if host_port_part.starts_with('[') {
+            if let Some(close_bracket) = host_port_part.find(']') {
+                &host_port_part[1..close_bracket]
+            } else {
+                host_port_part
+            }
+        } else if host_port_part.parse::<IpAddr>().is_ok() {
+            host_port_part
+        } else {
+            host_port_part.split(':').next().unwrap_or(host_port_part)
+        };
+
+        // Check if clean_host is a literal IP address first (so blocked IPs in userinfo URLs return the exact Blocked error)
         if let Ok(ip) = clean_host.parse::<IpAddr>() {
             Self::validate_ip(ip)?;
+            if has_userinfo {
+                return Err(SsrfError::ResolutionFailed(
+                    host.to_string(),
+                    "URL userinfo '@' is forbidden by anti-SSRF validator".to_string(),
+                ));
+            }
             return Ok(ip);
+        }
+
+        let lower_host = clean_host.trim_end_matches('.').to_ascii_lowercase();
+        if lower_host == "localhost" || lower_host.ends_with(".localhost") {
+            return Err(SsrfError::LoopbackBlocked(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        }
+
+        if has_userinfo
+            || clean_host.is_empty()
+            || clean_host
+                .chars()
+                .any(|c| c.is_control() || c.is_whitespace())
+        {
+            return Err(SsrfError::ResolutionFailed(
+                host.to_string(),
+                "Invalid or forbidden characters/userinfo in authority".to_string(),
+            ));
         }
 
         // Resolve DNS
