@@ -20,6 +20,9 @@ pub(crate) struct Core {
     hold_started: Option<Instant>,
     voice_started_at: Option<Instant>,
     saved_owner_cranks: Option<Vec<(String, u8)>>,
+    /// Condensat SHA-256 du PIN propriétaire du pass invité actif. Jamais
+    /// placé dans le snapshot ni dans le checkpoint (contrat `SavedDraftV2`).
+    guest_pin_hash: Option<[u8; 32]>,
 }
 impl Default for Core {
     fn default() -> Self {
@@ -30,8 +33,40 @@ impl Default for Core {
             hold_started: None,
             voice_started_at: None,
             saved_owner_cranks: None,
+            guest_pin_hash: None,
         }
     }
+}
+
+/// Condensat de PIN séparé par domaine (pas de comparaison en clair).
+fn hash_owner_pin(pin: &str) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"hakille-mobile-guest-pin-v1:");
+    h.update(pin.as_bytes());
+    h.finalize().into()
+}
+
+/// Comparaison à temps constant de deux condensats.
+fn ct_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
+/// Engagement SHA-256 réel d'un effacement local (domaine ‖ id ‖ row_id).
+/// Ce n'est PAS un reçu signé du hub : c'est un condensat local vérifiable.
+pub(crate) fn erasure_commitment_hex(id: u64, row_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"hakille-mobile-forget-v1:");
+    h.update(id.to_be_bytes());
+    h.update(row_id.as_bytes());
+    h.finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
 }
 
 impl Core {
@@ -102,6 +137,11 @@ impl Core {
                 return Ok(None);
             }
             MobileAction::SetHub { hub_id } => {
+                // Changer de hub réinitialiserait le snapshot (et donc le pass
+                // invité) : ce serait une évasion du mode invité.
+                if self.is_guest_active() {
+                    return Err("Action interdite en mode invité éphémère".into());
+                }
                 text(&hub_id, 2048, false)?;
                 if hub_id.contains(['@', '?', '#']) {
                     return Err(
@@ -213,9 +253,26 @@ impl Core {
                 name,
                 power,
                 duration_secs,
+                owner_pin,
             } => {
                 text(&name, 128, false)?;
                 text(&power, 128, false)?;
+                if self.is_guest_active() {
+                    return Err(
+                        "Un pass invité est déjà actif : le révoquer avant d'en ouvrir un autre"
+                            .into(),
+                    );
+                }
+                let pin_hash = match &owner_pin {
+                    Some(pin) => {
+                        let pin = pin.0.trim();
+                        if pin.chars().count() < 4 || pin.len() > 64 {
+                            return Err("PIN propriétaire invalide (4 à 64 caractères)".into());
+                        }
+                        Some(hash_owner_pin(pin))
+                    }
+                    None => None,
+                };
                 let dur = duration_secs.unwrap_or(3600);
                 let dto = GuestPassDto::new(name.trim(), power.trim(), dur);
                 if !dto.expired {
@@ -235,6 +292,7 @@ impl Core {
                 } else {
                     self.restore_owner_cranks();
                 }
+                self.guest_pin_hash = if dto.expired { None } else { pin_hash };
                 self.snapshot.guest_pass = Some(dto);
                 return Ok(None);
             }
@@ -242,15 +300,35 @@ impl Core {
                 let Some(pass) = &mut self.snapshot.guest_pass else {
                     return Err("Aucun pass invité actif".into());
                 };
+                // Le temps écoulé est monotone : un retour en arrière
+                // prolongerait illégitimement le pass invité.
+                if elapsed_secs < pass.elapsed_secs {
+                    return Err("Temps écoulé du pass invité non monotone : refusé".into());
+                }
                 pass.tick(elapsed_secs);
                 let expired = pass.expired;
                 if expired {
                     self.restore_owner_cranks();
+                    self.guest_pin_hash = None;
                 }
                 return Ok(None);
             }
-            MobileAction::RevokeGuestPass {} => {
+            MobileAction::RevokeGuestPass { owner_pin } => {
+                if self.is_guest_active()
+                    && let Some(expected) = self.guest_pin_hash
+                {
+                    let ok = owner_pin
+                        .as_ref()
+                        .is_some_and(|pin| ct_eq(&expected, &hash_owner_pin(pin.0.trim())));
+                    if !ok {
+                        return Err(
+                            "PIN propriétaire requis et correct pour révoquer le pass invité"
+                                .into(),
+                        );
+                    }
+                }
                 self.restore_owner_cranks();
+                self.guest_pin_hash = None;
                 self.snapshot.guest_pass = None;
                 return Ok(None);
             }
@@ -260,6 +338,13 @@ impl Core {
             } => {
                 text(&target_id, 256, false)?;
                 text(&target_type, 64, false)?;
+                // Ligne modèle : uniquement ce que le hub a réellement déclaré.
+                let model_line = self
+                    .snapshot
+                    .status
+                    .as_ref()
+                    .map(|s| s.model.clone())
+                    .unwrap_or_else(|| "inconnu (statut du hub non chargé)".to_string());
                 let why = if target_type == "card" {
                     if let Some(card) = self
                         .snapshot
@@ -273,13 +358,15 @@ impl Core {
                             facts: vec![],
                             plan: card.reason.clone(),
                             powers: vec!["Intervention locale".to_string()],
-                            confidence_word: "haute".to_string(),
-                            confidence_value: 0.95,
+                            // Ni la carte ni le protocole ne portent de score
+                            // de confiance : aucune valeur n'est inventée.
+                            confidence_word: "non mesurée".to_string(),
+                            confidence_value: 0.0,
                             alternatives: vec![
                                 "Refuser l'action".to_string(),
                                 "Modifier les paramètres".to_string(),
                             ],
-                            model_line: "Qwen 2.5 0.5B Local CPU".to_string(),
+                            model_line: model_line.clone(),
                             cost_label: card.cost.display(),
                             data_line: match &card.data_exit {
                                 hakille_ui_protocol::DataExit::Local => {
@@ -303,12 +390,12 @@ impl Core {
                             facts: vec![],
                             plan: format!("Exécution validée à {}", entry.timestamp),
                             powers: vec!["Audit Ed25519".to_string()],
-                            confidence_word: "haute".to_string(),
-                            confidence_value: 1.0,
+                            confidence_word: "non mesurée".to_string(),
+                            confidence_value: 0.0,
                             alternatives: vec!["Annuler l'action (Undo)".to_string()],
-                            model_line: "Qwen 2.5 0.5B Local CPU".to_string(),
-                            cost_label: "0.00 EUR".to_string(),
-                            data_line: "Local uniquement".to_string(),
+                            model_line,
+                            cost_label: "inconnu (non fourni par l'entrée journal)".to_string(),
+                            data_line: "inconnu (non fourni par l'entrée journal)".to_string(),
                             would_change: "Révocation dans le journal d'audit".to_string(),
                         }
                     } else {
@@ -412,6 +499,17 @@ impl Core {
                 )
             }
             MobileAction::RefreshStatus {} => (UiToKernel::StatusRequest, "refresh_status", false),
+            MobileAction::LoadMemory { .. }
+            | MobileAction::Remember { .. }
+            | MobileAction::LoadJournal { .. }
+            | MobileAction::GhostActionAccept { .. }
+                if self.is_guest_active() =>
+            {
+                return Err(
+                    "Mode invité : mémoire, journal et actions fantômes du propriétaire inaccessibles"
+                        .into(),
+                );
+            }
             MobileAction::LoadMemory { query, limit } => {
                 rows(limit)?;
                 if let Some(query) = &query {
@@ -610,7 +708,11 @@ impl Core {
                     target_id: row_id.clone(),
                     timestamp_str: format!("t-{id}"),
                     reason: "Droit à l'oubli / Rectification mémoire".to_string(),
-                    verification_token: format!("sha256-receipt-{receipt_id}"),
+                    // Condensat SHA-256 local réel (pas un reçu signé du hub).
+                    verification_token: format!(
+                        "sha256-receipt-{}",
+                        erasure_commitment_hex(id, row_id)
+                    ),
                 });
             }
             _ => {}

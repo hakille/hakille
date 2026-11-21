@@ -186,5 +186,10 @@ public struct PrivacyGuardVeilView: View {
             )
             .padding(24)
         }
+        // Le voile intercepte toute interaction tactile et VoiceOver : rien ne
+        // traverse vers le contenu sensible dessous tant que l'utilisateur n'a
+        // pas déverrouillé explicitement.
+        .contentShape(Rectangle())
+        .accessibilityAddTraits(.isModal)
     }
 }

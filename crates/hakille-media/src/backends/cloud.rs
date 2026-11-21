@@ -26,12 +26,23 @@ use std::time::Duration;
 
 const MAX_CLOUD_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CloudMediaBackend {
     base_url: Option<String>,
     api_key: Option<String>,
     provider_name: String,
     model_name: String,
+}
+
+impl std::fmt::Debug for CloudMediaBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloudMediaBackend")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<masqué>"))
+            .field("provider_name", &self.provider_name)
+            .field("model_name", &self.model_name)
+            .finish()
+    }
 }
 
 impl CloudMediaBackend {
@@ -67,6 +78,15 @@ impl CloudMediaBackend {
         if parsed.scheme() != "https" {
             return Err(MediaError::InvalidRequest(
                 "un fournisseur média cloud DOIT utiliser HTTPS (TLS vérifié)".into(),
+            ));
+        }
+        if !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(MediaError::InvalidRequest(
+                "URL cloud : identifiants, query et fragment interdits".into(),
             ));
         }
         let host = parsed
@@ -113,7 +133,10 @@ impl CloudMediaBackend {
         }
     }
 
-    fn build_client(&self, timeout_ms: u64) -> MediaResult<(reqwest::Client, reqwest::Url, &str)> {
+    async fn build_client(
+        &self,
+        timeout_ms: u64,
+    ) -> MediaResult<(reqwest::Client, reqwest::Url, &str)> {
         let raw_url = self
             .base_url
             .as_deref()
@@ -129,13 +152,68 @@ impl CloudMediaBackend {
                 reason: "HAKILLE_MEDIA_CLOUD_API_KEY non défini".into(),
             })?;
         let url = Self::validate_cloud_url(raw_url)?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| MediaError::InvalidRequest("hôte absent dans l'URL cloud".into()))?;
+        let port = url.port_or_known_default().unwrap_or(443);
+
+        // Résolution DNS explicite + blocage des IP privées/locales + épinglage
+        // des adresses validées (bloque DNS rebinding et domaines pointant vers
+        // 127.0.0.1 / 169.254.169.254).
+        let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+            .await
+            .map_err(|e| MediaError::Network(format!("résolution DNS cloud ({host}) : {e}")))?
+            .collect();
+        if addrs.is_empty() {
+            return Err(MediaError::Network(format!(
+                "aucune adresse IP résolue pour l'hôte cloud '{host}'"
+            )));
+        }
+        for addr in &addrs {
+            if is_private_or_local_ip(addr.ip()) {
+                return Err(MediaError::ConstitutionBlocked(format!(
+                    "SSRF bloqué : '{host}' résout vers une IP privée/locale ({})",
+                    addr.ip()
+                )));
+            }
+        }
+
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .resolve_to_addrs(host, &addrs)
             .timeout(Duration::from_millis(timeout_ms.max(10_000)))
             .build()
             .map_err(|e| MediaError::Network(e.to_string()))?;
         Ok((client, url, api_key))
     }
+}
+
+pub(crate) async fn read_bounded_body(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+    label: &str,
+) -> MediaResult<Vec<u8>> {
+    if let Some(len) = resp.content_length()
+        && len > max_bytes as u64
+    {
+        return Err(MediaError::PolicyExceeded(format!(
+            "{label} au-delà de la limite de sécurité ({len} > {max_bytes} octets)"
+        )));
+    }
+    let mut out = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| MediaError::Network(e.to_string()))?
+    {
+        if out.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(MediaError::PolicyExceeded(format!(
+                "{label} au-delà de la limite de sécurité ({max_bytes} octets)"
+            )));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
 }
 
 fn is_private_or_local_ip(ip: IpAddr) -> bool {
@@ -146,11 +224,16 @@ fn is_private_or_local_ip(ip: IpAddr) -> bool {
                 || v4.is_link_local()
                 || v4.is_broadcast()
                 || v4.is_unspecified()
+                || v4.is_multicast()
                 || (v4.octets()[0] == 100 && (v4.octets()[1] & 0b1100_0000) == 64)
         }
         IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_private_or_local_ip(IpAddr::V4(mapped));
+            }
             v6.is_loopback()
                 || v6.is_unspecified()
+                || v6.is_multicast()
                 || (v6.segments()[0] & 0xfe00) == 0xfc00
                 || (v6.segments()[0] & 0xffc0) == 0xfe80
         }
@@ -185,7 +268,7 @@ impl ImageGeneratorBackend for CloudMediaBackend {
         _progress: Option<ProgressCallback>,
     ) -> MediaResult<ImageGenerationOutput> {
         control.check()?;
-        let (client, base, api_key) = self.build_client(req.deadline_ms)?;
+        let (client, base, api_key) = self.build_client(req.deadline_ms).await?;
         let url = format!(
             "{}/v1/images/generations",
             base.as_str().trim_end_matches('/')
@@ -211,15 +294,7 @@ impl ImageGeneratorBackend for CloudMediaBackend {
                 resp.status()
             )));
         }
-        let raw = resp
-            .bytes()
-            .await
-            .map_err(|e| MediaError::Network(e.to_string()))?;
-        if raw.len() > MAX_CLOUD_RESPONSE_BYTES {
-            return Err(MediaError::PolicyExceeded(
-                "réponse cloud image au-delà de la limite de sécurité".into(),
-            ));
-        }
+        let raw = read_bounded_body(resp, MAX_CLOUD_RESPONSE_BYTES, "réponse cloud image").await?;
         let parsed: serde_json::Value = serde_json::from_slice(&raw)?;
         let b64 =
             parsed["data"][0]["b64_json"]
@@ -281,7 +356,7 @@ impl AudioGeneratorBackend for CloudMediaBackend {
         _progress: Option<ProgressCallback>,
     ) -> MediaResult<AudioGenerationOutput> {
         control.check()?;
-        let (client, base, api_key) = self.build_client(req.deadline_ms)?;
+        let (client, base, api_key) = self.build_client(req.deadline_ms).await?;
         let url = format!("{}/v1/audio/speech", base.as_str().trim_end_matches('/'));
         let body = serde_json::json!({
             "model": self.model_name,
@@ -301,16 +376,8 @@ impl AudioGeneratorBackend for CloudMediaBackend {
                 resp.status()
             )));
         }
-        let wav_bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| MediaError::Network(e.to_string()))?
-            .to_vec();
-        if wav_bytes.len() > MAX_CLOUD_RESPONSE_BYTES {
-            return Err(MediaError::PolicyExceeded(
-                "réponse cloud audio trop volumineuse".into(),
-            ));
-        }
+        let wav_bytes =
+            read_bounded_body(resp, MAX_CLOUD_RESPONSE_BYTES, "réponse cloud audio").await?;
         let tmp = tempfile::NamedTempFile::new()?;
         std::fs::write(tmp.path(), &wav_bytes)?;
         let buffer = read_wav_file(tmp.path())?;

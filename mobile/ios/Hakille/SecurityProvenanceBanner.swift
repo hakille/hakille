@@ -58,9 +58,11 @@ public func sanitizeSkillText(_ input: String) -> String {
 public func copySensitiveToClipboard(text: String, label: String = "Sensitive") {
     let expiration = Date().addingTimeInterval(CLIPBOARD_SENSITIVE_TTL_SECS)
     let pasteboard = UIPasteboard.general
+    // `.localOnly` : jamais propagé au presse-papiers universel (Handoff) ;
+    // `.expirationDate` : purgé automatiquement après le TTL.
     pasteboard.setItems(
-        [[UIPasteboard.typeListString[0] as! String: text]],
-        options: [.expirationDate: expiration]
+        [["public.utf8-plain-text": text]],
+        options: [.localOnly: true, .expirationDate: expiration]
     )
 }
 

@@ -131,36 +131,78 @@ class Gateway {
             .post(requestBytes.toRequestBody("application/json".toMediaType()))
         if (!session.isNullOrEmpty()) builder.header("X-Hakille-Session", session)
         val call = client.newCall(builder.build())
-        val response = call.execute()
-        response.use { resp ->
-            require(resp.code !in 300..399) { "Redirect refused / Redirection refusée" }
-            if (resp.code !in 200..299) {
-                val errorBody = resp.body?.string().orEmpty()
-                throw IOException("Gateway error ${resp.code}: $errorBody")
-            }
-            val body = resp.body ?: throw IOException("Empty gateway response / Réponse vide")
-            val contentType = resp.header("Content-Type").orEmpty()
-            if (contentType.contains("text/event-stream")) {
-                val reader = body.byteStream().bufferedReader(Charsets.UTF_8)
-                var line: String? = reader.readLine()
-                while (line != null) {
-                    val trimmed = line.trim()
-                    if (trimmed.startsWith("data:")) {
-                        val data = trimmed.removePrefix("data:").trim()
-                        if (data != "{}") {
-                            onFrame(data)
-                        }
-                    } else if (trimmed.startsWith("event: done")) {
-                        break
-                    }
-                    line = reader.readLine()
+        // Annulation coopérative : l'annulation de la coroutine ferme l'appel
+        // HTTP (sinon la lecture bloquante continuerait en arrière-plan).
+        val cancelHandle = kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]
+            ?.invokeOnCompletion { if (it != null) call.cancel() }
+        try {
+            call.execute().use { resp ->
+                require(resp.code !in 300..399) { "Redirect refused / Redirection refusée" }
+                val body = resp.body ?: throw IOException("Empty gateway response / Réponse vide")
+                if (resp.code !in 200..299) {
+                    // Corps d'erreur borné, jamais recopié intégralement.
+                    throw IOException("Gateway error ${resp.code} / Erreur passerelle ${resp.code}")
                 }
-            } else {
-                val fullBody = body.string()
-                onFrame(fullBody)
+                val contentType = resp.header("Content-Type").orEmpty()
+                val stream = body.byteStream()
+                if (contentType.contains("text/event-stream")) {
+                    var total = 0L
+                    while (true) {
+                        kotlinx.coroutines.ensureActive()
+                        val line = readBoundedLine(stream, MAX_BYTES) ?: break
+                        total += line.length + 1
+                        if (total > MAX_STREAM_BYTES) {
+                            throw IOException("Gateway stream too large / Flux trop volumineux")
+                        }
+                        val trimmed = line.trim()
+                        if (trimmed.startsWith("data:")) {
+                            val data = trimmed.removePrefix("data:").trim()
+                            if (data != "{}") onFrame(data)
+                        } else if (trimmed.startsWith("event: done")) {
+                            break
+                        }
+                    }
+                } else {
+                    onFrame(readBounded(stream, MAX_BYTES))
+                }
             }
+        } finally {
+            cancelHandle?.dispose()
         }
     }
 
-    companion object { const val MAX_BYTES = 1024 * 1024 }
+    /** Lit une ligne UTF-8 stricte d'au plus `limit` octets (`null` en fin de flux). */
+    private fun readBoundedLine(stream: java.io.InputStream, limit: Int): String? {
+        val out = java.io.ByteArrayOutputStream()
+        while (true) {
+            val b = stream.read()
+            if (b < 0) return if (out.size() == 0) null else decodeStrict(out.toByteArray())
+            if (b == '\n'.code) return decodeStrict(out.toByteArray()).removeSuffix("\r")
+            if (out.size() >= limit) throw IOException("Gateway line too long / Ligne trop longue")
+            out.write(b)
+        }
+    }
+
+    private fun readBounded(stream: java.io.InputStream, limit: Int): String {
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) {
+            val count = stream.read(buffer)
+            if (count < 0) break
+            if (out.size() + count > limit) throw IOException("Gateway response too large / Réponse trop volumineuse")
+            out.write(buffer, 0, count)
+        }
+        return decodeStrict(out.toByteArray())
+    }
+
+    private fun decodeStrict(bytes: ByteArray): String = Charsets.UTF_8.newDecoder()
+        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+        .decode(java.nio.ByteBuffer.wrap(bytes)).toString()
+
+    companion object {
+        const val MAX_BYTES = 1024 * 1024
+        /** Plafond cumulé d'un flux SSE (deltas + réponse finale). */
+        const val MAX_STREAM_BYTES = 16L * 1024 * 1024
+    }
 }

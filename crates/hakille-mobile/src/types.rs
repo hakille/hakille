@@ -115,11 +115,31 @@ pub enum MobileAction {
         power: String,
         #[serde(default)]
         duration_secs: Option<u32>,
+        /// PIN propriétaire optionnel : s'il est fourni, la révocation
+        /// anticipée exigera le même PIN (seul son condensat SHA-256 est
+        /// gardé en mémoire vive, jamais sérialisé ni persisté).
+        #[serde(default)]
+        owner_pin: Option<OwnerPin>,
     },
     TickGuestPass {
         elapsed_secs: u32,
     },
-    RevokeGuestPass {},
+    RevokeGuestPass {
+        #[serde(default)]
+        owner_pin: Option<OwnerPin>,
+    },
+}
+
+/// PIN propriétaire transmis par le shell natif. Le `Debug` est masqué pour
+/// qu'aucun journal ni trace de panique ne divulgue le secret.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct OwnerPin(pub String);
+
+impl std::fmt::Debug for OwnerPin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OwnerPin(<masqué>)")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

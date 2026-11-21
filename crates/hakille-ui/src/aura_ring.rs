@@ -142,11 +142,12 @@ impl AuraVisualState {
 
     /// Calcule le facteur d'échelle d'animation sinusoïdale $[0.95, 1.05]$ pour un horodatage donné en millisecondes.
     pub fn animation_factor(&self, timestamp_ms: u64) -> f32 {
-        let period = self.pulse_period_ms() as f32;
-        if period <= 0.0 {
+        let period_u64 = self.pulse_period_ms() as u64;
+        if period_u64 == 0 {
             return 1.0;
         }
-        let phase = (timestamp_ms as f32 % period) / period;
+        let rem_ms = timestamp_ms % period_u64;
+        let phase = (rem_ms as f32) / (period_u64 as f32);
         let wave = (phase * 2.0 * PI).sin();
         1.0 + 0.05 * wave
     }
@@ -176,10 +177,18 @@ impl Default for AuraRingWidget {
 }
 
 impl AuraRingWidget {
+    fn sanitize_tau(tau: f32) -> f32 {
+        if tau.is_finite() {
+            tau.clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
     /// Crée un nouveau widget Aura Ring initialisé avec une valeur de $\tau$.
     pub fn new(initial_tau: f32) -> Self {
         let mut widget = Self {
-            tau: initial_tau.clamp(0.0, 1.0),
+            tau: Self::sanitize_tau(initial_tau),
             is_step_up_active: false,
             is_locked: false,
             is_distress: false,
@@ -192,7 +201,7 @@ impl AuraRingWidget {
 
     /// Met à jour le score continu de confiance $\tau \in [0.0, 1.0]$ et réévalue l'état visuel.
     pub fn update_confidence(&mut self, tau: f32) {
-        self.tau = tau.clamp(0.0, 1.0);
+        self.tau = Self::sanitize_tau(tau);
         self.recompute_state();
     }
 

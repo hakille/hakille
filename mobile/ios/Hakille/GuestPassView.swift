@@ -33,9 +33,14 @@ public struct GuestPassView: View {
     @Environment(\.colorScheme) private var scheme
     public let guestPass: JSONValue
     public let busy: Bool
-    public let onStartGuestPass: (String, String, UInt32) -> Void
-    public let onRevokeGuestPass: () -> Void
+    public let onStartGuestPass: (String, String, UInt32, String?) -> Void
+    public let onRevokeGuestPass: (String?) -> Void
+    /// Horloge du pass (temps écoulé monotone) : sans elle, le pass
+    /// n'expirerait jamais côté cœur.
+    public let onTickGuestPass: (UInt32) -> Void
 
+    @State private var ownerPin = ""
+    @State private var revokePin = ""
     @State private var guestName = "Invité"
     @State private var guestPower = "wifi.connect"
     @State private var durationSecs: UInt32 = GuestPassHelper.defaultDurationSecs
@@ -43,13 +48,15 @@ public struct GuestPassView: View {
     public init(
         guestPass: JSONValue,
         busy: Bool,
-        onStartGuestPass: @escaping (String, String, UInt32) -> Void,
-        onRevokeGuestPass: @escaping () -> Void
+        onStartGuestPass: @escaping (String, String, UInt32, String?) -> Void,
+        onRevokeGuestPass: @escaping (String?) -> Void,
+        onTickGuestPass: @escaping (UInt32) -> Void = { _ in }
     ) {
         self.guestPass = guestPass
         self.busy = busy
         self.onStartGuestPass = onStartGuestPass
         self.onRevokeGuestPass = onRevokeGuestPass
+        self.onTickGuestPass = onTickGuestPass
     }
 
     private var textColor: Color {
@@ -118,11 +125,28 @@ public struct GuestPassView: View {
                     }
                     Spacer()
                     Button("Révoquer", role: .destructive) {
-                        onRevokeGuestPass()
+                        onRevokeGuestPass(revokePin.isEmpty ? nil : revokePin)
+                        revokePin = ""
                     }
                     .disabled(busy)
                     .frame(minHeight: 44)
                 }
+                // Compte à rebours réel sur horloge monotone (systemUptime) :
+                // un changement d'heure système ne prolonge pas le pass.
+                .task(id: guestPass["name"].text + guestPass["power"].text + String(dur)) {
+                    let base = elapsed
+                    let startedAt = ProcessInfo.processInfo.systemUptime
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        if Task.isCancelled { break }
+                        let secs = base + UInt32(max(0, ProcessInfo.processInfo.systemUptime - startedAt))
+                        onTickGuestPass(min(secs, dur))
+                        if secs >= dur { break }
+                    }
+                }
+                SecureField("PIN propriétaire (si défini)", text: $revokePin)
+                    .keyboardType(.numberPad)
+                    .textContentType(.oneTimeCode)
             } else {
                 TextField("Nom de l'invité", text: $guestName)
                     .disabled(busy)
@@ -140,10 +164,15 @@ public struct GuestPassView: View {
                 }
                 .pickerStyle(.segmented)
                 .disabled(busy)
+                SecureField("PIN propriétaire pour révoquer (optionnel, 4+)", text: $ownerPin)
+                    .keyboardType(.numberPad)
+                    .disabled(busy)
                 Button("Activer le pass invité") {
-                    onStartGuestPass(guestName, guestPower, durationSecs)
+                    onStartGuestPass(guestName, guestPower, durationSecs, ownerPin.isEmpty ? nil : ownerPin)
+                    ownerPin = ""
                 }
-                .disabled(busy || guestName.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(busy || guestName.trimmingCharacters(in: .whitespaces).isEmpty
+                    || (!ownerPin.isEmpty && ownerPin.count < 4))
                 .frame(minHeight: 44)
             }
         }

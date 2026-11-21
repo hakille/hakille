@@ -287,17 +287,21 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
     fun rememberFact(text: String): Boolean = dispatch("remember") { put("text", text) }
     fun loadAgents(): Boolean = dispatch("load_agents")
     fun dismissPrivacyGuard(): Boolean = dispatch("dismiss_privacy_guard")
-    fun startGuestPass(name: String, power: String, durationSecs: Int = 3600): Boolean =
+    // `ownerPin` optionnel : s'il est fourni, la révocation anticipée exigera
+    // le même PIN (le cœur Rust n'en garde que le condensat, en mémoire vive).
+    fun startGuestPass(name: String, power: String, durationSecs: Int = 3600, ownerPin: String? = null): Boolean =
         dispatch("start_guest_pass") {
             put("name", name)
             put("power", power)
             put("duration_secs", JsonPrimitive(durationSecs))
+            if (!ownerPin.isNullOrEmpty()) put("owner_pin", ownerPin)
         }
     fun tickGuestPass(elapsedSecs: Int): Boolean =
         dispatch("tick_guest_pass") {
             put("elapsed_secs", JsonPrimitive(elapsedSecs))
         }
-    fun revokeGuestPass(): Boolean = dispatch("revoke_guest_pass")
+    fun revokeGuestPass(ownerPin: String? = null): Boolean =
+        dispatch("revoke_guest_pass") { if (!ownerPin.isNullOrEmpty()) put("owner_pin", ownerPin) }
     fun connectFromPairingQr(rawQrJson: String) {
         try {
             val parsed = EndpointPolicy.parsePairingQr(rawQrJson)

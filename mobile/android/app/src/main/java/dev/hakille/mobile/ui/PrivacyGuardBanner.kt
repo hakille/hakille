@@ -8,6 +8,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
@@ -147,10 +149,28 @@ fun PrivacyGuardVeilOverlay(
     val recommended = event?.text("recommended_action")?.ifBlank { null }
         ?: "Écran voilé pour protéger vos données souveraines."
 
+    // Voile actif : capture d'écran / enregistrement interdits (FLAG_SECURE),
+    // levés dès que le voile disparaît.
+    val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
+    DisposableEffect(activity) {
+        val flag = android.view.WindowManager.LayoutParams.FLAG_SECURE
+        activity?.window?.addFlags(flag)
+        onDispose { activity?.window?.clearFlags(flag) }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
             .testTag("privacy_guard_veil")
+            // Le voile consomme TOUS les gestes : aucun tap ne traverse vers le
+            // contenu sensible situé dessous (seul « Déverrouiller » reste actif).
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        awaitPointerEvent().changes.forEach { it.consume() }
+                    }
+                }
+            }
             .background(veilBackground.copy(alpha = 0.96f))
             .padding(24.dp),
         contentAlignment = Alignment.Center

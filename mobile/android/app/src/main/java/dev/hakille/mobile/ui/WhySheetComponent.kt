@@ -38,9 +38,10 @@ fun WhySheetComponent(
     val confidenceWord = whySheet.text("confidence_word").ifBlank { "basse" }
     val confidenceValue = (whySheet["confidence_value"] as? JsonPrimitive)?.doubleOrNull ?: 0.0
     val alternatives = (whySheet["alternatives"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }.orEmpty()
-    val modelLine = whySheet.text("model_line").ifBlank { "Qwen 2.5 0.5B Local CPU" }
-    val costLabel = whySheet.text("cost_label").ifBlank { "0.00 EUR" }
-    val dataLine = whySheet.text("data_line").ifBlank { "Local uniquement" }
+    // Valeurs absentes → « inconnu » : jamais de modèle, coût ou sortie inventés.
+    val modelLine = whySheet.text("model_line").ifBlank { "inconnu" }
+    val costLabel = whySheet.text("cost_label").ifBlank { "inconnu" }
+    val dataLine = whySheet.text("data_line").ifBlank { "inconnu" }
     val wouldChange = whySheet.text("would_change")
 
     val confidenceColor = when {

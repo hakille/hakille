@@ -49,19 +49,20 @@ public struct WhySheetView: View {
         whySheet["confidence_value"].doubleValue ?? 0.0
     }
 
+    // Valeur absente → « inconnu » : jamais de modèle, coût ou sortie inventés.
     private var modelLine: String {
         let m = whySheet["model_line"].text
-        return m.isEmpty ? "Qwen 2.5 0.5B Local CPU" : m
+        return m.isEmpty ? "inconnu" : m
     }
 
     private var costLabel: String {
         let c = whySheet["cost_label"].text
-        return c.isEmpty ? "0.00 EUR" : c
+        return c.isEmpty ? "inconnu" : c
     }
 
     private var dataLine: String {
         let d = whySheet["data_line"].text
-        return d.isEmpty ? "Local uniquement" : d
+        return d.isEmpty ? "inconnu" : d
     }
 
     private var wouldChange: String {

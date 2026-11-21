@@ -40,48 +40,55 @@ impl ProvenanceBand {
 /// image ou séquence d'échappement ANSI n'atteint une carte.
 pub fn sanitize_skill_text(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
-    let lower = input.to_lowercase();
-    let bytes = input.as_bytes();
-    let len = bytes.len();
+    let ascii_lower = input.to_ascii_lowercase();
+    let len = input.len();
     let mut i = 0;
 
     // Étape 1 : suppression intégrale des blocs <script>...</script> et <style>...</style>,
-    // puis des balises HTML générales <...>
+    // puis des balises HTML générales <...> tout en préservant les caractères UTF-8 multi-octets.
     while i < len {
-        if bytes[i] == b'<' {
-            let rest_lower = &lower[i..];
+        let rest = &input[i..];
+        let rest_lower = &ascii_lower[i..];
+        if rest.starts_with('<') {
             if rest_lower.starts_with("<script") {
                 if let Some(end_idx) = rest_lower.find("</script>") {
                     i += end_idx + "</script>".len();
-                    continue;
+                } else {
+                    break;
                 }
-            } else if rest_lower.starts_with("<style")
-                && let Some(end_idx) = rest_lower.find("</style>")
-            {
-                i += end_idx + "</style>".len();
+                continue;
+            } else if rest_lower.starts_with("<style") {
+                if let Some(end_idx) = rest_lower.find("</style>") {
+                    i += end_idx + "</style>".len();
+                } else {
+                    break;
+                }
                 continue;
             }
-            while i < len && bytes[i] != b'>' {
-                i += 1;
+            if let Some(close_idx) = rest.find('>') {
+                i += close_idx + 1;
+            } else {
+                break;
             }
-            if i < len && bytes[i] == b'>' {
-                i += 1;
-            }
+        } else if let Some(ch) = rest.chars().next() {
+            out.push(ch);
+            i += ch.len_utf8();
         } else {
-            out.push(bytes[i] as char);
-            i += 1;
+            break;
         }
     }
 
     // Étape 2 : suppression complète des séquences d'échappement terminales ANSI
-    // (CSI \x1b[...m, OSC \x1b]..., séquences Fe, et octets d'échappement nus)
+    // (CSI \x1b[...m, OSC \x1b]..., séquences Fe, octets d'échappement nus)
+    // ainsi que des contrôles directionnels Unicode BiDi (spoofing) et NUL.
     let mut clean = String::with_capacity(out.len());
     let chars: Vec<char> = out.chars().collect();
     let c_len = chars.len();
     let mut j = 0;
 
     while j < c_len {
-        if chars[j] == '\u{001b}' {
+        let ch = chars[j];
+        if ch == '\u{001b}' {
             j += 1;
             if j < c_len {
                 if chars[j] == '[' {
@@ -113,8 +120,15 @@ pub fn sanitize_skill_text(input: &str) -> String {
                     j += 1;
                 }
             }
+        } else if ch == '\0'
+            || matches!(
+                ch,
+                '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+            )
+        {
+            j += 1;
         } else {
-            clean.push(chars[j]);
+            clean.push(ch);
             j += 1;
         }
     }
@@ -182,5 +196,12 @@ mod tests {
         };
         assert!(!legit.looks_like_installed(&["mail".to_string()]));
         assert_eq!(CLIPBOARD_SENSITIVE_TTL_SECS, 60);
+    }
+
+    #[test]
+    fn test_sanitize_skill_text_preserves_utf8_and_strips_bidi_and_unclosed_script() {
+        let input = "Vérifié · İstanbul éàù… <b>日本語</b>\u{202E}evil<SCRIPT>unclosed_payload";
+        let clean = sanitize_skill_text(input);
+        assert_eq!(clean, "Vérifié · İstanbul éàù… 日本語evil");
     }
 }

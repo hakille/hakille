@@ -31,6 +31,9 @@ use std::time::{Duration, Instant};
 /// Longueur maximale de la requête HUD (octets UTF-8).
 pub const MAX_QUERY_BYTES: usize = 512;
 
+/// Taille maximale du tampon de streaming par tour HUD (64 Kio).
+pub const MAX_STREAMED_TEXT_BYTES: usize = 64 * 1024;
+
 /// Seuil au-delà duquel une réponse est rendue dans le panneau étendu :
 /// une seule ligne du HUD (≈ 100 caractères) ne suffit plus.
 pub const EXPAND_RESPONSE_CHARS: usize = 120;
@@ -310,6 +313,8 @@ pub struct HudApp {
     /// Carte d'action issue du démon, en attente de décision. Une seule à la
     /// fois (spec §8) ; elle n'est jamais déduite d'un texte local.
     pending_card: Option<ActionCard>,
+    /// Identifiant de la carte dont la décision (Approve/Reject) est déjà en vol vers le démon.
+    card_decision_in_flight: Option<u64>,
     pub bridge: KernelBridge<RealDaemonBridge>,
     /// Refus honnête à afficher (plus prioritaire que `hud_response`).
     pub notice: Option<String>,
@@ -391,6 +396,7 @@ impl HudApp {
             silence: SilenceBudgetTracker::new(3),
             pending_actions: 0,
             pending_card: None,
+            card_decision_in_flight: None,
             bridge: KernelBridge::new(bridge),
             notice: None,
             budget,
@@ -1385,6 +1391,11 @@ impl HudApp {
         }
     }
 
+    /// Identifiant de carte dont la décision est déjà en vol.
+    pub fn card_decision_in_flight(&self) -> Option<u64> {
+        self.card_decision_in_flight
+    }
+
     /// Carte réelle proposée par le démon : une seule à la fois. Elle force
     /// l'état `DecisionRequired`, ouvre le panneau 720×360 et ne produit aucun
     /// effet avant une décision auditée côté démon.
@@ -1399,6 +1410,7 @@ impl HudApp {
             );
         }
         self.pending_card = Some(card);
+        self.card_decision_in_flight = None;
         self.pending_actions = 1;
         self.presence
             .set_state(hakille_ui::PresenceState::DecisionRequired);
@@ -1425,6 +1437,10 @@ impl HudApp {
         if self.pending_card.as_ref().map(|c| c.id) != Some(card_id) {
             return Vec::new();
         }
+        if self.card_decision_in_flight == Some(card_id) {
+            return Vec::new();
+        }
+        self.card_decision_in_flight = Some(card_id);
         self.presence.set_state(hakille_ui::PresenceState::Acting);
         self.data_notice = Some(if approved {
             "validation envoyée — en attente de l'audit du démon…".to_string()
@@ -1467,6 +1483,7 @@ impl HudApp {
             ));
         }
         self.pending_card = None;
+        self.card_decision_in_flight = None;
         self.pending_actions = 0;
         self.presence.set_state(hakille_ui::PresenceState::Idle);
         let short: String = audit_id.chars().take(8).collect();
@@ -1520,9 +1537,17 @@ impl HudApp {
                 }
             }
             KernelToUi::TokenDelta { text } => {
-                // STREAMING : le texte apparaît au fil de l'eau. La réponse
-                // finale (HudReply) remplacera ce texte (c'est la référence).
-                self.streamed_text.push_str(&text);
+                // STREAMING : le texte apparaît au fil de l'eau (plafonné à 64 Kio).
+                // La réponse finale (HudReply) remplacera ce texte (c'est la référence).
+                if self.streamed_text.len() < MAX_STREAMED_TEXT_BYTES {
+                    let remaining = MAX_STREAMED_TEXT_BYTES - self.streamed_text.len();
+                    if text.len() <= remaining {
+                        self.streamed_text.push_str(&text);
+                    } else {
+                        let boundary = text.floor_char_boundary(remaining);
+                        self.streamed_text.push_str(&text[..boundary]);
+                    }
+                }
                 let streamed = self.streamed_text.clone();
                 if let Some(query) = self.pending_query.clone() {
                     self.hud.set_streaming(query, streamed, false);
@@ -1651,6 +1676,38 @@ impl HudApp {
                     self.unseen_reply = true;
                     Vec::new()
                 }
+            }
+            KernelToUi::JournalAppended { id } => {
+                self.notice_actions(format!("journal : entrée #{id} ajoutée"))
+            }
+            KernelToUi::Notification(dto) => {
+                self.notice_actions(format!("{} : {}", dto.title, dto.body))
+            }
+            KernelToUi::FatigueAlert(alert) => {
+                self.notice_actions(format!("bien-être : {}", alert.recommendation))
+            }
+            KernelToUi::PrivacyGuardAlert(alert) => {
+                self.notice_actions(format!("garde vie privée : {}", alert.description))
+            }
+            KernelToUi::GhostActionSuggest(dto) => {
+                self.notice_actions(format!("suggestion : {}", dto.label))
+            }
+            KernelToUi::NotificationDismissed { .. }
+            | KernelToUi::UserContext(_)
+            | KernelToUi::EmotionUpdate(_)
+            | KernelToUi::AuraRingUpdate(_)
+            | KernelToUi::MicroGestureRecognized(_)
+            | KernelToUi::GhostActionDismissed { .. } => {
+                if self.visible {
+                    vec![HudAction::Redraw]
+                } else {
+                    Vec::new()
+                }
+            }
+            KernelToUi::Toast { text }
+                if self.pending_card.is_some() && self.pending_query.is_none() =>
+            {
+                self.notice_actions(text)
             }
             msg => self.on_turn_reply(msg),
         }
@@ -1785,6 +1842,7 @@ impl HudApp {
     /// d'annulation, aucune réponse ne viendra plus).
     pub fn on_kernel_disconnected(&mut self) -> Vec<HudAction> {
         let had_card = self.pending_card.take().is_some();
+        self.card_decision_in_flight = None;
         // Plus aucune réponse ne viendra : le chrono d'attente s'arrête.
         self.waiting_since = None;
         if had_card {

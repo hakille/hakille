@@ -213,6 +213,13 @@ fn enable_transparency(window: &Arc<Window>) -> bool {
             unsafe {
                 SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED.0 as isize);
             }
+            // Relecture : `SetWindowLongPtrW` peut échouer silencieusement
+            // (retour 0 ambigu). On ne suppose jamais le succès.
+            let applied = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+            if applied & WS_EX_LAYERED.0 as isize == 0 {
+                eprintln!("hakille-desktop: WS_EX_LAYERED non appliqué par l'OS — fond opaque");
+                return false;
+            }
         }
         // Clé couleur = fond peint exact (COLORREF 0x00BBGGRR → RGB 1,1,1).
         let key = COLORREF(0x0001_0101);
@@ -296,7 +303,9 @@ impl Present {
         let rgba = self.renderer.paint(scene);
         let (bg_r, bg_g, bg_b) = self.renderer.backdrop_rgb(scene.theme_dark);
         let ink = rgba
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|c| c[0] != bg_r || c[1] != bg_g || c[2] != bg_b)
             .count();
         let mut buffer = self
@@ -389,10 +398,10 @@ struct DesktopApp {
     voice_started: bool,
     window: Option<WindowState>,
     pending_frame_at: Option<Instant>,
-    /// Début de l'appui sur Entrée pour une carte irréversible (≥600 ms).
-    card_hold_start: Option<Instant>,
-    /// Début de l'appui **souris** sur « Valider » (carte irréversible).
-    card_mouse_hold_start: Option<Instant>,
+    /// Début de l'appui sur Entrée pour une carte irréversible : `(card_id, Instant)`.
+    card_hold_start: Option<(u64, Instant)>,
+    /// Début de l'appui **souris** sur « Valider » (carte irréversible) : `(card_id, Instant)`.
+    card_mouse_hold_start: Option<(u64, Instant)>,
     /// Position courante du pointeur (coordonnées physiques).
     cursor: Option<PhysicalPosition<f64>>,
     /// Fraction de ligne retenue pour les petits gestes du pavé tactile.
@@ -559,6 +568,9 @@ impl DesktopApp {
         approved: Option<bool>,
         event_loop: &ActiveEventLoop,
     ) {
+        if approved.is_some() && self.core.card_decision_in_flight() == Some(card_id) {
+            return;
+        }
         let sent = self
             .ipc
             .as_ref()
@@ -574,8 +586,26 @@ impl DesktopApp {
         self.apply(actions, event_loop);
     }
 
+    /// Nettoie tout maintien clavier/souris qui ne correspond plus à la carte courante.
+    fn sync_card_hold_state(&mut self) {
+        let active_card_id = self.core.pending_card().map(|c| c.id);
+        if self
+            .card_hold_start
+            .is_some_and(|(id, _)| Some(id) != active_card_id)
+        {
+            self.card_hold_start = None;
+        }
+        if self
+            .card_mouse_hold_start
+            .is_some_and(|(id, _)| Some(id) != active_card_id)
+        {
+            self.card_mouse_hold_start = None;
+        }
+    }
+
     /// Applique les effets de la machine à états.
     fn apply(&mut self, actions: Vec<HudAction>, event_loop: &ActiveEventLoop) {
+        self.sync_card_hold_state();
         for action in actions {
             match action {
                 HudAction::SetVoiceEnabled { enabled } => {
@@ -743,6 +773,7 @@ impl DesktopApp {
                 HudAction::Quit => event_loop.exit(),
             }
         }
+        self.sync_card_hold_state();
         self.sync_voice_suspension(event_loop);
     }
 
@@ -837,8 +868,8 @@ impl DesktopApp {
                     // Carte annulable : validation immédiate (comme Entrée).
                     self.apply(vec![HudAction::ApproveCard { card_id: id }], event_loop);
                 } else {
-                    // Carte définitive : le maintien 600 ms reste obligatoire.
-                    self.card_mouse_hold_start = Some(Instant::now());
+                    // Carte définitive : le maintien 600 ms reste obligatoire et lié à l'ID de carte.
+                    self.card_mouse_hold_start = Some((id, Instant::now()));
                 }
             }
             PointerTarget::CardEdit => {
@@ -862,11 +893,19 @@ impl DesktopApp {
 
     /// Relâchement gauche : fin du maintien 600 ms sur « Valider ».
     fn on_left_release(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(started) = self.card_mouse_hold_start.take() else {
+        let Some((held_card_id, started)) = self.card_mouse_hold_start.take() else {
             return;
         };
+        let on_validate = self
+            .logical_point()
+            .is_some_and(|(x, y)| self.core.pointer_target(x, y) == PointerTarget::CardValidate);
+        if !on_validate {
+            return;
+        }
         if started.elapsed() >= CARD_HOLD {
-            if let Some(card) = self.core.pending_card() {
+            if let Some(card) = self.core.pending_card()
+                && card.id == held_card_id
+            {
                 let card_id = card.id;
                 self.apply(vec![HudAction::ApproveCard { card_id }], event_loop);
             }
@@ -980,22 +1019,39 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                         }
                         return;
                     }
-                    if let Some(card_id) = self.core.pending_card().map(|c| c.id) {
-                        // Une activation AccessKit est explicite : elle vaut
-                        // décision, sans le hold souris (pas de clic accidentel
-                        // lecteur d'écran). Focus seul = pas de décision.
+                    if let Some((card_id, reversible)) =
+                        self.core.pending_card().map(|c| (c.id, c.reversible))
+                    {
+                        // Focus seul = pas de décision. Pour une carte irréversible,
+                        // AccessKit ne contourne jamais la barrière temporelle de 600 ms :
+                        // une 1re activation arme le délai, une 2e activation après ≥ 600 ms
+                        // (et ≤ 5 s) valide la décision.
                         if request.action == accesskit::Action::Click {
-                            let action = if request.target_node == A11Y_CARD_APPROVE {
-                                Some(HudAction::ApproveCard { card_id })
+                            if request.target_node == A11Y_CARD_APPROVE {
+                                if reversible {
+                                    self.apply(
+                                        vec![HudAction::ApproveCard { card_id }],
+                                        event_loop,
+                                    );
+                                } else if let Some((held_id, started)) = self.card_hold_start.take()
+                                    && held_id == card_id
+                                    && started.elapsed() >= CARD_HOLD
+                                    && started.elapsed() <= Duration::from_secs(5)
+                                {
+                                    self.apply(
+                                        vec![HudAction::ApproveCard { card_id }],
+                                        event_loop,
+                                    );
+                                } else {
+                                    self.card_hold_start = Some((card_id, Instant::now()));
+                                    let actions = self.core.on_card_hold_too_short();
+                                    self.apply(actions, event_loop);
+                                }
                             } else if request.target_node == A11Y_CARD_EDIT {
-                                Some(HudAction::EditCard { card_id })
+                                self.apply(vec![HudAction::EditCard { card_id }], event_loop);
                             } else if request.target_node == A11Y_CARD_REJECT {
-                                Some(HudAction::RejectCard { card_id })
-                            } else {
-                                None
-                            };
-                            if let Some(action) = action {
-                                self.apply(vec![action], event_loop);
+                                self.card_hold_start = None;
+                                self.apply(vec![HudAction::RejectCard { card_id }], event_loop);
                             }
                         }
                     } else {
@@ -1035,11 +1091,17 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
             WindowEvent::Resized(size) => {
                 if let Some(ws) = self.window.as_mut() {
                     ws.present.resize(size.width, size.height);
+                    ws.reapply_transparency();
                     if self.core.visible {
                         ws.window.request_redraw();
                     }
                 }
                 return;
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                if let Some(ws) = self.window.as_ref() {
+                    ws.reapply_transparency();
+                }
             }
             WindowEvent::RedrawRequested => {
                 self.redraw();
@@ -1088,14 +1150,14 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                                 self.card_hold_start = None;
                                 inputs.push(HudInput::Escape);
                             }
-                            Key::Named(NamedKey::Enter) => {
+                            Key::Named(NamedKey::Enter) if !repeat => {
                                 if card.1 {
                                     direct_actions.push(HudAction::ApproveCard { card_id: card.0 });
                                 } else {
-                                    self.card_hold_start = Some(Instant::now());
+                                    self.card_hold_start = Some((card.0, Instant::now()));
                                 }
                             }
-                            Key::Character(s) if s.eq_ignore_ascii_case("r") => {
+                            Key::Character(s) if s.eq_ignore_ascii_case("r") && !repeat => {
                                 self.card_hold_start = None;
                                 direct_actions.push(HudAction::RejectCard { card_id: card.0 });
                             }
@@ -1103,7 +1165,8 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                         },
                         ElementState::Released => {
                             if matches!(&logical_key, Key::Named(NamedKey::Enter))
-                                && let Some(started) = self.card_hold_start.take()
+                                && let Some((held_card_id, started)) = self.card_hold_start.take()
+                                && held_card_id == card.0
                             {
                                 if started.elapsed() >= CARD_HOLD {
                                     direct_actions.push(HudAction::ApproveCard { card_id: card.0 });
@@ -1152,6 +1215,17 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
             WindowEvent::Ime(Ime::Preedit(..)) => {}
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Some(position);
+                if self.card_mouse_hold_start.is_some()
+                    && !self.logical_point().is_some_and(|(x, y)| {
+                        self.core.pointer_target(x, y) == PointerTarget::CardValidate
+                    })
+                {
+                    self.card_mouse_hold_start = None;
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor = None;
+                self.card_mouse_hold_start = None;
             }
             WindowEvent::MouseInput {
                 state,
