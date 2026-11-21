@@ -2,6 +2,7 @@ package dev.hakille.mobile
 
 import java.net.URI
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
@@ -148,7 +149,7 @@ class Gateway {
                 if (contentType.contains("text/event-stream")) {
                     var total = 0L
                     while (true) {
-                        kotlinx.coroutines.ensureActive()
+                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
                         val line = readBoundedLine(stream, MAX_BYTES) ?: break
                         total += line.length + 1
                         if (total > MAX_STREAM_BYTES) {

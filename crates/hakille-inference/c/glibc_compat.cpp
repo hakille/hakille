@@ -6,8 +6,41 @@
 // Compatibility shims for systems running glibc < 2.38 and GCC < 13
 // where precompiled ONNX Runtime static/dynamic symbols might reference ISO C23
 // conversion functions and newer libstdc++ cold string replacement routines.
-// Marked weak so standard system libraries take precedence when present.
+//
+// IMPORTANT : sur glibc >= 2.38 (ex. Ubuntu 24.04), <cstdlib> redirige `strtol`
+// vers `__isoc23_strtol` via __asm__ — définir ce shim sur glibc >= 2.38
+// provoquerait une récursion infinie (stack overflow). On ne compile donc
+// chaque shim QUE lorsque la bibliothèque système ne le fournit pas déjà.
 
+#if defined(__GLIBC__) && (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ < 38))
+extern "C" {
+__attribute__((weak)) long int __isoc23_strtol(const char *nptr, char **endptr, int base) {
+    return strtol(nptr, endptr, base);
+}
+
+__attribute__((weak)) long long int __isoc23_strtoll(const char *nptr, char **endptr, int base) {
+    return strtoll(nptr, endptr, base);
+}
+
+__attribute__((weak)) long long int __isoc23_strtoll_l(const char *nptr, char **endptr, int base, locale_t loc) {
+    return strtoll_l(nptr, endptr, base, loc);
+}
+
+__attribute__((weak)) unsigned long int __isoc23_strtoul(const char *nptr, char **endptr, int base) {
+    return strtoul(nptr, endptr, base);
+}
+
+__attribute__((weak)) unsigned long long int __isoc23_strtoull(const char *nptr, char **endptr, int base) {
+    return strtoull(nptr, endptr, base);
+}
+
+__attribute__((weak)) unsigned long long int __isoc23_strtoull_l(const char *nptr, char **endptr, int base, locale_t loc) {
+    return strtoull_l(nptr, endptr, base, loc);
+}
+}
+#endif
+
+#if defined(__GLIBCXX__) && (!defined(__GNUC__) || __GNUC__ < 13)
 namespace {
 template <typename CharT>
 inline void replace_cold_impl(
@@ -38,30 +71,6 @@ inline void replace_cold_impl(
 } // namespace
 
 extern "C" {
-__attribute__((weak)) long int __isoc23_strtol(const char *nptr, char **endptr, int base) {
-    return strtol(nptr, endptr, base);
-}
-
-__attribute__((weak)) long long int __isoc23_strtoll(const char *nptr, char **endptr, int base) {
-    return strtoll(nptr, endptr, base);
-}
-
-__attribute__((weak)) long long int __isoc23_strtoll_l(const char *nptr, char **endptr, int base, locale_t loc) {
-    return strtoll_l(nptr, endptr, base, loc);
-}
-
-__attribute__((weak)) unsigned long int __isoc23_strtoul(const char *nptr, char **endptr, int base) {
-    return strtoul(nptr, endptr, base);
-}
-
-__attribute__((weak)) unsigned long long int __isoc23_strtoull(const char *nptr, char **endptr, int base) {
-    return strtoull(nptr, endptr, base);
-}
-
-__attribute__((weak)) unsigned long long int __isoc23_strtoull_l(const char *nptr, char **endptr, int base, locale_t loc) {
-    return strtoull_l(nptr, endptr, base, loc);
-}
-
 __attribute__((weak)) void _ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE15_M_replace_coldEPcmPKcmm(
     void * /*this_ptr*/,
     char *p,
@@ -84,3 +93,4 @@ __attribute__((weak)) void _ZNSt7__cxx1112basic_stringIwSt11char_traitsIwESaIwEE
     replace_cold_impl<wchar_t>(p, len1, s, len2, how_much);
 }
 }
+#endif
