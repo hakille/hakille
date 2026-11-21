@@ -370,3 +370,104 @@ impl CapabilityExecutor for NativeToolsAdapter {
         }
     }
 }
+
+impl NativeToolsAdapter {
+    /// Enregistre les outils domotiques canoniques (Tier 0 / Tier 1 / Tier 3).
+    /// L'exécution physique réelle reste soumise au `SovereignHomeHub` du démon :
+    /// sans transport raccordé ici, cet adaptateur renvoie un refus explicite (zéro simulation).
+    pub fn register_home_tools(&mut self) {
+        self.register_tool(
+            CanonicalToolDefinition::new(
+                "home_trigger_scene",
+                "Déclenche une scène domotique locale réversible (éclairage/climat)",
+                json!({
+                    "type": "object",
+                    "properties": { "scene_id": { "type": "string" } },
+                    "required": ["scene_id"]
+                }),
+            ),
+            RiskTier::Tier1StateMutating,
+            Some(CapabilityScope::Network),
+            |args| {
+                let scene_id = args
+                    .get("scene_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing 'scene_id'")?;
+                Err(format!(
+                    "Transport SovereignHomeHub non attaché pour la scène '{scene_id}' — utilisez le démon ou IPC"
+                ))
+            },
+        );
+
+        self.register_tool(
+            CanonicalToolDefinition::new(
+                "home_unlock_door",
+                "Déverrouille une serrure connectée locale (exige validation physique 600 ms)",
+                json!({
+                    "type": "object",
+                    "properties": { "device_id": { "type": "string" } },
+                    "required": ["device_id"]
+                }),
+            ),
+            RiskTier::Tier3CriticalExecution,
+            Some(CapabilityScope::Network),
+            |args| {
+                let device_id = args
+                    .get("device_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing 'device_id'")?;
+                Err(format!(
+                    "Serrure '{device_id}' non exécutée ici : exécution exigeante via SovereignHomeHub + maintien 600 ms"
+                ))
+            },
+        );
+
+        self.register_tool(
+            CanonicalToolDefinition::new(
+                "home_execute_command",
+                "Exécute une commande domotique LAN sur un appareil enregistré",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "device_id": { "type": "string" },
+                        "action": { "type": "string" },
+                        "params": { "type": "object" }
+                    },
+                    "required": ["device_id", "action"]
+                }),
+            ),
+            RiskTier::Tier1StateMutating,
+            Some(CapabilityScope::Network),
+            |args| {
+                let device_id = args
+                    .get("device_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing 'device_id'")?;
+                let action = args
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .ok_or("Missing 'action'")?;
+                Err(format!(
+                    "Commande '{action}' sur '{device_id}' non routée en process isolé : passer par SovereignHomeHub"
+                ))
+            },
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn register_home_tools_adds_honest_tier_metadata() {
+        let mut adapter = NativeToolsAdapter::with_standard_tools();
+        let base_count = adapter.definitions().len();
+        adapter.register_home_tools();
+        let defs = adapter.definitions();
+        assert_eq!(defs.len(), base_count + 3);
+        assert!(defs.iter().any(|d| d.name == "home_unlock_door"));
+        assert!(defs.iter().any(|d| d.name == "home_trigger_scene"));
+        assert!(defs.iter().any(|d| d.name == "home_execute_command"));
+    }
+}

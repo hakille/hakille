@@ -587,11 +587,28 @@ fn allowed(message: &UiToKernel) -> bool {
         UiToKernel::NotificationDismiss { id }
         | UiToKernel::GhostActionAccept { id }
         | UiToKernel::GhostActionDismiss { id } => !id.is_empty() && id.len() <= 256,
-        UiToKernel::SpatialGesture(_) | UiToKernel::MediaEnginesRequest => true,
+        UiToKernel::SpatialGesture(_)
+        | UiToKernel::MediaEnginesRequest
+        | UiToKernel::HomeDevicesRequest => true,
         UiToKernel::MediaGalleryRequest { limit } => *limit > 0 && *limit <= 200,
         UiToKernel::MediaJobCancel { job_id } => !job_id.is_empty() && job_id.len() <= 256,
         UiToKernel::MediaGenerateRequest(req) => {
             !req.prompt.trim().is_empty() && req.prompt.len() <= 4096 && req.engine.len() <= 128
+        }
+        UiToKernel::HomeDiscoverRequest { protocol } => protocol
+            .as_ref()
+            .is_none_or(|p| !p.trim().is_empty() && p.len() <= 64),
+        UiToKernel::HomeCommandRequest {
+            device_id,
+            action,
+            params_json,
+            ..
+        } => {
+            !device_id.trim().is_empty()
+                && device_id.len() <= 128
+                && !action.trim().is_empty()
+                && action.len() <= 64
+                && params_json.len() <= 64 * 1024
         }
         UiToKernel::Undo { journal_id } => *journal_id > 0,
         UiToKernel::RevokeAll | UiToKernel::SettingsToggle { .. } | UiToKernel::OutboxFlush => {

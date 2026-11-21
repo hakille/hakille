@@ -219,6 +219,47 @@ impl DryRunSimulator {
             ),
         }
     }
+
+    /// Simule une commande domotique critique avant engagement sur le réseau local.
+    pub fn simulate_home_action(
+        device_label: &str,
+        protocol: &str,
+        action: &str,
+        is_security_critical: bool,
+    ) -> DryRunReport {
+        let diff = SimulatedDiff {
+            target_resource: format!("Home / {device_label} [{protocol}]"),
+            state_before: "État actuel sur bus local (non modifié)".to_string(),
+            state_after: format!("Commande '{action}' prête (en attente de validation)"),
+            estimated_impact: if is_security_critical {
+                format!(
+                    "Action physique critique '{action}' sur '{device_label}' via {protocol} (périmètre sécurité/énergie)"
+                )
+            } else {
+                format!("Commande locale '{action}' sur '{device_label}' via {protocol}")
+            },
+            is_destructive: is_security_critical,
+        };
+
+        let warning = if is_security_critical {
+            Some(
+                "Action domotique critique (serrure/alarme/garage/disjoncteur/vanne) : maintien physique 600 ms requis."
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+
+        DryRunReport {
+            action_type: "HomeExecution".to_string(),
+            simulation_successful: true,
+            diffs: vec![diff],
+            warning,
+            human_readable_preview: format!(
+                "Simulation domotique ({protocol}) : '{action}' sur '{device_label}' — aucune trame envoyée avant validation."
+            ),
+        }
+    }
 }
 
 #[cfg(test)]

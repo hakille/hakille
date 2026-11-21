@@ -122,6 +122,11 @@ impl KernelStub for RealDaemonBridge {
                 | UiToKernel::MediaGalleryRequest { .. } => {
                     self.require_daemon("moteur génératif média réel requis")
                 }
+                UiToKernel::HomeDevicesRequest
+                | UiToKernel::HomeDiscoverRequest { .. }
+                | UiToKernel::HomeCommandRequest { .. } => {
+                    self.require_daemon("SovereignHomeHub réel requis")
+                }
             };
         }
         // LocalAuthorized : le noyau (simulé ici) revérifie puis journalise.
@@ -213,6 +218,13 @@ impl KernelStub for RealDaemonBridge {
             | UiToKernel::MediaJobCancel { .. }
             | UiToKernel::MediaGalleryRequest { .. } => Ok(KernelToUi::Toast {
                 text: "moteur génératif média réel requis — démon non branché (pont simulé)".into(),
+            }),
+            // Extension additive v1 (domotique) : aucune simulation d'appareil
+            // sur le pont simulé — refus explicite.
+            UiToKernel::HomeDevicesRequest
+            | UiToKernel::HomeDiscoverRequest { .. }
+            | UiToKernel::HomeCommandRequest { .. } => Ok(KernelToUi::Toast {
+                text: "SovereignHomeHub réel requis — démon non branché (pont simulé)".into(),
             }),
         }
     }

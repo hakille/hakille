@@ -32,6 +32,7 @@ hakille-keystore = { path = "../hakille-keystore" }
 hakille-design = { path = "../hakille-design" }
 hakille-metrics = { path = "../hakille-metrics" }
 hakille-media = { path = "../hakille-media" }
+hakille-home = { path = "../hakille-home" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 biscuit-auth = { workspace = true }
