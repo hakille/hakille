@@ -585,55 +585,63 @@ async fn serve_client_session<S>(
         }
     });
 
-    loop {
-        tokio::select! {
-            bcast_res = bcast_rx.recv() => {
-                match bcast_res {
-                    Ok(envelope) => {
-                        if envelope.originating_session == Some(session_id) {
-                            continue;
-                        }
-                        // Les messages de broadcast ont TOUJOURS id = 0 pour respecter le contrat mobile et HUD
-                        let frame = Frame::reply(0, envelope.message);
-                        if session_outbound_tx.send(frame).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        eprintln!("IPC [session {session_id}]: bus broadcast décalé de {skipped} message(s)");
+    // Relais broadcast dans une tâche dédiée : `transport::read_frame` n'est
+    // PAS annulation-sûr (et sous Windows, annuler une lecture sur un named
+    // pipe `tokio::io::split` peut fermer la session prématurément). En
+    // découplant le bus broadcast de la boucle de lecture, aucune trame
+    // entrante n'est jamais interrompue en cours de lecture.
+    let bcast_outbound_tx = session_outbound_tx.clone();
+    let bcast_task = tokio::spawn(async move {
+        loop {
+            match bcast_rx.recv().await {
+                Ok(envelope) => {
+                    if envelope.originating_session == Some(session_id) {
                         continue;
                     }
-                    Err(broadcast::error::RecvError::Closed) => {
+                    // Les messages de broadcast ont TOUJOURS id = 0 pour respecter le contrat mobile et HUD
+                    let frame = Frame::reply(0, envelope.message);
+                    if bcast_outbound_tx.send(frame).await.is_err() {
                         break;
                     }
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    eprintln!(
+                        "IPC [session {session_id}]: bus broadcast décalé de {skipped} message(s)"
+                    );
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    break;
                 }
             }
-            client_res = transport::read_frame(&mut reader) => {
-                match client_res {
-                    Ok(Some(frame)) => {
-                        let client_req = ClientSessionRequest {
-                            session_id,
-                            frame,
-                            reply_tx: session_outbound_tx.clone(),
-                        };
-                        if request_tx.send(client_req).await.is_err() {
-                            break;
-                        }
-                    }
-                    Ok(None) => {
-                        // EOF propre — client déconnecté
-                        break;
-                    }
-                    Err(e) => {
-                        eprintln!("IPC [session {session_id}]: trame illisible — {e}");
-                        break;
-                    }
+        }
+    });
+
+    loop {
+        match transport::read_frame(&mut reader).await {
+            Ok(Some(frame)) => {
+                let client_req = ClientSessionRequest {
+                    session_id,
+                    frame,
+                    reply_tx: session_outbound_tx.clone(),
+                };
+                if request_tx.send(client_req).await.is_err() {
+                    break;
                 }
+            }
+            Ok(None) => {
+                // EOF propre — client déconnecté
+                break;
+            }
+            Err(e) => {
+                eprintln!("IPC [session {session_id}]: trame illisible — {e}");
+                break;
             }
         }
     }
 
     println!("IPC [session {session_id}]: client déconnecté");
+    bcast_task.abort();
+    drop(session_outbound_tx);
     writer_task.abort();
 }
 

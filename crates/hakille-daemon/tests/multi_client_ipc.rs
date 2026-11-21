@@ -67,6 +67,42 @@ async fn start_daemon_server() -> DaemonHarness {
 
     let mut child = cmd.spawn().expect("failed to spawn hakille-daemon binary");
 
+    // Draine stdout/stderr en continu : sous Windows le buffer d'un pipe anonyme
+    // est de 4 Kio seulement ; sans vidage, les `println!` du démon finiraient
+    // par bloquer la boucle IPC pendant le test.
+    let stdout_buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let stderr_buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    if let Some(mut out) = child.stdout.take() {
+        let buf = std::sync::Arc::clone(&stdout_buf);
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut tmp = [0u8; 4096];
+            while let Ok(n) = out.read(&mut tmp).await {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut g) = buf.lock() {
+                    g.extend_from_slice(&tmp[..n]);
+                }
+            }
+        });
+    }
+    if let Some(mut err) = child.stderr.take() {
+        let buf = std::sync::Arc::clone(&stderr_buf);
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut tmp = [0u8; 4096];
+            while let Ok(n) = err.read(&mut tmp).await {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut g) = buf.lock() {
+                    g.extend_from_slice(&tmp[..n]);
+                }
+            }
+        });
+    }
+
     let mut token = String::new();
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     while std::time::Instant::now() < deadline {
@@ -90,11 +126,13 @@ async fn start_daemon_server() -> DaemonHarness {
     if token.is_empty() {
         // Le diagnostic d'un boot bloqué ne doit pas attendre indéfiniment.
         let _ = child.start_kill();
-        let output = child.wait_with_output().await.expect("wait failed");
+        let _ = child.wait().await;
+        let out_bytes = stdout_buf.lock().map(|g| g.clone()).unwrap_or_default();
+        let err_bytes = stderr_buf.lock().map(|g| g.clone()).unwrap_or_default();
         panic!(
             "le serveur daemon n'a pas écrit le jeton IPC à temps.\nSTDOUT:\n{}\nSTDERR:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&out_bytes),
+            String::from_utf8_lossy(&err_bytes)
         );
     }
 

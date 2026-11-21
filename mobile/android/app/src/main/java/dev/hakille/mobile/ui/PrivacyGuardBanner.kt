@@ -151,7 +151,7 @@ fun PrivacyGuardVeilOverlay(
 
     // Voile actif : capture d'écran / enregistrement interdits (FLAG_SECURE),
     // levés dès que le voile disparaît.
-    val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
+    val activity = androidx.activity.compose.LocalActivity.current
     DisposableEffect(activity) {
         val flag = android.view.WindowManager.LayoutParams.FLAG_SECURE
         activity?.window?.addFlags(flag)
