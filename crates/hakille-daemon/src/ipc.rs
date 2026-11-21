@@ -732,7 +732,7 @@ async fn handle_client_request(
 
             let session_reply_tx = reply_tx.clone();
             let turn_result = {
-                let turn = async {
+                let mut turn = Box::pin(async {
                     run_turn_core(
                         orchestrator,
                         presence,
@@ -747,8 +747,7 @@ async fn handle_client_request(
                     )
                     .await
                     .map_err(|e| e.to_string())
-                };
-                tokio::pin!(turn);
+                });
                 let mut delta_open = true;
                 loop {
                     tokio::select! {
@@ -2043,7 +2042,7 @@ pub async fn run_serve_on_listener(
                     break;
                 }
                 Some(req) = request_rx.recv() => {
-                    handle_client_request(
+                    Box::pin(handle_client_request(
                         req,
                         orchestrator,
                         presence,
@@ -2063,14 +2062,14 @@ pub async fn run_serve_on_listener(
                         &perception_state,
                         &broadcast_tx,
                         home_hub.as_ref(),
-                    )
+                    ))
                     .await;
                 }
             }
         } else {
             match request_rx.recv().await {
                 Some(req) => {
-                    handle_client_request(
+                    Box::pin(handle_client_request(
                         req,
                         orchestrator,
                         presence,
@@ -2090,7 +2089,7 @@ pub async fn run_serve_on_listener(
                         &perception_state,
                         &broadcast_tx,
                         home_hub.as_ref(),
-                    )
+                    ))
                     .await;
                 }
                 None => break,

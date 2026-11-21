@@ -68,8 +68,35 @@ fn make_cli_progress_callback() -> hakille_inference::ProgressCallback {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Sous Windows MSVC, la pile du thread principal est limitée à 1 Mio par
+    // défaut (contre 8 Mio sous Linux/macOS) : les machines à états async du
+    // démon (REPL + IPC + noyau cognitif + média + domotique) dépassent 1 Mio
+    // en profil debug non optimisé. On exécute donc `async_main` et les workers
+    // Tokio avec une pile uniforme de 8 Mio sur toutes les plateformes.
+    const STACK_BYTES: usize = 8 * 1024 * 1024;
+    let handle = std::thread::Builder::new()
+        .name("hakille-main".to_string())
+        .stack_size(STACK_BYTES)
+        .spawn(|| -> Result<(), String> {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(STACK_BYTES)
+                .build()
+                .map_err(|e| format!("initialisation runtime Tokio : {e}"))?;
+            rt.block_on(Box::pin(async_main()))
+                .map_err(|e| e.to_string())
+        })
+        .map_err(|e| format!("lancement thread principal hakille-daemon : {e}"))?;
+    match handle.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(msg)) => Err(msg.into()),
+        Err(_) => Err("thread principal hakille-daemon interrompu par une panique".into()),
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     tracing_subscriber::fmt()
         .with_max_level(
