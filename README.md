@@ -9,7 +9,7 @@
 
 [![Rust Version](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org)
 [![Build Status](https://github.com/hakille/hakille/actions/workflows/ci.yml/badge.svg)](https://github.com/hakille/hakille/actions/workflows/ci.yml)
-[![Conformance](https://img.shields.io/badge/conformance-66%20fast%20%2B12%20slow%20ignored-yellow.svg)](.github/workflows/ci.yml)
+[![Conformance](https://img.shields.io/badge/conformance-71%20fast%20%2B10%20slow%20ignored-yellow.svg)](.github/workflows/ci.yml)
 [![Security](https://img.shields.io/badge/security-Biscuit%20Capabilities-red.svg)]()
 [![No Python](https://img.shields.io/badge/python-0%25%20(Pure%20Rust)-purple.svg)]()
 
@@ -206,7 +206,7 @@ cargo check --workspace
 # Exécuter l'intégralité des tests unitaires et d'intégration
 cargo test --workspace
 
-# Exécuter la suite de conformité formelle (78 tests : 66 fast verts + 12 slow ignorés, voir CI)
+# Exécuter la suite de conformité formelle (71 fast verts + 10 slow ignorés : 7 conformance, 3 kernel)
 cargo xtask conformance
 # Gate lente hebdo (décodage Qwen CPU réel) :
 cargo xtask conformance-slow
@@ -321,7 +321,7 @@ cargo run --locked -p hakille-daemon -- models download --model silero-vad-v5
 cargo run --locked -p hakille-daemon -- models download --model whisper-tiny-multilingual
 cargo run --locked -p hakille-daemon -- voice devices
 # Session continue ; Ctrl+C arrête :
-cargo run --locked -p hakille-daemon -- --listen --models-dir models --voice-language fr
+cargo run --locked -p hakille-daemon --features cpal -- --listen --models-dir models --voice-language fr
 # Diagnostic WAV sans microphone ni exécution de commande :
 cargo run --locked -p hakille-daemon -- voice test --audio commande.wav --models-dir models --language fr
 ```
@@ -413,7 +413,7 @@ Pour explorer chaque sous-système en profondeur, consultez les guides dédiés 
 - 🤖 [**Modèles Fondations & Runtimes d'Inférence**](docs/MODELS.md) : Spécifications des 7 modèles, parseurs binaires GGUF v3 / Safetensors / ONNX et registre LRU VRAM.
 - 🛡️ [**Sécurité, Capabilities & Gouvernance**](docs/SECURITY_AND_GOVERNANCE.md) : Jetons Biscuit, Registre de Consentement, Journal chaîné Ed25519, Constitution et Anti-Spoofing.
 - 👁️ [**Interfaces Ambiantes & Perception**](docs/INTERFACES_AND_PERCEPTION.md) : Présence discrète, HUD Spotlight éphémère, Sélecteur de Canal, Budget de Silence, World Model et moteur vocal duplex (RVQ/VAD v1).
-- [**Guide du Développeur & Manuel d'Ingénierie**](docs/DEVELOPER_GUIDE.md) : Guide pas à pas de compilation, suite de conformance 66 fast + 12 slow, commandes CLI REPL et état réel du runtime d'agents (2 agents de référence exécutés, 5 manifests métier déclaratifs).
+- [**Guide du Développeur & Manuel d'Ingénierie**](docs/DEVELOPER_GUIDE.md) : Guide pas à pas de compilation, suite de conformance 71 fast + 10 slow, commandes CLI REPL et état réel du runtime d'agents (2 agents de référence exécutés, 5 manifests métier déclaratifs).
 - 📋 [**Index des Décisions d'Architecture (ADRs)**](adr/) : Historique et justifications des choix techniques fondamentaux.
 
 ---

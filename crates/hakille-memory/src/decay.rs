@@ -120,8 +120,8 @@ impl DecayEngine {
             let should_stamp = if let Some(t) = graph.get_mut(&id) {
                 if Self::should_exclude(t) {
                     false
-                } else if preserve_history && Self::is_faded(t.metadata.weight, cutoff) {
-                    // Déjà fané (tombstone logique) : ne plus re-compter ni dégrader.
+                } else if preserve_history && (t.metadata.weight - cutoff).abs() <= 1e-12 {
+                    // Déjà fané à ce cutoff (tombstone logique) : ne plus re-compter ni dégrader.
                     false
                 } else {
                     let ref_ts = prev_decayed

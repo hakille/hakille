@@ -90,17 +90,18 @@ async fn test_ambient_multimodal_perception_and_interface_pipeline() {
     visual_context.lighting = LightingCondition::Daylight;
     camera_pipeline.update_world_model(&visual_context, &mut world_model);
 
-    // By default single user in daylight/adequate room is private
+    // Sans mesure micro, le niveau de bruit ambiant vaut honnêtement 0.0 dB
+    // (aucune valeur factice 35.0 dB inventée).
     assert!(world_model.state().user_present);
-    assert_eq!(world_model.state().ambient_noise_level_db, 35.0);
+    assert_eq!(world_model.state().ambient_noise_level_db, 0.0);
     assert!(world_model.is_private_environment());
 
     // =========================================================================
     // 4. Dynamic Channel Selector Arbitration (§21a)
     // =========================================================================
-    // Scenario A: Private room, user looking at desktop screen -> Ephemeral HUD
+    // Scenario A: Private room (mesure acoustique normale 38 dB), user looking at desktop screen -> Ephemeral HUD
     let ctx_desktop = InteractionContext {
-        ambient_noise_db: world_model.state().ambient_noise_level_db,
+        ambient_noise_db: 38.0,
         third_parties_present: world_model.state().third_parties_present,
         in_meeting: world_model.state().in_meeting,
         user_attentive_to_screen: world_model.state().user_attentive,

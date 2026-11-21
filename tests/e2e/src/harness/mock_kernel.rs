@@ -254,7 +254,7 @@ impl MockKernel {
             UiToKernel::NotificationDismiss { id } => Ok(Some(KernelToUi::Toast {
                 text: format!("Notification {id} masquée"),
             })),
-            UiToKernel::GhostActionAccept { id } => {
+            UiToKernel::GhostActionAccept { id: _ } => {
                 let audit_id = self.next_audit_id;
                 self.next_audit_id += 1;
                 Ok(Some(KernelToUi::JournalAppended { id: audit_id }))

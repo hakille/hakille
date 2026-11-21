@@ -5,17 +5,17 @@
 use crate::harness::E2eHarness;
 use crate::harness::a11y_inspector::A11yInspector;
 use crate::harness::frame_inspector::FrameInspector;
-use crate::harness::gestures::{GestureSimulator, HoldOutcome};
+use crate::harness::gestures::HoldOutcome;
 use crate::harness::mock_kernel::MockKernel;
 use crate::harness::token_verifier::TokenVerifier;
 use hakille_design::brand::wire_count;
 use hakille_design::generated::color::{
-    COLOR_BRAISE_DARK, COLOR_SURFACE_0_DARK, COLOR_VERRE_FOND_DARK, COLOR_VERRE_REFLET_DARK,
+    COLOR_BRAISE_DARK, COLOR_VERRE_FOND_DARK, COLOR_VERRE_REFLET_DARK,
 };
 use hakille_ui::PresenceState;
-use hakille_ui_desktop::a11y::{ActionCardA11y, build_shell_tree};
+use hakille_ui_desktop::a11y::build_shell_tree;
 use hakille_ui_desktop::app::{HudApp, PointerTarget};
-use hakille_ui_desktop::renderer::{SoftwareRenderer, TRANSPARENT_KEY_RGB, card_buttons};
+use hakille_ui_desktop::renderer::{TRANSPARENT_KEY_RGB, card_buttons};
 use hakille_ui_desktop::runtime::{FrameBudget, HeadlessRuntime, RuntimeEvent};
 use hakille_ui_desktop::scene::Scene;
 use hakille_ui_model::StableSnapshot;
@@ -136,7 +136,7 @@ fn test_t3_pair_06_colorkey_transparency_with_zero_frame_quiescence() {
 /// `T3_PAIR_07`: F11 (Presence State Machine) + F17 (Battery Frame Budget)
 #[test]
 fn test_t3_pair_07_presence_waveform_with_battery_throttling() {
-    let mut budget = FrameBudget::battery_saver();
+    let budget = FrameBudget::battery_saver();
     assert_eq!(budget.max_fps, 30);
     assert_eq!(budget.min_frame_interval, Duration::from_millis(33));
 }

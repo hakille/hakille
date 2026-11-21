@@ -133,7 +133,7 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
                 if (saved != null) {
                     val result = Json.parseToJsonElement(bridge.restoreDraftJson(saved)).jsonObject
                     if (result["ok"]?.jsonPrimitive?.booleanOrNull != true) error("État local refusé par le cœur")
-                    _snapshot.value = result.getValue("snapshot").jsonObject
+                    (result["snapshot"] as? JsonObject)?.let { _snapshot.value = it }
                 }
             } catch (_: Exception) {
                 restoreBlocked = true
@@ -185,7 +185,7 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
         val preserved = bridge.draftJson()
         bridge = MobileBridge()
         val restored = Json.parseToJsonElement(bridge.restoreDraftJson(preserved)).jsonObject
-        _snapshot.value = restored.getValue("snapshot").jsonObject
+        (restored["snapshot"] as? JsonObject)?.let { _snapshot.value = it }
         accept(bridge.dispatchJson(buildJsonObject { put("type", "set_foreground"); put("active", foregroundActive) }.toString()))
         return generation
     }
@@ -313,7 +313,7 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
 
     private fun accept(json: String, clearStorageError: Boolean = true): Boolean {
         val result = Json.parseToJsonElement(json).jsonObject
-        _snapshot.value = result.getValue("snapshot").jsonObject
+        (result["snapshot"] as? JsonObject)?.let { _snapshot.value = it }
         _error.value = result.text("error")
         val ok = result["ok"]?.jsonPrimitive?.booleanOrNull == true
         val frame = result.objectOrNull("request")
@@ -356,7 +356,7 @@ class MobileModel(application: Application) : AndroidViewModel(application) {
                                 viewModelScope.launch(Dispatchers.Main) {
                                     val resJson = bridge.receiveStreamFrame(id, chunk)
                                     val streamResult = Json.parseToJsonElement(resJson).jsonObject
-                                    _snapshot.value = streamResult.getValue("snapshot").jsonObject
+                                    (streamResult["snapshot"] as? JsonObject)?.let { _snapshot.value = it }
                                     _error.value = streamResult.text("error")
                                 }
                             }

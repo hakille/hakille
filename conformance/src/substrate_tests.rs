@@ -27,17 +27,17 @@ async fn test_all_substrates_manifest_and_attestation() {
     let lin = LinuxSubstrate::new();
     assert_eq!(lin.manifest().tier, Tier::Native);
     let att = lin.attest(b"test").await.unwrap();
-    assert_eq!(att.platform_id, "Linux-Substrate-Host");
+    assert_eq!(att.platform_id, "Linux-Substrate-Host-dev-attestation");
 
     let mac = MacosSubstrate::new();
     assert_eq!(mac.manifest().tier, Tier::Native);
     let att = mac.attest(b"test").await.unwrap();
-    assert_eq!(att.platform_id, "macOS-AppleSilicon-Host");
+    assert_eq!(att.platform_id, "macOS-Substrate-Host-dev-attestation");
 
     let redox = RedoxSubstrate::new();
     assert_eq!(redox.manifest().tier, Tier::Sovereign);
     let att = redox.attest(b"test").await.unwrap();
-    assert_eq!(att.platform_id, "Redox-Sovereign-Dedicated-Node");
+    assert_eq!(att.platform_id, "Redox-Substrate-Host-dev-attestation");
 
     let mob = MobileSubstrate::new();
     assert_eq!(mob.manifest().tier, Tier::Guest);
@@ -48,7 +48,7 @@ async fn test_all_substrates_manifest_and_attestation() {
     let web = WebSubstrate::new();
     assert_eq!(web.manifest().tier, Tier::Guest);
     let att = web.attest(b"test").await.unwrap();
-    assert_eq!(att.platform_id, "Wasm-Browser-Client");
+    assert_eq!(att.platform_id, "Wasm-Browser-Client-dev-attestation");
 }
 
 #[tokio::test]
@@ -278,7 +278,9 @@ fn test_macos_conformance_seatbelt_and_mach() {
     let mut profile = MacosSandboxProfile::agent_mail("/Users/tester");
     assert!(profile.profile_string.contains("(deny default)"));
     assert!(profile.validate_safety().is_ok());
-    assert!(profile.apply().is_ok());
+    // Contrat d'honnêteté : sans appel noyau `sandbox_init`, `apply()` refuse
+    // explicitement au lieu de retourner un faux succès.
+    assert!(profile.apply().is_err());
 
     // Flag reset verification
     profile.rules.clear();
@@ -403,7 +405,23 @@ fn test_web_conformance_audio_and_webgpu() {
     let count = bridge.buffer_mut().ingest_worklet_samples_f32(&pcm_in);
     assert_eq!(count, 160); // 10ms at 16kHz
 
-    let detector = WebGpuDetector::new();
+    // Contrat d'honnêteté : sans adaptateur navigateur sondé, WebGPU est annoncé indisponible.
+    let unprobed = WebGpuDetector::new();
+    assert!(!unprobed.capabilities().is_webgpu_supported);
+    assert!(!unprobed.can_run_half_precision_gemm());
+    assert!(
+        unprobed
+            .validate_tensor_allocation(256 * 1024 * 1024)
+            .is_err()
+    );
+
+    // Capacités injectées par un hôte navigateur réel : limites et f16 validées.
+    let caps = hakille_substrate_web::WebGpuCapabilities {
+        is_webgpu_supported: true,
+        has_shader_f16: true,
+        ..Default::default()
+    };
+    let detector = WebGpuDetector::with_capabilities(caps);
     assert!(detector.capabilities().is_webgpu_supported);
     assert!(detector.can_run_half_precision_gemm());
     assert!(

@@ -54,12 +54,10 @@ fn test_t1_f01_02_token_tool_cli_flag_validation() {
     ];
 
     for flag in flags {
-        let is_valid = match flag {
-            "--check" | "--export-rust" | "--export-swift" | "--export-kotlin" | "--export-css" => {
-                true
-            }
-            _ => false,
-        };
+        let is_valid = matches!(
+            flag,
+            "--check" | "--export-rust" | "--export-swift" | "--export-kotlin" | "--export-css"
+        );
         assert!(
             is_valid,
             "Flag {} must be recognized by token tooling",

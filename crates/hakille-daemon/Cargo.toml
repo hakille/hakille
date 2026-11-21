@@ -24,7 +24,6 @@ hakille-voice = { path = "../hakille-voice" }
 hakille-agents = { path = "../hakille-agents" }
 hakille-audit = { path = "../hakille-audit" }
 hakille-sync = { path = "../hakille-sync" }
-hakille-auth = { path = "../hakille-auth" }
 hakille-constitution = { path = "../hakille-constitution" }
 hakille-ui = { path = "../hakille-ui" }
 hakille-ui-protocol = { path = "../hakille-ui-protocol" }

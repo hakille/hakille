@@ -75,7 +75,9 @@ fn test_milestone1_single_decision_open_constraint() {
 
     // Shell allows at most 1 active decision card open
     assert!(ActionCardView::single_decision_open(&[]));
-    assert!(ActionCardView::single_decision_open(&[dummy_card.clone()]));
+    assert!(ActionCardView::single_decision_open(std::slice::from_ref(
+        &dummy_card
+    )));
     assert!(!ActionCardView::single_decision_open(&[
         dummy_card.clone(),
         dummy_card.clone()

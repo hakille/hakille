@@ -37,8 +37,9 @@ fn test_t2_f10_03_software_renderer_buffer_exhaustion_fallback() {
 /// `T2_F10_04`: High Contrast Toggle Mid-Frame
 #[test]
 fn test_t2_f10_04_high_contrast_toggle_mid_frame() {
-    let mut high_contrast = false;
-    high_contrast = true;
+    let border_before = if false { 2.0 } else { 1.0 };
+    assert_eq!(border_before, 1.0);
+    let high_contrast = true;
     let border_px = if high_contrast { 2.0 } else { 1.0 };
     assert_eq!(border_px, 2.0, "High contrast must use solid 2px border");
 }

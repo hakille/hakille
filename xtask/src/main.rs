@@ -83,10 +83,34 @@ async fn main() {
             }
         }
         "generate-manifests" => {
-            println!("== Generating Tier Manifests ==");
-            println!("Tier Sovereign (Redox) -> manifests/sovereign.toml");
-            println!("Tier Native (Windows/Linux/macOS) -> manifests/native.toml");
-            println!("Tier Guest (Mobile/Web) -> manifests/guest.toml");
+            println!(
+                "== Vérification des manifestes de paliers (sources versionnées dans manifests/) =="
+            );
+            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+            let mut failures = 0usize;
+            for (tier, rel) in [
+                ("Sovereign (Redox)", "manifests/sovereign.toml"),
+                ("Native (Windows/Linux/macOS)", "manifests/native.toml"),
+                ("Guest (Mobile/Web)", "manifests/guest.toml"),
+            ] {
+                let path = root.join(rel);
+                match tokens::parse_toml(&path) {
+                    Ok(doc) if !doc.is_empty() => {
+                        println!("✓ Tier {tier} vérifié -> {rel} ({} sections)", doc.len());
+                    }
+                    Ok(_) => {
+                        eprintln!("✗ Tier {tier} -> {rel} est vide");
+                        failures += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("✗ Tier {tier} -> {rel} invalide : {e}");
+                        failures += 1;
+                    }
+                }
+            }
+            if failures > 0 {
+                std::process::exit(1);
+            }
         }
         "list-models" => {
             #[cfg(feature = "inference")]
@@ -130,21 +154,32 @@ async fn main() {
                     _ => None,
                 });
 
+                let mut failures = 0usize;
                 if let Some(tier) = target_tier {
                     println!("Target Tier: {:?}", tier);
                     let models = ModelCatalog::models_for_tier(tier);
                     for m in models {
                         println!("\nProvisioning: {} ({})", m.name, m.id);
-                        let _ = provisioner.provision_model(&m, progress.clone()).await;
+                        if let Err(e) = provisioner.provision_model(&m, progress.clone()).await {
+                            eprintln!("\n✗ Échec provisionnement {} : {e}", m.id);
+                            failures += 1;
+                        }
                         println!();
                     }
                 } else {
                     println!("Target: All models");
                     for m in provisioner.catalog() {
                         println!("\nProvisioning: {} ({})", m.name, m.id);
-                        let _ = provisioner.provision_model(m, progress.clone()).await;
+                        if let Err(e) = provisioner.provision_model(m, progress.clone()).await {
+                            eprintln!("\n✗ Échec provisionnement {} : {e}", m.id);
+                            failures += 1;
+                        }
                         println!();
                     }
+                }
+                if failures > 0 {
+                    eprintln!("✗ {failures} modèle(s) non provisionné(s).");
+                    std::process::exit(1);
                 }
             }
             #[cfg(not(feature = "inference"))]
@@ -160,6 +195,7 @@ async fn main() {
             {
                 println!("== Verifying Cryptographic Integrity of Local Models ==");
                 let provisioner = ModelProvisioner::new(models_dir);
+                let mut failures = 0usize;
                 for s in provisioner.list_all_status() {
                     if !s.is_installed {
                         println!("• {:<26} [NOT DOWNLOADED]", s.entry.id);
@@ -167,9 +203,19 @@ async fn main() {
                     }
                     match provisioner.verify_integrity(&s.entry) {
                         Ok(true) => println!("• {:<26} [OK - Valid SHA-256]", s.entry.id),
-                        Ok(false) => println!("• {:<26} [CORRUPTED]", s.entry.id),
-                        Err(e) => println!("• {:<26} [ERROR: {}]", s.entry.id, e),
+                        Ok(false) => {
+                            eprintln!("• {:<26} [CORRUPTED]", s.entry.id);
+                            failures += 1;
+                        }
+                        Err(e) => {
+                            eprintln!("• {:<26} [ERROR: {}]", s.entry.id, e);
+                            failures += 1;
+                        }
                     }
+                }
+                if failures > 0 {
+                    eprintln!("✗ Intégrité invalide sur {failures} modèle(s).");
+                    std::process::exit(1);
                 }
             }
             #[cfg(not(feature = "inference"))]

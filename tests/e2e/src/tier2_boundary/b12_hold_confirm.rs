@@ -70,4 +70,5 @@ fn test_t2_f12_05_simultaneous_multi_touch_clicks() {
         !accepted,
         "Secondary touch must be ignored during active hold"
     );
+    assert_eq!(primary_touch_id, Some(1));
 }
