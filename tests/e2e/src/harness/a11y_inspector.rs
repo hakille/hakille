@@ -48,7 +48,7 @@ impl A11yInspector {
     }
 
     /// Find nodes matching a specific role.
-    pub fn find_nodes_by_role<'a>(update: &'a TreeUpdate, role: Role) -> Vec<&'a Node> {
+    pub fn find_nodes_by_role(update: &TreeUpdate, role: Role) -> Vec<&Node> {
         update
             .nodes
             .iter()
@@ -63,15 +63,15 @@ impl A11yInspector {
         substr: &str,
     ) -> Option<&'a Node> {
         update.nodes.iter().find_map(|(_, n)| {
-            if let Some(l) = n.label() {
-                if l.contains(substr) {
-                    return Some(n);
-                }
+            if let Some(l) = n.label()
+                && l.contains(substr)
+            {
+                return Some(n);
             }
-            if let Some(v) = n.value() {
-                if v.contains(substr) {
-                    return Some(n);
-                }
+            if let Some(v) = n.value()
+                && v.contains(substr)
+            {
+                return Some(n);
             }
             None
         })

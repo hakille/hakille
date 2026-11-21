@@ -42,7 +42,7 @@ pub fn compute_blind_prefix_index(term: &str, prefix_len: usize, blind_key: &[u8
 
     let mut mac = HmacSha256::new_from_slice(blind_key).expect("HMAC accepts 32-byte keys");
     mac.update(b"hakille:blind:prefix:v1:");
-    mac.update(&prefix_len.to_le_bytes());
+    mac.update(&(prefix_len as u32).to_le_bytes());
     mac.update(b":");
     mac.update(prefix.as_bytes());
     mac.finalize().into_bytes().into()

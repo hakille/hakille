@@ -1,9 +1,10 @@
 use crate::entry::{AuditEntry, sha256_token_hash};
 use hakille_core::{
     ActorId, CapabilityAction, CapabilityScope, CapabilityToken, EntryId, PinnedRootPublicKey,
-    Result, Timestamp, token_binding_facts, verify_capability_with_root_key,
+    Result, Timestamp, token_binding_facts, token_revocation_ids_hex,
+    verify_capability_with_root_key,
 };
-use redb::{Database, TableDefinition};
+use redb::{Database, ReadableTable, TableDefinition};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -34,6 +35,10 @@ pub enum JournalError {
     Storage(#[from] redb::StorageError),
     #[error("Entry not found: {0}")]
     NotFound(String),
+    #[error("Audit journal lock poisoned: {0}")]
+    LockPoisoned(&'static str),
+    #[error("Corrupted audit metadata: {0}")]
+    CorruptedMetadata(String),
 }
 
 impl From<JournalError> for hakille_core::HakilleError {
@@ -192,6 +197,11 @@ impl AuditJournal {
         pinned_root: Option<PinnedRootPublicKey>,
     ) -> Result<Self> {
         let db = Database::create(db_path).map_err(JournalError::Database)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(db_path, std::fs::Permissions::from_mode(0o600));
+        }
         let write_txn = db.begin_write().map_err(JournalError::Transaction)?;
         {
             write_txn
@@ -221,8 +231,13 @@ impl AuditJournal {
                 .get(b"seq".as_slice())
                 .map_err(JournalError::Storage)?
             {
-                let mut b = [0u8; 8];
-                b.copy_from_slice(v.value());
+                let raw = v.value();
+                let b: [u8; 8] = raw.try_into().map_err(|_| {
+                    JournalError::CorruptedMetadata(format!(
+                        "META_TABLE[seq] taille invalide ({} octets, 8 attendus)",
+                        raw.len()
+                    ))
+                })?;
                 u64::from_be_bytes(b)
             } else {
                 0
@@ -278,8 +293,14 @@ impl AuditJournal {
         for e in &entries {
             Self::index_entry(&mut actor_idx, &mut action_idx, e);
         }
-        *self.actor_index.lock().unwrap() = actor_idx;
-        *self.action_index.lock().unwrap() = action_idx;
+        *self
+            .actor_index
+            .lock()
+            .map_err(|_| JournalError::LockPoisoned("actor_index"))? = actor_idx;
+        *self
+            .action_index
+            .lock()
+            .map_err(|_| JournalError::LockPoisoned("action_index"))? = action_idx;
         Ok(())
     }
 
@@ -292,7 +313,10 @@ impl AuditJournal {
         let order_table = read_txn
             .open_table(ENTRY_ORDER_TABLE)
             .map_err(JournalError::Table)?;
-        let seq = *self.seq.lock().unwrap();
+        let seq = *self
+            .seq
+            .lock()
+            .map_err(|_| JournalError::LockPoisoned("seq"))?;
         let mut results = Vec::new();
         for i in 0..seq {
             if let Some(id_data) = order_table.get(i).map_err(JournalError::Storage)?
@@ -326,6 +350,14 @@ impl AuditJournal {
         Ok(hasher.finalize().to_vec())
     }
 
+    fn head_anchor_message(seq: u64, last_hash: &[u8]) -> Vec<u8> {
+        let mut msg = Vec::with_capacity(22 + 8 + last_hash.len());
+        msg.extend_from_slice(b"hakille:audit:head:v1:");
+        msg.extend_from_slice(&seq.to_be_bytes());
+        msg.extend_from_slice(last_hash);
+        msg
+    }
+
     pub fn append(&self, entry: AuditEntry) -> Result<EntryId> {
         self.append_inner(entry).map_err(|e| (*e).into())
     }
@@ -343,8 +375,14 @@ impl AuditJournal {
     ) -> std::result::Result<EntryId, Box<JournalError>> {
         use ed25519_dalek::Signer;
 
-        let mut last_hash_lock = self.last_hash.lock().unwrap();
-        let mut seq_lock = self.seq.lock().unwrap();
+        let mut last_hash_lock = self
+            .last_hash
+            .lock()
+            .map_err(|_| Box::new(JournalError::LockPoisoned("last_hash")))?;
+        let mut seq_lock = self
+            .seq
+            .lock()
+            .map_err(|_| Box::new(JournalError::LockPoisoned("seq")))?;
         entry.prev_hash = last_hash_lock.clone();
 
         // Sign the entry (excluding signature field itself)
@@ -357,18 +395,28 @@ impl AuditJournal {
         let id_bytes = id.0.as_bytes().to_vec();
         let entry_bytes = serde_json::to_vec(&entry).map_err(JournalError::Serialization)?;
 
-        // Compute new hash. Les ancres en mémoire ne sont avancées qu'APRÈS
-        // le commit redb : un échec de commit ne doit jamais laisser le
-        // journal en mémoire pointer vers une entrée qui n'existe pas.
         let new_hash = Self::chain_hash(&entry).map_err(JournalError::Serialization)?;
         let cur_seq = *seq_lock;
         let next_seq = cur_seq + 1;
+        let head_sig = self
+            .signing_key
+            .sign(&Self::head_anchor_message(next_seq, &new_hash));
 
         let write_txn = self.db.begin_write().map_err(JournalError::Transaction)?;
         {
             let mut entries_table = write_txn
                 .open_table(ENTRIES_TABLE)
                 .map_err(JournalError::Table)?;
+            if entries_table
+                .get(id_bytes.as_slice())
+                .map_err(JournalError::Storage)?
+                .is_some()
+            {
+                return Err(Box::new(JournalError::CorruptedMetadata(format!(
+                    "collision d'identifiant d'entrée d'audit {}",
+                    id.0
+                ))));
+            }
             entries_table
                 .insert(id_bytes.as_slice(), entry_bytes.as_slice())
                 .map_err(JournalError::Storage)?;
@@ -389,21 +437,24 @@ impl AuditJournal {
             meta_table
                 .insert(b"last_hash".as_slice(), new_hash.as_slice())
                 .map_err(JournalError::Storage)?;
+            meta_table
+                .insert(b"head_sig".as_slice(), head_sig.to_bytes().as_slice())
+                .map_err(JournalError::Storage)?;
         }
         write_txn.commit().map_err(JournalError::Commit)?;
 
-        // Commit réussi : on peut publier les nouvelles ancres. Les verrous
-        // restent tenus jusqu'ici pour que toute lecture/écriture concurrente
-        // voie soit l'ancien état complet, soit le nouveau.
         *last_hash_lock = new_hash;
         *seq_lock = next_seq;
 
-        // Maintient les index secondaires en mémoire.
         {
-            let mut actor_idx = self.actor_index.lock().unwrap();
-            let mut action_idx = self.action_index.lock().unwrap();
-            // Re-lit l'entrée signée telle que stockée pour indexer l'id exact.
-            // Ici `entry` (avec signature/prev_hash) suffit.
+            let mut actor_idx = self
+                .actor_index
+                .lock()
+                .map_err(|_| Box::new(JournalError::LockPoisoned("actor_index")))?;
+            let mut action_idx = self
+                .action_index
+                .lock()
+                .map_err(|_| Box::new(JournalError::LockPoisoned("action_index")))?;
             Self::index_entry(&mut actor_idx, &mut action_idx, &entry);
         }
 
@@ -502,10 +553,10 @@ impl AuditJournal {
     }
 
     /// `true` si un flag `reversed` valide (signature Ed25519 du journal)
-    /// existe pour `id`. Un flag à signature invalide => `Err` fail-closed
-    /// (altération des flags détectée comme une rupture de chaîne).
+    /// existe pour `id`. Un flag à signature invalide ou incohérent => `Err`
+    /// fail-closed (altération des flags détectée comme une rupture de chaîne).
     pub fn is_reversed(&self, id: &EntryId) -> Result<bool> {
-        use ed25519_dalek::{Signature as DalekSignature, Verifier};
+        use ed25519_dalek::Signature as DalekSignature;
         let read_txn = self.db.begin_read().map_err(JournalError::Transaction)?;
         let table = read_txn
             .open_table(FLAGS_TABLE)
@@ -516,8 +567,11 @@ impl AuditJournal {
         };
         let flag: ReversalFlag =
             serde_json::from_slice(flag_data.value()).map_err(JournalError::Serialization)?;
-        if !flag.reversed {
-            return Ok(false);
+        if flag.entry_id != id.0.to_string() {
+            return Err(hakille_core::HakilleError::Internal(format!(
+                "flag de réversion incohérent pour {} (entry_id={})",
+                id.0, flag.entry_id
+            )));
         }
         let verifying_key = self.signing_key.verifying_key();
         let sig = DalekSignature::from_slice(&flag.signature).map_err(|_| {
@@ -527,13 +581,19 @@ impl AuditJournal {
             ))
         })?;
         verifying_key
-            .verify(&Self::reversal_flag_message(id), &sig)
+            .verify_strict(&Self::reversal_flag_message(id), &sig)
             .map_err(|_| {
                 hakille_core::HakilleError::Internal(format!(
                     "flag de réversion invalide pour {} (altération détectée)",
                     id.0
                 ))
             })?;
+        if !flag.reversed {
+            return Err(hakille_core::HakilleError::Internal(format!(
+                "flag de réversion incohérent pour {} (reversed=false)",
+                id.0
+            )));
+        }
         Ok(true)
     }
 
@@ -546,7 +606,10 @@ impl AuditJournal {
             .open_table(ENTRY_ORDER_TABLE)
             .map_err(JournalError::Table)?;
 
-        let seq = *self.seq.lock().unwrap();
+        let seq = *self
+            .seq
+            .lock()
+            .map_err(|_| JournalError::LockPoisoned("seq"))?;
         let mut results = Vec::new();
         for i in 0..seq {
             if let Some(id_data) = order_table.get(i).map_err(JournalError::Storage)?
@@ -582,7 +645,10 @@ impl AuditJournal {
             .open_table(ENTRY_ORDER_TABLE)
             .map_err(JournalError::Table)?;
 
-        let seq = *self.seq.lock().unwrap();
+        let seq = *self
+            .seq
+            .lock()
+            .map_err(|_| JournalError::LockPoisoned("seq"))?;
         let mut results = Vec::new();
         for i in 0..seq {
             if let Some(id_data) = order_table.get(i).map_err(JournalError::Storage)?
@@ -608,10 +674,10 @@ impl AuditJournal {
     }
 
     /// Vérifie l'intégrité complète du journal :
-    /// - signatures Ed25519 de chaque entrée (contenu canonique) ;
+    /// - signatures Ed25519 strictes de chaque entrée (contenu canonique) ;
     /// - liens `prev_hash` depuis la genèse `[0u8; 32]` ;
-    /// - ancre `last_hash` de la metadata synchronisée avec le dernier
-    ///   maillon (détecte une tête de chaîne falsifiée) ;
+    /// - ancre `last_hash` + signature de tête `head_sig` (détecte toute
+    ///   troncature ou falsification de tête de chaîne) ;
     /// - flags de réversion `reversed` (table annexe signée séparément).
     ///
     /// En cas de corruption, retourne un [`ChainReport`] avec l'index
@@ -620,7 +686,8 @@ impl AuditJournal {
     /// remontent en `Err` ; une entrée illisible est rapportée comme
     /// [`ChainCorruption::MalformedEntry`].
     pub fn verify_chain(&self) -> std::result::Result<ChainReport, AuditError> {
-        use ed25519_dalek::{Signature as DalekSignature, Verifier};
+        use ed25519_dalek::Signature as DalekSignature;
+        use redb::ReadableTableMetadata;
 
         let read_txn = self.db.begin_read().map_err(JournalError::Transaction)?;
         let entries_table = read_txn
@@ -633,7 +700,10 @@ impl AuditJournal {
             .open_table(META_TABLE)
             .map_err(JournalError::Table)?;
 
-        let seq = *self.seq.lock().unwrap();
+        let seq = *self
+            .seq
+            .lock()
+            .map_err(|_| JournalError::LockPoisoned("seq"))?;
         let verifying_key = self.signing_key.verifying_key();
         let mut expected_prev_hash = vec![0u8; 32];
         let mut valid_count = 0u64;
@@ -693,7 +763,7 @@ impl AuditJournal {
                 ));
             }
 
-            // Signature invalide : Ed25519 sur le contenu canonique.
+            // Signature invalide : Ed25519 strict sur le contenu canonique.
             let recorded_sig = entry.signature.clone();
             let Ok(unsigned_bytes) = Self::signing_bytes(&entry) else {
                 return Ok(ChainReport::corrupted(
@@ -706,7 +776,7 @@ impl AuditJournal {
             };
             let sig_ok = DalekSignature::from_slice(&recorded_sig)
                 .ok()
-                .is_some_and(|sig| verifying_key.verify(&unsigned_bytes, &sig).is_ok());
+                .is_some_and(|sig| verifying_key.verify_strict(&unsigned_bytes, &sig).is_ok());
             if !sig_ok {
                 return Ok(ChainReport::corrupted(
                     seq,
@@ -732,27 +802,58 @@ impl AuditJournal {
             valid_count += 1;
         }
 
-        // Ancre de tête : `last_hash` (metadata) doit correspondre au hash
-        // recalculé du dernier maillon. Absente = pas de contrôle (compat
-        // journaux anciens), présente et différente = hash incohérent.
-        if seq > 0
-            && let Some(v) = meta_table
-                .get(b"last_hash".as_slice())
-                .map_err(JournalError::Storage)?
-            && v.value() != expected_prev_hash.as_slice()
-        {
+        // Aucun maillon caché au-delà de `seq`.
+        let actual_order_len = order_table.len().map_err(JournalError::Storage)?;
+        if actual_order_len != seq {
             return Ok(ChainReport::corrupted(
                 seq,
                 valid_count,
                 last_id,
-                seq - 1,
-                ChainCorruption::HashMismatch,
+                seq.saturating_sub(1),
+                ChainCorruption::ChainBreak,
             ));
         }
 
+        // Ancre de tête : `last_hash` obligatoire et exacte dès que `seq > 0`,
+        // suivie de la vérification de la signature de tête `head_sig`.
+        if seq > 0 {
+            let last_hash_matches = meta_table
+                .get(b"last_hash".as_slice())
+                .map_err(JournalError::Storage)?
+                .is_some_and(|v| v.value() == expected_prev_hash.as_slice());
+            if !last_hash_matches {
+                return Ok(ChainReport::corrupted(
+                    seq,
+                    valid_count,
+                    last_id,
+                    seq - 1,
+                    ChainCorruption::HashMismatch,
+                ));
+            }
+
+            let head_sig_ok = meta_table
+                .get(b"head_sig".as_slice())
+                .map_err(JournalError::Storage)?
+                .and_then(|v| DalekSignature::from_slice(v.value()).ok())
+                .is_some_and(|sig| {
+                    verifying_key
+                        .verify_strict(&Self::head_anchor_message(seq, &expected_prev_hash), &sig)
+                        .is_ok()
+                });
+            if !head_sig_ok {
+                return Ok(ChainReport::corrupted(
+                    seq,
+                    valid_count,
+                    last_id,
+                    seq - 1,
+                    ChainCorruption::InvalidSignature,
+                ));
+            }
+        }
+
         // F2 : vérifie les flags `reversed` (table annexe signée séparément).
-        // Un flag à signature invalide = altération => chaîne rompue sur
-        // l'entrée concernée (fail-closed, jamais silencieuse).
+        // Un flag à clé/valeur incohérente ou signature invalide = altération
+        // => chaîne rompue sur l'entrée concernée (fail-closed).
         {
             let flags_table = read_txn
                 .open_table(FLAGS_TABLE)
@@ -764,20 +865,18 @@ impl AuditJournal {
                 let (k, v) = item.map_err(JournalError::Storage)?;
                 let flag: ReversalFlag =
                     serde_json::from_slice(v.value()).map_err(JournalError::Serialization)?;
-                let id_str = String::from_utf8_lossy(k.value()).into_owned();
-                let id_uuid = uuid::Uuid::parse_str(&flag.entry_id)
-                    .or_else(|_| uuid::Uuid::parse_str(&id_str))
-                    .map_err(|_| {
-                        AuditError::Corruption(format!(
-                            "flag de réversion illisible (entry_id={})",
-                            flag.entry_id
-                        ))
-                    })?;
+                let id_uuid = uuid::Uuid::parse_str(&flag.entry_id).map_err(|_| {
+                    AuditError::Corruption(format!(
+                        "flag de réversion illisible (entry_id={})",
+                        flag.entry_id
+                    ))
+                })?;
+                let key_matches = k.value() == id_uuid.as_bytes();
                 let msg = format!("reversed:{id_uuid}").into_bytes();
-                let ok = DalekSignature::from_slice(&flag.signature)
+                let sig_ok = DalekSignature::from_slice(&flag.signature)
                     .ok()
-                    .is_some_and(|sig| verifying_key.verify(&msg, &sig).is_ok());
-                if !ok {
+                    .is_some_and(|sig| verifying_key.verify_strict(&msg, &sig).is_ok());
+                if !key_matches || !flag.reversed || !sig_ok {
                     let corrupted_index = (0..seq).find(|&i| {
                         order_table
                             .get(i)
@@ -807,6 +906,12 @@ impl AuditJournal {
         if !entry.action.reversible {
             return Err(hakille_core::HakilleError::CapabilityDenied(format!(
                 "Action {} is marked non-reversible",
+                id.0
+            )));
+        }
+        if entry.action.reversed || self.is_reversed(id)? {
+            return Err(hakille_core::HakilleError::CapabilityDenied(format!(
+                "Action {} est déjà révoquée",
                 id.0
             )));
         }
@@ -888,12 +993,15 @@ impl AuditJournal {
     /// Révocation sous capability ÉPINGLÉE (F3) : vérifie le token contre la
     /// clé racine du journal (`new_with_root`), jamais en mode non-épinglé.
     ///
+    /// - Vérifie la signature cryptographique Biscuit AVANT d'inspecter les
+    ///   faits de liaison ou la liste de révocation.
     /// - Exige un scope Audit/Admin : `FullSystem + Admin` (admin, peut
     ///   révoquer pour autrui) ou `FullSystem + Read` (auditeur, seulement
     ///   ses propres actions). `hakille-core` ne définit pas de scope
     ///   `Audit` dédié : `FullSystem` joue ce rôle (fail-closed via Biscuit).
     /// - Exige `caller == acteur original` OU `Admin` (cap Admin valide).
-    /// - Refuse si le token présente un nonce/jti révoqué (F3/F5).
+    /// - Refuse si un identifiant de révocation Biscuit ou le `token_nonce`
+    ///   du bloc d'autorité est révoqué (F3/F5).
     /// - Compense via `revert()` (append-only) + flag `mark_reversed`
     ///   (table annexe signée, JAMAIS de mutation in-place).
     ///
@@ -910,7 +1018,39 @@ impl AuditJournal {
                 "revert_with_cap refuse : clé racine non épinglée (construire le journal via new_with_root)".to_string(),
             )
         })?;
-        // F3/F5 : le token d'autorisation lui-même ne doit pas être révoqué.
+        // Vérification cryptographique Biscuit EN PREMIER (avant toute lecture de faits).
+        let is_admin = verify_capability_with_root_key(
+            cap,
+            root,
+            CapabilityScope::FullSystem,
+            CapabilityAction::Admin,
+        )
+        .is_ok();
+        let is_auditor = if is_admin {
+            true
+        } else {
+            verify_capability_with_root_key(
+                cap,
+                root,
+                CapabilityScope::FullSystem,
+                CapabilityAction::Read,
+            )
+            .is_ok()
+        };
+        if !is_admin && !is_auditor {
+            return Err(hakille_core::HakilleError::CapabilityDenied(
+                "revert exige une capability Audit/Admin (FullSystem Read ou Admin)".to_string(),
+            ));
+        }
+        // F3/F5 : vérification de révocation sur les identifiants Biscuit natifs
+        // ET le nonce/jti du bloc d'autorité 0.
+        for rev_id in token_revocation_ids_hex(cap)? {
+            if self.is_token_revoked(&rev_id)? {
+                return Err(hakille_core::HakilleError::CapabilityDenied(format!(
+                    "token d'autorisation révoqué (revocation_id {rev_id})"
+                )));
+            }
+        }
         let (_, nonce, _) = token_binding_facts(cap);
         if let Some(n) = nonce
             && self.is_token_revoked(&n)?
@@ -922,25 +1062,6 @@ impl AuditJournal {
         let entry = self.get(id)?.ok_or_else(|| {
             hakille_core::HakilleError::Internal(format!("Entry {} not found", id.0))
         })?;
-        let is_admin = verify_capability_with_root_key(
-            cap,
-            root,
-            CapabilityScope::FullSystem,
-            CapabilityAction::Admin,
-        )
-        .is_ok();
-        let is_auditor = verify_capability_with_root_key(
-            cap,
-            root,
-            CapabilityScope::FullSystem,
-            CapabilityAction::Read,
-        )
-        .is_ok();
-        if !is_admin && !is_auditor {
-            return Err(hakille_core::HakilleError::CapabilityDenied(
-                "revert exige une capability Audit/Admin (FullSystem Read ou Admin)".to_string(),
-            ));
-        }
         if &entry.actor != caller && !is_admin {
             return Err(hakille_core::HakilleError::CapabilityDenied(
                 "seul l'acteur original ou un Admin peut révoquer cette entrée".to_string(),
@@ -1016,7 +1137,7 @@ impl AuditJournal {
         let ids: Vec<EntryId> = self
             .actor_index
             .lock()
-            .unwrap()
+            .map_err(|_| JournalError::LockPoisoned("actor_index"))?
             .get(actor)
             .cloned()
             .unwrap_or_default();
@@ -1034,7 +1155,7 @@ impl AuditJournal {
         let ids: Vec<EntryId> = self
             .action_index
             .lock()
-            .unwrap()
+            .map_err(|_| JournalError::LockPoisoned("action_index"))?
             .get(action_type)
             .cloned()
             .unwrap_or_default();

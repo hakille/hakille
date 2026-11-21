@@ -1,7 +1,9 @@
 use crate::screen_capture::WindowsScreenCapturer;
 use crate::win32_ffi::*;
 use hakille_core::Result;
-use hakille_substrate::{InputAction, Key, MouseButton, ScrollDirection};
+use hakille_substrate::{InputAction, Key};
+#[cfg(windows)]
+use hakille_substrate::{MouseButton, ScrollDirection};
 
 pub struct WindowsInputInjector;
 
@@ -15,10 +17,10 @@ impl WindowsInputInjector {
         #[cfg(not(windows))]
         {
             let _ = action;
-            return Err(hakille_core::HakilleError::SubstrateError(
+            Err(hakille_core::HakilleError::SubstrateError(
                 "injection d'entrée non implémentée hors Windows — refus explicite (aucun faux succès)"
                     .into(),
-            ));
+            ))
         }
         #[cfg(windows)]
         {
@@ -28,12 +30,10 @@ impl WindowsInputInjector {
                 InputAction::Click { x, y, button } => {
                     let px = Self::resolve_coord(*x, screen_w);
                     let py = Self::resolve_coord(*y, screen_h);
-                    // HONNÊTE : déplacement absolu SendInput 0..65535 (plus précis
-                    // et layout-indépendant que SetCursorPos seul).
                     Self::move_absolute(
                         Self::to_absolute(px, screen_w),
                         Self::to_absolute(py, screen_h),
-                    );
+                    )?;
 
                     unsafe {
                         match button {
@@ -60,7 +60,7 @@ impl WindowsInputInjector {
                     Self::move_absolute(
                         Self::to_absolute(px, screen_w),
                         Self::to_absolute(py, screen_h),
-                    );
+                    )?;
                     unsafe {
                         mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
                         mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
@@ -77,7 +77,7 @@ impl WindowsInputInjector {
                     Self::move_absolute(
                         Self::to_absolute(px, screen_w),
                         Self::to_absolute(py, screen_h),
-                    );
+                    )?;
                     unsafe {
                         mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0);
                         mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0);
@@ -98,13 +98,13 @@ impl WindowsInputInjector {
                     Self::move_absolute(
                         Self::to_absolute(start_x, screen_w),
                         Self::to_absolute(start_y, screen_h),
-                    );
+                    )?;
                     unsafe {
                         mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
                         for step in 1..=10 {
                             let cur_x = start_x + ((end_x - start_x) * step) / 10;
                             let cur_y = start_y + ((end_y - start_y) * step) / 10;
-                            Self::move_absolute(
+                            let _ = Self::move_absolute(
                                 Self::to_absolute(cur_x, screen_w),
                                 Self::to_absolute(cur_y, screen_h),
                             );
@@ -115,31 +115,40 @@ impl WindowsInputInjector {
                 }
 
                 InputAction::Scroll { direction, amount } => {
-                    let ticks = (*amount).max(1) * 120;
+                    let ticks = (*amount).clamp(1, 10_000).saturating_mul(120);
                     unsafe {
                         match direction {
                             ScrollDirection::Up => {
                                 mouse_event(MOUSEEVENTF_WHEEL, 0, 0, ticks as u32, 0);
                             }
                             ScrollDirection::Down => {
-                                mouse_event(MOUSEEVENTF_WHEEL, 0, 0, (-ticks) as u32, 0);
+                                mouse_event(
+                                    MOUSEEVENTF_WHEEL,
+                                    0,
+                                    0,
+                                    ticks.saturating_neg() as u32,
+                                    0,
+                                );
                             }
                             ScrollDirection::Right => {
                                 mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, ticks as u32, 0);
                             }
                             ScrollDirection::Left => {
-                                mouse_event(MOUSEEVENTF_HWHEEL, 0, 0, (-ticks) as u32, 0);
+                                mouse_event(
+                                    MOUSEEVENTF_HWHEEL,
+                                    0,
+                                    0,
+                                    ticks.saturating_neg() as u32,
+                                    0,
+                                );
                             }
                         }
                     }
                 }
 
                 InputAction::Type { text } => {
-                    // HONNÊTE : injection Unicode via SendInput (layout-indépendant,
-                    // fonctionne en AZERTY + ponctuation FR). Chaque caractère est
-                    // envoyé en KEYEVENTF_UNICODE (down+up) ; pas de VK simulé.
                     for ch in text.chars() {
-                        Self::type_unicode_char(ch);
+                        Self::type_unicode_char(ch)?;
                     }
                 }
 
@@ -162,6 +171,7 @@ impl WindowsInputInjector {
     }
 
     /// Resolve coordinate: if coordinate is small (0 or 1), treat as normalized ratio, otherwise as pixel.
+    #[allow(dead_code)]
     fn resolve_coord(val: i32, screen_max: i32) -> i32 {
         if val < 0 {
             0
@@ -184,8 +194,8 @@ impl WindowsInputInjector {
     }
 
     /// Déplace le curseur en absolu via SendInput (0..65535), avec repli
-    /// honnête sur SetCursorPos si SendInput échoue (session verrouillée…).
-    fn move_absolute(abs_x: i32, abs_y: i32) {
+    /// honnête sur SetCursorPos. Échoue explicitement si les deux appels Win32 échouent.
+    fn move_absolute(abs_x: i32, abs_y: i32) -> Result<()> {
         unsafe {
             let mut input = INPUT {
                 type_: INPUT_MOUSE,
@@ -204,15 +214,20 @@ impl WindowsInputInjector {
                 let (sw, sh) = WindowsScreenCapturer::display_dimensions();
                 let px = ((abs_x as i64 * sw as i64) / 65535) as i32;
                 let py = ((abs_y as i64 * sh as i64) / 65535) as i32;
-                SetCursorPos(px, py);
+                if SetCursorPos(px, py) == 0 {
+                    return Err(hakille_core::HakilleError::SubstrateError(
+                        "déplacement curseur Windows refusé (SendInput et SetCursorPos ont échoué — session verrouillée ou UIPI)".into(),
+                    ));
+                }
             }
         }
+        Ok(())
     }
 
     /// Envoie un clic souris complet en absolu (move + down/up) via SendInput.
     #[allow(dead_code)]
-    fn click_absolute(abs_x: i32, abs_y: i32, down: u32, up: u32) {
-        Self::move_absolute(abs_x, abs_y);
+    fn click_absolute(abs_x: i32, abs_y: i32, down: u32, up: u32) -> Result<()> {
+        Self::move_absolute(abs_x, abs_y)?;
         unsafe {
             for flag in [down, up] {
                 let mut input = INPUT {
@@ -220,19 +235,26 @@ impl WindowsInputInjector {
                     ..Default::default()
                 };
                 input.u.mi.dwFlags = flag;
-                SendInput(
+                if SendInput(
                     1,
                     &input as *const INPUT,
                     std::mem::size_of::<INPUT>() as i32,
-                );
+                ) == 0
+                {
+                    return Err(hakille_core::HakilleError::SubstrateError(
+                        "clic souris Windows refusé par SendInput (UIPI ou session verrouillée)"
+                            .into(),
+                    ));
+                }
             }
         }
+        Ok(())
     }
 
     /// Frappe un caractère Unicode via SendInput (down + up).
-    /// Layout-indépendant : couvre AZERTY + ponctuation FR
-    /// (é è à ç ù â ê î ô û ä ë ï ö ü ÿ œ æ …) sans table VK.
-    fn type_unicode_char(ch: char) {
+    /// Layout-indépendant : couvre AZERTY + ponctuation FR sans table VK.
+    #[allow(dead_code)]
+    fn type_unicode_char(ch: char) -> Result<()> {
         // BMP uniquement pour KEYEVENTF_UNICODE (u16) ; hors-BMP → surrogate pair.
         let mut buf = [0u16; 2];
         let encoded = ch.encode_utf16(&mut buf);
@@ -246,14 +268,20 @@ impl WindowsInputInjector {
                     input.u.ki.wVk = 0;
                     input.u.ki.wScan = unit;
                     input.u.ki.dwFlags = KEYEVENTF_UNICODE | if up { KEYEVENTF_KEYUP } else { 0 };
-                    SendInput(
+                    if SendInput(
                         1,
                         &input as *const INPUT,
                         std::mem::size_of::<INPUT>() as i32,
-                    );
+                    ) == 0
+                    {
+                        return Err(hakille_core::HakilleError::SubstrateError(
+                            "frappe clavier Windows refusée par SendInput (UIPI ou session verrouillée)".into(),
+                        ));
+                    }
                 }
             }
         }
+        Ok(())
     }
 
     /// Indique si le caractère exige la touche Shift sur un layout AZERTY-FR.
@@ -292,6 +320,7 @@ impl WindowsInputInjector {
         )
     }
 
+    #[allow(dead_code)]
     fn key_to_vk(key: &Key) -> Option<u8> {
         match key {
             Key::Enter => Some(0x0D),

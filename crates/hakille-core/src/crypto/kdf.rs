@@ -100,9 +100,13 @@ impl MasterKeyKdf {
         salt: &[u8; 32],
         params: &Argon2Params,
     ) -> Result<MasterKey, CryptoError> {
-        if params.memory_kib == 0 || params.passes == 0 || params.parallelism == 0 {
+        if params.memory_kib == 0
+            || params.passes == 0
+            || params.parallelism == 0
+            || params.output_len != 32
+        {
             return Err(CryptoError::KdfError(
-                "Argon2 parameters must be non-zero".to_string(),
+                "Argon2 parameters must be non-zero with 32-byte output".to_string(),
             ));
         }
 
@@ -116,12 +120,27 @@ impl MasterKeyKdf {
 
         let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2_params);
 
-        let mut out = [0u8; 32];
+        let mut out = zeroize::Zeroizing::new([0u8; 32]);
         argon2
-            .hash_password_into(passphrase, salt, &mut out)
+            .hash_password_into(passphrase, salt, &mut *out)
             .map_err(|e| CryptoError::KdfError(e.to_string()))?;
 
-        Ok(MasterKey::new(out))
+        Ok(MasterKey::new(*out))
+    }
+
+    /// Dérivation de production avec plancher minimal OWASP/RFC 9106 (≥ 19 MiB, ≥ 2 passes).
+    pub fn derive_master_key_production(
+        passphrase: &[u8],
+        salt: &[u8; 32],
+        params: &Argon2Params,
+    ) -> Result<MasterKey, CryptoError> {
+        if params.memory_kib < 19_456 || params.passes < 2 {
+            return Err(CryptoError::KdfError(
+                "Paramètres Argon2id insuffisants pour la production (min 19456 KiB, 2 passes)"
+                    .to_string(),
+            ));
+        }
+        Self::derive_master_key_with_params(passphrase, salt, params)
     }
 
     /// Derive default subkey hierarchy from a derived master key

@@ -104,6 +104,30 @@ pub fn fresh_token_hex() -> String {
     encode_hex(&bytes)
 }
 
+/// Crée et sécurise le répertoire parent (0700 sur Unix si c'est un sous-dossier hakille,
+/// refus strict si le répertoire parent est un lien symbolique).
+fn ensure_private_parent_dir(parent: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(parent)?;
+    let meta = std::fs::symlink_metadata(parent)?;
+    if meta.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "hakille-ipc: répertoire parent symlink refusé ({})",
+                parent.display()
+            ),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if parent != Path::new("/tmp") && parent != Path::new("/var/tmp") {
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    Ok(())
+}
+
 /// Publie le jeton par remplacement atomique (0600 sur Unix).
 /// Le fichier temporaire est créé exclusivement dans le même répertoire ;
 /// un lien symbolique à la destination n'est jamais suivi lors de l'écriture.
@@ -114,7 +138,7 @@ pub fn write_token_file(path: &Path, token_hex: &str) -> std::io::Result<()> {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)?;
+    ensure_private_parent_dir(parent)?;
     let temporary = parent.join(format!(".hakille-token-{}.tmp", fresh_token_hex()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -228,6 +252,13 @@ pub struct IpcListener {
 #[cfg(unix)]
 impl IpcListener {
     pub async fn bind(endpoint: &str) -> std::io::Result<Self> {
+        use std::os::unix::fs::PermissionsExt as _;
+        if let Some(parent) = Path::new(endpoint)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+        {
+            ensure_private_parent_dir(parent)?;
+        }
         let listener = tokio::net::UnixListener::bind(endpoint).map_err(|err| {
             if err.kind() == std::io::ErrorKind::AddrInUse {
                 std::io::Error::new(
@@ -238,6 +269,7 @@ impl IpcListener {
                 err
             }
         })?;
+        std::fs::set_permissions(endpoint, std::fs::Permissions::from_mode(0o600))?;
         Ok(Self { listener })
     }
 
@@ -419,8 +451,8 @@ fn tokens_equal(expected_hex: &str, received_hex: &str) -> bool {
         return false;
     }
     let mut diff = 0u8;
-    for (a, b) in expected.iter().zip(received.iter()) {
-        diff |= a ^ b;
+    for (&a, &b) in expected.iter().zip(received.iter()) {
+        diff = std::hint::black_box(diff | std::hint::black_box(a ^ b));
     }
-    diff == 0
+    std::hint::black_box(diff) == 0
 }

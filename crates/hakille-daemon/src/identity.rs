@@ -23,12 +23,14 @@ fn exists(path: &Path) -> io::Result<bool> {
 
 fn read_seed(path: &Path) -> io::Result<Seed> {
     let metadata = std::fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_file() {
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
         return Err(invalid(
             "clé : fichier régulier requis, lien symbolique refusé",
         ));
     }
-    let mut file = std::fs::File::open(path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    let mut file = options.open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(invalid("clé : fichier régulier requis"));
@@ -37,7 +39,10 @@ fn read_seed(path: &Path) -> io::Result<Seed> {
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let current = std::fs::symlink_metadata(path)?;
-        if !current.is_file() || current.dev() != metadata.dev() || current.ino() != metadata.ino()
+        if current.file_type().is_symlink()
+            || !current.is_file()
+            || current.dev() != metadata.dev()
+            || current.ino() != metadata.ino()
         {
             return Err(invalid("clé remplacée pendant l'ouverture : boot refusé"));
         }
@@ -69,6 +74,17 @@ fn load_or_create_seed(path: &Path, generate: impl FnOnce() -> Seed) -> io::Resu
         Ok(seed) => return Ok(seed),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
+    }
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+        if std::fs::symlink_metadata(parent)?.file_type().is_symlink() {
+            return Err(invalid("répertoire de clés : lien symbolique refusé"));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        }
     }
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);

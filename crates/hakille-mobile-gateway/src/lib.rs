@@ -20,6 +20,7 @@ use tokio::time::Instant;
 
 pub const MAX_RESPONSE_BYTES: usize = 1 << 20;
 pub const MAX_RESPONSE_FRAMES: usize = 256;
+pub const MAX_STREAM_TOKEN_DELTAS: usize = 65_536;
 pub const BARRIER_ID: u64 = u64::MAX;
 
 #[derive(Clone)]
@@ -63,8 +64,18 @@ impl GatewayConfig {
     }
 }
 
-/// Jeton distinct de l'IPC, jamais affiché par Debug.
+/// Jeton distinct de l'IPC, jamais affiché par Debug et zéroïsé au Drop.
 pub struct BearerToken([u8; 64]);
+
+impl Drop for BearerToken {
+    fn drop(&mut self) {
+        for byte in &mut self.0 {
+            // SAFETY: `byte` est une référence mutable valide sur un octet de `self.0`.
+            unsafe { std::ptr::write_volatile(byte, 0) };
+        }
+        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 impl std::fmt::Debug for BearerToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -439,24 +450,28 @@ impl Gateway {
             let res = tokio::time::timeout(gateway.config.request_timeout, async {
                 transport::write_frame(&mut connection.stream, &frame)
                     .await
-                    .map_err(|_| ())?;
+                    .map_err(|_| "ipc_write")?;
                 transport::write_frame(
                     &mut connection.stream,
                     &Frame::request(BARRIER_ID, UiToKernel::StatusRequest),
                 )
                 .await
-                .map_err(|_| ())?;
+                .map_err(|_| "ipc_write")?;
 
                 let mut saw_final = false;
                 let mut accounted_bytes = 0_usize;
                 let mut frame_count = 0_usize;
+                let mut token_delta_count = 0_usize;
 
                 loop {
-                    let incoming = transport::read_frame(&mut connection.stream)
-                        .await
-                        .map_err(|_| ())?
-                        .ok_or(())?;
-                    incoming.check().map_err(|_| ())?;
+                    let incoming = tokio::select! {
+                        biased;
+                        _ = tx.closed() => return Err("client_closed"),
+                        read_res = transport::read_frame(&mut connection.stream) => {
+                            read_res.map_err(|_| "ipc_read")?.ok_or("ipc_eof")?
+                        }
+                    };
+                    incoming.check().map_err(|_| "bad_frame")?;
 
                     if incoming.id == BARRIER_ID {
                         if !saw_final
@@ -467,7 +482,7 @@ impl Gateway {
                                 }
                             )
                         {
-                            return Err(());
+                            return Err("barrier_violation");
                         }
                         let done_event = b"event: done\ndata: {}\n\n";
                         let _ = tx.send(bytes::Bytes::from_static(done_event)).await;
@@ -479,29 +494,46 @@ impl Gateway {
                         FrameBody::Reply { .. } | FrameBody::Error { .. }
                     ) || (incoming.id != 0 && incoming.id != request_id)
                     {
-                        return Err(());
+                        return Err("unexpected_frame");
                     }
 
                     if incoming.id == request_id {
                         if saw_final {
-                            return Err(());
+                            return Err("duplicate_final");
                         }
                         saw_final = true;
                     }
 
-                    let json = serde_json::to_string(&incoming).map_err(|_| ())?;
-                    accounted_bytes = accounted_bytes.checked_add(json.len()).ok_or(())?;
+                    let is_token_delta = incoming.id == 0
+                        && matches!(
+                            incoming.body,
+                            FrameBody::Reply {
+                                message: KernelToUi::TokenDelta { .. }
+                            }
+                        );
+
+                    let json = serde_json::to_string(&incoming).map_err(|_| "serialize")?;
+                    accounted_bytes = accounted_bytes
+                        .checked_add(json.len())
+                        .ok_or("response_too_large")?;
                     if accounted_bytes > MAX_RESPONSE_BYTES - 1024 {
-                        return Err(());
+                        return Err("response_too_large");
                     }
-                    frame_count += 1;
-                    if frame_count > MAX_RESPONSE_FRAMES {
-                        return Err(());
+                    if is_token_delta {
+                        token_delta_count += 1;
+                        if token_delta_count > MAX_STREAM_TOKEN_DELTAS {
+                            return Err("too_many_token_deltas");
+                        }
+                    } else {
+                        frame_count += 1;
+                        if frame_count > MAX_RESPONSE_FRAMES {
+                            return Err("too_many_frames");
+                        }
                     }
 
                     let sse = format!("data: {json}\n\n");
                     if tx.send(bytes::Bytes::from(sse)).await.is_err() {
-                        return Err(());
+                        return Err("client_closed");
                     }
                 }
             })
@@ -512,7 +544,13 @@ impl Gateway {
                     connection.last_used = Instant::now();
                     *state = Some(connection);
                 }
+                Ok(Err("client_closed")) => {
+                    drop(connection);
+                    *state = None;
+                }
                 _ => {
+                    let err_event = b"event: error\ndata: {\"code\":\"stream_aborted\",\"message\":\"flux SSE interrompu ou hors limites ; session ferm\xC3\xA9e, ne pas rejouer\",\"issue_unknown\":true}\n\n";
+                    let _ = tx.send(bytes::Bytes::from_static(err_event)).await;
                     drop(connection);
                     *state = None;
                 }
@@ -549,11 +587,28 @@ fn allowed(message: &UiToKernel) -> bool {
         UiToKernel::NotificationDismiss { id }
         | UiToKernel::GhostActionAccept { id }
         | UiToKernel::GhostActionDismiss { id } => !id.is_empty() && id.len() <= 256,
-        UiToKernel::SpatialGesture(_) | UiToKernel::MediaEnginesRequest => true,
+        UiToKernel::SpatialGesture(_)
+        | UiToKernel::MediaEnginesRequest
+        | UiToKernel::HomeDevicesRequest => true,
         UiToKernel::MediaGalleryRequest { limit } => *limit > 0 && *limit <= 200,
         UiToKernel::MediaJobCancel { job_id } => !job_id.is_empty() && job_id.len() <= 256,
         UiToKernel::MediaGenerateRequest(req) => {
             !req.prompt.trim().is_empty() && req.prompt.len() <= 4096 && req.engine.len() <= 128
+        }
+        UiToKernel::HomeDiscoverRequest { protocol } => protocol
+            .as_ref()
+            .is_none_or(|p| !p.trim().is_empty() && p.len() <= 64),
+        UiToKernel::HomeCommandRequest {
+            device_id,
+            action,
+            params_json,
+            ..
+        } => {
+            !device_id.trim().is_empty()
+                && device_id.len() <= 128
+                && !action.trim().is_empty()
+                && action.len() <= 64
+                && params_json.len() <= 64 * 1024
         }
         UiToKernel::Undo { journal_id } => *journal_id > 0,
         UiToKernel::RevokeAll | UiToKernel::SettingsToggle { .. } | UiToKernel::OutboxFlush => {

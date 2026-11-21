@@ -1,5 +1,5 @@
 use crate::crypto::error::CryptoError;
-use ed25519_dalek::{Signature as EdSignature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature as EdSignature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -53,6 +53,11 @@ pub fn base58_decode(str: &str) -> Result<Vec<u8>, CryptoError> {
 
     let mut b256 = vec![0u8; str.len() * 733 / 1000 + 1];
     for c in str.chars() {
+        if !c.is_ascii() {
+            return Err(CryptoError::InvalidDid(format!(
+                "Invalid non-ASCII Base58 character: {c}"
+            )));
+        }
         let val = match BASE58_ALPHABET.iter().position(|&x| x == c as u8) {
             Some(v) => v as u32,
             None => {
@@ -139,10 +144,20 @@ pub fn base64url_decode(s: &str) -> Result<Vec<u8>, CryptoError> {
 
         let c0 = decode_char(bytes[i])?;
         let c1 = decode_char(bytes[i + 1])?;
+        if rem == 2 && (c1 & 0x0f) != 0 {
+            return Err(CryptoError::InvalidDid(
+                "Non-canonical base64url trailing bits".to_string(),
+            ));
+        }
         out.push((c0 << 2) | (c1 >> 4));
 
         if rem >= 3 {
             let c2 = decode_char(bytes[i + 2])?;
+            if rem == 3 && (c2 & 0x03) != 0 {
+                return Err(CryptoError::InvalidDid(
+                    "Non-canonical base64url trailing bits".to_string(),
+                ));
+            }
             out.push(((c1 & 0x0f) << 4) | (c2 >> 2));
 
             if rem >= 4 {
@@ -344,25 +359,74 @@ impl VerifiableCredential {
         Ok(())
     }
 
-    /// Verify the Ed25519 cryptographic proof on this credential
+    /// Vérifie la fenêtre temporelle (`valid_from` <= now <= `valid_until`) en fail-closed.
+    fn verify_temporal_bounds(&self) -> Result<(), CryptoError> {
+        let now = chrono::Utc::now();
+        let valid_from = chrono::DateTime::parse_from_rfc3339(&self.valid_from)
+            .map_err(|e| CryptoError::InvalidCredential(format!("valid_from invalide : {e}")))?
+            .with_timezone(&chrono::Utc);
+        if now < valid_from {
+            return Err(CryptoError::InvalidCredential(
+                "Credential pas encore valide (valid_from dans le futur)".to_string(),
+            ));
+        }
+        if let Some(ref until_str) = self.valid_until {
+            let valid_until = chrono::DateTime::parse_from_rfc3339(until_str)
+                .map_err(|e| CryptoError::InvalidCredential(format!("valid_until invalide : {e}")))?
+                .with_timezone(&chrono::Utc);
+            if now > valid_until {
+                return Err(CryptoError::InvalidCredential(
+                    "Credential expiré (valid_until dépassé)".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Vérifie la preuve Ed25519 du credential contre une clé publique d'émetteur ÉPINGLÉE
+    /// (recommandé en production : empêche l'auto-signature par un émetteur non fiable).
+    pub fn verify_with_trusted_issuer(
+        &self,
+        expected_issuer: &VerifyingKey,
+    ) -> Result<bool, CryptoError> {
+        let pub_key_bytes = self.extract_issuer_public_key()?;
+        if pub_key_bytes != expected_issuer.to_bytes() {
+            return Err(CryptoError::SignatureVerificationFailed(
+                "L'émetteur du credential ne correspond pas à la clé de confiance épinglée"
+                    .to_string(),
+            ));
+        }
+        self.verify()
+    }
+
+    fn extract_issuer_public_key(&self) -> Result<[u8; 32], CryptoError> {
+        if self.issuer.starts_with("did:key:") {
+            parse_did_key(&self.issuer)
+        } else if self.issuer.starts_with("did:jwk:") {
+            parse_did_jwk(&self.issuer)
+        } else {
+            Err(CryptoError::InvalidDid(format!(
+                "Unsupported issuer DID method: {}",
+                self.issuer
+            )))
+        }
+    }
+
+    /// Verify the Ed25519 cryptographic proof and temporal validity on this credential
     pub fn verify(&self) -> Result<bool, CryptoError> {
         let proof = match &self.proof {
             Some(p) => p,
             None => return Err(CryptoError::InvalidCredential("Missing proof".to_string())),
         };
 
-        // Extract issuer public key (supports both did:key and did:jwk)
-        let pub_key_bytes = if self.issuer.starts_with("did:key:") {
-            parse_did_key(&self.issuer)?
-        } else if self.issuer.starts_with("did:jwk:") {
-            parse_did_jwk(&self.issuer)?
-        } else {
-            return Err(CryptoError::InvalidDid(format!(
-                "Unsupported issuer DID method: {}",
-                self.issuer
+        if proof.proof_type != "Ed25519Signature2020" {
+            return Err(CryptoError::InvalidCredential(format!(
+                "Type de preuve non supporté : {}",
+                proof.proof_type
             )));
-        };
+        }
 
+        let pub_key_bytes = self.extract_issuer_public_key()?;
         let vk = VerifyingKey::from_bytes(&pub_key_bytes)
             .map_err(|e| CryptoError::SignatureVerificationFailed(e.to_string()))?;
 
@@ -377,9 +441,11 @@ impl VerifiableCredential {
             .map_err(|e| CryptoError::SignatureVerificationFailed(e.to_string()))?;
 
         let digest = self.compute_digest()?;
-        vk.verify(&digest, &sig)
-            .map(|_| true)
-            .map_err(|e| CryptoError::SignatureVerificationFailed(e.to_string()))
+        vk.verify_strict(&digest, &sig)
+            .map_err(|e| CryptoError::SignatureVerificationFailed(e.to_string()))?;
+
+        self.verify_temporal_bounds()?;
+        Ok(true)
     }
 }
 

@@ -133,10 +133,9 @@ impl SystemdWatchdog {
             return None;
         }
         if let Ok(pid_str) = std::env::var("WATCHDOG_PID") {
-            if let Ok(target_pid) = pid_str.parse::<u32>() {
-                if target_pid != std::process::id() {
-                    return None;
-                }
+            let target_pid = pid_str.trim().parse::<u32>().ok()?;
+            if target_pid != std::process::id() {
+                return None;
             }
         }
         let interval = std::time::Duration::from_micros(usec);
@@ -167,6 +166,9 @@ impl SystemdWatchdog {
         notify(&SystemdNotifyState::Watchdog)
     }
 }
+
+/// Plafond anti-DoS sur le nombre de descripteurs `LISTEN_FDS` acceptés.
+pub const MAX_LISTEN_FDS: usize = 1024;
 
 /// Socket activé par systemd (sd_listen_fds).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,6 +205,8 @@ impl ActivatedSocket {
 }
 
 /// Analyse déterministe des descripteurs de socket activation à partir de valeurs de variables.
+/// Fail-closed : un `LISTEN_PID` non numérique ou différent de `current_pid`, ou un
+/// `LISTEN_FDS` nul / non numérique / supérieur à `MAX_LISTEN_FDS` renvoie vide.
 pub fn parse_listen_fds_from(
     fds_str: Option<&str>,
     pid_str: Option<&str>,
@@ -210,16 +214,17 @@ pub fn parse_listen_fds_from(
     current_pid: u32,
 ) -> Vec<ActivatedSocket> {
     if let Some(target_pid_str) = pid_str {
-        if let Ok(target_pid) = target_pid_str.trim().parse::<u32>() {
-            if target_pid != current_pid {
-                return Vec::new();
-            }
+        let Ok(target_pid) = target_pid_str.trim().parse::<u32>() else {
+            return Vec::new();
+        };
+        if target_pid != current_pid {
+            return Vec::new();
         }
     }
 
     let fds_count: usize = match fds_str {
-        Some(s) => match s.trim().parse() {
-            Ok(n) if n > 0 => n,
+        Some(s) => match s.trim().parse::<usize>() {
+            Ok(n) if (1..=MAX_LISTEN_FDS).contains(&n) => n,
             _ => return Vec::new(),
         },
         None => return Vec::new(),
@@ -240,27 +245,33 @@ pub fn parse_listen_fds_from(
     sockets
 }
 
-/// Vérifie l'activation de sockets via `LISTEN_FDS`, `LISTEN_PID` et `LISTEN_FDNAMES`.
-pub fn listen_fds(unset_env: bool) -> Result<Vec<ActivatedSocket>, SystemdError> {
+/// Lit l'activation de sockets via `LISTEN_FDS`, `LISTEN_PID` et `LISTEN_FDNAMES`
+/// sans modifier l'environnement global (sûr en contexte multithread).
+pub fn listen_fds() -> Result<Vec<ActivatedSocket>, SystemdError> {
     let fds_var = std::env::var("LISTEN_FDS").ok();
     let pid_var = std::env::var("LISTEN_PID").ok();
     let fdnames_var = std::env::var("LISTEN_FDNAMES").ok();
 
-    let sockets = parse_listen_fds_from(
+    Ok(parse_listen_fds_from(
         fds_var.as_deref(),
         pid_var.as_deref(),
         fdnames_var.as_deref(),
         std::process::id(),
-    );
+    ))
+}
 
-    if unset_env {
-        unsafe {
-            std::env::remove_var("LISTEN_FDS");
-            std::env::remove_var("LISTEN_PID");
-            std::env::remove_var("LISTEN_FDNAMES");
-        }
+/// Variante avec nettoyage des variables `LISTEN_*` au démarrage mono-thread.
+///
+/// # Safety
+/// Doit être appelée uniquement tant qu'aucun autre thread ne lit ni n'écrit
+/// l'environnement du processus (`std::env::remove_var` est non thread-safe sous POSIX).
+pub unsafe fn listen_fds_and_unset_env() -> Result<Vec<ActivatedSocket>, SystemdError> {
+    let sockets = listen_fds()?;
+    unsafe {
+        std::env::remove_var("LISTEN_FDS");
+        std::env::remove_var("LISTEN_PID");
+        std::env::remove_var("LISTEN_FDNAMES");
     }
-
     Ok(sockets)
 }
 
@@ -540,11 +551,8 @@ impl LinuxDaemon {
         notify(&SystemdNotifyState::Status(status))
     }
 
-    pub fn check_socket_activation(
-        &self,
-        unset_env: bool,
-    ) -> Result<Vec<ActivatedSocket>, SystemdError> {
-        listen_fds(unset_env)
+    pub fn check_socket_activation(&self) -> Result<Vec<ActivatedSocket>, SystemdError> {
+        listen_fds()
     }
 
     pub fn generate_service_unit(&self, scope: SystemdUnitScope, exec_path: &str) -> String {

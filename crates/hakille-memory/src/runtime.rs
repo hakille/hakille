@@ -465,6 +465,7 @@ impl MemoryRuntime {
             predicate_names,
             subject_labels,
             predicate_labels,
+            last_decayed: _,
         } = snapshot;
 
         // Libellés AVANT hydration : `hydrate_from` les conserve pour les IDs
@@ -811,12 +812,8 @@ fn embedding_error(error: hakille_core::HakilleError) -> MemoryRuntimeError {
 /// n'attendent jamais réellement (redb est bloquant enveloppé en `async`),
 /// mais on boucle proprement jusqu'au `Ready` au lieu de `poll` une fois.
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    struct NoopWaker;
-    impl std::task::Wake for NoopWaker {
-        fn wake(self: Arc<Self>) {}
-    }
-    let waker = std::task::Waker::from(Arc::new(NoopWaker));
-    let mut context = std::task::Context::from_waker(&waker);
+    let waker = std::task::Waker::noop();
+    let mut context = std::task::Context::from_waker(waker);
     let mut future = std::pin::pin!(future);
     loop {
         match future.as_mut().poll(&mut context) {
@@ -1017,6 +1014,7 @@ mod tests {
                 (aime.clone(), "aime".to_string()),
                 (capitale.clone(), "capitale".to_string()),
             ],
+            last_decayed: vec![],
         };
         let json = dir.join("legacy.json");
         std::fs::write(&json, serde_json::to_vec_pretty(&snapshot).unwrap()).unwrap();

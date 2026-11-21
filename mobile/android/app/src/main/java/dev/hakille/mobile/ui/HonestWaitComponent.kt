@@ -19,7 +19,7 @@ import kotlinx.coroutines.delay
  * 3-Tier Honest Wait Counter (states.rs §19):
  * - t < 400ms: LoadingFast (invisible transition, no spinner, no jitter)
  * - 400ms <= t < 2000ms: LoadingSkeleton (calm static skeleton, no fake radar)
- * - t >= 2000ms: LoadingHonest (exact elapsed seconds, local Qwen CPU explanation, active Annuler button)
+ * - t >= 2000ms: LoadingHonest (exact elapsed seconds, hub generation explanation, active Annuler button)
  */
 @Composable
 fun HonestWaitComponent(
@@ -75,7 +75,7 @@ fun HonestWaitComponent(
             }
         }
         else -> {
-            // LoadingHonest: exact elapsed seconds + local Qwen CPU explanation + active cancel button
+            // LoadingHonest: exact elapsed seconds + hub generation explanation + active cancel button
             Card(
                 modifier = modifier.fillMaxWidth().testTag("wait_honest"),
                 colors = CardDefaults.cardColors(containerColor = T.colorSurface1Dark),
@@ -96,7 +96,7 @@ fun HonestWaitComponent(
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Génération locale Qwen CPU en cours… (${elapsedSeconds}s)",
+                                text = "Génération en cours sur le hub… (${elapsedSeconds}s)",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = T.colorTexte1Dark
                             )

@@ -704,8 +704,10 @@ mod real_model_tests {
         let path = std::env::var("HAKILLE_TEST_PCM16K_F32").expect("fixture requise");
         let bytes = std::fs::read(path).unwrap();
         let pcm: Vec<_> = bytes
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&b| f32::from_le_bytes(b))
             .collect();
         let model = resolve_vad_model_path(None).expect("modèle requis");
         let mut vad = OrtVadSession::open(model).unwrap();

@@ -122,6 +122,12 @@ pub struct PalaceSceneRenderer {
     pub pulse_time_s: f32,
 }
 
+impl Default for PalaceSceneRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PalaceSceneRenderer {
     pub fn new() -> Self {
         Self {

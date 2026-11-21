@@ -84,6 +84,27 @@ struct ActiveCapture {
     _com: ComGuard,
 }
 
+impl Drop for ActiveCapture {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.reader.Flush(self.stream_index);
+            let _ = self.source.Shutdown();
+        }
+    }
+}
+
+struct BufferLockGuard<'a> {
+    buffer: &'a windows::Win32::Media::MediaFoundation::IMFMediaBuffer,
+}
+
+impl Drop for BufferLockGuard<'_> {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.buffer.Unlock();
+        }
+    }
+}
+
 fn open_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
     let com = ComGuard::new()?;
     let mf = MfGuard::new()?;
@@ -115,7 +136,10 @@ fn open_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
         MFEnumDeviceSources(&attributes, &mut devices, &mut count).map_err(|e| {
             format!("camera unavailable: MediaFoundation MFEnumDeviceSources failed: {e}")
         })?;
-        if count == 0 {
+        if count == 0 || devices.is_null() {
+            if !devices.is_null() {
+                CoTaskMemFree(Some(devices as *const core::ffi::c_void));
+            }
             return Err(
                 "camera unavailable: MediaFoundation found no video capture device".to_string(),
             );
@@ -186,18 +210,19 @@ fn open_capture(config: &CameraConfig) -> Result<ActiveCapture, String> {
         })?;
         let width = (packed >> 32) as u32;
         let height = (packed & 0xFFFF_FFFF) as u32;
+        let default_stride = i32::try_from(width.saturating_mul(4)).unwrap_or(0);
         let stride = current
             .GetUINT32(&MF_MT_DEFAULT_STRIDE)
             .ok()
             .map(|value| value as i32)
-            .filter(|value| *value != 0)
-            .unwrap_or(width as i32 * 4);
+            .filter(|value| *value != 0 && *value != i32::MIN)
+            .unwrap_or(default_stride);
         (width, height, stride)
     };
 
-    if width == 0 || height == 0 {
+    if width == 0 || height == 0 || width > 16384 || height > 16384 {
         return Err(
-            "camera unavailable: MediaFoundation negotiated an empty frame size".to_string(),
+            "camera unavailable: MediaFoundation negotiated an invalid frame size".to_string(),
         );
     }
 
@@ -238,8 +263,9 @@ fn sample_to_frame(
     stride: i32,
     timestamp_100ns: i64,
 ) -> Option<CameraFrame> {
-    let row_bytes = width as usize * 4;
-    let mut data = vec![0u8; row_bytes * height as usize];
+    let row_bytes = (width as usize).checked_mul(4)?;
+    let total_bytes = row_bytes.checked_mul(height as usize)?;
+    let mut data = vec![0u8; total_bytes];
     unsafe {
         let buffer = sample.ConvertToContiguousBuffer().ok()?;
         let mut pointer: *mut u8 = std::ptr::null_mut();
@@ -252,9 +278,13 @@ fn sample_to_frame(
                 Some(std::ptr::addr_of_mut!(current_length)),
             )
             .ok()?;
-        let available = current_length as usize;
+        let _unlock_guard = BufferLockGuard { buffer: &buffer };
+        if pointer.is_null() {
+            return None;
+        }
+        let available = (current_length as usize).min(max_length as usize);
         let source_stride = if stride == 0 {
-            row_bytes as i32
+            i32::try_from(row_bytes).ok()?
         } else {
             stride
         };
@@ -265,18 +295,22 @@ fn sample_to_frame(
             } else {
                 row
             };
-            let source_offset = source_row * step;
+            let Some(source_offset) = source_row.checked_mul(step) else {
+                break;
+            };
             if source_offset >= available {
                 break;
             }
             let copy_len = row_bytes.min(available - source_offset);
+            let Some(dst_offset) = row.checked_mul(row_bytes) else {
+                break;
+            };
             std::ptr::copy_nonoverlapping(
                 pointer.add(source_offset),
-                data.as_mut_ptr().add(row * row_bytes),
+                data.as_mut_ptr().add(dst_offset),
                 copy_len,
             );
         }
-        let _ = buffer.Unlock();
     }
     Some(CameraFrame {
         width,

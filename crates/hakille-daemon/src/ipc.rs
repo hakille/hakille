@@ -83,10 +83,49 @@ fn remember_parts(text: &str) -> (String, &str, &str) {
     }
 }
 
-/// Vue mémoire : `limit` dernières lignes (dernière activation décroissante ;
-/// le graphe est un index, pas une file — l'ordre est explicite et testé).
-fn memory_view_rows(graph: &hakille_memory::KnowledgeGraph, limit: usize) -> Vec<MemoryRowDto> {
-    let mut triplets: Vec<&hakille_memory::Triplet> = graph.all_triplets();
+/// État matériel et cognitif partagé piloté par `UiToKernel::PerceptionControl` (Règle 8).
+#[derive(Debug)]
+pub struct PerceptionControlState {
+    pub hardware_camera_enabled: std::sync::atomic::AtomicBool,
+    pub hardware_mic_enabled: std::sync::atomic::AtomicBool,
+    pub cognitive_inference_enabled: std::sync::atomic::AtomicBool,
+    pub active_channels_mask: std::sync::atomic::AtomicU32,
+}
+
+impl Default for PerceptionControlState {
+    fn default() -> Self {
+        Self {
+            hardware_camera_enabled: std::sync::atomic::AtomicBool::new(true),
+            hardware_mic_enabled: std::sync::atomic::AtomicBool::new(true),
+            cognitive_inference_enabled: std::sync::atomic::AtomicBool::new(true),
+            active_channels_mask: std::sync::atomic::AtomicU32::new(0xFF),
+        }
+    }
+}
+
+/// Vue mémoire : `limit` dernières lignes visibles dans la partition active
+/// (exclut `TrustLevel::Untrusted` et les tombstones fanés ; tri par dernière activation décroissante).
+fn memory_view_rows(
+    graph: &hakille_memory::KnowledgeGraph,
+    active_partition: &hakille_memory::ContextPartition,
+    limit: usize,
+) -> Vec<MemoryRowDto> {
+    let mut triplets: Vec<&hakille_memory::Triplet> = graph
+        .all_triplets()
+        .into_iter()
+        .filter(|t| {
+            t.metadata.trust_level != hakille_core::TrustLevel::Untrusted
+                && hakille_memory::context_partition::is_visible(
+                    &t.metadata.context,
+                    active_partition,
+                    false,
+                )
+                && !hakille_memory::DecayEngine::is_faded(
+                    t.metadata.weight,
+                    hakille_memory::DEFAULT_COGNITIVE_CUTOFF_WEIGHT,
+                )
+        })
+        .collect();
     triplets.sort_by(|a, b| {
         b.metadata
             .last_activated
@@ -163,6 +202,14 @@ fn card_from_preview(id: u64, preview: ActionCardPreview) -> ActionCard {
     }
 }
 
+/// Durée minimale obligatoire entre la proposition d'une carte et son approbation
+/// (maintien 600 ms imposé par le contrat `hakille-ui-protocol`).
+pub const MIN_APPROVAL_HOLD: std::time::Duration = std::time::Duration::from_millis(600);
+/// Durée de vie maximale d'une carte en attente (15 minutes).
+pub const PENDING_CARD_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+/// Nombre maximal de cartes en attente simultanées.
+pub const MAX_PENDING_CARDS: usize = 64;
+
 /// Carte proposée par le démon, en attente de décision.
 ///
 /// Le PLAN D'EXÉCUTION est conservé avec la carte : à l'approbation, le
@@ -172,6 +219,7 @@ fn card_from_preview(id: u64, preview: ActionCardPreview) -> ActionCard {
 pub struct PendingCard {
     pub card: ActionCard,
     pub plan: hakille_kernel::planner::ExecutionPlan,
+    pub proposed_at: Instant,
 }
 
 /// Gestionnaire centralisé et partagé des cartes d'action multi-clients.
@@ -189,27 +237,50 @@ impl ActionCardManager {
         }
     }
 
+    /// Alloue une nouvelle carte sans l'insérer dans `pending` (permet d'auditer
+    /// `ActionCardProposed` AVANT de rendre la carte approuvable).
+    pub fn allocate_preview(&mut self, preview: ActionCardPreview) -> ActionCard {
+        let card = card_from_preview(self.next_id, preview);
+        self.next_id = self.next_id.saturating_add(1);
+        card
+    }
+
+    pub fn purge_expired(&mut self) {
+        self.pending
+            .retain(|_, p| p.proposed_at.elapsed() <= PENDING_CARD_TTL);
+    }
+
+    #[cfg(test)]
     pub fn insert(
         &mut self,
         preview: ActionCardPreview,
         plan: hakille_kernel::planner::ExecutionPlan,
     ) -> ActionCard {
-        let card = card_from_preview(self.next_id, preview);
-        self.pending.insert(
-            card.id,
-            PendingCard {
-                card: card.clone(),
-                plan,
-            },
-        );
-        self.next_id = self.next_id.saturating_add(1);
+        let card = self.allocate_preview(preview);
+        self.insert_card(card.clone(), plan);
         card
     }
 
-    #[allow(dead_code)]
     pub fn insert_card(&mut self, card: ActionCard, plan: hakille_kernel::planner::ExecutionPlan) {
+        self.purge_expired();
+        if self.pending.len() >= MAX_PENDING_CARDS
+            && let Some(oldest_id) = self
+                .pending
+                .iter()
+                .min_by_key(|(_, p)| p.proposed_at)
+                .map(|(&id, _)| id)
+        {
+            self.pending.remove(&oldest_id);
+        }
         let id = card.id;
-        self.pending.insert(id, PendingCard { card, plan });
+        self.pending.insert(
+            id,
+            PendingCard {
+                card,
+                plan,
+                proposed_at: Instant::now(),
+            },
+        );
         if id >= self.next_id {
             self.next_id = id.saturating_add(1);
         }
@@ -223,6 +294,7 @@ impl ActionCardManager {
         card_id: u64,
         approved: bool,
     ) -> KernelToUi {
+        self.purge_expired();
         decide_card(
             &mut self.pending,
             audit_journal,
@@ -269,6 +341,20 @@ fn decide_card(
             text: format!("carte #{card_id} inconnue ou déjà traitée — aucune décision"),
         };
     };
+    if pending.proposed_at.elapsed() > PENDING_CARD_TTL {
+        pending_cards.remove(&card_id);
+        return KernelToUi::Toast {
+            text: format!("carte #{card_id} expirée (> 15 min) — veuillez relancer la demande"),
+        };
+    }
+    if approved && pending.proposed_at.elapsed() < MIN_APPROVAL_HOLD {
+        let elapsed_ms = pending.proposed_at.elapsed().as_millis();
+        return KernelToUi::Toast {
+            text: format!(
+                "approbation de la carte #{card_id} refusée : maintien minimal de 600 ms requis ({elapsed_ms} ms écoulés)"
+            ),
+        };
+    }
     let card = pending.card;
     let plan = pending.plan;
     let action_type = if approved {
@@ -316,7 +402,6 @@ fn decide_card(
         };
         added_to_outbox = added;
         if added {
-            // Le remplacement du snapshot a réussi avant de déclarer cet effet.
             (
                 "outbox_enqueued",
                 Some(format!("action mise en file (clé {dedup_key})")),
@@ -361,8 +446,6 @@ fn decide_card(
             }
         }
         Err(e) => {
-            // Restaurer seulement l'ajout de cette décision, jamais un doublon
-            // préexistant. Un échec de restauration reste explicitement signalé.
             if added_to_outbox && let Err(rollback) = replace_outbox(data_dir, outbox, before) {
                 return KernelToUi::Toast {
                     text: format!(
@@ -502,55 +585,63 @@ async fn serve_client_session<S>(
         }
     });
 
-    loop {
-        tokio::select! {
-            bcast_res = bcast_rx.recv() => {
-                match bcast_res {
-                    Ok(envelope) => {
-                        if envelope.originating_session == Some(session_id) {
-                            continue;
-                        }
-                        // Les messages de broadcast ont TOUJOURS id = 0 pour respecter le contrat mobile et HUD
-                        let frame = Frame::reply(0, envelope.message);
-                        if session_outbound_tx.send(frame).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        eprintln!("IPC [session {session_id}]: bus broadcast décalé de {skipped} message(s)");
+    // Relais broadcast dans une tâche dédiée : `transport::read_frame` n'est
+    // PAS annulation-sûr (et sous Windows, annuler une lecture sur un named
+    // pipe `tokio::io::split` peut fermer la session prématurément). En
+    // découplant le bus broadcast de la boucle de lecture, aucune trame
+    // entrante n'est jamais interrompue en cours de lecture.
+    let bcast_outbound_tx = session_outbound_tx.clone();
+    let bcast_task = tokio::spawn(async move {
+        loop {
+            match bcast_rx.recv().await {
+                Ok(envelope) => {
+                    if envelope.originating_session == Some(session_id) {
                         continue;
                     }
-                    Err(broadcast::error::RecvError::Closed) => {
+                    // Les messages de broadcast ont TOUJOURS id = 0 pour respecter le contrat mobile et HUD
+                    let frame = Frame::reply(0, envelope.message);
+                    if bcast_outbound_tx.send(frame).await.is_err() {
                         break;
                     }
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    eprintln!(
+                        "IPC [session {session_id}]: bus broadcast décalé de {skipped} message(s)"
+                    );
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    break;
                 }
             }
-            client_res = transport::read_frame(&mut reader) => {
-                match client_res {
-                    Ok(Some(frame)) => {
-                        let client_req = ClientSessionRequest {
-                            session_id,
-                            frame,
-                            reply_tx: session_outbound_tx.clone(),
-                        };
-                        if request_tx.send(client_req).await.is_err() {
-                            break;
-                        }
-                    }
-                    Ok(None) => {
-                        // EOF propre — client déconnecté
-                        break;
-                    }
-                    Err(e) => {
-                        eprintln!("IPC [session {session_id}]: trame illisible — {e}");
-                        break;
-                    }
+        }
+    });
+
+    loop {
+        match transport::read_frame(&mut reader).await {
+            Ok(Some(frame)) => {
+                let client_req = ClientSessionRequest {
+                    session_id,
+                    frame,
+                    reply_tx: session_outbound_tx.clone(),
+                };
+                if request_tx.send(client_req).await.is_err() {
+                    break;
                 }
+            }
+            Ok(None) => {
+                // EOF propre — client déconnecté
+                break;
+            }
+            Err(e) => {
+                eprintln!("IPC [session {session_id}]: trame illisible — {e}");
+                break;
             }
         }
     }
 
     println!("IPC [session {session_id}]: client déconnecté");
+    bcast_task.abort();
+    drop(session_outbound_tx);
     writer_task.abort();
 }
 
@@ -575,7 +666,9 @@ async fn handle_client_request(
     agent_registry: &hakille_agents::AgentRegistry,
     media_manager: Option<&std::sync::Arc<hakille_media::MediaJobManager>>,
     card_manager: &mut ActionCardManager,
+    perception_state: &PerceptionControlState,
     broadcast_tx: &broadcast::Sender<BroadcastEnvelope>,
+    home_hub: Option<&std::sync::Arc<hakille_home::SovereignHomeHub>>,
 ) {
     let id = client_req.frame.id;
     let session_id = client_req.session_id;
@@ -596,26 +689,50 @@ async fn handle_client_request(
                     .await;
                 return;
             }
+            if !perception_state
+                .cognitive_inference_enabled
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                let _ = reply_tx
+                    .send(Frame::reply(
+                        id,
+                        KernelToUi::Toast {
+                            text: "inférence cognitive désactivée par contrôle de perception (Règle 8)"
+                                .into(),
+                        },
+                    ))
+                    .await;
+                return;
+            }
 
-            // Notifie l'attente réelle avant le tour (broadcast id 0).
+            // Notifie l'attente réelle avant le tour (id 0) : envoi direct sur reply_tx
+            // du client émetteur (ordre déterministe garanti avant la réponse finale)
+            // et diffusion aux autres pairs connectés.
             presence.set_state(DaemonPresenceState::Acting);
-            let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::Presence(
-                ProtoPresenceState::Acting,
-            )));
+            let _ = reply_tx
+                .send(Frame::reply(
+                    0,
+                    KernelToUi::Presence(ProtoPresenceState::Acting),
+                ))
+                .await;
+            let _ = broadcast_tx.send(BroadcastEnvelope::peer_only(
+                session_id,
+                KernelToUi::Presence(ProtoPresenceState::Acting),
+            ));
 
             let started = Instant::now();
-            let (delta_tx, mut delta_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-            hakille_inference::set_token_stream_callback(Some(Box::new(
+            let (delta_tx, mut delta_rx) = tokio::sync::mpsc::channel::<String>(256);
+            let _stream_guard = hakille_inference::install_token_stream_callback(Box::new(
                 move |event: &hakille_inference::TokenEvent| {
                     if !event.text_delta.is_empty() {
-                        let _ = delta_tx.send(event.text_delta.clone());
+                        let _ = delta_tx.try_send(event.text_delta.clone());
                     }
                 },
-            )));
+            ));
 
             let session_reply_tx = reply_tx.clone();
             let turn_result = {
-                let turn = async {
+                let mut turn = Box::pin(async {
                     run_turn_core(
                         orchestrator,
                         presence,
@@ -630,8 +747,7 @@ async fn handle_client_request(
                     )
                     .await
                     .map_err(|e| e.to_string())
-                };
-                tokio::pin!(turn);
+                });
                 let mut delta_open = true;
                 loop {
                     tokio::select! {
@@ -648,7 +764,7 @@ async fn handle_client_request(
                     }
                 }
             };
-            hakille_inference::clear_token_stream_callback();
+            drop(_stream_guard);
 
             let mut card_proposed = false;
             match turn_result {
@@ -664,7 +780,7 @@ async fn handle_client_request(
                         && let Some((preview, plan)) =
                             CognitiveOrchestrator::action_card_with_plan(&query)
                     {
-                        let card = card_manager.insert(preview, plan);
+                        let card = card_manager.allocate_preview(preview);
                         let proposed = audit_action_with_id(
                             audit_journal,
                             "ActionCardProposed",
@@ -682,6 +798,7 @@ async fn handle_client_request(
                         );
                         match proposed {
                             Ok(_) => {
+                                card_manager.insert_card(card.clone(), plan);
                                 card_proposed = true;
                                 presence.set_state(DaemonPresenceState::DecisionRequired);
                                 println!(
@@ -689,32 +806,52 @@ async fn handle_client_request(
                                     card.id,
                                     card_manager.pending_count()
                                 );
-                                // Diffusion à TOUS les clients connectés
-                                let _ = broadcast_tx.send(BroadcastEnvelope::all(
+                                // Envoi direct sur reply_tx (garantit que ShowCard précède HudReply
+                                // et tout StatusReply de barrière sur la session émettrice) + diffusion aux pairs.
+                                let _ = reply_tx
+                                    .send(Frame::reply(
+                                        0,
+                                        KernelToUi::Presence(ProtoPresenceState::DecisionRequired),
+                                    ))
+                                    .await;
+                                let _ = reply_tx
+                                    .send(Frame::reply(0, KernelToUi::ShowCard(card.clone())))
+                                    .await;
+                                let _ = broadcast_tx.send(BroadcastEnvelope::peer_only(
+                                    session_id,
                                     KernelToUi::Presence(ProtoPresenceState::DecisionRequired),
                                 ));
-                                let _ = broadcast_tx
-                                    .send(BroadcastEnvelope::all(KernelToUi::ShowCard(card)));
+                                let _ = broadcast_tx.send(BroadcastEnvelope::peer_only(
+                                    session_id,
+                                    KernelToUi::ShowCard(card),
+                                ));
                             }
                             Err(e) => {
                                 eprintln!(
                                     "IPC: carte non présentée (id={id}) — audit indisponible: {e}"
                                 );
-                                let _ =
-                                    broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::Toast {
-                                        text: format!(
-                                            "carte non présentée — audit indisponible: {e}"
-                                        ),
-                                    }));
+                                let toast = KernelToUi::Toast {
+                                    text: format!("carte non présentée — audit indisponible: {e}"),
+                                };
+                                let _ = reply_tx.send(Frame::reply(0, toast.clone())).await;
+                                let _ = broadcast_tx
+                                    .send(BroadcastEnvelope::peer_only(session_id, toast));
                             }
                         }
                     }
 
                     if !card_proposed {
                         presence.set_state(DaemonPresenceState::Idle);
-                        let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::Presence(
-                            ProtoPresenceState::Idle,
-                        )));
+                        let _ = reply_tx
+                            .send(Frame::reply(
+                                0,
+                                KernelToUi::Presence(ProtoPresenceState::Idle),
+                            ))
+                            .await;
+                        let _ = broadcast_tx.send(BroadcastEnvelope::peer_only(
+                            session_id,
+                            KernelToUi::Presence(ProtoPresenceState::Idle),
+                        ));
                     }
 
                     let response = if outcome.non_empty {
@@ -748,9 +885,16 @@ async fn handle_client_request(
                     };
                     eprintln!("IPC: tour échoué (id={id}) — {text}");
                     presence.set_state(DaemonPresenceState::Idle);
-                    let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::Presence(
-                        ProtoPresenceState::Idle,
-                    )));
+                    let _ = reply_tx
+                        .send(Frame::reply(
+                            0,
+                            KernelToUi::Presence(ProtoPresenceState::Idle),
+                        ))
+                        .await;
+                    let _ = broadcast_tx.send(BroadcastEnvelope::peer_only(
+                        session_id,
+                        KernelToUi::Presence(ProtoPresenceState::Idle),
+                    ));
                     let _ = reply_tx
                         .send(Frame::reply(id, KernelToUi::Toast { text }))
                         .await;
@@ -777,9 +921,16 @@ async fn handle_client_request(
                     // Broadcast pour les pairs (Desktop HUD, etc.) avec id = 0 pour refermer la carte
                     let _ = broadcast_tx.send(BroadcastEnvelope::peer_only(session_id, reply));
                     if card_manager.is_empty() {
-                        let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::Presence(
-                            ProtoPresenceState::Idle,
-                        )));
+                        let _ = reply_tx
+                            .send(Frame::reply(
+                                0,
+                                KernelToUi::Presence(ProtoPresenceState::Idle),
+                            ))
+                            .await;
+                        let _ = broadcast_tx.send(BroadcastEnvelope::peer_only(
+                            session_id,
+                            KernelToUi::Presence(ProtoPresenceState::Idle),
+                        ));
                     }
                 }
                 KernelToUi::Toast { text } => {
@@ -810,9 +961,16 @@ async fn handle_client_request(
                     // Broadcast pour les pairs pour refermer la carte
                     let _ = broadcast_tx.send(BroadcastEnvelope::peer_only(session_id, reply));
                     if card_manager.is_empty() {
-                        let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::Presence(
-                            ProtoPresenceState::Idle,
-                        )));
+                        let _ = reply_tx
+                            .send(Frame::reply(
+                                0,
+                                KernelToUi::Presence(ProtoPresenceState::Idle),
+                            ))
+                            .await;
+                        let _ = broadcast_tx.send(BroadcastEnvelope::peer_only(
+                            session_id,
+                            KernelToUi::Presence(ProtoPresenceState::Idle),
+                        ));
                     }
                 }
                 KernelToUi::Toast { text } => {
@@ -897,7 +1055,11 @@ async fn handle_client_request(
                     ),
                 },
                 None => {
-                    let rows = memory_view_rows(&orchestrator.memory_graph, limit);
+                    let rows = memory_view_rows(
+                        &orchestrator.memory_graph,
+                        &orchestrator.recall_policy.partition,
+                        limit,
+                    );
                     println!(
                         "IPC [session {session_id}]: mémoire servie (id={id}, {} lignes)",
                         rows.len()
@@ -1006,11 +1168,19 @@ async fn handle_client_request(
         FrameBody::Request {
             message: UiToKernel::StatusRequest,
         } => {
-            let status = StatusDto {
-                model: format!(
+            let model_label = if orchestrator.system1.has_inference_engine() {
+                format!(
                     "Qwen 0.5B Q4_K_M (timeout {} ms)",
                     orchestrator.system1.llm_timeout_ms()
-                ),
+                )
+            } else {
+                format!(
+                    "Qwen 0.5B Q4_K_M [non chargé] (timeout {} ms)",
+                    orchestrator.system1.llm_timeout_ms()
+                )
+            };
+            let status = StatusDto {
+                model: model_label,
                 cost: cost_counter.formatted_total(),
                 state: format!("{:?}", presence.state()),
                 memory_count: orchestrator.memory_graph.len() as u64,
@@ -1040,6 +1210,27 @@ async fn handle_client_request(
         } => {
             let agent_name = name.clone();
             let input = input_json.clone();
+            if let Err(e) = audit_action_with_id(
+                audit_journal,
+                "WasmAgentRunRequested",
+                format!("Demande d'exécution d'agent WASM : {agent_name}"),
+                serde_json::json!({
+                    "agent": agent_name,
+                    "session_id": session_id,
+                    "input_bytes": input.len(),
+                }),
+                false,
+            ) {
+                let _ = reply_tx
+                    .send(Frame::reply(
+                        id,
+                        KernelToUi::Toast {
+                            text: format!("exécution d'agent refusée — audit indisponible: {e}"),
+                        },
+                    ))
+                    .await;
+                return;
+            }
             let reply = match agent_runtime {
                 Some(runtime) => {
                     let runtime = std::sync::Arc::clone(runtime);
@@ -1097,6 +1288,16 @@ async fn handle_client_request(
                         }
                         Ok(Ok(other)) => other,
                         Ok(Err(e)) => {
+                            let _ = audit_action_with_id(
+                                audit_journal,
+                                "WasmAgentRunFailed",
+                                format!("Échec d'exécution de l'agent {name}"),
+                                serde_json::json!({
+                                    "agent": name,
+                                    "error": e,
+                                }),
+                                false,
+                            );
                             eprintln!(
                                 "IPC [session {session_id}]: exécution d'agent échouée ({name}) — {e}"
                             );
@@ -1134,7 +1335,7 @@ async fn handle_client_request(
                     active_channels_mask,
                 },
         } => {
-            let audit_res = audit_action_with_id(
+            let audit_id = match audit_action_with_id(
                 audit_journal,
                 "PerceptionControlUpdated",
                 format!(
@@ -1151,9 +1352,38 @@ async fn handle_client_request(
                     "active_channels_mask": active_channels_mask,
                 }),
                 false,
-            );
+            ) {
+                Ok(audit_id) => audit_id,
+                Err(e) => {
+                    let _ = reply_tx
+                        .send(Frame::reply(
+                            id,
+                            KernelToUi::Toast {
+                                text: format!(
+                                    "contrôle de perception refusé — audit indisponible: {e}"
+                                ),
+                            },
+                        ))
+                        .await;
+                    return;
+                }
+            };
 
-            // Si coupure matérielle (kill-switch), diffusion de l'événement PrivacyGuardAlert
+            perception_state
+                .hardware_camera_enabled
+                .store(hardware_camera_enabled, std::sync::atomic::Ordering::SeqCst);
+            perception_state
+                .hardware_mic_enabled
+                .store(hardware_mic_enabled, std::sync::atomic::Ordering::SeqCst);
+            perception_state.cognitive_inference_enabled.store(
+                cognitive_inference_enabled,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            perception_state
+                .active_channels_mask
+                .store(active_channels_mask, std::sync::atomic::Ordering::SeqCst);
+
+            // Si coupure logicielle des flux de perception, diffusion de l'événement PrivacyGuardAlert
             if !hardware_camera_enabled || !hardware_mic_enabled {
                 let device = match (!hardware_camera_enabled, !hardware_mic_enabled) {
                     (true, true) => "camera_and_microphone".to_string(),
@@ -1165,9 +1395,9 @@ async fn handle_client_request(
                     trigger: PrivacyGuardTrigger::HardwareKillSwitchActivated {
                         device: device.clone(),
                     },
-                    description: format!("Coupure matérielle activée pour : {device}"),
-                    recommended_action: "Capteurs désactivés physiquement (Règle 8 souveraineté)"
-                        .to_string(),
+                    description: format!("Coupure des flux de perception activée pour : {device}"),
+                    recommended_action:
+                        "Flux de capteurs bloqués par le noyau (Règle 8 souveraineté)".to_string(),
                     timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
                 };
                 let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::PrivacyGuardAlert(
@@ -1175,13 +1405,12 @@ async fn handle_client_request(
                 )));
             }
 
-            let audit_id = audit_res.unwrap_or_else(|_| "audit_offline".to_string());
             println!(
                 "IPC [session {session_id}]: PerceptionControl (id={id}, cam={hardware_camera_enabled}, mic={hardware_mic_enabled}) — audit [{audit_id}]"
             );
             let reply = KernelToUi::Toast {
                 text: format!(
-                    "Perception matérielle mise à jour (caméra: {}, micro: {}, inférence: {})",
+                    "Contrôle de perception mis à jour (caméra: {}, micro: {}, inférence: {})",
                     if hardware_camera_enabled { "on" } else { "off" },
                     if hardware_mic_enabled { "on" } else { "off" },
                     if cognitive_inference_enabled {
@@ -1200,7 +1429,7 @@ async fn handle_client_request(
                     action_id,
                 },
         } => {
-            let audit_res = audit_action_with_id(
+            let audit_id = match audit_action_with_id(
                 audit_journal,
                 "NotificationActionTaken",
                 format!("Action '{action_id}' exécutée sur la notification '{notif_id}'"),
@@ -1210,8 +1439,22 @@ async fn handle_client_request(
                     "session_id": session_id,
                 }),
                 true,
-            );
-            let audit_id = audit_res.unwrap_or_else(|_| "audit_offline".to_string());
+            ) {
+                Ok(audit_id) => audit_id,
+                Err(e) => {
+                    let _ = reply_tx
+                        .send(Frame::reply(
+                            id,
+                            KernelToUi::Toast {
+                                text: format!(
+                                    "action de notification refusée — audit indisponible: {e}"
+                                ),
+                            },
+                        ))
+                        .await;
+                    return;
+                }
+            };
             println!(
                 "IPC [session {session_id}]: NotificationAction (id={id}, notif={notif_id}, action={action_id}) — audit [{audit_id}]"
             );
@@ -1229,7 +1472,7 @@ async fn handle_client_request(
         FrameBody::Request {
             message: UiToKernel::NotificationDismiss { id: notif_id },
         } => {
-            let audit_res = audit_action_with_id(
+            let audit_id = match audit_action_with_id(
                 audit_journal,
                 "NotificationDismissed",
                 format!("Notification '{notif_id}' acquittée manuellement"),
@@ -1238,8 +1481,22 @@ async fn handle_client_request(
                     "session_id": session_id,
                 }),
                 true,
-            );
-            let audit_id = audit_res.unwrap_or_else(|_| "audit_offline".to_string());
+            ) {
+                Ok(audit_id) => audit_id,
+                Err(e) => {
+                    let _ = reply_tx
+                        .send(Frame::reply(
+                            id,
+                            KernelToUi::Toast {
+                                text: format!(
+                                    "acquittement de notification refusé — audit indisponible: {e}"
+                                ),
+                            },
+                        ))
+                        .await;
+                    return;
+                }
+            };
             println!(
                 "IPC [session {session_id}]: NotificationDismiss (id={id}, notif={notif_id}) — audit [{audit_id}]"
             );
@@ -1303,6 +1560,30 @@ async fn handle_client_request(
             let _ = reply_tx.send(Frame::reply(id, reply)).await;
         }
         FrameBody::Request {
+            message: UiToKernel::HomeDevicesRequest,
+        } => {
+            let reply = match home_hub {
+                Some(hub) => {
+                    let (devices, energy, protocols) =
+                        crate::home_cli::collect_home_snapshot(hub).await;
+                    println!(
+                        "IPC [session {session_id}]: domotique servie (id={id}, {} appareil(s), {} protocole(s))",
+                        devices.len(),
+                        protocols.len()
+                    );
+                    KernelToUi::HomeDevicesReply {
+                        devices,
+                        energy,
+                        protocols,
+                    }
+                }
+                None => KernelToUi::Toast {
+                    text: "SovereignHomeHub indisponible dans cette session".into(),
+                },
+            };
+            let _ = reply_tx.send(Frame::reply(id, reply)).await;
+        }
+        FrameBody::Request {
             message: UiToKernel::MediaJobCancel { job_id },
         } => {
             let text = match media_manager {
@@ -1319,6 +1600,23 @@ async fn handle_client_request(
         FrameBody::Request {
             message: UiToKernel::MediaGenerateRequest(req),
         } => {
+            if !perception_state
+                .cognitive_inference_enabled
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                let _ = reply_tx
+                    .send(Frame::reply(
+                        id,
+                        KernelToUi::MediaJobFailed {
+                            job_id: "perception-blocked".into(),
+                            modality: req.modality,
+                            error: "inférence cognitive désactivée par contrôle de perception (Règle 8)"
+                                .into(),
+                        },
+                    ))
+                    .await;
+                return;
+            }
             let Some(mgr) = media_manager else {
                 let _ = reply_tx
                     .send(Frame::reply(
@@ -1466,6 +1764,174 @@ async fn handle_client_request(
             };
             let _ = reply_tx.send(Frame::reply(id, reply)).await;
         }
+        FrameBody::Request {
+            message: UiToKernel::HomeDiscoverRequest { protocol },
+        } => {
+            let reply = match home_hub {
+                Some(hub) => {
+                    let filter = match protocol.as_deref().map(str::trim).filter(|s| !s.is_empty())
+                    {
+                        Some(raw) => match hakille_home::ProtocolKind::from_str_loose(raw) {
+                            Some(p) => Some(p),
+                            None => {
+                                let _ = reply_tx
+                                    .send(Frame::reply(
+                                        id,
+                                        KernelToUi::Toast {
+                                            text: format!("Protocole domotique inconnu : '{raw}'"),
+                                        },
+                                    ))
+                                    .await;
+                                return;
+                            }
+                        },
+                        None => None,
+                    };
+                    match hub
+                        .discover_lan(filter, std::time::Duration::from_millis(600))
+                        .await
+                    {
+                        Ok(found) => {
+                            let _ = audit_action_with_id(
+                                audit_journal,
+                                "HomeLanDiscovery",
+                                format!(
+                                    "Découverte LAN réelle terminée ({} service(s))",
+                                    found.len()
+                                ),
+                                serde_json::json!({
+                                    "protocol_filter": protocol,
+                                    "discovered_count": found.len(),
+                                }),
+                                true,
+                            );
+                            let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::Toast {
+                                text: format!(
+                                    "Découverte LAN : {} service(s) détecté(s) sur le réseau local",
+                                    found.len()
+                                ),
+                            }));
+                            let (devices, energy, protocols) =
+                                crate::home_cli::collect_home_snapshot(hub).await;
+                            KernelToUi::HomeDevicesReply {
+                                devices,
+                                energy,
+                                protocols,
+                            }
+                        }
+                        Err(e) => KernelToUi::Toast {
+                            text: format!("Découverte LAN échouée : {e}"),
+                        },
+                    }
+                }
+                None => KernelToUi::Toast {
+                    text: "SovereignHomeHub indisponible dans cette session".into(),
+                },
+            };
+            let _ = reply_tx.send(Frame::reply(id, reply)).await;
+        }
+        FrameBody::Request {
+            message:
+                UiToKernel::HomeCommandRequest {
+                    device_id,
+                    action,
+                    params_json,
+                },
+        } => {
+            let reply = match home_hub {
+                Some(hub) => {
+                    let parsed =
+                        hakille_home::HomeCommand::parse_action(&action, Some(&params_json));
+                    match parsed {
+                        Err(e) => KernelToUi::HomeCommandReply {
+                            device_id,
+                            executed_on_wire: false,
+                            summary: e.to_string(),
+                            receipt_sha256: None,
+                        },
+                        Ok(command) => match hub.preview_command(&device_id, &command).await {
+                            Err(e) => KernelToUi::HomeCommandReply {
+                                device_id,
+                                executed_on_wire: false,
+                                summary: e.to_string(),
+                                receipt_sha256: None,
+                            },
+                            Ok(preview) => {
+                                let hold_ms = crate::home_cli::extract_hold_ms(&params_json);
+                                if preview.requires_600ms_hold && hold_ms.unwrap_or(0) < 600 {
+                                    let (card_preview, plan) =
+                                        crate::home_cli::build_tier3_action_card(
+                                            &preview, &command,
+                                        );
+                                    let card = card_manager.allocate_preview(card_preview);
+                                    if audit_action_with_id(
+                                        audit_journal,
+                                        "ActionCardProposed",
+                                        format!(
+                                            "Carte domotique Tier 3 #{} proposée : {} {}",
+                                            card.id, card.verb, card.object
+                                        ),
+                                        serde_json::json!({
+                                            "card_id": card.id,
+                                            "device_id": device_id,
+                                            "action": command.action_name(),
+                                        }),
+                                        true,
+                                    )
+                                    .is_ok()
+                                    {
+                                        card_manager.insert_card(card.clone(), plan);
+                                        presence.set_state(DaemonPresenceState::DecisionRequired);
+                                        let _ = broadcast_tx.send(BroadcastEnvelope::all(
+                                            KernelToUi::Presence(
+                                                ProtoPresenceState::DecisionRequired,
+                                            ),
+                                        ));
+                                        let _ = broadcast_tx.send(BroadcastEnvelope::all(
+                                            KernelToUi::ShowCard(card),
+                                        ));
+                                    }
+                                    KernelToUi::HomeCommandReply {
+                                        device_id,
+                                        executed_on_wire: false,
+                                        summary: "Confirmation physique 600 ms requise — carte d'action proposée".to_string(),
+                                        receipt_sha256: None,
+                                    }
+                                } else {
+                                    match crate::home_cli::execute_home_command_with_audit(
+                                        hub,
+                                        authority,
+                                        audit_journal,
+                                        &device_id,
+                                        &command,
+                                        hold_ms,
+                                    )
+                                    .await
+                                    {
+                                        Ok(receipt) => KernelToUi::HomeCommandReply {
+                                            device_id,
+                                            executed_on_wire: receipt.executed_on_wire,
+                                            summary: receipt.summary,
+                                            receipt_sha256: Some(receipt.frame_sha256),
+                                        },
+                                        Err(err) => KernelToUi::HomeCommandReply {
+                                            device_id,
+                                            executed_on_wire: false,
+                                            summary: format!("Refus / hors ligne : {err}"),
+                                            receipt_sha256: None,
+                                        },
+                                    }
+                                }
+                            }
+                        },
+                    }
+                }
+                None => KernelToUi::Toast {
+                    text: "SovereignHomeHub indisponible dans cette session".into(),
+                },
+            };
+            let _ = reply_tx.send(Frame::reply(id, reply)).await;
+        }
         FrameBody::Request { .. } => {
             eprintln!(
                 "IPC [session {session_id}]: message non supporté (id={id}) — refus explicite"
@@ -1518,6 +1984,7 @@ pub async fn run_serve_on_listener(
     >,
     agent_registry: &hakille_agents::AgentRegistry,
     media_manager: Option<std::sync::Arc<hakille_media::MediaJobManager>>,
+    home_hub: Option<std::sync::Arc<hakille_home::SovereignHomeHub>>,
     mut shutdown_rx: Option<tokio::sync::oneshot::Receiver<()>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (broadcast_tx, _) = broadcast::channel::<BroadcastEnvelope>(256);
@@ -1526,19 +1993,27 @@ pub async fn run_serve_on_listener(
     let listener_token = token.clone();
     let listener_bcast = broadcast_tx.clone();
     let listener_req = request_tx.clone();
+    let session_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(32));
 
-    // Boucle d'acceptation asynchrone non-bloquante avec tokio::spawn
+    // Boucle d'acceptation asynchrone non-bloquante avec tokio::spawn et plafond de sessions
     let accept_task = tokio::spawn(async move {
         let mut session_counter: u64 = 1;
         loop {
             match listener.accept().await {
                 Ok(stream) => {
+                    let Ok(permit) = session_slots.clone().try_acquire_owned() else {
+                        eprintln!(
+                            "IPC: plafond de 32 sessions clientes atteint — connexion refusée"
+                        );
+                        continue;
+                    };
                     let session_id = session_counter;
                     session_counter = session_counter.saturating_add(1);
                     let session_token = listener_token.clone();
                     let session_bcast = listener_bcast.subscribe();
                     let session_req = listener_req.clone();
                     tokio::spawn(async move {
+                        let _permit = permit;
                         serve_client_session(
                             session_id,
                             stream,
@@ -1558,6 +2033,7 @@ pub async fn run_serve_on_listener(
     });
 
     let mut card_manager = ActionCardManager::new(1);
+    let perception_state = PerceptionControlState::default();
 
     loop {
         if let Some(ref mut stop) = shutdown_rx {
@@ -1566,7 +2042,7 @@ pub async fn run_serve_on_listener(
                     break;
                 }
                 Some(req) = request_rx.recv() => {
-                    handle_client_request(
+                    Box::pin(handle_client_request(
                         req,
                         orchestrator,
                         presence,
@@ -1583,15 +2059,17 @@ pub async fn run_serve_on_listener(
                         agent_registry,
                         media_manager.as_ref(),
                         &mut card_manager,
+                        &perception_state,
                         &broadcast_tx,
-                    )
+                        home_hub.as_ref(),
+                    ))
                     .await;
                 }
             }
         } else {
             match request_rx.recv().await {
                 Some(req) => {
-                    handle_client_request(
+                    Box::pin(handle_client_request(
                         req,
                         orchestrator,
                         presence,
@@ -1608,8 +2086,10 @@ pub async fn run_serve_on_listener(
                         agent_registry,
                         media_manager.as_ref(),
                         &mut card_manager,
+                        &perception_state,
                         &broadcast_tx,
-                    )
+                        home_hub.as_ref(),
+                    ))
                     .await;
                 }
                 None => break,
@@ -1641,6 +2121,7 @@ pub async fn run_serve(
     >,
     agent_registry: &hakille_agents::AgentRegistry,
     media_manager: Option<std::sync::Arc<hakille_media::MediaJobManager>>,
+    home_hub: Option<std::sync::Arc<hakille_home::SovereignHomeHub>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = hakille_ipc::transport::default_endpoint();
     let token_path = hakille_ipc::transport::default_token_path();
@@ -1679,6 +2160,7 @@ pub async fn run_serve(
         agent_runtime,
         agent_registry,
         media_manager,
+        home_hub,
         None,
     )
     .await
@@ -1741,7 +2223,7 @@ mod tests {
         graph.insert(triplet("milieu", -60));
         graph.insert(triplet("récent", -10));
 
-        let rows = memory_view_rows(&graph, 2);
+        let rows = memory_view_rows(&graph, &ContextPartition::Personal, 2);
         assert_eq!(rows.len(), 2, "limit respecté");
         assert_eq!(rows[0].text, "récent", "plus récent d'abord");
         assert_eq!(rows[1].text, "milieu");
@@ -1749,8 +2231,18 @@ mod tests {
         assert_eq!(rows[0].source, "User");
         assert!(rows[0].tags.contains(&"Personal".to_string()));
 
-        assert!(memory_view_rows(&graph, 0).is_empty(), "limit 0 = vide");
-        assert_eq!(memory_view_rows(&graph, 99).len(), 3);
+        assert!(
+            memory_view_rows(&graph, &ContextPartition::Personal, 0).is_empty(),
+            "limit 0 = vide"
+        );
+        assert_eq!(
+            memory_view_rows(&graph, &ContextPartition::Personal, 99).len(),
+            3
+        );
+        assert!(
+            memory_view_rows(&graph, &ContextPartition::Professional, 99).is_empty(),
+            "isolation de partition"
+        );
     }
 
     #[test]
@@ -1893,6 +2385,7 @@ mod tests {
                     provenance: Provenance::Hakille,
                 },
                 plan: test_plan(),
+                proposed_at: Instant::now() - std::time::Duration::from_secs(1),
             },
         );
         let mut outbox = Outbox::new();
@@ -1989,6 +2482,7 @@ mod tests {
                     provenance: Provenance::Hakille,
                 },
                 plan: test_plan(),
+                proposed_at: Instant::now(),
             },
         );
         let reply = decide_card(&mut cards, &journal, &mut outbox, &dir, 43, false);
@@ -2104,6 +2598,13 @@ mod tests {
         .unwrap();
         let mut outbox = Outbox::new();
 
+        // Approbation immédiate (< 600 ms) : refusée par le démon et la carte reste en attente.
+        let premature = mgr.decide(&journal, &mut outbox, &dir, 1, true);
+        assert!(matches!(premature, KernelToUi::Toast { .. }));
+        assert_eq!(mgr.pending_count(), 2);
+
+        tokio::time::sleep(std::time::Duration::from_millis(610)).await;
+
         let ack1 = mgr.decide(&journal, &mut outbox, &dir, 1, true);
         assert!(matches!(
             ack1,
@@ -2197,6 +2698,7 @@ mod tests {
                 &server_dir,
                 None,
                 &registry,
+                None,
                 None,
                 Some(shutdown_rx),
             )
@@ -2370,7 +2872,8 @@ mod tests {
             other => panic!("ShowCard attendu, reçu : {other:?}"),
         };
 
-        // VÉRIFICATION 3 : Mobile approuve la carte -> Mobile reçoit Unicast avec son id 202, Desktop reçoit broadcast avec id 0
+        // VÉRIFICATION 3 : Mobile respecte le maintien 600 ms puis approuve la carte -> Mobile reçoit Unicast avec son id 202, Desktop reçoit broadcast avec id 0
+        tokio::time::sleep(Duration::from_millis(610)).await;
         let approve_req = Frame::request(202, UiToKernel::Approve { card_id });
         transport::write_frame(&mut mobile_writer, &approve_req)
             .await
@@ -2517,6 +3020,7 @@ mod tests {
                 None,
                 &registry,
                 Some(media_mgr),
+                None,
                 Some(shutdown_rx),
             )
             .await
@@ -2623,6 +3127,241 @@ mod tests {
                     other => panic!("MediaGalleryReply attendu, reçu : {other:?}"),
                 }
             }
+        }
+
+        let _ = shutdown_tx.send(());
+        let _ = server_task.await;
+        #[cfg(unix)]
+        let _ = std::fs::remove_file(&endpoint);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn home_ipc_devices_and_tier3_card_plus_real_mqtt_dispatch() {
+        use hakille_home::protocols::mqtt::{MqttPacket, read_mqtt_packet};
+        use hakille_home::{DeviceCategory, HomeDevice, ProtocolKind, RoomZone, SovereignHomeHub};
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let id = uuid::Uuid::now_v7();
+        let dir = std::env::temp_dir().join(format!("hakille_home_ipc_{id}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(unix)]
+        let endpoint = format!("/tmp/hakille-home-ipc-{id}.sock");
+        #[cfg(windows)]
+        let endpoint = format!(r"\\.\pipe\hakille-home-ipc-{id}");
+        let token = transport::fresh_token_hex();
+        let listener = transport::IpcListener::bind(&endpoint).await.unwrap();
+
+        // Broker MQTT loopback réel
+        let mqtt_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mqtt_addr = mqtt_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = mqtt_listener.accept().await.unwrap();
+            let _ = read_mqtt_packet(&mut sock).await.unwrap();
+            sock.write_all(
+                &MqttPacket::ConnAck {
+                    session_present: false,
+                    reason_code: 0,
+                }
+                .to_bytes(),
+            )
+            .await
+            .unwrap();
+            if let MqttPacket::Publish { packet_id, .. } =
+                read_mqtt_packet(&mut sock).await.unwrap()
+            {
+                sock.write_all(
+                    &MqttPacket::PubAck {
+                        packet_id: packet_id.unwrap(),
+                    }
+                    .to_bytes(),
+                )
+                .await
+                .unwrap();
+            }
+        });
+
+        let home_hub = Arc::new(SovereignHomeHub::open(dir.join("home.redb")).await.unwrap());
+        home_hub
+            .upsert_room(RoomZone::new("salon", "Salon", 0, [0.0, 1.4, -3.0]))
+            .await
+            .unwrap();
+        home_hub
+            .register_device(HomeDevice::new(
+                "plug-salon",
+                "Prise Salon",
+                "salon",
+                ProtocolKind::Mqtt,
+                DeviceCategory::Switch,
+                format!("mqtt://{mqtt_addr}"),
+            ))
+            .await
+            .unwrap();
+        home_hub
+            .register_device(HomeDevice::new(
+                "door-front",
+                "Porte Entrée",
+                "salon",
+                ProtocolKind::Matter,
+                DeviceCategory::DoorLock,
+                "127.0.0.1:5540",
+            ))
+            .await
+            .unwrap();
+
+        let user_id = hakille_core::UserId(uuid::Uuid::now_v7());
+        let fabric =
+            hakille_kernel::CognitiveFabric::new(hakille_kernel::CognitiveManifest::default());
+        let constitution = hakille_constitution::Constitution::default_v1();
+        let mut orchestrator = CognitiveOrchestrator::new(fabric, user_id, constitution);
+        let mut presence = PresenceIndicator::new();
+        let mut cost_counter = CostCounter::new(10_000, "EUR");
+        let mut continuity = ContinuityTracker::new();
+        let mut initiative = BoundedInitiativeTracker::new();
+        let mut generality = GeneralityTracker::new();
+        let mut audit_journal = AuditJournal::new(
+            dir.join("audit.redb").to_str().unwrap(),
+            ed25519_dalek::SigningKey::from_bytes(&[11u8; 32]),
+        )
+        .unwrap();
+        let authority = hakille_core::CapabilityAuthority::new();
+        let memory_path = dir.join("memory.json");
+        let mut outbox = Outbox::new();
+        let registry = hakille_agents::AgentRegistry::new();
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server_token = token.clone();
+        let server_dir = dir.clone();
+        let hub_srv = Arc::clone(&home_hub);
+        let server_task = tokio::spawn(async move {
+            run_serve_on_listener(
+                listener,
+                server_token,
+                &mut orchestrator,
+                &mut presence,
+                &mut cost_counter,
+                &mut continuity,
+                &mut initiative,
+                &mut generality,
+                &mut audit_journal,
+                &authority,
+                &memory_path,
+                &mut outbox,
+                &server_dir,
+                None,
+                &registry,
+                None,
+                Some(hub_srv),
+                Some(shutdown_rx),
+            )
+            .await
+            .unwrap();
+        });
+
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let mut stream = transport::connect(&endpoint).await.unwrap();
+        transport::client_handshake(&mut stream, &token)
+            .await
+            .unwrap();
+        let (reader, mut writer) = tokio::io::split(stream);
+        let mut reader = BufReader::new(reader);
+
+        // 1. HomeDevicesRequest retourne les 2 appareils et 19 protocoles
+        transport::write_frame(
+            &mut writer,
+            &Frame::request(1, UiToKernel::HomeDevicesRequest),
+        )
+        .await
+        .unwrap();
+        let f1 = transport::read_frame(&mut reader).await.unwrap().unwrap();
+        assert_eq!(f1.id, 1);
+        match f1.body {
+            FrameBody::Reply {
+                message:
+                    KernelToUi::HomeDevicesReply {
+                        devices, protocols, ..
+                    },
+            } => {
+                assert_eq!(devices.len(), 2);
+                assert_eq!(protocols.len(), 19);
+            }
+            other => panic!("HomeDevicesReply attendu, reçu {other:?}"),
+        }
+
+        // 2. Commande Tier 3 (unlock) SANS maintien 600 ms -> émet ShowCard et NE s'exécute PAS
+        transport::write_frame(
+            &mut writer,
+            &Frame::request(
+                2,
+                UiToKernel::HomeCommandRequest {
+                    device_id: "door-front".into(),
+                    action: "unlock".into(),
+                    params_json: "{}".into(),
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        let mut saw_card = false;
+        let mut saw_reply = false;
+        for _ in 0..3 {
+            let f = transport::read_frame(&mut reader).await.unwrap().unwrap();
+            if f.id == 2 {
+                if let FrameBody::Reply {
+                    message:
+                        KernelToUi::HomeCommandReply {
+                            executed_on_wire,
+                            summary,
+                            ..
+                        },
+                } = f.body
+                {
+                    assert!(!executed_on_wire);
+                    assert!(summary.contains("600 ms"));
+                    saw_reply = true;
+                }
+            } else if let FrameBody::Reply {
+                message: KernelToUi::ShowCard(card),
+            } = f.body
+            {
+                assert!(card.verb.contains("600 ms"));
+                saw_card = true;
+            }
+        }
+        assert!(saw_card && saw_reply);
+
+        // 3. Commande MQTT réelle Tier 1 sur le courtier loopback
+        transport::write_frame(
+            &mut writer,
+            &Frame::request(
+                3,
+                UiToKernel::HomeCommandRequest {
+                    device_id: "plug-salon".into(),
+                    action: "on".into(),
+                    params_json: "{}".into(),
+                },
+            ),
+        )
+        .await
+        .unwrap();
+        let f3 = transport::read_frame(&mut reader).await.unwrap().unwrap();
+        assert_eq!(f3.id, 3);
+        match f3.body {
+            FrameBody::Reply {
+                message:
+                    KernelToUi::HomeCommandReply {
+                        executed_on_wire,
+                        receipt_sha256,
+                        ..
+                    },
+            } => {
+                assert!(executed_on_wire);
+                assert_eq!(receipt_sha256.as_deref().map(str::len), Some(64));
+            }
+            other => panic!("HomeCommandReply MQTT attendu, reçu {other:?}"),
         }
 
         let _ = shutdown_tx.send(());

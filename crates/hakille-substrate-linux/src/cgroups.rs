@@ -155,7 +155,55 @@ pub struct CgroupManager {
     config: CgroupV2Config,
 }
 
+/// Valide un identifiant d'agent cgroup (un seul segment sûr, sans `/`, `\`, `..` ni NUL).
+pub fn validate_agent_id(agent_id: &str) -> Result<(), String> {
+    if agent_id.is_empty() || agent_id.len() > 128 {
+        return Err("agent_id cgroup vide ou trop long (max 128)".to_string());
+    }
+    if agent_id == "."
+        || agent_id == ".."
+        || agent_id.contains('/')
+        || agent_id.contains('\\')
+        || agent_id.contains('\0')
+        || agent_id.contains("..")
+        || !agent_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(format!(
+            "agent_id cgroup invalide (traversée ou caractère interdit) : '{agent_id}'"
+        ));
+    }
+    Ok(())
+}
+
 impl CgroupManager {
+    pub fn try_new(agent_id: impl Into<String>, config: CgroupV2Config) -> Result<Self, String> {
+        let agent_id = agent_id.into();
+        validate_agent_id(&agent_id)?;
+        let base_path = PathBuf::from("/sys/fs/cgroup/hakille").join(&agent_id);
+        Ok(Self {
+            base_path,
+            agent_id,
+            config,
+        })
+    }
+
+    pub fn try_with_base_path(
+        base_path: impl AsRef<Path>,
+        agent_id: impl Into<String>,
+        config: CgroupV2Config,
+    ) -> Result<Self, String> {
+        let agent_id = agent_id.into();
+        validate_agent_id(&agent_id)?;
+        let path = base_path.as_ref().join(&agent_id);
+        Ok(Self {
+            base_path: path,
+            agent_id,
+            config,
+        })
+    }
+
     pub fn new(agent_id: impl Into<String>, config: CgroupV2Config) -> Self {
         let agent_id = agent_id.into();
         let base_path = PathBuf::from("/sys/fs/cgroup/hakille").join(&agent_id);
@@ -193,6 +241,7 @@ impl CgroupManager {
     }
 
     fn require_existing(&self, operation: &str) -> Result<(), String> {
+        validate_agent_id(&self.agent_id)?;
         if self.base_path.exists() {
             Ok(())
         } else {
@@ -204,6 +253,7 @@ impl CgroupManager {
     }
 
     fn write_file(&self, name: &str, value: &str) -> Result<(), String> {
+        validate_agent_id(&self.agent_id)?;
         let path = self.base_path.join(name);
         std::fs::write(&path, value).map_err(|e| format!("write {} failed: {e}", path.display()))
     }
@@ -327,6 +377,7 @@ impl CgroupManager {
     /// unreadable/malformed counters are explicit errors: quoted placeholder
     /// metrics are never returned.
     pub fn read_metrics(&self) -> Result<CgroupMetrics, String> {
+        validate_agent_id(&self.agent_id)?;
         if !self.base_path.exists() {
             return Err(format!(
                 "cgroup path {} does not exist: metrics unavailable (never simulated)",

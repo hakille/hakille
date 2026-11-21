@@ -26,7 +26,7 @@ mod tests {
         let manifest = substrate.manifest();
         assert_eq!(manifest.tier, Tier::Native);
         assert_eq!(manifest.os_name, "macOS");
-        assert!(manifest.has_secure_enclave);
+        assert!(!manifest.has_secure_enclave);
         assert!(
             manifest
                 .capabilities_granted
@@ -42,7 +42,14 @@ mod tests {
             .attest(b"macos-nonce")
             .await
             .expect("Attestation failed");
-        assert_eq!(attestation.platform_id, "macOS-AppleSilicon-Host");
+        assert_eq!(
+            attestation.platform_id,
+            "macOS-Substrate-Host-dev-attestation"
+        );
+        assert_eq!(
+            attestation.manifest_hash,
+            format!("sha256-{}", hakille_substrate::sha256_hex(b"macos-nonce"))
+        );
         assert!(!attestation.signature.0.is_empty());
     }
 
@@ -83,7 +90,13 @@ mod tests {
                 .contains("/Users/alice/Library/Hakille/Mail")
         );
         assert!(mail_profile.validate_safety().is_ok());
-        assert!(mail_profile.apply().is_ok());
+        // Honnête : sans binding libsystem_sandbox, apply() refuse explicitement.
+        assert!(mail_profile.apply().is_err());
+
+        // Injection Scheme neutralisée par échappement des guillemets.
+        let injected = MacosSandboxProfile::agent_code_sandbox("/tmp/x\")(allow default)(\"");
+        assert!(injected.profile_string.contains("\\\""));
+        assert!(!injected.profile_string.contains("/tmp/x\")(allow default)"));
 
         // Verify flag reset upon recompilation
         mail_profile.rules.clear();

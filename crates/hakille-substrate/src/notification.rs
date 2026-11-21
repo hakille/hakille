@@ -6,11 +6,12 @@
 use serde::{Deserialize, Serialize};
 
 /// Niveau d'urgence d'une notification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum NotificationUrgency {
     /// Information d'arrière-plan, sans interruption sonore ni vibration.
     Low,
     /// Notification nominale de l'OS ou d'un agent.
+    #[default]
     Normal,
     /// Alerte requérant l'attention rapide de l'utilisateur (alerte fatigue, calendrier immédiat).
     High,
@@ -18,16 +19,11 @@ pub enum NotificationUrgency {
     Critical,
 }
 
-impl Default for NotificationUrgency {
-    fn default() -> Self {
-        Self::Normal
-    }
-}
-
 /// Catégorie fonctionnelle de la notification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum NotificationCategory {
     /// Événements du noyau ou de l'OS (mises à jour, batterie, périphériques).
+    #[default]
     System,
     /// Inférences cognitives (vigilance, fatigue PERCLOS, posture, rappels bien-être).
     Cognitive,
@@ -37,12 +33,6 @@ pub enum NotificationCategory {
     Security,
     /// Opérations et budgets financiers locaux.
     Wallet,
-}
-
-impl Default for NotificationCategory {
-    fn default() -> Self {
-        Self::System
-    }
 }
 
 /// Action interactive rattachée à une notification (bouton de réponse).

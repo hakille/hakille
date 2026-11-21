@@ -106,7 +106,18 @@ struct GatewayTransport {
         if let sessionID, !sessionID.isEmpty { request.setValue(sessionID, forHTTPHeaderField: "X-Hakille-Session") }
         let (bytes, response) = try await session.bytes(for: request)
         guard let response = response as? HTTPURLResponse, (200...299).contains(response.statusCode) else { throw GatewayError.invalidResponse }
-        for try await line in bytes.lines {
+        // Lecture octet par octet bornée : `bytes.lines` n'impose aucune limite
+        // de longueur de ligne ni de volume total (risque OOM).
+        let maxStreamBytes = 16 * 1024 * 1024
+        var totalBytes = 0
+        var lineBuffer = Data()
+        lineBuffer.reserveCapacity(4096)
+        func flushLine() throws -> Bool {
+            if lineBuffer.last == 0x0D { lineBuffer.removeLast() }
+            guard let line = String(data: lineBuffer, encoding: .utf8) else {
+                throw GatewayError.invalidResponse
+            }
+            lineBuffer.removeAll(keepingCapacity: true)
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("data:") {
                 let data = String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespaces)
@@ -114,8 +125,23 @@ struct GatewayTransport {
                     onFrame(data)
                 }
             } else if trimmed.hasPrefix("event: done") {
-                break
+                return true
             }
+            return false
+        }
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            totalBytes += 1
+            guard totalBytes <= maxStreamBytes else { throw GatewayError.invalidResponse }
+            if byte == 0x0A {
+                if try flushLine() { break }
+            } else {
+                guard lineBuffer.count < Self.maxBytes else { throw GatewayError.invalidResponse }
+                lineBuffer.append(byte)
+            }
+        }
+        if !lineBuffer.isEmpty {
+            _ = try flushLine()
         }
     }
 }

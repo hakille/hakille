@@ -107,9 +107,14 @@ fun ActionCardComponent(
     busy: Boolean,
     onApprove: (JsonElement) -> Unit,
     onReject: (JsonElement) -> Unit,
-    onEdit: (JsonElement) -> Unit = {},
+    // Aucune action « modifier » n'existe dans le protocole : le bouton n'est
+    // affiché que si l'hôte fournit un vrai gestionnaire (jamais de faux bouton).
+    onEdit: ((JsonElement) -> Unit)? = null,
     onRequestWhy: (JsonElement) -> Unit = {},
     onCancelApproval: () -> Unit = {},
+    // Le cœur Rust exige `begin_approval` au DÉBUT du maintien puis `approve`
+    // après 600 ms : sans ce signal, l'approbation est refusée.
+    onBeginApproval: (JsonElement) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val isDark = LocalHakilleDark.current
@@ -214,6 +219,8 @@ fun ActionCardComponent(
                 HoldToConfirmButton(
                     onConfirmed = { onApprove(id) },
                     onCancelled = onCancelApproval,
+                    onHoldingChanged = { holding -> if (holding) onBeginApproval(id) },
+                    onArmed = { onBeginApproval(id) },
                     label = "Maintenir 600 ms pour valider",
                     confirmedLabel = "Action validée",
                     enabled = true
@@ -235,13 +242,15 @@ fun ActionCardComponent(
                         Text("Refuser")
                     }
 
-                    TextButton(
-                        onClick = { onEdit(id) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .minTouchTarget()
-                    ) {
-                        Text("Modifier")
+                    if (onEdit != null) {
+                        TextButton(
+                            onClick = { onEdit(id) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .minTouchTarget()
+                        ) {
+                            Text("Modifier")
+                        }
                     }
 
                     TextButton(

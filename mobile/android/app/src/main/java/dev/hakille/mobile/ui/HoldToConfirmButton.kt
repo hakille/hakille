@@ -72,6 +72,9 @@ fun HoldToConfirmButton(
     onConfirmed: () -> Unit,
     onCancelled: () -> Unit = {},
     onHoldingChanged: (Boolean) -> Unit = {},
+    // Première étape du parcours lecteur d'écran : l'hôte doit armer le cœur
+    // (`begin_approval`), qui exigera lui-même 600 ms avant `approve`.
+    onArmed: () -> Unit = {},
     label: String = "Maintenir 600 ms pour valider",
     confirmedLabel: String = "Action validée",
     enabled: Boolean = true,
@@ -141,6 +144,7 @@ fun HoldToConfirmButton(
                     if (!enabled || isConfirmed) return@onClick false
                     if (!accessibleArmed) {
                         accessibleArmed = true
+                        onArmed()
                         view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     } else {
                         accessibleArmed = false

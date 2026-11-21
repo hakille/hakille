@@ -172,6 +172,7 @@ async fn test_real_sensevoice_tokenizer_parsing() {
 #[tokio::test]
 async fn test_real_onnx_models_inspection() {
     let dir = get_models_dir();
+    let mut inspected = 0usize;
 
     // 1. Silero VAD
     let vad_path = dir.join("silero_vad.onnx");
@@ -180,6 +181,7 @@ async fn test_real_onnx_models_inspection() {
         assert_eq!(info.primary_role, "VoiceActivity");
         assert!(info.file_size_bytes > 2_000_000);
         assert_eq!(info.expected_input_shape, vec![1, 512]);
+        inspected += 1;
     }
 
     // 2. CAM++
@@ -188,6 +190,7 @@ async fn test_real_onnx_models_inspection() {
         let info = OnnxModelInspector::inspect_file(&campplus_path).unwrap();
         assert_eq!(info.primary_role, "Biometrics");
         assert_eq!(info.expected_output_shape, vec![1, 192]);
+        inspected += 1;
     }
 
     // 3. All-MiniLM-L6-v2
@@ -196,6 +199,7 @@ async fn test_real_onnx_models_inspection() {
         let info = OnnxModelInspector::inspect_file(&minilm_path).unwrap();
         assert_eq!(info.primary_role, "MemoryEmbeddings");
         assert_eq!(info.expected_output_shape, vec![1, 384]);
+        inspected += 1;
     }
 
     // 4. SenseVoice-Small INT8
@@ -204,6 +208,14 @@ async fn test_real_onnx_models_inspection() {
         let info = OnnxModelInspector::inspect_file(&sensevoice_path).unwrap();
         assert_eq!(info.primary_role, "PerceptionAsr");
         assert!(info.file_size_bytes > 200_000_000);
+        inspected += 1;
+    }
+
+    if inspected == 0 {
+        eprintln!(
+            "SKIP: artefact de modèle absent (aucun modèle ONNX présent dans {})",
+            dir.display()
+        );
     }
 }
 
@@ -246,7 +258,10 @@ async fn test_end_to_end_cross_crate_model_wiring() {
 
     let connected = match provisioner.connect_all_models() {
         Ok(c) => c,
-        Err(_) => return,
+        Err(e) => {
+            eprintln!("SKIP: artefact de modèle absent ({e})");
+            return;
+        }
     };
 
     // 1. Cross-crate ASR wiring: SenseVoiceSmall + SenseVoiceTokenizer

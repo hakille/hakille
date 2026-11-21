@@ -56,7 +56,7 @@ fn test_adv_prosody_non_finite_and_out_of_bounds_inputs() {
                 "Rate must be finite for C={c}, U={u}; got {rate}"
             );
             assert!(
-                rate >= PROSODY_MIN_RATE && rate <= PROSODY_MAX_RATE,
+                (PROSODY_MIN_RATE..=PROSODY_MAX_RATE).contains(&rate),
                 "Rate out of bounds [{PROSODY_MIN_RATE}, {PROSODY_MAX_RATE}]: got {rate} for C={c}, U={u}"
             );
 
@@ -66,7 +66,7 @@ fn test_adv_prosody_non_finite_and_out_of_bounds_inputs() {
                 "Pitch must be finite for C={c}, U={u}; got {pitch}"
             );
             assert!(
-                pitch >= PROSODY_MIN_F0 && pitch <= PROSODY_MAX_F0,
+                (PROSODY_MIN_F0..=PROSODY_MAX_F0).contains(&pitch),
                 "Pitch out of bounds [{PROSODY_MIN_F0}, {PROSODY_MAX_F0}]: got {pitch} for C={c}, U={u}"
             );
 
@@ -76,7 +76,7 @@ fn test_adv_prosody_non_finite_and_out_of_bounds_inputs() {
                 "Breathiness must be finite for C={c}, U={u}; got {breath}"
             );
             assert!(
-                breath >= PROSODY_MIN_BREATHINESS && breath <= PROSODY_MAX_BREATHINESS,
+                (PROSODY_MIN_BREATHINESS..=PROSODY_MAX_BREATHINESS).contains(&breath),
                 "Breathiness out of bounds [{PROSODY_MIN_BREATHINESS}, {PROSODY_MAX_BREATHINESS}]: got {breath} for C={c}, U={u}"
             );
 
@@ -227,7 +227,10 @@ fn test_adv_prosody_render_extreme_texts() {
     assert!(!pcm_unvoiced.samples.is_empty());
     assert!(pcm_unvoiced.samples.iter().all(|s| s.is_finite()));
     assert!(
-        pcm_unvoiced.samples.iter().all(|&s| s >= -1.0 && s <= 1.0),
+        pcm_unvoiced
+            .samples
+            .iter()
+            .all(|&s| (-1.0..=1.0).contains(&s)),
         "Samples must be in [-1, 1]"
     );
 
@@ -251,7 +254,10 @@ fn test_adv_prosody_render_extreme_texts() {
     assert!(!pcm_massive.samples.is_empty());
     assert!(pcm_massive.samples.iter().all(|s| s.is_finite()));
     assert!(
-        pcm_massive.samples.iter().all(|&s| s >= -1.0 && s <= 1.0),
+        pcm_massive
+            .samples
+            .iter()
+            .all(|&s| (-1.0..=1.0).contains(&s)),
         "Samples must be clamped in [-1.0, 1.0]"
     );
 }

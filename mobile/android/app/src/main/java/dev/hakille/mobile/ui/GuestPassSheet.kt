@@ -12,6 +12,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.foundation.text.KeyboardOptions
+import kotlinx.coroutines.delay
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -57,8 +61,11 @@ object GuestPassHelper {
 fun GuestPassPanel(
     guestPass: JsonObject?,
     busy: Boolean,
-    onStartGuestPass: (name: String, power: String, durationSecs: Int) -> Unit,
-    onRevokeGuestPass: () -> Unit,
+    onStartGuestPass: (name: String, power: String, durationSecs: Int, ownerPin: String?) -> Unit,
+    onRevokeGuestPass: (ownerPin: String?) -> Unit,
+    // Horloge du pass : appelée chaque seconde avec le temps écoulé monotone
+    // (sans elle, le pass n'expirerait jamais côté cœur).
+    onTickGuestPass: (elapsedSecs: Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val isDark = LocalHakilleDark.current
@@ -71,6 +78,8 @@ fun GuestPassPanel(
     var guestName by remember { mutableStateOf("Invité") }
     var guestPower by remember { mutableStateOf("wifi.connect") }
     var durationSecs by remember { mutableIntStateOf(GuestPassHelper.DEFAULT_DURATION_SECS) }
+    var ownerPin by remember { mutableStateOf("") }
+    var revokePin by remember { mutableStateOf("") }
 
     Column(
         modifier = modifier
@@ -102,6 +111,19 @@ fun GuestPassPanel(
             val fraction = guestPass["ring_fraction"]?.jsonPrimitive?.floatOrNull
                 ?: GuestPassHelper.computeRingFraction(elapsed, dur)
             val remainingMin = ((dur - elapsed).coerceAtLeast(0)) / 60
+
+            // Compte à rebours réel sur horloge monotone (elapsedRealtime) :
+            // un changement d'heure système ne prolonge pas le pass.
+            LaunchedEffect(name, power, dur) {
+                val base = elapsed
+                val startedAt = android.os.SystemClock.elapsedRealtime()
+                while (true) {
+                    delay(1000)
+                    val secs = base + ((android.os.SystemClock.elapsedRealtime() - startedAt) / 1000).toInt()
+                    onTickGuestPass(secs.coerceAtMost(dur))
+                    if (secs >= dur) break
+                }
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -142,13 +164,22 @@ fun GuestPassPanel(
                     Text(text = "Autonomie : Cran 0 (Observer)", style = MaterialTheme.typography.labelSmall, color = secondaryText)
                 }
                 OutlinedButton(
-                    onClick = onRevokeGuestPass,
+                    onClick = { onRevokeGuestPass(revokePin.ifBlank { null }); revokePin = "" },
                     enabled = !busy,
                     modifier = Modifier.minTouchTarget().testTag("guest_pass_revoke")
                 ) {
                     Text("Révoquer")
                 }
             }
+            OutlinedTextField(
+                value = revokePin,
+                onValueChange = { revokePin = it.take(64) },
+                label = { Text("PIN propriétaire (si défini)") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                modifier = Modifier.fillMaxWidth().testTag("guest_pass_revoke_pin")
+            )
         } else {
             OutlinedTextField(
                 value = guestName,
@@ -176,9 +207,22 @@ fun GuestPassPanel(
                     )
                 }
             }
+            OutlinedTextField(
+                value = ownerPin,
+                onValueChange = { ownerPin = it.take(64) },
+                label = { Text("PIN propriétaire pour révoquer (optionnel, 4+)") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                modifier = Modifier.fillMaxWidth().testTag("guest_pass_owner_pin")
+            )
             Button(
-                onClick = { onStartGuestPass(guestName, guestPower, durationSecs) },
-                enabled = !busy && guestName.isNotBlank() && guestPower.isNotBlank(),
+                onClick = {
+                    onStartGuestPass(guestName, guestPower, durationSecs, ownerPin.ifBlank { null })
+                    ownerPin = ""
+                },
+                enabled = !busy && guestName.isNotBlank() && guestPower.isNotBlank() &&
+                    (ownerPin.isEmpty() || ownerPin.length >= 4),
                 modifier = Modifier.align(Alignment.End).minTouchTarget().testTag("guest_pass_start")
             ) {
                 Text("Activer le pass invité")

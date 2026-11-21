@@ -24,6 +24,8 @@ tracing = { workspace = true }
 
 # Cryptography & Security
 biscuit-auth = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
 sha2 = { workspace = true }
 zeroize = { workspace = true }
 hex = "0.4"
@@ -41,6 +43,4 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
-ed25519-dalek = { workspace = true }
 tempfile = "3"
-rand = { workspace = true }

@@ -8,6 +8,9 @@ on:
     - cron: "0 3 * * 0"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # Les artefacts debug et le cache incrémental saturent le disque des runners
 # lors des builds successifs check/clippy/test. Les assertions et contrôles
 # d'overflow des profils dev/test restent actifs ; seuls ces artefacts changent.
@@ -44,8 +47,8 @@ jobs:
         run: cargo check --workspace --all-targets --locked
       - name: clippy
         run: cargo clippy --workspace --all-targets -- --no-deps
-        # Windows : 0 warning (vérifié localement). `-D warnings` reste désactivé
-        # tant que la matrice Ubuntu n'a pas été repassée en revue.
+        # Audit workspace durci : 0 warning clippy sur Linux (Ubuntu) ; `-D warnings`
+        # à activer une fois la matrice Windows revalidée en CI.
       - name: tests
         # Exécuter toutes les suites même si l’une échoue ; le job reste en échec.
         run: cargo test --workspace --locked --no-fail-fast
@@ -102,7 +105,7 @@ jobs:
   conformance-slow:
     # Gate lente hebdo : 10 tests ignorés (décodage Qwen CPU réel, minutes en
     # debug) — 7 dans `conformance`, 3 dans `hakille-kernel`. Fast gate
-    # (66 tests) reste dans check-test via `xtask conformance`.
+    # (71 tests) reste dans check-test via `xtask conformance`.
     # Tant que les 10 slow ne sont pas verts en nightly, la suite fast est la
     # référence CI ; voir xtask conformance-slow.
     # ATTENTION : ces tests exigent le GGUF Qwen + son tokenizer (~475 Mo) :

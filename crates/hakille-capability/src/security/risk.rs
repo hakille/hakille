@@ -1,6 +1,7 @@
 //! 4-Tier Risk Governance and ActionCard physical hold verification.
 
 use chrono::{DateTime, Duration, Utc};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -22,6 +23,9 @@ pub enum RiskVerificationError {
 
     #[error("Action confirmation timestamp is in the future")]
     FutureTimestamp,
+
+    #[error("Action confirmation cryptographic signature invalid: {0}")]
+    InvalidSignature(String),
 }
 
 /// Cryptographic confirmation proof emitted by the UI Shell upon 600ms physical hold.
@@ -37,7 +41,7 @@ pub struct ActionConfirmationProof {
     pub physical_hold_duration_ms: u64,
     /// Timestamp when hold confirmation completed.
     pub confirmed_at: DateTime<Utc>,
-    /// Optional Ed25519 signature of the confirmation token.
+    /// Optional Ed25519 signature of the confirmation token (64-byte signature or 96-byte pubkey||signature).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signature: Vec<u8>,
 }
@@ -67,6 +71,32 @@ impl ActionConfirmationProof {
         self
     }
 
+    /// Canonical domain-separated, length-prefixed payload covered by Ed25519 signature.
+    pub fn canonical_signing_payload(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(128);
+        buf.extend_from_slice(b"hakille-action-confirmation-v1:");
+        buf.extend_from_slice(&(self.card_id.len() as u64).to_le_bytes());
+        buf.extend_from_slice(self.card_id.as_bytes());
+        buf.extend_from_slice(&self.action_hash);
+        buf.extend_from_slice(&(self.user_id.len() as u64).to_le_bytes());
+        buf.extend_from_slice(self.user_id.as_bytes());
+        buf.extend_from_slice(&self.physical_hold_duration_ms.to_le_bytes());
+        buf.extend_from_slice(&self.confirmed_at.timestamp_millis().to_le_bytes());
+        buf
+    }
+
+    /// Cryptographically signs this confirmation proof with an Ed25519 `SigningKey`,
+    /// storing the 32-byte verifying key + 64-byte signature (96 bytes total) in `self.signature`.
+    pub fn sign_ed25519(mut self, signing_key: &SigningKey) -> Self {
+        let payload = self.canonical_signing_payload();
+        let sig: Signature = signing_key.sign(&payload);
+        let mut sig_bundle = Vec::with_capacity(96);
+        sig_bundle.extend_from_slice(signing_key.verifying_key().as_bytes());
+        sig_bundle.extend_from_slice(&sig.to_bytes());
+        self.signature = sig_bundle;
+        self
+    }
+
     /// Computes deterministic SHA-256 action hash for a tool name and arguments payload.
     pub fn compute_action_hash(tool_name: &str, arguments: &serde_json::Value) -> [u8; 32] {
         let mut hasher = Sha256::new();
@@ -77,13 +107,15 @@ impl ActionConfirmationProof {
         hasher.finalize().into()
     }
 
-    /// Verifies the physical hold duration, validity timeframe, and action hash.
+    /// Verifies the physical hold duration, validity timeframe, action hash, and
+    /// cryptographic Ed25519 signature (if present).
     ///
     /// Rules:
     /// 1. `physical_hold_duration_ms >= 600` ms.
     /// 2. `confirmed_at` is not more than 30 seconds old.
     /// 3. `confirmed_at` is not more than 5 seconds in the future (clock skew tolerance).
     /// 4. `action_hash` matches `expected_action_hash`.
+    /// 5. If `signature` is non-empty, it must be a valid 96-byte `(VerifyingKey || Signature)` bundle passing `verify_strict`.
     pub fn verify(&self, expected_action_hash: &[u8; 32]) -> Result<(), RiskVerificationError> {
         if self.physical_hold_duration_ms < 600 {
             return Err(RiskVerificationError::InsufficientHoldDuration {
@@ -111,6 +143,61 @@ impl ActionConfirmationProof {
             });
         }
 
+        if !self.signature.is_empty() {
+            if self.signature.len() != 96 {
+                return Err(RiskVerificationError::InvalidSignature(format!(
+                    "expected 96-byte (pubkey||sig) bundle, got {} bytes",
+                    self.signature.len()
+                )));
+            }
+            let pk_bytes: [u8; 32] = self.signature[0..32].try_into().unwrap();
+            let sig_bytes: [u8; 64] = self.signature[32..96].try_into().unwrap();
+            let verifying_key = VerifyingKey::from_bytes(&pk_bytes).map_err(|e| {
+                RiskVerificationError::InvalidSignature(format!("invalid Ed25519 public key: {e}"))
+            })?;
+            let sig = Signature::from_bytes(&sig_bytes);
+            verifying_key
+                .verify_strict(&self.canonical_signing_payload(), &sig)
+                .map_err(|e| {
+                    RiskVerificationError::InvalidSignature(format!(
+                        "Ed25519 signature verification failed: {e}"
+                    ))
+                })?;
+        }
+
         Ok(())
+    }
+
+    /// Strictly verifies the proof AND requires a valid Ed25519 signature matching `expected_public_key`.
+    pub fn verify_with_public_key(
+        &self,
+        expected_action_hash: &[u8; 32],
+        expected_public_key: &VerifyingKey,
+    ) -> Result<(), RiskVerificationError> {
+        self.verify(expected_action_hash)?;
+        let sig_bytes: [u8; 64] = match self.signature.len() {
+            64 => self.signature[0..64].try_into().unwrap(),
+            96 => {
+                if &self.signature[0..32] != expected_public_key.as_bytes() {
+                    return Err(RiskVerificationError::InvalidSignature(
+                        "embedded public key does not match pinned verifying key".to_string(),
+                    ));
+                }
+                self.signature[32..96].try_into().unwrap()
+            }
+            other => {
+                return Err(RiskVerificationError::InvalidSignature(format!(
+                    "missing or malformed Ed25519 signature ({other} bytes)"
+                )));
+            }
+        };
+        let sig = Signature::from_bytes(&sig_bytes);
+        expected_public_key
+            .verify_strict(&self.canonical_signing_payload(), &sig)
+            .map_err(|e| {
+                RiskVerificationError::InvalidSignature(format!(
+                    "Ed25519 signature verification failed: {e}"
+                ))
+            })
     }
 }

@@ -22,8 +22,11 @@ pub const LANGUAGE_AUTO_FALLBACK: i32 = 0;
 pub const TEXTNORM_WITH_ITN_FALLBACK: i32 = 14;
 
 /// Émotion vocale discrète émise par le discriminateur multi-tâche SenseVoice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum VocalEmotionKind {
+    #[default]
     Neutral,
     Happy,
     Sad,
@@ -31,12 +34,6 @@ pub enum VocalEmotionKind {
     Fearful,
     Disgusted,
     Surprised,
-}
-
-impl Default for VocalEmotionKind {
-    fn default() -> Self {
-        Self::Neutral
-    }
 }
 
 impl VocalEmotionKind {
@@ -885,8 +882,10 @@ mod tests {
         let bytes = std::fs::read(path).unwrap();
         assert_eq!(bytes.len() % 4, 0);
         let pcm: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&b| f32::from_le_bytes(b))
             .collect();
         let mut model = SenseVoiceOnnx::open(
             models.join(SENSEVOICE_MODEL_FILE),

@@ -94,22 +94,29 @@ impl HkdfSubkeyTree {
     }
 }
 
-/// Derive a 32-byte domain-separated subkey:
-/// context = "hakille:v1:" || Domain || ":" || TenantID
+/// Derive a 32-byte domain-separated subkey with unambiguous length-prefixed HKDF info:
+/// info = "hakille:v2:" || len(domain) || domain || len(tenant) || tenant
 pub fn derive_subkey(
     master: &MasterKey,
     domain: &SubkeyDomain,
     tenant_id: Option<&str>,
 ) -> Result<[u8; 32], CryptoError> {
     let hk = Hkdf::<Sha256>::new(Some(HKDF_DOMAIN_SALT), master.as_bytes());
+    let domain_str = domain.as_str();
     let tenant_str = tenant_id.unwrap_or("default");
-    let info = format!("hakille:v1:{}:{}", domain.as_str(), tenant_str);
 
-    let mut okm = [0u8; 32];
-    hk.expand(info.as_bytes(), &mut okm)
+    let mut info = Vec::with_capacity(11 + 8 + domain_str.len() + tenant_str.len());
+    info.extend_from_slice(b"hakille:v2:");
+    info.extend_from_slice(&(domain_str.len() as u32).to_le_bytes());
+    info.extend_from_slice(domain_str.as_bytes());
+    info.extend_from_slice(&(tenant_str.len() as u32).to_le_bytes());
+    info.extend_from_slice(tenant_str.as_bytes());
+
+    let mut okm = zeroize::Zeroizing::new([0u8; 32]);
+    hk.expand(&info, &mut *okm)
         .map_err(|e| CryptoError::SubkeyDerivationError(e.to_string()))?;
 
-    Ok(okm)
+    Ok(*okm)
 }
 
 /// Derive full subkey hierarchy bound to a specific tenant ID

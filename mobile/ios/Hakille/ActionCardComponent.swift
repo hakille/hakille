@@ -47,18 +47,23 @@ public struct ActionCardComponent: View {
     public let busy: Bool
     public let onApprove: (JSONValue) -> Void
     public let onReject: (JSONValue) -> Void
-    public let onEdit: (JSONValue) -> Void
+    /// Aucune action « modifier » n'existe dans le protocole : le bouton n'est
+    /// affiché que si l'hôte fournit un vrai gestionnaire.
+    public let onEdit: ((JSONValue) -> Void)?
     public let onRequestWhy: (JSONValue) -> Void
     public let onCancelApproval: () -> Void
+    /// `begin_approval` au début du maintien (exigé par le cœur Rust).
+    public let onBeginApproval: (JSONValue) -> Void
 
     public init(
         card: JSONValue,
         busy: Bool = false,
         onApprove: @escaping (JSONValue) -> Void,
         onReject: @escaping (JSONValue) -> Void,
-        onEdit: @escaping (JSONValue) -> Void = { _ in },
+        onEdit: ((JSONValue) -> Void)? = nil,
         onRequestWhy: @escaping (JSONValue) -> Void = { _ in },
-        onCancelApproval: @escaping () -> Void = {}
+        onCancelApproval: @escaping () -> Void = {},
+        onBeginApproval: @escaping (JSONValue) -> Void = { _ in }
     ) {
         self.card = card
         self.busy = busy
@@ -67,6 +72,7 @@ public struct ActionCardComponent: View {
         self.onEdit = onEdit
         self.onRequestWhy = onRequestWhy
         self.onCancelApproval = onCancelApproval
+        self.onBeginApproval = onBeginApproval
     }
 
     private var surfaceColor: Color {
@@ -144,7 +150,8 @@ public struct ActionCardComponent: View {
                     confirmedLabel: "Action validée",
                     isEnabled: true,
                     onConfirmed: { onApprove(id) },
-                    onCancelled: onCancelApproval
+                    onCancelled: onCancelApproval,
+                    onHoldBegan: { onBeginApproval(id) }
                 )
 
                 HStack(spacing: 8) {
@@ -156,13 +163,15 @@ public struct ActionCardComponent: View {
                     }
                     .buttonStyle(.bordered)
 
-                    Button {
-                        onEdit(id)
-                    } label: {
-                        Text("Modifier")
-                            .frame(maxWidth: .infinity, minHeight: 44)
+                    if let onEdit {
+                        Button {
+                            onEdit(id)
+                        } label: {
+                            Text("Modifier")
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(.borderless)
                     }
-                    .buttonStyle(.borderless)
 
                     Button {
                         onRequestWhy(id)

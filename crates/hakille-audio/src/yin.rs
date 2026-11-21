@@ -180,6 +180,7 @@ impl YinPitchDetector {
     }
 
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     fn compute_features(
         sample_rate: u32,
         threshold: f32,
@@ -252,10 +253,8 @@ impl YinPitchDetector {
 
         for tau in 1..=max_tau {
             let s_shifted = &samples[tau..tau + window_size];
-            let chunks_base = s_base.chunks_exact(8);
-            let chunks_shifted = s_shifted.chunks_exact(8);
-            let rem_base = chunks_base.remainder();
-            let rem_shifted = chunks_shifted.remainder();
+            let (chunks_base, rem_base) = s_base.as_chunks::<8>();
+            let (chunks_shifted, rem_shifted) = s_shifted.as_chunks::<8>();
 
             let mut s0 = 0.0f32;
             let mut s1 = 0.0f32;
@@ -266,7 +265,7 @@ impl YinPitchDetector {
             let mut s6 = 0.0f32;
             let mut s7 = 0.0f32;
 
-            for (cb, cs) in chunks_base.zip(chunks_shifted) {
+            for (cb, cs) in chunks_base.iter().zip(chunks_shifted.iter()) {
                 let d0 = cb[0] - cs[0];
                 let d1 = cb[1] - cs[1];
                 let d2 = cb[2] - cs[2];
@@ -326,9 +325,15 @@ impl YinPitchDetector {
             None => {
                 let mut min_val = f32::MAX;
                 let mut min_idx = min_period;
-                for tau in min_period..max_tau {
-                    if workspace.cmndf[tau] < min_val {
-                        min_val = workspace.cmndf[tau];
+                for (tau, &val) in workspace
+                    .cmndf
+                    .iter()
+                    .enumerate()
+                    .take(max_tau)
+                    .skip(min_period)
+                {
+                    if val < min_val {
+                        min_val = val;
                         min_idx = tau;
                     }
                 }
@@ -337,7 +342,7 @@ impl YinPitchDetector {
         };
 
         // 5. Étape 4 YIN : Interpolation parabolique fine pour précision sub-pixel
-        let refined_tau = if best_tau > 1 && best_tau + 1 <= max_tau {
+        let refined_tau = if best_tau > 1 && best_tau < max_tau {
             let s0 = workspace.cmndf[best_tau - 1];
             let s1 = workspace.cmndf[best_tau];
             let s2 = workspace.cmndf[best_tau + 1];

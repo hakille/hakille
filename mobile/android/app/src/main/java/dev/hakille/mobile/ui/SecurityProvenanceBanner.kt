@@ -93,6 +93,15 @@ fun copySensitiveToClipboard(
 ) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
     val clip = ClipData.newPlainText(label, text)
+    // Android 13+ : marque le contenu sensible (pas d'aperçu dans la bannière
+    // système du presse-papiers, ni de suggestion clavier).
+    clip.description.extras = android.os.PersistableBundle().apply {
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true)
+        } else {
+            putBoolean("android.content.extra.IS_SENSITIVE", true)
+        }
+    }
     clipboard.setPrimaryClip(clip)
 
     scope.launch {

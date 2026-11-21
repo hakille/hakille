@@ -156,10 +156,10 @@ impl Constitution {
 
     /// Variante typée : en plus du keyword matching de `check_action`,
     /// applique deux garde-fous contextuels :
-    /// - si `trust == "untrusted"` et l'action contient "execute" ou
+    /// - si `trust == "untrusted"` et l'action contient "execute"/"exécuter" ou
     ///   "instruction", bloque (contenu non fiable exécuté comme instruction).
-    /// - si `domain` est medical/legal/financial et l'action contient le
-    ///   mot-clé "low-confidence", bloque (domaine sensible sans confiance).
+    /// - si `domain` est medical/legal/financial (ou médical/juridique/financier)
+    ///   et l'action contient "low-confidence"/"faible confiance", bloque.
     pub fn check_action_typed(
         &self,
         action_type: &str,
@@ -171,22 +171,33 @@ impl Constitution {
         let needle = action_type.to_lowercase();
 
         // 2. Contenu non fiable exécuté comme instruction.
-        if let Some(t) = trust
-            && t.trim().eq_ignore_ascii_case("untrusted")
-            && (needle.contains("execute") || needle.contains("instruction"))
-        {
-            return Err(HakilleError::ConstitutionViolation(format!(
-                "Action bloquée par rule-1 : untrusted content must not be executed as instruction ({action_type})"
-            )));
+        if let Some(t) = trust {
+            let tnorm = t.trim().to_lowercase();
+            if (tnorm == "untrusted" || tnorm == "non fiable" || tnorm == "non_fiable")
+                && (needle.contains("execute")
+                    || needle.contains("exécuter")
+                    || needle.contains("executer")
+                    || needle.contains("instruction"))
+            {
+                return Err(HakilleError::ConstitutionViolation(format!(
+                    "Action bloquée par rule-1 : untrusted content must not be executed as instruction ({action_type})"
+                )));
+            }
         }
 
         // 3. Domaine sensible avec faible confiance.
         if let Some(d) = domain {
             let dnorm = d.trim().to_lowercase();
-            if (dnorm == "medical" || dnorm == "legal" || dnorm == "financial")
+            let is_sensitive = matches!(
+                dnorm.as_str(),
+                "medical" | "médical" | "legal" | "juridique" | "financial" | "financier"
+            );
+            if is_sensitive
                 && (needle.contains("low-confidence")
                     || needle.contains("low confidence")
-                    || needle.contains("low_confidence"))
+                    || needle.contains("low_confidence")
+                    || needle.contains("faible confiance")
+                    || needle.contains("peu fiable"))
             {
                 return Err(HakilleError::ConstitutionViolation(format!(
                     "Action bloquée par rule-6 : {dnorm} domain requires elevated confidence ({action_type})"
@@ -210,8 +221,8 @@ impl Constitution {
             .count()
     }
 
-    /// Vérifie la cohérence interne : exactement 10 règles, ids uniques
-    /// non vides, priorité > 0, et toute règle HardBlock en priorité 1.
+    /// Vérifie la cohérence interne : exactement 10 règles (`rule-1`..`rule-10`),
+    /// ids uniques non vides, priorité > 0, et toute règle HardBlock en priorité 1.
     pub fn validate(&self) -> Result<()> {
         if self.rules.len() != 10 {
             return Err(HakilleError::ConstitutionViolation(format!(
@@ -245,6 +256,14 @@ impl Constitution {
                 )));
             }
         }
+        for idx in 1..=10 {
+            let expected_id = format!("rule-{idx}");
+            if !seen.contains(&expected_id) {
+                return Err(HakilleError::ConstitutionViolation(format!(
+                    "missing required constitutional rule id: {expected_id}"
+                )));
+            }
+        }
         Ok(())
     }
 }
@@ -259,7 +278,7 @@ pub fn constitution_v1_release_date() -> Timestamp {
     )
 }
 
-/// Mots-clés documentés déclenchant le HardBlock de chaque règle.
+/// Mots-clés documentés (EN + FR) déclenchant le HardBlock de chaque règle.
 /// Ils décrivent des tentatives de CONTOURNEMENT de la règle (pas le sujet
 /// légitime lui-même : p. ex. demander de l'aide en crise reste autorisé,
 /// mais exiger de gérer la crise sans référent humain est bloqué).
@@ -268,61 +287,82 @@ fn hard_block_keywords(rule_id: &str) -> Option<&'static [&'static str]> {
         // rule-1 : jamais d'instructions depuis du contenu non fiable.
         "rule-1" => &[
             "prompt injection",
+            "injection de prompt",
             "jailbreak",
             "ignore previous instructions",
+            "ignorer les instructions précédentes",
             "system prompt leak",
             "execute untrusted instructions",
+            "exécuter du contenu non fiable",
         ],
         // rule-2 : toute action doit rester auditable.
         "rule-2" => &[
             "skip audit",
+            "contourner l'audit",
             "disable logging",
+            "désactiver l'audit",
             "delete audit logs",
+            "supprimer le journal d'audit",
             "cover tracks",
+            "effacer les traces",
             "unaudited action",
+            "action sans audit",
         ],
         // rule-3 : l'identité vit dans le graphe, pas dans les poids.
         "rule-3" => &[
             "bake identity into weights",
+            "figer l'identité dans les poids",
             "hardcode identity in model",
             "memorize identity in weights",
         ],
         // rule-4 : les capabilities ne s'atténuent que vers le bas.
         "rule-4" => &[
             "expand capability",
+            "étendre la capacité",
             "escalate privilege",
+            "escalade de privilèges",
             "widen token scope",
             "bypass capability check",
+            "contourner la vérification de capacité",
         ],
         // rule-5 : crise ⇒ référent humain obligatoire.
         "rule-5" => &[
             "handle crisis alone",
+            "gérer la crise seul",
             "no human referral",
+            "sans référent humain",
             "hide helpline",
             "replace human crisis help",
         ],
         // rule-6 : domaines sensibles ⇒ confiance élevée requise.
         "rule-6" => &[
             "low-confidence medical diagnosis",
+            "diagnostic médical peu fiable",
             "uncertain legal advice",
+            "conseil juridique incertain",
             "unverified financial order",
+            "ordre financier non vérifié",
         ],
         // rule-7 : profils mineurs restreints par défaut.
         "rule-7" => &[
             "disable minor protection",
+            "désactiver la protection mineur",
             "child safety bypass",
             "unrestricted minor profile",
         ],
         // rule-8 : capture A/V continue — jamais de flux brut hors hôte.
         "rule-8" => &[
             "exfiltrate raw audio",
+            "exfiltrer l'audio brut",
             "stream raw video off-device",
             "upload raw microphone",
             "transmit raw camera feed",
+            "transmettre le flux vidéo brut",
         ],
         // rule-9 : export mémoire en format ouvert documenté.
         "rule-9" => &[
             "proprietary memory export",
+            "export mémoire propriétaire",
             "undocumented memory dump",
             "export without schema",
         ],

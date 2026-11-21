@@ -84,10 +84,10 @@ impl ShoulderSurfingDetector {
 
         for face in faces {
             // Exclude the primary user's face if identified
-            if let Some(primary_box) = primary {
-                if face.bbox.intersection_over_union(primary_box) > self.primary_iou_threshold {
-                    continue;
-                }
+            if let Some(primary_box) = primary
+                && face.bbox.intersection_over_union(primary_box) > self.primary_iou_threshold
+            {
+                continue;
             }
 
             let area_ratio = face.bbox.area() / total_area;

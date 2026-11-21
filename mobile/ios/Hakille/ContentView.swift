@@ -55,10 +55,11 @@ extension Color {
                     GuestPassView(
                         guestPass: model.snapshot["guest_pass"],
                         busy: busy,
-                        onStartGuestPass: { name, power, dur in
-                            model.startGuestPass(name: name, power: power, durationSecs: dur)
+                        onStartGuestPass: { name, power, dur, pin in
+                            model.startGuestPass(name: name, power: power, durationSecs: dur, ownerPin: pin)
                         },
-                        onRevokeGuestPass: { model.revokeGuestPass() }
+                        onRevokeGuestPass: { pin in model.revokeGuestPass(ownerPin: pin) },
+                        onTickGuestPass: { secs in model.tickGuestPass(elapsedSecs: secs) }
                     )
                     AutonomyLadderView(
                         domainAutonomies: model.snapshot["domain_autonomies"].array,
@@ -445,9 +446,11 @@ private struct JSONDetails: View {
             busy: busy,
             onApprove: { id in model.dispatch("approve", ["card_id": id]) },
             onReject: { id in model.dispatch("reject", ["card_id": id]) },
-            onEdit: { id in model.dispatch("edit_card", ["card_id": id]) },
+            // Pas d'action « edit_card » côté cœur : aucun bouton Modifier factice.
+            onEdit: nil,
             onRequestWhy: { id in model.requestWhy(targetId: id.text, targetType: "card") },
-            onCancelApproval: { model.dispatch("cancel_approval") }
+            onCancelApproval: { model.dispatch("cancel_approval") },
+            onBeginApproval: { id in model.dispatch("begin_approval", ["card_id": id]) }
         )
     }
 }

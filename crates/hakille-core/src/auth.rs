@@ -14,8 +14,8 @@
 //!   substrates sans clé privée. Jamais de `unimplemented!`.
 
 use crate::capability::{
-    CapabilityAction, CapabilityAuthority, CapabilityScope, CapabilityToken,
-    verify_capability_with_root_key,
+    CapabilityAction, CapabilityAuthority, CapabilityScope, CapabilityToken, token_binding_facts,
+    verify_capability_with_root_key_and_bindings,
 };
 use crate::error::{HakilleError, Result};
 use crate::types::Timestamp;
@@ -221,11 +221,34 @@ impl AuthorizationContext {
     }
 
     /// Autorisation complète : validation du contexte + audience + expiry du
-    /// token + vérification Biscuit épinglée + quota.
+    /// token + vérification Biscuit épinglée (incluant `resource`, `token_aud`
+    /// et `token_nonce` dès lors que le jeton porte ces liaisons) + quota.
     pub fn authorize(
         &self,
         token: &CapabilityToken,
         authority: &CapabilityAuthority,
+        expected_audience: &str,
+    ) -> Result<()> {
+        self.authorize_with_root_key(token, &authority.root_public_key(), expected_audience)
+    }
+
+    /// Autorisation stricte (fail-closed) : exige que le jeton Biscuit porte
+    /// cryptographiquement `resource`, `token_aud` et `token_nonce` égaux à ce
+    /// contexte ET consomme atomiquement une unité du `Quota` si présent.
+    pub fn authorize_strict(
+        &mut self,
+        token: &CapabilityToken,
+        authority: &CapabilityAuthority,
+        expected_audience: &str,
+    ) -> Result<()> {
+        self.authorize_strict_with_root_key(token, &authority.root_public_key(), expected_audience)
+    }
+
+    /// Variante substrates de `authorize_strict` (clé publique racine uniquement).
+    pub fn authorize_strict_with_root_key(
+        &mut self,
+        token: &CapabilityToken,
+        root_public_key: &biscuit_auth::PublicKey,
         expected_audience: &str,
     ) -> Result<()> {
         self.validate()?;
@@ -234,30 +257,38 @@ impl AuthorizationContext {
             return Err(HakilleError::CapabilityExpired);
         }
         if !self.covers(&self.scope, &self.action) {
-            // Garde interne (infaillible en pratique) : le contexte doit se
-            // couvrir lui-même, sinon construction corrompue.
             return Err(HakilleError::CapabilityDenied(
                 "contexte incohérent (auto-couverture impossible)".to_string(),
             ));
         }
-        authority
-            .verify_pinned(token, self.scope.clone(), self.action.clone())
-            .map_err(|e| match e {
-                HakilleError::CapabilityExpired => HakilleError::CapabilityExpired,
-                HakilleError::CapabilityDenied(msg) => HakilleError::CapabilityDenied(format!(
-                    "scope insuffisant pour {:?}/{:?} sur '{}': {}",
-                    self.scope, self.action, self.resource, msg
-                )),
-                other => other,
-            })?;
         if let Some(ref q) = self.quota {
             q.check()?;
         }
+        verify_capability_with_root_key_and_bindings(
+            token,
+            root_public_key,
+            self.scope.clone(),
+            self.action.clone(),
+            Some(&self.resource),
+            Some(expected_audience),
+            Some(&self.nonce),
+        )
+        .map_err(|e| match e {
+            HakilleError::CapabilityExpired => HakilleError::CapabilityExpired,
+            HakilleError::CapabilityDenied(msg) => HakilleError::CapabilityDenied(format!(
+                "autorisation stricte refusée pour {:?}/{:?} sur '{}': {}",
+                self.scope, self.action, self.resource, msg
+            )),
+            other => other,
+        })?;
+        self.try_consume_quota()?;
         Ok(())
     }
 
     /// Variante substrates : vérification avec la seule clé publique racine
-    /// (sans clé privée d'autorité).
+    /// (sans clé privée d'autorité). Si le jeton porte des faits de liaison
+    /// (`resource`, `token_aud`, `token_nonce`), ils sont vérifiés de façon
+    /// épinglée dans l'authorizer Biscuit contre le contexte courant.
     pub fn authorize_with_root_key(
         &self,
         token: &CapabilityToken,
@@ -269,11 +300,20 @@ impl AuthorizationContext {
         if token.is_expired() {
             return Err(HakilleError::CapabilityExpired);
         }
-        verify_capability_with_root_key(
+        if !self.covers(&self.scope, &self.action) {
+            return Err(HakilleError::CapabilityDenied(
+                "contexte incohérent (auto-couverture impossible)".to_string(),
+            ));
+        }
+        let (tok_res, tok_nonce, tok_aud) = token_binding_facts(token);
+        verify_capability_with_root_key_and_bindings(
             token,
             root_public_key,
             self.scope.clone(),
             self.action.clone(),
+            tok_res.as_ref().map(|_| self.resource.as_str()),
+            tok_aud.as_ref().map(|_| expected_audience),
+            tok_nonce.as_ref().map(|_| self.nonce.as_str()),
         )
         .map_err(|e| match e {
             HakilleError::CapabilityExpired => HakilleError::CapabilityExpired,

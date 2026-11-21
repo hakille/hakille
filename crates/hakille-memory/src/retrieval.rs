@@ -147,6 +147,10 @@ impl HybridRetriever {
                         TrustLevel::User | TrustLevel::System
                     )
                     && t.metadata.validate().is_ok()
+                    && !crate::DecayEngine::is_faded(
+                        t.metadata.weight,
+                        crate::DEFAULT_COGNITIVE_CUTOFF_WEIGHT,
+                    )
             })
             .map(|t| (t.id.clone(), t))
             .collect();
@@ -174,8 +178,8 @@ impl HybridRetriever {
                 );
                 changed = true;
             }
-            let doc = self.documents.get_mut(id).expect("document indexé");
-            if doc.embedding.is_none()
+            if let Some(doc) = self.documents.get_mut(id)
+                && doc.embedding.is_none()
                 && let Some(embedder) = embedder
             {
                 if attempted >= policy.max_new_embeddings {
@@ -184,9 +188,21 @@ impl HybridRetriever {
                 }
                 attempted += 1;
                 match embedder(&doc.text) {
-                    Ok(vector) if valid_embedding(&vector) => { doc.embedding = Some(vector); changed = true; }
-                    Ok(_) => report.warning = Some("Embedding invalide : dimension, valeurs non finies ou norme nulle ; rappel lexical disponible.".into()),
-                    Err(error) => report.warning = Some(format!("Encodeur indisponible : {error} ; rappel lexical disponible.")),
+                    Ok(vector) if valid_embedding(&vector) => {
+                        doc.embedding = Some(vector);
+                        changed = true;
+                    }
+                    Ok(_) => {
+                        report.warning = Some(
+                            "Embedding invalide : dimension, valeurs non finies ou norme nulle ; rappel lexical disponible."
+                                .into(),
+                        )
+                    }
+                    Err(error) => {
+                        report.warning = Some(format!(
+                            "Encodeur indisponible : {error} ; rappel lexical disponible."
+                        ))
+                    }
                 }
             }
         }
@@ -257,7 +273,11 @@ impl HybridRetriever {
                         .vectors
                         .search(&vector, policy.limit.saturating_mul(4).max(32))?
                         .into_iter()
-                        .filter(|(_, score)| *score >= policy.min_cosine)
+                        .filter(|(id, score)| {
+                            *score >= policy.min_cosine
+                                && eligible.contains_key(id)
+                                && self.documents.contains_key(id)
+                        })
                         .enumerate()
                     {
                         let entry = fused.entry(id).or_insert((0.0, 0.0, None));
@@ -276,31 +296,34 @@ impl HybridRetriever {
                 }
             }
         }
-        let mut ranked: Vec<_> = fused.into_iter().collect();
+        let mut ranked: Vec<_> = fused
+            .into_iter()
+            .filter(|(id, _)| eligible.contains_key(id) && self.documents.contains_key(id))
+            .collect();
         ranked.sort_by(|a, b| {
+            let ta = eligible.get(&a.0);
+            let tb = eligible.get(&b.0);
             b.1.0
                 .total_cmp(&a.1.0)
-                .then_with(|| {
-                    eligible[&b.0]
+                .then_with(|| match (tb, ta) {
+                    (Some(tb), Some(ta)) => tb
                         .metadata
                         .confidence
-                        .total_cmp(&eligible[&a.0].metadata.confidence)
-                })
-                .then_with(|| {
-                    eligible[&b.0]
-                        .metadata
-                        .weight
-                        .total_cmp(&eligible[&a.0].metadata.weight)
+                        .total_cmp(&ta.metadata.confidence)
+                        .then_with(|| tb.metadata.weight.total_cmp(&ta.metadata.weight)),
+                    _ => std::cmp::Ordering::Equal,
                 })
                 .then_with(|| a.0.cmp(&b.0))
         });
         let total = ranked.len();
         let mut bytes = 0usize;
         for (id, (score, lexical_score, cosine)) in ranked {
-            let t = eligible[&id];
+            let (Some(t), Some(doc)) = (eligible.get(&id), self.documents.get(&id)) else {
+                continue;
+            };
             let text = format!(
                 "[fait {} ; source={:?} ; confiance={:.2}] {}",
-                id.0, t.metadata.source, t.metadata.confidence, self.documents[&id].text
+                id.0, t.metadata.source, t.metadata.confidence, doc.text
             );
             if report.hits.len() == policy.limit
                 || bytes.saturating_add(text.len()) > policy.max_bytes

@@ -114,10 +114,23 @@ impl SkillParser {
                     "scope" => match val.to_ascii_lowercase().as_str() {
                         "filesystem" => scopes.push(CapabilityScope::Filesystem),
                         "network" => scopes.push(CapabilityScope::Network),
-                        "gui_input" => scopes.push(CapabilityScope::GuiInput),
+                        "gui_input" | "guiinput" => scopes.push(CapabilityScope::GuiInput),
                         "wallet" => scopes.push(CapabilityScope::Wallet),
                         "audio" => scopes.push(CapabilityScope::Audio),
                         "camera" => scopes.push(CapabilityScope::Camera),
+                        "sensor" => scopes.push(CapabilityScope::Sensor),
+                        "biometrics" => scopes.push(CapabilityScope::Biometrics),
+                        "spatial" => scopes.push(CapabilityScope::Spatial),
+                        "cognitive_inference" | "cognitiveinference" => {
+                            scopes.push(CapabilityScope::CognitiveInference)
+                        }
+                        "model_inference" | "modelinference" => {
+                            scopes.push(CapabilityScope::ModelInference)
+                        }
+                        "notification" => scopes.push(CapabilityScope::Notification),
+                        "media_generation" | "mediageneration" => {
+                            scopes.push(CapabilityScope::MediaGeneration)
+                        }
                         "fullsystem" | "full_system" => scopes.push(CapabilityScope::FullSystem),
                         unknown => {
                             return Err(CapabilityError::Custom(format!(
@@ -200,6 +213,22 @@ impl ProgressiveSkillsLoader {
         Ok(name)
     }
 
+    fn validate_resource_path(resource_path: &str) -> Result<(), CapabilityError> {
+        if resource_path.trim().is_empty()
+            || resource_path.contains("..")
+            || resource_path.starts_with('/')
+            || resource_path.starts_with('\\')
+            || resource_path.contains('\\')
+            || resource_path.contains(':')
+            || resource_path.contains('\0')
+        {
+            return Err(CapabilityError::SecurityViolation {
+                reason: format!("Path traversal rejected in skill resource: '{resource_path}'"),
+            });
+        }
+        Ok(())
+    }
+
     /// Adds a bundled resource to an existing skill with path traversal protection.
     pub async fn attach_resource(
         &self,
@@ -207,14 +236,7 @@ impl ProgressiveSkillsLoader {
         resource_path: &str,
         data: Vec<u8>,
     ) -> Result<(), CapabilityError> {
-        if resource_path.contains("..")
-            || resource_path.starts_with('/')
-            || resource_path.starts_with('\\')
-        {
-            return Err(CapabilityError::SecurityViolation {
-                reason: format!("Path traversal rejected in skill resource: '{resource_path}'"),
-            });
-        }
+        Self::validate_resource_path(resource_path)?;
 
         let mut lock = self.skills.write().await;
         let skill = lock
@@ -257,15 +279,7 @@ impl ProgressiveSkillsLoader {
         skill_name: &str,
         resource_path: &str,
     ) -> Result<Vec<u8>, CapabilityError> {
-        if resource_path.contains("..")
-            || resource_path.starts_with('/')
-            || resource_path.starts_with('\\')
-            || resource_path.contains('\\')
-        {
-            return Err(CapabilityError::SecurityViolation {
-                reason: format!("Path traversal in resource fetch: '{resource_path}'"),
-            });
-        }
+        Self::validate_resource_path(resource_path)?;
 
         let lock = self.skills.read().await;
         let skill = lock

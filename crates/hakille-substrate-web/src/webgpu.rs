@@ -32,11 +32,13 @@ pub struct WebGpuCapabilities {
 
 impl Default for WebGpuCapabilities {
     fn default() -> Self {
+        // Honnête : aucun adaptateur navigateur WebGPU sondé par défaut ;
+        // un hôte navigateur réel injecte ses capacités via `WebGpuDetector::with_capabilities`.
         Self {
-            is_webgpu_supported: true,
-            adapter_name: "WebGPU Sovereign Adapter (Chrome / Edge / Safari)".to_string(),
-            has_shader_f16: true,
-            has_subgroups: true,
+            is_webgpu_supported: false,
+            adapter_name: "WebGPU indisponible (aucun adaptateur navigateur raccordé)".to_string(),
+            has_shader_f16: false,
+            has_subgroups: false,
             has_timestamp_query: false,
             limits: WebGpuLimits::default(),
         }

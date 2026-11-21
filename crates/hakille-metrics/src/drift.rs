@@ -38,6 +38,19 @@ impl ValuesDriftDetector {
         if current_vector.len() != self.baseline_moral_vector.len() || current_vector.is_empty() {
             return None;
         }
+        if !self.max_drift_threshold.is_finite()
+            || self.baseline_moral_vector.iter().any(|x| !x.is_finite())
+            || current_vector.iter().any(|x| !x.is_finite())
+        {
+            return Some(ValuesDriftAlert {
+                timestamp: Timestamp::now(),
+                cosine_drift: 1.0,
+                threshold: self.max_drift_threshold,
+                description:
+                    "Constitutional values drift alert: non-finite (NaN/Inf) moral vector detected"
+                        .to_string(),
+            });
+        }
 
         let dot_product: f64 = self
             .baseline_moral_vector
@@ -54,8 +67,18 @@ impl ValuesDriftDetector {
             .sqrt();
         let norm_curr: f64 = current_vector.iter().map(|&x| x * x).sum::<f64>().sqrt();
 
-        if norm_base == 0.0 || norm_curr == 0.0 {
+        if norm_base == 0.0 {
             return None;
+        }
+        if norm_curr == 0.0 {
+            return Some(ValuesDriftAlert {
+                timestamp: Timestamp::now(),
+                cosine_drift: 1.0,
+                threshold: self.max_drift_threshold,
+                description:
+                    "Constitutional values drift alert: zero-norm current moral vector detected"
+                        .to_string(),
+            });
         }
 
         let cosine_sim = (dot_product / (norm_base * norm_curr)).clamp(-1.0, 1.0);
@@ -84,11 +107,11 @@ impl ValuesDriftDetector {
         }
     }
 
-    /// Persistance JSON simple via `std::fs`.
+    /// Persistance JSON atomique via fichier temporaire.
     pub fn save_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
         let json = serde_json::to_string_pretty(&self.to_snapshot())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(path, json)
+        crate::atomic_write_json(path, &json)
     }
 
     pub fn load_from_file(path: &std::path::Path) -> std::io::Result<Self> {

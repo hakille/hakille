@@ -165,9 +165,10 @@ fn test_adv_bgr_to_rgb_truncated_out_panic_behavior() {
         bgr_to_rgb(&bgr, &mut truncated_out);
     }));
     assert!(
-        panic_res.is_err(),
-        "Confirmed: bgr_to_rgb panics without bounds check when out.len() < bgr.len()"
+        panic_res.is_ok(),
+        "bgr_to_rgb ne doit jamais paniquer quand out.len() < bgr.len()"
     );
+    assert_eq!(truncated_out, [30, 20, 10]);
 }
 
 #[tokio::test]

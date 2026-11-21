@@ -365,18 +365,17 @@ impl HnswVectorStore {
             .iter()
             .map(|(id, emb)| (id.clone(), cosine_sim(query, emb)))
             .collect();
-        scored.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        });
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         scored.truncate(k);
         scored
     }
-}
 
-impl VectorIndex for HnswVectorStore {
-    fn insert(&mut self, id: TripletId, embedding: Vec<f32>) -> hakille_core::Result<()> {
+    fn insert_without_rebuild(
+        &mut self,
+        id: TripletId,
+        embedding: Vec<f32>,
+        record_wal: bool,
+    ) -> hakille_core::Result<()> {
         check_embedding_values(&embedding, "VectorIndex::insert")?;
         check_dimension(
             self.expected_dim,
@@ -403,24 +402,46 @@ impl VectorIndex for HnswVectorStore {
         self.embeddings.insert(id.clone(), embedding.clone());
         self.ids.push(id.clone());
         self.points.push(EmbeddingPoint(embedding.clone()));
-        // WAL : mémoire + append fichier (best-effort, erreur loggée).
-        self.wal.push((id.clone(), embedding.clone()));
-        if let Some(ref path) = self.wal_path.clone() {
-            let line = serde_json::json!({"id": id, "embedding": embedding}).to_string();
-            if let Err(e) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .and_then(|mut f| {
-                    use std::io::Write;
-                    writeln!(f, "{line}")
-                })
-            {
-                tracing::warn!("HnswVectorStore WAL append impossible: {e}");
+        if record_wal {
+            // WAL : mémoire + append fichier (best-effort, erreur loggée).
+            self.wal.push((id.clone(), embedding.clone()));
+            if let Some(ref path) = self.wal_path.clone() {
+                let line = serde_json::json!({"id": id, "embedding": embedding}).to_string();
+                if let Err(e) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .and_then(|mut f| {
+                        use std::io::Write;
+                        writeln!(f, "{line}")
+                    })
+                {
+                    tracing::warn!("HnswVectorStore WAL append impossible: {e}");
+                }
             }
         }
+        Ok(())
+    }
+}
+
+impl VectorIndex for HnswVectorStore {
+    fn insert(&mut self, id: TripletId, embedding: Vec<f32>) -> hakille_core::Result<()> {
+        self.insert_without_rebuild(id, embedding, true)?;
         // Index : reconstruit seulement au-delà du seuil (en deçà, le
         // brute-force exact suffit et évite le coût HNSW).
+        if self.embeddings.len() >= HNSW_BRUTE_FORCE_THRESHOLD {
+            self.rebuild();
+        } else {
+            self.index = None;
+        }
+        Ok(())
+    }
+
+    fn batch_insert(&mut self, items: Vec<(TripletId, Vec<f32>)>) -> hakille_core::Result<()> {
+        for (id, embedding) in items {
+            self.insert_without_rebuild(id, embedding, true)?;
+        }
+        // Un seul rebuild ANN à la fin du lot : O(N log N) au lieu de O(N^2 log N).
         if self.embeddings.len() >= HNSW_BRUTE_FORCE_THRESHOLD {
             self.rebuild();
         } else {
@@ -471,17 +492,14 @@ impl VectorIndex for HnswVectorStore {
                 }
             }
         }
-        scored.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        });
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         scored.truncate(k);
         Ok(scored)
     }
 
     fn remove(&mut self, id: &TripletId) -> hakille_core::Result<()> {
         self.embeddings.remove(id);
+        self.wal.retain(|(wid, _)| wid != id);
         if let Some(pos) = self.ids.iter().position(|x| x == id) {
             self.ids.remove(pos);
             self.points.remove(pos);
@@ -506,6 +524,7 @@ impl VectorIndex for HnswVectorStore {
     }
 
     fn save(&self, db: &redb::Database) -> hakille_core::Result<()> {
+        use redb::ReadableTable;
         let txn = db
             .begin_write()
             .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?;
@@ -513,6 +532,24 @@ impl VectorIndex for HnswVectorStore {
             let mut table = txn
                 .open_table(crate::storage::edge::EMBEDDINGS_TABLE)
                 .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?;
+            let stale: Vec<Vec<u8>> = table
+                .iter()
+                .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?
+                .filter_map(|item| {
+                    item.ok().and_then(|(k, _)| {
+                        let key = k.value();
+                        let keep = bincode::deserialize::<TripletId>(key)
+                            .ok()
+                            .is_some_and(|id| self.embeddings.contains_key(&id));
+                        (!keep).then(|| key.to_vec())
+                    })
+                })
+                .collect();
+            for key in stale {
+                table
+                    .remove(key.as_slice())
+                    .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?;
+            }
             for (id, vec) in &self.embeddings {
                 let id_bytes = bincode::serialize(id)
                     .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?;
@@ -538,14 +575,13 @@ impl VectorIndex for HnswVectorStore {
             Err(e) => return Err(hakille_core::HakilleError::Internal(e.to_string())),
         };
         use redb::ReadableTable;
-        // Vide l'état courant puis rejoue (WAL non rejoué ici : déjà persisté).
+        // Vide l'état courant puis recharge en un seul rebuild ANN (O(N log N)).
         self.embeddings.clear();
         self.ids.clear();
         self.points.clear();
+        self.wal.clear();
         self.index = None;
         self.expected_dim = None;
-        // Suspend le WAL fichier pendant le rejeu (évite de dupliquer le WAL).
-        let wal_path = self.wal_path.take();
         for item in table
             .iter()
             .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?
@@ -555,9 +591,11 @@ impl VectorIndex for HnswVectorStore {
                 .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?;
             let vec: Vec<f32> = bincode::deserialize(v.value())
                 .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?;
-            self.insert(id, vec)?;
+            self.insert_without_rebuild(id, vec, false)?;
         }
-        self.wal_path = wal_path;
+        if self.embeddings.len() >= HNSW_BRUTE_FORCE_THRESHOLD {
+            self.rebuild();
+        }
         Ok(())
     }
 }

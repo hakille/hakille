@@ -9,13 +9,13 @@
 
 use crate::audio::mastering::{AudioBuffer, read_wav_file};
 use crate::audio::{AudioGenerationOutput, AudioGeneratorBackend};
+use crate::backends::cloud::read_bounded_body;
 use crate::error::{MediaError, MediaResult};
 use crate::image::encode::RgbaImageBuf;
 use crate::image::{ImageGenerationOutput, ImageGeneratorBackend};
 use crate::types::{
     AudioGenRequest, EngineAvailability, EngineDescriptor, EngineKind, GenerationControl,
-    ImageGenRequest, MediaDataExit, MediaModality, ProgressCallback, VideoContainer,
-    VideoGenRequest, derive_seed,
+    ImageGenRequest, MediaDataExit, MediaModality, ProgressCallback, VideoGenRequest, derive_seed,
 };
 use crate::video::{VideoGenerationOutput, VideoGeneratorBackend};
 use async_trait::async_trait;
@@ -55,6 +55,15 @@ impl LoopbackMediaServerBackend {
         if parsed.scheme() != "http" {
             return Err(MediaError::InvalidRequest(
                 "le serveur loopback média doit utiliser http:// sur 127.0.0.1 ou [::1]".into(),
+            ));
+        }
+        if !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(MediaError::InvalidRequest(
+                "URL loopback : identifiants, query et fragment interdits".into(),
             ));
         }
         let host = parsed
@@ -176,15 +185,8 @@ impl ImageGeneratorBackend for LoopbackMediaServerBackend {
                 resp.status()
             )));
         }
-        let raw = resp
-            .bytes()
-            .await
-            .map_err(|e| MediaError::Network(e.to_string()))?;
-        if raw.len() > MAX_LOOPBACK_RESPONSE_BYTES {
-            return Err(MediaError::PolicyExceeded(
-                "réponse loopback image trop volumineuse".into(),
-            ));
-        }
+        let raw =
+            read_bounded_body(resp, MAX_LOOPBACK_RESPONSE_BYTES, "réponse loopback image").await?;
         let parsed: serde_json::Value = serde_json::from_slice(&raw)?;
         let b64 =
             parsed["data"][0]["b64_json"]
@@ -263,16 +265,8 @@ impl AudioGeneratorBackend for LoopbackMediaServerBackend {
                 resp.status()
             )));
         }
-        let wav_bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| MediaError::Network(e.to_string()))?
-            .to_vec();
-        if wav_bytes.len() > MAX_LOOPBACK_RESPONSE_BYTES {
-            return Err(MediaError::PolicyExceeded(
-                "réponse loopback audio trop volumineuse".into(),
-            ));
-        }
+        let wav_bytes =
+            read_bounded_body(resp, MAX_LOOPBACK_RESPONSE_BYTES, "réponse loopback audio").await?;
         let tmp = tempfile::NamedTempFile::new()?;
         std::fs::write(tmp.path(), &wav_bytes)?;
         let buffer: AudioBuffer = read_wav_file(tmp.path())?;
@@ -349,19 +343,11 @@ impl VideoGeneratorBackend for LoopbackMediaServerBackend {
                 resp.status()
             )));
         }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| MediaError::Network(e.to_string()))?
-            .to_vec();
-        if bytes.len() > MAX_LOOPBACK_RESPONSE_BYTES {
-            return Err(MediaError::PolicyExceeded(
-                "réponse loopback vidéo trop volumineuse".into(),
-            ));
-        }
+        let bytes =
+            read_bounded_body(resp, MAX_LOOPBACK_RESPONSE_BYTES, "réponse loopback vidéo").await?;
         Ok(VideoGenerationOutput {
             encoded_bytes: bytes,
-            container: VideoContainer::Mp4H264,
+            container: req.container,
             preview: crate::types::PreviewImage {
                 width: 0,
                 height: 0,

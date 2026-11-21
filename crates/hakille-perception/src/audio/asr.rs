@@ -38,7 +38,7 @@ pub struct SenseVoiceSmall {
     model_name: String,
     tokenizer: Option<SenseVoiceTokenizer>,
     models_dir: Option<PathBuf>,
-    engine: std::sync::Mutex<Option<SenseVoiceOnnx>>,
+    engine: std::sync::Arc<std::sync::Mutex<Option<SenseVoiceOnnx>>>,
 }
 
 impl SenseVoiceSmall {
@@ -47,7 +47,7 @@ impl SenseVoiceSmall {
             model_name: "SenseVoice-Small-INT8".to_string(),
             tokenizer: None,
             models_dir: None,
-            engine: std::sync::Mutex::new(None),
+            engine: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -56,7 +56,7 @@ impl SenseVoiceSmall {
             model_name: "SenseVoice-Small-INT8".to_string(),
             tokenizer: Some(tokenizer),
             models_dir: None,
-            engine: std::sync::Mutex::new(None),
+            engine: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -73,7 +73,7 @@ impl SenseVoiceSmall {
             model_name: "SenseVoice-Small-INT8".to_string(),
             tokenizer: None,
             models_dir: Some(dir.as_ref().to_path_buf()),
-            engine: std::sync::Mutex::new(None),
+            engine: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -127,23 +127,6 @@ impl SenseVoiceSmall {
             MODEL, TOKENS, candidates
         )))
     }
-
-    /// Verrouille le slot moteur, initialise paresseusement au premier appel.
-    /// Le verrou est tenu pendant le forward (transcriptions concurrentes
-    /// sérialisées — v1 documenté ; `Session::run` exige `&mut`).
-    fn lock_engine(&self) -> Result<std::sync::MutexGuard<'_, Option<SenseVoiceOnnx>>> {
-        let mut slot = self.engine.lock().map_err(|e| {
-            HakilleError::InferenceError(format!(
-                "SenseVoiceSmall::transcribe: moteur empoisonné : {e}"
-            ))
-        })?;
-        if slot.is_none() {
-            let (model, tokens) = self.resolve_model_files()?;
-            let engine = SenseVoiceOnnx::open(&model, &tokens)?;
-            *slot = Some(engine);
-        }
-        Ok(slot)
-    }
 }
 
 impl Default for SenseVoiceSmall {
@@ -161,16 +144,34 @@ impl AsrEngine for SenseVoiceSmall {
             chunk.sample_rate,
         )?;
         let duration = pcm.len() as f32 / 16_000.0;
-        let mut slot = self.lock_engine().map_err(|e| {
-            HakilleError::InferenceError(format!("SenseVoiceSmall::transcribe: {e}"))
-        })?;
-        let engine = slot.as_mut().expect("moteur initialisé par lock_engine");
-        // Forward RÉEL : mel + ort + CTC greedy + tokenizer réel.
-        let out = engine.transcribe(&pcm)?;
+        let (model_path, tokens_path) = self.resolve_model_files()?;
+        let engine_arc = std::sync::Arc::clone(&self.engine);
+
+        // Déport sur spawn_blocking pour ne jamais bloquer les workers Tokio
+        // pendant le chargement ONNX ou le forward CPU SenseVoice.
+        let out = tokio::task::spawn_blocking(move || -> Result<_> {
+            let mut slot = engine_arc.lock().map_err(|e| {
+                HakilleError::InferenceError(format!(
+                    "SenseVoiceSmall::transcribe: moteur empoisonné : {e}"
+                ))
+            })?;
+            if slot.is_none() {
+                let engine = SenseVoiceOnnx::open(&model_path, &tokens_path)?;
+                *slot = Some(engine);
+            }
+            let engine = slot
+                .as_mut()
+                .ok_or_else(|| HakilleError::InferenceError("moteur SenseVoice absent".into()))?;
+            engine.transcribe(&pcm)
+        })
+        .await
+        .map_err(|e| {
+            HakilleError::InferenceError(format!("SenseVoiceSmall::transcribe interrompu : {e}"))
+        })??;
+
         Ok(AsrHypothesis {
             transcript: out.text,
             language: out.language,
-            // v1 honnête : têtes auxiliaires émotion/événements non décodées.
             emotion: out.emotion_event.emotion,
             acoustic_events: out.emotion_event.events,
             confidence: out.confidence,

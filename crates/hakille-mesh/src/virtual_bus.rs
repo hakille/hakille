@@ -47,12 +47,10 @@ impl MeshTransport for VirtualMeshPeer {
             .map_err(|e| MeshError::Transport(e.to_string()))
     }
 
-    async fn send_direct(
-        &self,
-        target_peer_id: &str,
-        mut frame: MeshFrame,
-    ) -> Result<bool, MeshError> {
-        frame.target_peer_id = Some(target_peer_id.to_string());
+    async fn send_direct(&self, target_peer_id: &str, frame: MeshFrame) -> Result<bool, MeshError> {
+        if frame.target_peer_id.as_deref() != Some(target_peer_id) {
+            return Err(MeshError::InvalidSignature);
+        }
         self.bus_sender
             .send(frame)
             .map(|_| true)
@@ -69,10 +67,10 @@ impl MeshTransport for VirtualMeshPeer {
                         continue;
                     }
                     // Filtre les trames unicast adressées à un tiers
-                    if let Some(target) = &frame.target_peer_id {
-                        if target != &self.peer_id {
-                            continue;
-                        }
+                    if let Some(target) = &frame.target_peer_id
+                        && target != &self.peer_id
+                    {
+                        continue;
                     }
                     return Ok(frame);
                 }

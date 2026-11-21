@@ -83,10 +83,9 @@ impl KernelStub for RealDaemonBridge {
         msg.check().map_err(BridgeError::Protocol)?;
         if self.policy == AuthorityPolicy::Detached {
             return match &msg.inner {
-                UiToKernel::Undo { journal_id } => {
-                    Ok(KernelToUi::JournalAppended { id: *journal_id })
+                UiToKernel::Undo { .. } | UiToKernel::RevokeAll => {
+                    self.require_daemon("journal d'audit signé du démon requis")
                 }
-                UiToKernel::RevokeAll => Ok(KernelToUi::JournalAppended { id: 0 }),
                 UiToKernel::Approve { .. }
                 | UiToKernel::Edit { .. }
                 | UiToKernel::Reject { .. } => self.require_daemon("carte en attente"),
@@ -122,6 +121,11 @@ impl KernelStub for RealDaemonBridge {
                 | UiToKernel::MediaJobCancel { .. }
                 | UiToKernel::MediaGalleryRequest { .. } => {
                     self.require_daemon("moteur génératif média réel requis")
+                }
+                UiToKernel::HomeDevicesRequest
+                | UiToKernel::HomeDiscoverRequest { .. }
+                | UiToKernel::HomeCommandRequest { .. } => {
+                    self.require_daemon("SovereignHomeHub réel requis")
                 }
             };
         }
@@ -215,6 +219,13 @@ impl KernelStub for RealDaemonBridge {
             | UiToKernel::MediaGalleryRequest { .. } => Ok(KernelToUi::Toast {
                 text: "moteur génératif média réel requis — démon non branché (pont simulé)".into(),
             }),
+            // Extension additive v1 (domotique) : aucune simulation d'appareil
+            // sur le pont simulé — refus explicite.
+            UiToKernel::HomeDevicesRequest
+            | UiToKernel::HomeDiscoverRequest { .. }
+            | UiToKernel::HomeCommandRequest { .. } => Ok(KernelToUi::Toast {
+                text: "SovereignHomeHub réel requis — démon non branché (pont simulé)".into(),
+            }),
         }
     }
 }
@@ -245,6 +256,8 @@ mod tests {
             UiEvent::SettingsToggled { index: 0 },
             UiEvent::MemoryForget { row_id: "m".into() },
             UiEvent::OutboxFlush,
+            UiEvent::JournalRevert { index: 1 },
+            UiEvent::PowersKillAll,
         ] {
             assert!(b.dispatch(ev).is_err(), "Detached doit refuser sans noyau");
         }

@@ -18,3 +18,4 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 bytes = { workspace = true }
 async-trait = { workspace = true }
+sha2 = { workspace = true }

@@ -31,6 +31,11 @@ hakille-auth = { path = "../crates/hakille-auth" }
 hakille-perception = { path = "../crates/hakille-perception" }
 hakille-inference = { path = "../crates/hakille-inference" }
 hakille-media = { path = "../crates/hakille-media" }
+hakille-home = { path = "../crates/hakille-home" }
+hakille-mesh = { path = "../crates/hakille-mesh" }
+hakille-mobile = { path = "../crates/hakille-mobile" }
+hakille-ipc = { path = "../crates/hakille-ipc" }
+hakille-spatial = { path = "../crates/hakille-spatial" }
 ed25519-dalek = { workspace = true }
 tempfile = "3"
 serde = { workspace = true }
@@ -40,5 +45,4 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-proptest = { workspace = true }
 async-trait = { workspace = true }

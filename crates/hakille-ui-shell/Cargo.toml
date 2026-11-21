@@ -13,7 +13,6 @@ hakille-core = { path = "../hakille-core" }
 hakille-ui = { path = "../hakille-ui" }
 hakille-audit = { path = "../hakille-audit" }
 hakille-memory = { path = "../hakille-memory" }
-hakille-design = { path = "../hakille-design" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

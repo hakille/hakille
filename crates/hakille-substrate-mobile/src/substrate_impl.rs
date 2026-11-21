@@ -130,7 +130,7 @@ impl MobileSubstrate {
             (CapabilityScope::Camera, self.camera.is_some()),
             (CapabilityScope::GuiInput, self.input.is_some()),
             (CapabilityScope::Sensor, self.screen.is_some()),
-            (CapabilityScope::Notification, true),
+            (CapabilityScope::Notification, self.notification.is_some()),
             (CapabilityScope::ModelInference, false),
             (CapabilityScope::Wallet, false),
             (CapabilityScope::FullSystem, false),
@@ -205,6 +205,7 @@ impl MobileSubstrate {
     }
     pub fn with_notification_driver(mut self, driver: Arc<dyn MobileNotificationDriver>) -> Self {
         self.notification = Some(driver);
+        self.refresh_manifest();
         self
     }
 
@@ -561,12 +562,9 @@ impl Substrate for MobileSubstrate {
         if let Some(driver) = &self.notification {
             driver.send(request).await
         } else {
-            tracing::info!(id = %request.id, "MobileSubstrate: Queued in mobile shadow sync queue");
-            Ok(hakille_substrate::NotificationHandle {
-                id: request.id,
-                channel: "mobile_shadow_queue".to_string(),
-                delivered_at_ms: chrono::Utc::now().timestamp_millis() as u64,
-            })
+            Err(HakilleError::SubstrateError(
+                "notification mobile indisponible : aucun pilote natif NotificationManager/UNUserNotificationCenter raccordé ; aucune notification envoyée".into(),
+            ))
         }
     }
 
@@ -584,8 +582,10 @@ impl Substrate for MobileSubstrate {
         if let Some(driver) = &self.notification {
             driver.dismiss(handle).await
         } else {
-            tracing::debug!(id = %handle.id, "MobileSubstrate: Dismissed notification from shadow queue");
-            Ok(())
+            Err(HakilleError::SubstrateError(
+                "fermeture de notification mobile indisponible : aucun pilote natif raccordé"
+                    .into(),
+            ))
         }
     }
 }

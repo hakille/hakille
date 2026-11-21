@@ -292,18 +292,26 @@ import Combine
     func dismissPrivacyGuard() {
         dispatch("dismiss_privacy_guard")
     }
-    func startGuestPass(name: String, power: String, durationSecs: UInt32 = 3600) {
-        dispatch("start_guest_pass", [
+    /// `ownerPin` optionnel : s'il est fourni, la révocation anticipée exigera
+    /// le même PIN (le cœur Rust n'en garde que le condensat, en mémoire vive).
+    func startGuestPass(name: String, power: String, durationSecs: UInt32 = 3600, ownerPin: String? = nil) {
+        var values: [String: JSONValue] = [
             "name": .string(name),
             "power": .string(power),
             "duration_secs": .unsigned(UInt64(durationSecs))
-        ])
+        ]
+        if let ownerPin, !ownerPin.isEmpty { values["owner_pin"] = .string(ownerPin) }
+        dispatch("start_guest_pass", values)
     }
     func tickGuestPass(elapsedSecs: UInt32) {
         dispatch("tick_guest_pass", ["elapsed_secs": .unsigned(UInt64(elapsedSecs))])
     }
-    func revokeGuestPass() {
-        dispatch("revoke_guest_pass")
+    func revokeGuestPass(ownerPin: String? = nil) {
+        if let ownerPin, !ownerPin.isEmpty {
+            dispatch("revoke_guest_pass", ["owner_pin": .string(ownerPin)])
+        } else {
+            dispatch("revoke_guest_pass")
+        }
     }
     func connectFromPairingQr(_ rawQrJson: String) {
         do {

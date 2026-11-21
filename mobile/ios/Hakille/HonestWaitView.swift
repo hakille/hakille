@@ -4,7 +4,7 @@ import Combine
 /// 3-Tier Honest Wait Counter (states.rs §19):
 /// - t < 400ms: LoadingFast (invisible transition, no indicator)
 /// - 400ms <= t < 2000ms: LoadingSkeleton (calm static skeleton, no fake radar)
-/// - t >= 2000ms: LoadingHonest (exact elapsed seconds, local Qwen CPU explanation, active Annuler button)
+/// - t >= 2000ms: LoadingHonest (exact elapsed seconds, hub generation explanation, active Annuler button)
 struct HonestWaitView: View {
     let startTime: Date?
     let onCancel: () -> Void
@@ -34,13 +34,13 @@ struct HonestWaitView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .accessibilityLabel("Chargement en cours")
             } else {
-                // LoadingHonest: exact elapsed seconds + local Qwen CPU explanation + active cancel button
+                // LoadingHonest: exact elapsed seconds + hub generation explanation + active cancel button
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 12) {
                         ProgressView()
                             .tint(HakilleTokens.colorBraiseDark)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Génération locale Qwen CPU en cours… (\(elapsedSeconds)s)")
+                            Text("Génération en cours sur le hub… (\(elapsedSeconds)s)")
                                 .font(HakilleTypography.body)
                                 .foregroundStyle(HakilleTokens.colorTexte1Dark)
                             Text("Inférence sur le processeur du hub. Aucun traitement cloud.")

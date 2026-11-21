@@ -217,7 +217,6 @@ impl Capture {
                 let (tx, rx) = std::sync::mpsc::channel();
                 self.stop_tx = Some(tx);
                 let mut cb = callback;
-                let health = std::sync::Arc::clone(&self.health);
                 std::thread::spawn(move || {
                     let silence = vec![0.0f32; CAPTURE_BLOCK_SAMPLES];
                     while running.load(std::sync::atomic::Ordering::SeqCst) {
@@ -281,9 +280,10 @@ impl Capture {
     {
         let channels = self.config.channels as usize;
         let mut resampler = LinearStreamResampler::new(self.config.sample_rate, TARGET_SAMPLE_RATE);
-        let mut mono: Vec<f32> = Vec::new();
-        let mut resampled: Vec<f32> = Vec::new();
-        let mut pending: Vec<f32> = Vec::new();
+        let mut mono: Vec<f32> = Vec::with_capacity(4096);
+        let mut resampled: Vec<f32> = Vec::with_capacity(4096);
+        let mut pending: Vec<f32> = Vec::with_capacity(CAPTURE_BLOCK_SAMPLES * 4);
+        let mut block = [0.0f32; CAPTURE_BLOCK_SAMPLES];
         let error_device_name = self.device_name.clone();
         let health = std::sync::Arc::clone(&self.health);
         let error_health = std::sync::Arc::clone(&self.health);
@@ -301,14 +301,18 @@ impl Capture {
                     resampled.clear();
                     resampler.push(&mono, &mut resampled);
                     pending.extend_from_slice(&resampled);
-                    while pending.len() >= CAPTURE_BLOCK_SAMPLES {
-                        let block: Vec<f32> = pending.drain(..CAPTURE_BLOCK_SAMPLES).collect();
+                    let mut consumed = 0usize;
+                    while pending.len().saturating_sub(consumed) >= CAPTURE_BLOCK_SAMPLES {
+                        block.copy_from_slice(&pending[consumed..consumed + CAPTURE_BLOCK_SAMPLES]);
+                        consumed += CAPTURE_BLOCK_SAMPLES;
                         health.block_delivered();
                         callback(&block);
                     }
+                    if consumed > 0 {
+                        pending.drain(..consumed);
+                    }
                 },
                 move |err: cpal::Error| {
-                    error_health.record_error(AudioError::StreamError(err.to_string()));
                     tracing::error!(
                         error = %err,
                         device = %error_device_name,

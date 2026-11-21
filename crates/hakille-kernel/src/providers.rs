@@ -284,7 +284,8 @@ pub fn require_network_capability(
 
 /// Variante avec [`AuthorizationContext`] : valide le contexte (ressource,
 /// expiry, audience, quota, nonce, délégation), exige qu'il couvre
-/// `Network`/`Execute`, puis vérifie le token épinglé.
+/// `Network`/`Execute`, puis vérifie le token épinglé AVEC liaisons
+/// cryptographiques (`resource`, `token_aud`, `token_nonce`).
 pub fn require_network_capability_with_context(
     authority: &CapabilityAuthority,
     network_capability: Option<&CapabilityToken>,
@@ -304,7 +305,14 @@ pub fn require_network_capability_with_context(
             ctx.scope, ctx.action, ctx.resource
         )));
     }
-    require_network_capability(authority, network_capability)
+    let token = network_capability.ok_or_else(|| {
+        HakilleError::CapabilityDenied(
+            "cloud provider requires explicit Network capability + consent (aucun token fourni)"
+                .to_string(),
+        )
+    })?;
+    ctx.authorize(token, authority, expected_audience)?;
+    require_network_capability(authority, Some(token))
 }
 
 #[cfg(test)]

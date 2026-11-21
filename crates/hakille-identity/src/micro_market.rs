@@ -7,7 +7,7 @@
 use crate::agent::AgentPassport;
 use crate::biscuit::BiscuitCapabilityManager;
 use crate::ssi::{Did, DidKey};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use hakille_core::HakilleError;
 use hakille_core::auth::MAX_DELEGATION_DEPTH;
 use hakille_core::capability::{CapabilityAction, CapabilityScope, CapabilityToken};
@@ -135,18 +135,17 @@ pub struct AgentBidOffer {
 }
 
 impl AgentBidOffer {
-    /// Compute canonical digest of bid bound to a specific contract ID.
+    /// Compute canonical digest of bid bound to a specific contract ID with length-prefixed fields.
     pub fn canonical_digest(&self, contract_id: &str) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"HAKILLE_BID_OFFER_V1:");
+        hasher.update((contract_id.len() as u32).to_le_bytes());
         hasher.update(contract_id.as_bytes());
-        hasher.update(b":");
-        hasher.update(self.bidder_did.as_str().as_bytes());
-        hasher.update(b":");
+        let bidder_bytes = self.bidder_did.as_str().as_bytes();
+        hasher.update((bidder_bytes.len() as u32).to_le_bytes());
+        hasher.update(bidder_bytes);
         hasher.update(self.requested_fuel.to_le_bytes());
-        hasher.update(b":");
         hasher.update(self.requested_budget_cents.to_le_bytes());
-        hasher.update(b":");
         hasher.update(self.estimated_duration_ms.to_le_bytes());
         let mut out = [0u8; 32];
         out.copy_from_slice(&hasher.finalize());
@@ -174,7 +173,7 @@ impl AgentBidOffer {
         };
         let sig = Signature::from_bytes(&sig_bytes);
         let digest = self.canonical_digest(contract_id);
-        verifying_key.verify(&digest, &sig).is_ok()
+        verifying_key.verify_strict(&digest, &sig).is_ok()
     }
 }
 
@@ -325,7 +324,7 @@ impl DefaultAgentMicroMarketEngine {
         }
     }
 
-    /// Register or overwrite an explicit parent compute budget.
+    /// Register or update an explicit parent compute budget without erasing active escrow locks.
     pub fn register_parent_budget(
         &self,
         parent_did: &Did,
@@ -335,13 +334,25 @@ impl DefaultAgentMicroMarketEngine {
             .escrow_ledger
             .write()
             .map_err(|e| HakilleError::CapabilityDenied(format!("Ledger lock failed: {e}")))?;
+        let (locked_fuel, locked_cents) = ledger
+            .get(parent_did)
+            .map(|e| (e.locked_fuel, e.locked_cents))
+            .unwrap_or((0, 0));
+        if budget.total_fuel_points < budget.consumed_fuel_points.saturating_add(locked_fuel)
+            || budget.total_budget_cents < budget.consumed_budget_cents.saturating_add(locked_cents)
+        {
+            return Err(HakilleError::CapabilityDenied(
+                "Cannot register parent budget smaller than active locked + settled escrow"
+                    .to_string(),
+            ));
+        }
         ledger.insert(
             parent_did.clone(),
             ParentEscrow {
                 total_fuel: budget.total_fuel_points,
                 total_cents: budget.total_budget_cents,
-                locked_fuel: 0,
-                locked_cents: 0,
+                locked_fuel,
+                locked_cents,
                 settled_fuel: budget.consumed_fuel_points,
                 settled_cents: budget.consumed_budget_cents,
             },
@@ -371,7 +382,9 @@ impl DefaultAgentMicroMarketEngine {
         self.awarded_contracts.get(contract_id)
     }
 
-    /// Helper to synthesize or attenuate biscuit token bytes.
+    /// Helper to attenuate an existing parent Biscuit token or mint an initial contract token
+    /// when the parent passport was initialized without raw token bytes.
+    /// Never falls back to minting a fresh root token if a non-empty parent token is invalid!
     fn attenuate_or_mint_token(
         &self,
         parent_token_bytes: &[u8],
@@ -383,45 +396,30 @@ impl DefaultAgentMicroMarketEngine {
             Timestamp(chrono::Utc::now() + chrono::Duration::seconds(deadline_seconds as i64));
 
         if parent_token_bytes.is_empty() {
-            // Mint fresh root token for contract
             let root_tok =
                 self.biscuit_manager
                     .mint_root_token(scopes.to_vec(), actions.to_vec(), expiry)?;
             root_tok.to_vec()
         } else {
-            // Attempt to deserialize parent token using pinned root key
-            match CapabilityToken::from_vec(
+            let parent_tok = CapabilityToken::from_vec(
                 parent_token_bytes.to_vec(),
                 &self.biscuit_manager.root_public_key(),
-            ) {
-                Ok(parent_tok) => {
-                    if let Some(parent_exp) = parent_tok.min_expiry_timestamp() {
-                        if expiry.0.timestamp() > parent_exp {
-                            expiry = Timestamp(
-                                chrono::DateTime::from_timestamp(parent_exp, 0).unwrap_or(expiry.0),
-                            );
-                        }
-                    }
-                    let child_tok = self.biscuit_manager.attenuate_token(
-                        &parent_tok,
-                        scopes,
-                        actions,
-                        scopes,
-                        actions,
-                        expiry,
-                    )?;
-                    child_tok.to_vec()
-                }
-                Err(_) => {
-                    // Parent token bytes may be from an external authority; mint attenuated token
-                    let tok = self.biscuit_manager.mint_root_token(
-                        scopes.to_vec(),
-                        actions.to_vec(),
-                        expiry,
-                    )?;
-                    tok.to_vec()
-                }
+            )?;
+            if let Some(parent_exp) = parent_tok.min_expiry_timestamp()
+                && expiry.0.timestamp() > parent_exp
+            {
+                expiry =
+                    Timestamp(chrono::DateTime::from_timestamp(parent_exp, 0).unwrap_or(expiry.0));
             }
+            let child_tok = self.biscuit_manager.attenuate_token(
+                &parent_tok,
+                scopes,
+                actions,
+                scopes,
+                actions,
+                expiry,
+            )?;
+            child_tok.to_vec()
         }
     }
 }
@@ -448,7 +446,7 @@ impl AgentMicroMarketEngine for DefaultAgentMicroMarketEngine {
         &mut self,
         contract_id: &str,
         bids: &[AgentBidOffer],
-        _parent_signing_key: &SigningKey,
+        parent_signing_key: &SigningKey,
     ) -> Result<AgentPassport, HakilleError> {
         let task = self.tasks.get(contract_id).ok_or_else(|| {
             HakilleError::CapabilityDenied(format!("Contract request '{contract_id}' not found"))
@@ -458,6 +456,15 @@ impl AgentMicroMarketEngine for DefaultAgentMicroMarketEngine {
             return Err(HakilleError::CapabilityDenied(format!(
                 "Contract '{contract_id}' has already been awarded"
             )));
+        }
+
+        // Verify that parent_signing_key matches the delegating parent agent's DID
+        if let Ok(expected_pk) = DidKey::extract_ed25519_bytes(&task.parent_passport.agent_did)
+            && parent_signing_key.verifying_key().to_bytes() != expected_pk
+        {
+            return Err(HakilleError::CapabilityDenied(
+                "Parent signing key does not match parent passport agent_did".to_string(),
+            ));
         }
 
         // Enforce strict delegation depth bound D <= 4
@@ -509,6 +516,15 @@ impl AgentMicroMarketEngine for DefaultAgentMicroMarketEngine {
             )
         })?;
 
+        // Attenuate Biscuit capability token BEFORE locking parent escrow so an
+        // attenuation error never leaks locked parent funds.
+        let attenuated_token_bytes = self.attenuate_or_mint_token(
+            &task.parent_passport.biscuit_token_bytes,
+            &task.required_scopes,
+            &task.required_actions,
+            task.deadline_seconds,
+        )?;
+
         // Enforce thread-safe parent escrow lock
         {
             let mut ledger = self
@@ -524,14 +540,6 @@ impl AgentMicroMarketEngine for DefaultAgentMicroMarketEngine {
                 winning_bid.requested_budget_cents,
             )?;
         }
-
-        // Attenuate Biscuit capability token
-        let attenuated_token_bytes = self.attenuate_or_mint_token(
-            &task.parent_passport.biscuit_token_bytes,
-            &task.required_scopes,
-            &task.required_actions,
-            task.deadline_seconds,
-        )?;
 
         // Issue child AgentPassport
         let child_passport = AgentPassport {

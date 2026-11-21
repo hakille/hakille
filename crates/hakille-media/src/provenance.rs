@@ -111,8 +111,13 @@ pub fn write_provenance_sidecar(
         std::fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_vec_pretty(provenance)?;
-    let tmp = sidecar.with_extension("json.tmp");
-    std::fs::write(&tmp, &json)?;
+    let tmp = sidecar.with_extension(format!("json.{}.tmp", std::process::id()));
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&json)?;
+        f.sync_all()?;
+    }
     std::fs::rename(&tmp, &sidecar)?;
     Ok(sidecar)
 }

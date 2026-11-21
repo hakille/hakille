@@ -7,7 +7,7 @@
 
 use crate::graph::KnowledgeGraph;
 use crate::triplet::NodeValue;
-use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -352,8 +352,7 @@ impl TimelineTimeTravel {
     pub fn rewind_to(&self, target_timestamp_ms: u64) -> Option<&TimelineSnapshot> {
         self.snapshots
             .iter()
-            .filter(|s| s.timestamp_ms <= target_timestamp_ms)
-            .last()
+            .rfind(|s| s.timestamp_ms <= target_timestamp_ms)
     }
 
     /// Vérifie l'intégrité cryptographique d'un instantané face à un layout.
@@ -401,19 +400,66 @@ pub struct CertifiedErasureCertificate {
 pub struct CertifiedCryptoForget;
 
 impl CertifiedCryptoForget {
-    /// Efface définitivement un fait du graphe et génère son certificat scellé.
-    pub fn forget_and_certify(
+    const DOMAIN: &'static [u8] = b"hakille:erasure-cert:v2:";
+
+    fn build_signing_payload(
+        receipt_id: &str,
         target_id: &str,
-        target_content: &str,
+        target_hash: &[u8; 32],
+        timestamp_ms: u64,
+        reason: &str,
+        compliance_rule: &str,
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(Self::DOMAIN);
+        for field in [
+            receipt_id.as_bytes(),
+            target_id.as_bytes(),
+            reason.as_bytes(),
+            compliance_rule.as_bytes(),
+        ] {
+            payload.extend_from_slice(&(field.len() as u32).to_le_bytes());
+            payload.extend_from_slice(field);
+        }
+        payload.extend_from_slice(target_hash);
+        payload.extend_from_slice(&timestamp_ms.to_le_bytes());
+        payload
+    }
+
+    /// Efface réellement le triplet cible du `KnowledgeGraph` et émet son
+    /// certificat d'oubli signé Ed25519. Échoue si le triplet est absent
+    /// (contrat d'honnêteté : aucun certificat d'oubli fictif).
+    pub fn forget_and_certify(
+        graph: &mut crate::graph::KnowledgeGraph,
+        target_id: &hakille_core::TripletId,
         reason: &str,
         signing_key: &SigningKey,
-    ) -> CertifiedErasureCertificate {
-        let now_ms = hakille_core::Timestamp::now().0.timestamp_millis().max(0) as u64;
+    ) -> hakille_core::Result<CertifiedErasureCertificate> {
+        let existing = graph.get(target_id).cloned().ok_or_else(|| {
+            hakille_core::HakilleError::StorageError(format!(
+                "CertifiedCryptoForget : triplet {} introuvable dans le graphe",
+                target_id.0
+            ))
+        })?;
+        let serialized = bincode::serialize(&existing)
+            .map_err(|e| hakille_core::HakilleError::SerializationError(e.to_string()))?;
 
-        // Hash SHA-256 du contenu cible avant élimination
+        // Suppression physique effective du graphe RAM avant émission du certificat.
+        if !graph.remove(target_id) {
+            return Err(hakille_core::HakilleError::StorageError(format!(
+                "CertifiedCryptoForget : échec de suppression du triplet {}",
+                target_id.0
+            )));
+        }
+
+        let now_ms = hakille_core::Timestamp::now().0.timestamp_millis().max(0) as u64;
+        let target_id_str = target_id.0.to_string();
+
+        // Hash SHA-256 du triplet sérialisé avant élimination
         let mut hasher = Sha256::new();
-        hasher.update(target_id.as_bytes());
-        hasher.update(target_content.as_bytes());
+        hasher.update(b"hakille:erasure-target:v2:");
+        hasher.update(target_id_str.as_bytes());
+        hasher.update(&serialized);
         let hash_res = hasher.finalize();
         let mut target_hash = [0u8; 32];
         target_hash.copy_from_slice(&hash_res);
@@ -421,36 +467,40 @@ impl CertifiedCryptoForget {
         let receipt_id = format!("erasure-{}", uuid::Uuid::new_v4());
         let compliance_rule = "Constitution-Art.17-Sovereign-FailClosed".to_string();
 
-        // Données d'attestation signées
-        let mut payload = Vec::new();
-        payload.extend_from_slice(receipt_id.as_bytes());
-        payload.extend_from_slice(target_id.as_bytes());
-        payload.extend_from_slice(&target_hash);
-        payload.extend_from_slice(&now_ms.to_le_bytes());
-        payload.extend_from_slice(reason.as_bytes());
-        payload.extend_from_slice(compliance_rule.as_bytes());
+        let payload = Self::build_signing_payload(
+            &receipt_id,
+            &target_id_str,
+            &target_hash,
+            now_ms,
+            reason,
+            &compliance_rule,
+        );
 
         let signature = signing_key.sign(&payload);
         let verifying_key = signing_key.verifying_key();
 
-        CertifiedErasureCertificate {
+        Ok(CertifiedErasureCertificate {
             receipt_id,
-            target_id: target_id.to_string(),
+            target_id: target_id_str,
             target_hash,
             timestamp_ms: now_ms,
             reason: reason.to_string(),
             compliance_rule,
             verifying_key_bytes: verifying_key.to_bytes(),
             signature_bytes: signature.to_bytes().to_vec(),
-        }
+        })
     }
 
-    /// Vérifie la validité cryptographique d'un certificat d'oubli.
-    pub fn verify_certificate(cert: &CertifiedErasureCertificate) -> bool {
-        let verifying_key = match VerifyingKey::from_bytes(&cert.verifying_key_bytes) {
-            Ok(k) => k,
-            Err(_) => return false,
-        };
+    /// Vérifie la validité cryptographique d'un certificat d'oubli contre une
+    /// clé publique de confiance épinglée (`expected_verifying_key`).
+    /// Ne fait jamais confiance à la clé auto-embarquée dans le certificat.
+    pub fn verify_certificate(
+        cert: &CertifiedErasureCertificate,
+        expected_verifying_key: &VerifyingKey,
+    ) -> bool {
+        if cert.verifying_key_bytes != expected_verifying_key.to_bytes() {
+            return false;
+        }
 
         let sig_array: [u8; 64] = match cert.signature_bytes.as_slice().try_into() {
             Ok(a) => a,
@@ -458,15 +508,18 @@ impl CertifiedCryptoForget {
         };
         let signature = ed25519_dalek::Signature::from_bytes(&sig_array);
 
-        let mut payload = Vec::new();
-        payload.extend_from_slice(cert.receipt_id.as_bytes());
-        payload.extend_from_slice(cert.target_id.as_bytes());
-        payload.extend_from_slice(&cert.target_hash);
-        payload.extend_from_slice(&cert.timestamp_ms.to_le_bytes());
-        payload.extend_from_slice(cert.reason.as_bytes());
-        payload.extend_from_slice(cert.compliance_rule.as_bytes());
+        let payload = Self::build_signing_payload(
+            &cert.receipt_id,
+            &cert.target_id,
+            &cert.target_hash,
+            cert.timestamp_ms,
+            &cert.reason,
+            &cert.compliance_rule,
+        );
 
-        verifying_key.verify(&payload, &signature).is_ok()
+        expected_verifying_key
+            .verify_strict(&payload, &signature)
+            .is_ok()
     }
 }
 
@@ -531,24 +584,63 @@ mod tests {
     }
 
     #[test]
-    fn test_certified_crypto_forget_signature_and_verification() {
+    fn test_certified_crypto_forget_removes_fact_and_enforces_pinned_key() {
         let secret_bytes = [42u8; 32];
         let signing_key = SigningKey::from_bytes(&secret_bytes);
+        let pinned_vk = signing_key.verifying_key();
+        let rogue_vk = SigningKey::from_bytes(&[99u8; 32]).verifying_key();
+
+        let mut graph = crate::graph::KnowledgeGraph::new();
+        let subj = graph.resolve_subject("Secret");
+        let pred = graph.resolve_predicate("api_key");
+        let triplet = crate::triplet::Triplet::new(
+            hakille_core::TripletId(uuid::Uuid::now_v7()),
+            subj,
+            pred,
+            crate::triplet::NodeValue::Text("Clé confidentielle API".into()),
+            crate::triplet::TripletMetadata::new(
+                1.0,
+                1.0,
+                crate::triplet::TripletSource::User,
+                crate::ContextPartition::Personal,
+                hakille_core::TrustLevel::User,
+                0.0,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let tid = triplet.id.clone();
+        graph.insert(triplet);
+        assert!(graph.contains(&tid));
 
         let cert = CertifiedCryptoForget::forget_and_certify(
-            "triplet-secret-99",
-            "Clé confidentielle API",
+            &mut graph,
+            &tid,
             "Demande utilisateur d'oubli souverain",
             &signing_key,
+        )
+        .expect("oubli certifié");
+
+        // Suppression effective vérifiée dans le graphe.
+        assert!(!graph.contains(&tid));
+        // Second oubli du même ID ⇒ erreur explicite (pas de certificat fictif).
+        assert!(
+            CertifiedCryptoForget::forget_and_certify(&mut graph, &tid, "doublon", &signing_key)
+                .is_err()
         );
 
-        assert_eq!(cert.target_id, "triplet-secret-99");
+        assert_eq!(cert.target_id, tid.0.to_string());
         assert!(cert.compliance_rule.contains("Sovereign"));
-        assert!(CertifiedCryptoForget::verify_certificate(&cert));
+        assert!(CertifiedCryptoForget::verify_certificate(&cert, &pinned_vk));
+        // Clé étrangère refusée (fail-closed, jamais auto-vérifié).
+        assert!(!CertifiedCryptoForget::verify_certificate(&cert, &rogue_vk));
 
         // Tamper test
         let mut tampered_cert = cert.clone();
         tampered_cert.reason = "Raison frauduleusement modifiée".to_string();
-        assert!(!CertifiedCryptoForget::verify_certificate(&tampered_cert));
+        assert!(!CertifiedCryptoForget::verify_certificate(
+            &tampered_cert,
+            &pinned_vk
+        ));
     }
 }

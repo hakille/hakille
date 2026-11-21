@@ -1241,7 +1241,8 @@ mod tests {
 
     #[test]
     fn emotion_hook_and_event_variants() {
-        let calls: Arc<Mutex<Vec<(String, Vec<String>, f32)>>> = Arc::new(Mutex::new(Vec::new()));
+        type EmotionCall = (String, Vec<String>, f32);
+        let calls: Arc<Mutex<Vec<EmotionCall>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&calls);
         let hook = Arc::new(
             move |emotion: &str, acoustic_events: &[String], confidence: f32| {
