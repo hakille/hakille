@@ -52,18 +52,19 @@ impl<'a> AadBinding<'a> {
         }
     }
 
-    /// Serialize into deterministic AAD bytes with unit separator delimiters
+    /// Serialize into deterministic length-prefixed AAD bytes preventing cross-field injection
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"hakille:aad:v1:");
-        bytes.extend_from_slice(self.tenant_id.as_bytes());
-        bytes.push(0x1f); // Unit separator
-        bytes.extend_from_slice(self.user_id.as_bytes());
-        bytes.push(0x1f);
-        bytes.extend_from_slice(self.table_id.as_bytes());
-        bytes.push(0x1f);
-        bytes.extend_from_slice(self.record_uuid.as_bytes());
-        bytes.push(0x1f);
+        bytes.extend_from_slice(b"hakille:aad:v2:");
+        for field in [
+            self.tenant_id.as_bytes(),
+            self.user_id.as_bytes(),
+            self.table_id.as_bytes(),
+            self.record_uuid.as_bytes(),
+        ] {
+            bytes.extend_from_slice(&(field.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(field);
+        }
         bytes.extend_from_slice(&self.schema_version.to_le_bytes());
         bytes
     }
@@ -126,11 +127,13 @@ impl XChaChaCipher {
         })
     }
 
-    /// Decrypt ciphertext payload and strictly verify AAD binding
+    /// Decrypt ciphertext payload and strictly verify AAD binding in constant time
     pub fn decrypt(blob: &XChaChaBlob, key: &[u8; 32], aad: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        // Fast-fail: verify AAD fingerprint before expensive decryption
+        use subtle::ConstantTimeEq;
+
+        // Fast-fail en temps constant : vérifie l'empreinte AAD sans fuite de timing.
         let aad_hash = Sha256::digest(aad);
-        if aad_hash.as_slice() != blob.aad_fingerprint {
+        if !bool::from(aad_hash.as_slice().ct_eq(&blob.aad_fingerprint)) {
             return Err(CryptoError::AadMismatch);
         }
 

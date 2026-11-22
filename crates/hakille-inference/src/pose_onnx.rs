@@ -137,42 +137,45 @@ impl PoseSession {
             ));
         }
 
-        if let Some(session_mutex) = &self.session {
-            let tensor_data =
-                preprocess_image_to_chw(rgb_data, width, height, POSE_INPUT_SIZE, POSE_INPUT_SIZE);
-            let input_tensor = Tensor::<f32>::from_array((
-                [1usize, 3usize, POSE_INPUT_SIZE, POSE_INPUT_SIZE],
-                tensor_data,
-            ))
-            .map_err(|e| ort_err("input_tensor", e))?;
+        let Some(session_mutex) = &self.session else {
+            return Err(HakilleError::InferenceError(
+                "PoseSession::infer: modèle ONNX rtmpose_tiny.onnx absent — squelette simulé refusé (contrat d'honnêteté)".into(),
+            ));
+        };
 
-            let mut session = session_mutex
-                .lock()
-                .map_err(|_| ort_err("lock", "mutex empoisonné"))?;
-            let outputs = session
-                .run(ort::inputs![input_tensor])
-                .map_err(|e| ort_err("forward", e))?;
-
-            let (_shape, values) = outputs[0]
-                .try_extract_tensor::<f32>()
-                .map_err(|e| ort_err("extract_output", e))?;
-
-            let skeleton = parse_pose_outputs(values, width as f32, height as f32)?;
-            let neck_angle_deg = calculate_neck_angle(&skeleton);
-            let posture = skeleton.posture;
-            let conf = average_confidence(&skeleton);
-
-            return Ok(PoseInferenceResult {
-                skeleton,
-                posture,
-                neck_angle_deg,
-                confidence: conf,
-                status: ModelStatus::Real,
-            });
+        let expected_bytes = width
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(3))
+            .ok_or_else(|| {
+                HakilleError::InferenceError("PoseSession::infer: dimensions débordantes".into())
+            })?;
+        if rgb_data.len() < expected_bytes {
+            return Err(HakilleError::InferenceError(format!(
+                "PoseSession::infer: tampon RGB trop court ({} < {expected_bytes})",
+                rgb_data.len()
+            )));
         }
 
-        // Mode simulation canonique déterministe
-        let skeleton = generate_canonical_seated_skeleton(width as f32, height as f32);
+        let tensor_data =
+            preprocess_image_to_chw(rgb_data, width, height, POSE_INPUT_SIZE, POSE_INPUT_SIZE);
+        let input_tensor = Tensor::<f32>::from_array((
+            [1usize, 3usize, POSE_INPUT_SIZE, POSE_INPUT_SIZE],
+            tensor_data,
+        ))
+        .map_err(|e| ort_err("input_tensor", e))?;
+
+        let mut session = session_mutex
+            .lock()
+            .map_err(|_| ort_err("lock", "mutex empoisonné"))?;
+        let outputs = session
+            .run(ort::inputs![input_tensor])
+            .map_err(|e| ort_err("forward", e))?;
+
+        let (_shape, values) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| ort_err("extract_output", e))?;
+
+        let skeleton = parse_pose_outputs(values, width as f32, height as f32)?;
         let neck_angle_deg = calculate_neck_angle(&skeleton);
         let posture = skeleton.posture;
         let conf = average_confidence(&skeleton);
@@ -182,7 +185,7 @@ impl PoseSession {
             posture,
             neck_angle_deg,
             confidence: conf,
-            status: ModelStatus::Simulated,
+            status: ModelStatus::Real,
         })
     }
 }
@@ -359,23 +362,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_pose_simulated_seated() {
+    fn test_pose_missing_model_refuses_simulated_output_and_neck_angle() {
         let session = PoseSession::open_or_simulated(None);
         assert_eq!(session.status(), ModelStatus::Simulated);
 
         let dummy_img = vec![128u8; 640 * 480 * 3];
-        let res = session
+        let err = session
             .infer(&dummy_img, 640, 480)
-            .expect("inférence réussie");
+            .expect_err("modèle absent : aucun squelette simulé autorisé");
+        assert!(err.to_string().contains("absent"));
 
-        assert_eq!(res.status, ModelStatus::Simulated);
-        assert_eq!(res.posture, PostureKind::Seated);
-        assert!(res.confidence > 0.75);
+        // Vérification directe de la géométrie posturale pure.
+        let skeleton = generate_canonical_seated_skeleton(640.0, 480.0);
+        let neck_angle_deg = calculate_neck_angle(&skeleton);
+        let conf = average_confidence(&skeleton);
+        assert_eq!(skeleton.posture, PostureKind::Seated);
+        assert!(conf > 0.75);
         assert!(
-            res.neck_angle_deg < 25.0,
+            neck_angle_deg < 25.0,
             "Angle du cou nominal assis < 25° : {}",
-            res.neck_angle_deg
+            neck_angle_deg
         );
-        assert_eq!(res.skeleton.joints.len(), 17);
+        assert_eq!(skeleton.joints.len(), 17);
     }
 }

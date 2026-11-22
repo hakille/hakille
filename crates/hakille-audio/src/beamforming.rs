@@ -214,9 +214,8 @@ impl BinauralSpeakerBeamformer {
         let final_audio = if self.config.enable_harmonic_comb
             && !is_off_axis
             && features.is_voiced
-            && features.f0_hz.is_some()
+            && let Some(f0) = features.f0_hz
         {
-            let f0 = features.f0_hz.unwrap();
             self.apply_harmonic_comb(&beamformed, f0, features.periodicity)
         } else {
             beamformed
@@ -241,13 +240,14 @@ impl BinauralSpeakerBeamformer {
         }
 
         let features = self.pitch_detector.analyze(mono);
-        let final_audio =
-            if self.config.enable_harmonic_comb && features.is_voiced && features.f0_hz.is_some() {
-                let f0 = features.f0_hz.unwrap();
-                self.apply_harmonic_comb(mono, f0, features.periodicity)
-            } else {
-                mono.to_vec()
-            };
+        let final_audio = if self.config.enable_harmonic_comb
+            && features.is_voiced
+            && let Some(f0) = features.f0_hz
+        {
+            self.apply_harmonic_comb(mono, f0, features.periodicity)
+        } else {
+            mono.to_vec()
+        };
 
         self.last_metrics = BeamformerMetrics {
             is_off_axis: false,

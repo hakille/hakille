@@ -55,6 +55,19 @@ impl MimiEngine {
     /// Charge les poids complets, jamais uniquement le header ou les codebooks.
     /// Un fichier absent, corrompu ou incompatible est une erreur bloquante.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        const MAX_MIMI_CHECKPOINT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+        let path = path.as_ref();
+        let meta = std::fs::symlink_metadata(path)
+            .map_err(|e| failure(format!("métadonnées du checkpoint : {e}")))?;
+        if !meta.file_type().is_file() {
+            return Err(failure("le checkpoint Mimi doit être un fichier régulier"));
+        }
+        if meta.len() == 0 || meta.len() > MAX_MIMI_CHECKPOINT_BYTES {
+            return Err(failure(format!(
+                "taille de checkpoint Mimi invalide ({} octets, max 2 Gio)",
+                meta.len()
+            )));
+        }
         let bytes =
             std::fs::read(path).map_err(|e| failure(format!("lecture du checkpoint : {e}")))?;
         let device = Device::Cpu;

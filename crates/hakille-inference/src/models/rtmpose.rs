@@ -120,73 +120,77 @@ impl RtmPoseEngine {
             return Err(HakilleError::InferenceError("RTMPose: entrée vide".into()));
         }
 
-        if let Some(session_mutex) = &self.session {
-            let mut session = session_mutex
-                .lock()
-                .map_err(|e| ort_err("lock", format!("{e}")))?;
+        let Some(session_mutex) = &self.session else {
+            return Err(HakilleError::InferenceError(
+                "RtmPoseEngine::extract_pose: modèle ONNX rtmpose_tiny.onnx absent — squelette simulé refusé (contrat d'honnêteté)".into(),
+            ));
+        };
 
-            let mut input_buf = vec![0.0f32; 3 * POSE_INPUT_SIZE * POSE_INPUT_SIZE];
-            resize_bilinear_rgb_nchw(
-                rgb_bytes,
-                width,
-                height,
-                &mut input_buf,
-                POSE_INPUT_SIZE,
-                POSE_INPUT_SIZE,
-                NormalizationMode::ImageNet,
-            );
-
-            let tensor = Tensor::from_array((
-                [1, 3, POSE_INPUT_SIZE, POSE_INPUT_SIZE],
-                input_buf.into_boxed_slice(),
-            ))
-            .map_err(|e| ort_err("tensor", e))?;
-
-            let outputs = session
-                .run(ort::inputs![tensor])
-                .map_err(|e| ort_err("run", e))?;
-
-            let joints = if outputs.len() >= 2 {
-                // Décodage SimCC : output[0] = simcc_x, output[1] = simcc_y
-                let (_sx, simcc_x) = outputs[0]
-                    .try_extract_tensor::<f32>()
-                    .map_err(|e| ort_err("extract_simcc_x", e))?;
-                let (_sy, simcc_y) = outputs[1]
-                    .try_extract_tensor::<f32>()
-                    .map_err(|e| ort_err("extract_simcc_y", e))?;
-                decode_simcc_joints(simcc_x, simcc_y, DEFAULT_SIMCC_SPLIT_RATIO)?
-            } else {
-                // Décodage standard (ex: YOLOv8-Pose tenseur [1, 17, 3] ou [1, 56, ...])
-                let (_s, values) = outputs[0]
-                    .try_extract_tensor::<f32>()
-                    .map_err(|e| ort_err("extract_pose", e))?;
-                decode_generic_joints(values)?
-            };
-
-            let (posture, neck_angle, conf) = analyze_skeleton_posture(&joints);
-            let skeleton = BodySkeleton3D::new(joints, posture);
-
-            Ok(PoseInferenceResult {
-                skeleton,
-                posture,
-                neck_angle_deg: neck_angle,
-                confidence: conf,
-                status: ModelStatus::Real,
-            })
-        } else {
-            // Mode synthétique déterministe
-            let joints = generate_canonical_coco_joints();
-            let (posture, neck_angle, conf) = analyze_skeleton_posture(&joints);
-            let skeleton = BodySkeleton3D::new(joints, posture);
-
-            Ok(PoseInferenceResult {
-                skeleton,
-                posture,
-                neck_angle_deg: neck_angle,
-                confidence: conf,
-                status: ModelStatus::Simulated,
-            })
+        let expected_bytes = width
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(3))
+            .ok_or_else(|| {
+                HakilleError::InferenceError("RtmPoseEngine: dimensions débordantes".into())
+            })?;
+        if rgb_bytes.len() < expected_bytes {
+            return Err(HakilleError::InferenceError(format!(
+                "RtmPoseEngine: tampon RGB trop court ({} < {expected_bytes})",
+                rgb_bytes.len()
+            )));
         }
+
+        let mut session = session_mutex
+            .lock()
+            .map_err(|e| ort_err("lock", format!("{e}")))?;
+
+        let mut input_buf = vec![0.0f32; 3 * POSE_INPUT_SIZE * POSE_INPUT_SIZE];
+        resize_bilinear_rgb_nchw(
+            rgb_bytes,
+            width,
+            height,
+            &mut input_buf,
+            POSE_INPUT_SIZE,
+            POSE_INPUT_SIZE,
+            NormalizationMode::ImageNet,
+        );
+
+        let tensor = Tensor::from_array((
+            [1, 3, POSE_INPUT_SIZE, POSE_INPUT_SIZE],
+            input_buf.into_boxed_slice(),
+        ))
+        .map_err(|e| ort_err("tensor", e))?;
+
+        let outputs = session
+            .run(ort::inputs![tensor])
+            .map_err(|e| ort_err("run", e))?;
+
+        let joints = if outputs.len() >= 2 {
+            // Décodage SimCC : output[0] = simcc_x, output[1] = simcc_y
+            let (_sx, simcc_x) = outputs[0]
+                .try_extract_tensor::<f32>()
+                .map_err(|e| ort_err("extract_simcc_x", e))?;
+            let (_sy, simcc_y) = outputs[1]
+                .try_extract_tensor::<f32>()
+                .map_err(|e| ort_err("extract_simcc_y", e))?;
+            decode_simcc_joints(simcc_x, simcc_y, DEFAULT_SIMCC_SPLIT_RATIO)?
+        } else {
+            // Décodage standard (ex: YOLOv8-Pose tenseur [1, 17, 3] ou [1, 56, ...])
+            let (_s, values) = outputs[0]
+                .try_extract_tensor::<f32>()
+                .map_err(|e| ort_err("extract_pose", e))?;
+            decode_generic_joints(values)?
+        };
+
+        let (posture, neck_angle, conf) = analyze_skeleton_posture(&joints);
+        let skeleton = BodySkeleton3D::new(joints, posture);
+
+        Ok(PoseInferenceResult {
+            skeleton,
+            posture,
+            neck_angle_deg: neck_angle,
+            confidence: conf,
+            status: ModelStatus::Real,
+        })
     }
 }
 
@@ -226,7 +230,11 @@ pub fn decode_simcc_joints(
     }
 
     let mut joints = [SkeletonJoint3D::default(); 17];
-    let sr = split_ratio.max(1.0);
+    let sr = if split_ratio.is_finite() {
+        split_ratio.max(1.0)
+    } else {
+        1.0
+    };
 
     for i in 0..COCO_KEYPOINTS_COUNT {
         let x_slice = &simcc_x[i * x_bins..(i + 1) * x_bins];
@@ -235,14 +243,18 @@ pub fn decode_simcc_joints(
         let (best_x_idx, max_val_x) = argmax_and_max(x_slice);
         let (best_y_idx, max_val_y) = argmax_and_max(y_slice);
 
-        // Subpixel refinement parabolique
+        // Subpixel refinement parabolique (protégé contre Inf/NaN)
         let refined_x = refine_subpixel(x_slice, best_x_idx);
         let refined_y = refine_subpixel(y_slice, best_y_idx);
 
         let norm_x = (refined_x / (sr * POSE_INPUT_SIZE as f32)).clamp(0.0, 1.0);
         let norm_y = (refined_y / (sr * POSE_INPUT_SIZE as f32)).clamp(0.0, 1.0);
 
-        let conf = ((max_val_x + max_val_y) * 0.5).clamp(0.0, 1.0);
+        let conf = if max_val_x.is_finite() && max_val_y.is_finite() {
+            ((max_val_x + max_val_y) * 0.5).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
 
         joints[i] = SkeletonJoint3D::new(i as u8, Point3D::new(norm_x, norm_y, 0.0), conf);
     }
@@ -253,17 +265,29 @@ pub fn decode_simcc_joints(
 fn decode_generic_joints(values: &[f32]) -> Result<[SkeletonJoint3D; 17]> {
     let mut joints = [SkeletonJoint3D::default(); 17];
     let stride = if values.len() >= 17 * 3 { 3 } else { 2 };
-    for i in 0..17 {
+    for (i, joint) in joints.iter_mut().enumerate() {
         let idx = i * stride;
         if idx + stride <= values.len() {
-            let x = values[idx].clamp(0.0, 1.0);
-            let y = values[idx + 1].clamp(0.0, 1.0);
+            let x = if values[idx].is_finite() {
+                values[idx].clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let y = if values[idx + 1].is_finite() {
+                values[idx + 1].clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             let conf = if stride == 3 {
-                values[idx + 2].clamp(0.0, 1.0)
+                if values[idx + 2].is_finite() {
+                    values[idx + 2].clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
             } else {
                 0.8
             };
-            joints[i] = SkeletonJoint3D::new(i as u8, Point3D::new(x, y, 0.0), conf);
+            *joint = SkeletonJoint3D::new(i as u8, Point3D::new(x, y, 0.0), conf);
         }
     }
     Ok(joints)
@@ -273,10 +297,13 @@ fn argmax_and_max(slice: &[f32]) -> (usize, f32) {
     let mut best_i = 0;
     let mut best_v = f32::NEG_INFINITY;
     for (i, &v) in slice.iter().enumerate() {
-        if v > best_v {
+        if v.is_finite() && v > best_v {
             best_v = v;
             best_i = i;
         }
+    }
+    if !best_v.is_finite() {
+        return (0, 0.0);
     }
     (best_i, best_v)
 }
@@ -286,10 +313,14 @@ fn refine_subpixel(slice: &[f32], idx: usize) -> f32 {
         let s0 = slice[idx - 1];
         let s1 = slice[idx];
         let s2 = slice[idx + 1];
-        let denom = 2.0 * (2.0 * s1 - s0 - s2);
-        if denom.abs() > 1e-6 {
-            let delta = (s2 - s0) / denom;
-            return idx as f32 + delta.clamp(-0.5, 0.5);
+        if s0.is_finite() && s1.is_finite() && s2.is_finite() {
+            let denom = 2.0 * (2.0 * s1 - s0 - s2);
+            if denom.is_finite() && denom.abs() > 1e-6 {
+                let delta = (s2 - s0) / denom;
+                if delta.is_finite() {
+                    return idx as f32 + delta.clamp(-0.5, 0.5);
+                }
+            }
         }
     }
     idx as f32
@@ -370,19 +401,22 @@ mod tests {
     use crate::models::mock::synthetic_face_crop;
 
     #[test]
-    fn test_rtmpose_mock_synthetic() {
+    fn test_rtmpose_missing_model_refuses_simulated_output_and_posture_computes() {
         let engine = RtmPoseEngine::mock_synthetic();
         assert!(engine.is_mock());
 
         let crop = synthetic_face_crop(256, 256);
-        let result = engine
+        let err = engine
             .extract_pose(&crop, 256, 256)
-            .expect("extraction pose réussie");
+            .expect_err("modèle absent : squelette simulé refusé");
+        assert!(err.to_string().contains("absent"));
 
-        assert_eq!(result.status, ModelStatus::Simulated);
-        assert_eq!(result.skeleton.joints.len(), 17);
-        assert!(result.confidence > 0.8);
-        assert!(result.neck_angle_deg >= 0.0 && result.neck_angle_deg < 60.0);
+        // Vérification directe de l'analyse posturale pure.
+        let joints = generate_canonical_coco_joints();
+        let (_posture, neck_angle_deg, conf) = analyze_skeleton_posture(&joints);
+        assert_eq!(joints.len(), 17);
+        assert!(conf > 0.8);
+        assert!((0.0..60.0).contains(&neck_angle_deg));
     }
 
     #[test]

@@ -31,8 +31,8 @@ pub enum DaemonError {
     NonMonotonicId { previous: u64, current: u64 },
     #[error("Unexpected request body: expected {expected:?}, got {actual:?}")]
     BodyMismatch {
-        expected: UiToKernel,
-        actual: FrameBody,
+        expected: Box<UiToKernel>,
+        actual: Box<FrameBody>,
     },
     #[error("Barrier error: {0}")]
     Barrier(String),
@@ -250,8 +250,8 @@ impl ControlledDaemon {
             FrameBody::Request { message } if message == &step.request => {}
             _ => {
                 return Err(DaemonError::BodyMismatch {
-                    expected: step.request,
-                    actual: frame.body,
+                    expected: Box::new(step.request),
+                    actual: Box::new(frame.body),
                 });
             }
         }
@@ -313,8 +313,8 @@ impl ControlledDaemon {
             FrameBody::Request { message: req } if req == &expected_request => {}
             _ => {
                 return Err(DaemonError::BodyMismatch {
-                    expected: expected_request,
-                    actual: frame.body,
+                    expected: Box::new(expected_request),
+                    actual: Box::new(frame.body),
                 });
             }
         }

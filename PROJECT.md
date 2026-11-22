@@ -13,7 +13,7 @@ Hakille follows a strict sovereign, layered, headless-first architecture across 
 9. `crates/hakille-agents`: Sandboxed agent runtime featuring pure AEl zero-import sandbox (`wasm_runner.rs`) with fuel metering and 5ms epoch preemption, scoped WASI preview-1 runtime (`runtime.rs`), Biscuit attenuation verification, quota tracking, and Bicameral Dialectic Engine (`bicameral.rs`: Devil's Advocate vs Catalyst parallel execution and weighted arbitration).
 10. `crates/hakille-perception`: Telemetry capture, Silero VAD v5, SenseVoice-Small speech recognition, 21-wire kora audio metering, pure-Rust CV algorithms, spatial tracking (`GazeTracker`, `MicroGestureDetector` for pinch/swipe/silence), and Sovereign Voiceprint Gate (`CamPlusPlusIdentifier` 192-d embedding).
 11. `crates/hakille-audio` & `crates/hakille-voice`: Zero-allocation YIN pitch detector, multi-channel Binaural Delay-and-Sum beamforming with directional ITD steering and harmonic comb filter, diagnostic health status, and Adaptive Bayesian Prosody Engine ($0.6 \cdot \text{model} + 0.4 \cdot \text{graph}$ and urgency rate/pitch/breathiness transfer functions).
-12. `crates/hakille-mesh`: Dedicated pure-Rust offline P2P mesh fabric (BLE GATT, Wi-Fi Direct SoftAP/P2P-GO, `VirtualAirGapBus`, frame chunking, and fail-closed zero-Internet link-local guard).
+12. `crates/hakille-mesh`: Offline P2P mesh fabric in pure Rust (`VirtualAirGapBus` in-memory transport, authenticated ChaCha20-Poly1305 + pinned Ed25519 `MeshFrame` with AAD and anti-replay, fail-closed zero-Internet guard; native BLE/Wi-Fi Direct drivers not yet wired).
 13. `crates/hakille-sync` & `crates/hakille-audit`: CRDT vector clock replication with persistent redb tombstones, Revocation-Wins distributed consent, ACID redb audit ledger with SHA-256 hash chaining, Ed25519 signatures, and Decentralized Zero-Knowledge Verifiable Compliance proofs (`ZkComplianceProof`).
 14. `hakille-sdk` (standalone repository `hakille/hakille-sdk`): Declarative WASM agent SDK for authoring, packaging, and distributing sandboxed sovereign applications with `agent.toml` manifest, fuel limits, Biscuit capability attenuation, and `.hap` App Store packaging.
 15. `crates/hakille-daemon`: System service (`hakilled`), multi-turn cognition, ActionCard proposal/approval, durable crash-safe outbox queuing (`outbox.json`), and WASM reference agent execution.
@@ -125,10 +125,10 @@ Hakille follows a strict sovereign, layered, headless-first architecture across 
 - `crates/hakille-audio/src/`: `capture.rs`, `diagnostics.rs`, `yin.rs`, `beamforming.rs`
 - `crates/hakille-voice/src/`: `tts.rs`, `formant.rs`, `input.rs`, `prosody.rs`
 - `crates/hakille-spatial/src/`: `gaze.rs`, `skeleton.rs`, `gesture.rs`
-- `crates/hakille-mesh/src/`: `transport.rs`, `ble.rs`, `wifi_direct.rs`, `virtual_bus.rs`, `frame.rs`, `lib.rs`
+- `crates/hakille-mesh/src/`: `transport.rs`, `virtual_bus.rs`, `frame.rs`, `lib.rs`
 - `crates/hakille-sync/src/`: `crdt.rs`, `lib.rs`
 - `crates/hakille-audit/src/`: `journal.rs`, `entry.rs`, `consent_registry.rs`, `zk_compliance.rs`
-- `crates/hakille-sdk/src/`: `manifest.rs`, `agent.rs`, `biscuit.rs`, `package.rs`, `lib.rs`
+- `hakille-sdk` (dépôt autonome `hakille/hakille-sdk`, hors workspace monorepo)
 - `crates/hakille-substrate-*`: Linux, Windows, macOS, Redox, Mobile, Web substrate implementations
 - `crates/hakille-daemon/src/`: `main.rs`, `ipc.rs`, `agent_runtime.rs`
 - `crates/hakille-ui-protocol/src/`: `lib.rs`, `ghost_action.rs`

@@ -324,7 +324,7 @@ fn test_f06_fuzzy_extractor_noise_thresholds() {
         .expect("Enrollment must succeed");
 
     // Low noise (10% bit flips): MUST succeed
-    let mut probe_10 = FuzzyExtractor::quantize(&embedding);
+    let mut probe_10 = FuzzyExtractor::quantize_salted(&embedding, &salt).unwrap();
     let total_bits = hakille_core::crypto::fuzzy::CODEWORD_BITS;
     let flips_10 = (total_bits as f32 * 0.10) as usize;
     for i in 0..flips_10 {
@@ -335,7 +335,7 @@ fn test_f06_fuzzy_extractor_noise_thresholds() {
     assert_eq!(master_key.as_bytes(), recovered_10.as_bytes());
 
     // Extreme noise (40% bit flips clustered across replicas): MUST be rejected
-    let mut probe_40 = FuzzyExtractor::quantize(&embedding);
+    let mut probe_40 = FuzzyExtractor::quantize_salted(&embedding, &salt).unwrap();
     let flips_40 = (total_bits as f32 * 0.40) as usize;
     for i in 0..flips_40 {
         let bit = (i * 2) % total_bits;
@@ -348,7 +348,7 @@ fn test_f06_fuzzy_extractor_noise_thresholds() {
     );
 
     // Uniform noise above 50% (55% bit flips flips majority of replicas): MUST be rejected
-    let mut probe_55 = FuzzyExtractor::quantize(&embedding);
+    let mut probe_55 = FuzzyExtractor::quantize_salted(&embedding, &salt).unwrap();
     let flips_55 = (total_bits as f32 * 0.55) as usize;
     for i in 0..flips_55 {
         let bit = (i * 3) % total_bits;
@@ -424,13 +424,17 @@ fn test_f06_fuzzy_extractor_dimension_mismatch_and_empty() {
         CryptoError::BiometricVerificationFailed
     );
 
-    // Query with empty vector
+    // Query and enrollment with empty vector must fail at quantization
     let emb_empty: Vec<f32> = vec![];
+    assert!(matches!(
+        extractor.generate_commitment(&emb_empty, &salt),
+        Err(CryptoError::BiometricQuantizationError(_))
+    ));
     let res_empty = extractor.reproduce_key(&emb_empty, &record);
-    assert_eq!(
-        res_empty.unwrap_err(),
-        CryptoError::BiometricVerificationFailed
-    );
+    assert!(matches!(
+        res_empty,
+        Err(CryptoError::BiometricQuantizationError(_))
+    ));
 }
 
 #[test]

@@ -55,6 +55,19 @@ fn reject(status: u16, code: &'static str, message: &'static str) -> HttpRespons
     )
 }
 
+fn is_valid_loopback_host(host: &str) -> bool {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let host_part = match trimmed.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+        Some(_) => return false,
+        None => trimmed,
+    };
+    host_part == "127.0.0.1" || host_part.eq_ignore_ascii_case("localhost")
+}
+
 async fn handle(
     request: Request<Incoming>,
     gateway: Arc<Gateway>,
@@ -65,6 +78,20 @@ async fn handle(
             "origin_refused",
             "clients natifs uniquement : Origin refusé",
         ));
+    }
+    // Protection anti-DNS rebinding : si Host est fourni, il doit être unique et
+    // strictement restreint à 127.0.0.1 ou localhost.
+    let mut host_headers = request.headers().get_all(hyper::header::HOST).iter();
+    if let Some(first_host) = host_headers.next() {
+        let valid_host =
+            first_host.to_str().is_ok_and(is_valid_loopback_host) && host_headers.next().is_none();
+        if !valid_host {
+            return Ok(reject(
+                400,
+                "bad_host",
+                "en-tête Host non local ou dupliqué refusé",
+            ));
+        }
     }
     if request.uri().query().is_some()
         || request.uri().scheme().is_some()
@@ -96,20 +123,20 @@ async fn handle(
     if !valid {
         return Ok(reject(401, "unauthorized", "authentification requise"));
     }
-    let content_type = request
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok());
-    if !content_type.is_some_and(|value| {
-        value
-            .split(';')
-            .next()
-            .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
-    }) {
+    let mut content_types = request.headers().get_all(CONTENT_TYPE).iter();
+    let content_type = content_types.next().and_then(|value| value.to_str().ok());
+    if content_types.next().is_some()
+        || !content_type.is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+        })
+    {
         return Ok(reject(
             415,
             "unsupported_media_type",
-            "application/json requis",
+            "application/json unique requis",
         ));
     }
     let mut session_headers = request.headers().get_all("x-hakille-session").iter();
@@ -201,7 +228,13 @@ pub async fn serve(
             _ = maintenance.tick() => gateway.expire_idle_session(),
             Some(_) = tasks.join_next(), if !tasks.is_empty() => {},
             accepted = listener.accept() => {
-                let (stream, _) = accepted?;
+                let (stream, _) = match accepted {
+                    Ok(pair) => pair,
+                    Err(_) => {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    }
+                };
                 let Ok(slot) = slots.clone().try_acquire_owned() else { continue; };
                 let gateway = gateway.clone();
                 tasks.spawn(async move {

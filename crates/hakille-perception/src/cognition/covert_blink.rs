@@ -137,10 +137,10 @@ impl CovertBlinkDetector {
         }
 
         // Global sequence timeout check
-        if let Some(seq_start) = self.sequence_start_at {
-            if now.duration_since(seq_start) > self.max_sequence_duration {
-                self.reset();
-            }
+        if let Some(seq_start) = self.sequence_start_at
+            && now.duration_since(seq_start) > self.max_sequence_duration
+        {
+            self.reset();
         }
 
         // Track start of left-eye covert closure

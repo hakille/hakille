@@ -156,19 +156,28 @@ pub async fn provision(
     keyword: &str,
     expected_sha256: Option<&str>,
 ) -> hakille_core::Result<PathBuf> {
-    if url.trim().is_empty() {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
         return Err(hakille_core::HakilleError::InferenceError(
             "wake_word::provision: URL vide".to_string(),
         ));
     }
-    if !url.starts_with("http://") && !url.starts_with("https://") {
+    if !trimmed.starts_with("https://") {
         return Err(hakille_core::HakilleError::InferenceError(format!(
-            "wake_word::provision: URL non supportée '{url}' (http/https requis)"
+            "wake_word::provision: URL non sécurisée '{trimmed}' (HTTPS obligatoire)"
         )));
     }
+    let sha = expected_sha256
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            hakille_core::HakilleError::InferenceError(
+                "wake_word::provision: checksum SHA-256 obligatoire pour tout artefact ONNX"
+                    .to_string(),
+            )
+        })?;
     let dest = models_dir.as_ref().join(oww_filename(keyword));
     ModelDownloader::new()
-        .download_file(url, &dest, None, expected_sha256, None)
+        .download_file(trimmed, &dest, None, Some(sha), None)
         .await
 }
 
@@ -328,7 +337,7 @@ impl WakeWordDetector {
         self.diagnostic_carry.extend_from_slice(&mono);
         for ((_, probability), window) in probabilities
             .iter()
-            .zip(self.diagnostic_carry.chunks_exact(512))
+            .zip(self.diagnostic_carry.as_chunks::<512>().0.iter())
         {
             let (rms, ratio) = band_measurements(window);
             self.last_windows.push((*probability, rms, ratio));

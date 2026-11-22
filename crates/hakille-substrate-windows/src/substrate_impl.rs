@@ -74,13 +74,14 @@ impl WindowsSubstrate {
             // (win32_ffi intentionally exposes no DXGI); not an 8 GiB claim.
             gpu_vram_bytes: None,
             has_secure_enclave: false,
-            has_tpm: true,
+            // Honnête : aucun binding TBS (TPM Base Services) n'est interrogé.
+            has_tpm: false,
             battery_powered: on_battery,
             // Honest: no thermal envelope modeling without a WMI /
             // MSACPI thermal-zone binding; unknown, not invented.
             thermal_envelope_watts: None,
             os_name: "Windows".to_string(),
-            os_version: "11 (24H2)".to_string(),
+            os_version: "Windows (version OS non sondée)".to_string(),
         };
 
         let virtual_fs_root = std::env::var("LOCALAPPDATA")
@@ -154,23 +155,20 @@ impl WindowsSubstrate {
         if let Some(root) = &self.trusted_capability_root {
             hakille_core::verify_capability_with_root_key(cap, root, scope, action)
         } else {
-            // Legacy fallback UNIQUEMENT en debug/tests : vérification
-            // structurelle sans pinning (accepte les tokens auto-signés).
-            // En release, panique fail-closed : `verify_unpinned` est interdit.
+            // Repli legacy UNIQUEMENT en debug/tests ; en release, refus fail-closed
+            // propre (`Err`) sans jamais paniquer le processus.
             #[cfg(debug_assertions)]
             {
                 #[allow(deprecated)]
                 {
-                    let authority = hakille_core::CapabilityAuthority::default();
-                    let _ = authority;
                     hakille_core::verify_capability_unpinned(cap, scope, action)
                 }
             }
             #[cfg(not(debug_assertions))]
             {
-                panic!(
-                    "unpinned capability verification forbidden in release; call with_trusted_root in production"
-                );
+                Err(hakille_core::HakilleError::CapabilityDenied(
+                    "vérification non épinglée interdite en release : appeler with_trusted_root en production".into(),
+                ))
             }
         }
     }
@@ -181,78 +179,11 @@ impl WindowsSubstrate {
         self
     }
 
-    /// Resolve a VirtualPath to a real Windows path inside the isolated root.
-    /// Secure: rejects `..`, absolute paths, drive letters, NUL bytes and
-    /// ensures the final path stays inside `virtual_fs_root`.
-    fn resolve_path(&self, path: &VirtualPath) -> hakille_core::Result<PathBuf> {
-        use std::path::Component;
-        if path.0.contains('\0') {
-            return Err(hakille_core::HakilleError::CapabilityDenied(
-                "NUL byte in virtual path".into(),
-            ));
-        }
-        // Reject Windows drive letters and UNC prefixes early.
-        let lower = path.0.to_ascii_lowercase();
-        if lower.contains(':') || path.0.starts_with(r"\\") {
-            return Err(hakille_core::HakilleError::CapabilityDenied(
-                "absolute / drive path rejected".into(),
-            ));
-        }
-        // Normalise les deux séparateurs : sur Linux, `..\\evil.txt` est un
-        // simple nom de fichier pour `Path`, mais il doit rester refusé comme
-        // traversée Windows. La sécurité ne doit pas dépendre de l'hôte.
-        let normalized = path.0.replace('\\', "/");
-        let mut clean = PathBuf::new();
-        let mut saw_normal = false;
-        for comp in std::path::Path::new(&normalized).components() {
-            match comp {
-                Component::Normal(p) => {
-                    if p == std::ffi::OsStr::new("..") {
-                        return Err(hakille_core::HakilleError::CapabilityDenied(
-                            "path traversal (..) rejected".into(),
-                        ));
-                    }
-                    clean.push(p);
-                    saw_normal = true;
-                }
-                Component::CurDir => {}
-                // Any ParentDir, RootDir, Prefix => reject
-                _ => {
-                    return Err(hakille_core::HakilleError::CapabilityDenied(
-                        "non-normal path component rejected".into(),
-                    ));
-                }
-            }
-        }
-        if !saw_normal {
-            // Empty virtual path means the VirtualFS root itself (for list_dir).
-            return Ok(self.virtual_fs_root.clone());
-        }
-        let joined = self.virtual_fs_root.join(&clean);
-        // Defence in depth: canonicalize prefix check when root exists.
-        // If canonicalization fails (path doesn't exist yet for writes),
-        // the component-level rejection above already blocks traversal.
-        if let (Ok(root_c), Ok(joined_c)) =
-            (self.virtual_fs_root.canonicalize(), joined.canonicalize())
-        {
-            if !joined_c.starts_with(&root_c) {
-                return Err(hakille_core::HakilleError::CapabilityDenied(
-                    "resolved path escapes VirtualFS root".into(),
-                ));
-            }
-            return Ok(joined_c);
-        }
-        Ok(joined)
-    }
-
     pub fn virtual_fs_root(&self) -> &Path {
         &self.virtual_fs_root
     }
 
-    /// Capability-checked stop for an audio stream. The trait-level
-    /// `stop_audio_capture(handle)` is kept for compatibility but only logs
-    /// a deprecation warning (no cap = no ownership proof); new code MUST
-    /// call this method with the owner's Audio/Read capability.
+    /// Capability-checked stop for an audio stream.
     pub async fn stop_audio_capture_with_cap(
         &self,
         _handle: AudioStreamHandle,
@@ -268,8 +199,7 @@ impl WindowsSubstrate {
         ))
     }
 
-    /// Capability-checked stop for a camera stream. See
-    /// `stop_audio_capture_with_cap` — same ownership rationale (Camera/Read).
+    /// Capability-checked stop for a camera stream.
     pub async fn stop_camera_capture_with_cap(
         &self,
         handle: CameraStreamHandle,
@@ -280,6 +210,13 @@ impl WindowsSubstrate {
             CapabilityScope::Camera,
             hakille_core::CapabilityAction::Read,
         )?;
+        self.stop_camera_stream_inner(handle).await
+    }
+
+    async fn stop_camera_stream_inner(
+        &self,
+        handle: CameraStreamHandle,
+    ) -> hakille_core::Result<()> {
         let _ = handle;
         #[cfg(windows)]
         {
@@ -297,8 +234,14 @@ impl WindowsSubstrate {
                     Err(e) => tracing::warn!("camera stop task failed: {e}"),
                 }
             }
+            Ok(())
         }
-        Ok(())
+        #[cfg(not(windows))]
+        {
+            Err(hakille_core::HakilleError::SubstrateError(
+                WINDOWS_CAMERA_UNIMPLEMENTED.into(),
+            ))
+        }
     }
 }
 
@@ -333,23 +276,7 @@ impl Substrate for WindowsSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Read,
         )?;
-        let local_path = self.resolve_path(path)?;
-        if local_path.exists() {
-            tokio::fs::read(&local_path).await.map_err(|e| {
-                hakille_core::HakilleError::StorageError(format!(
-                    "Read error {}: {}",
-                    local_path.display(),
-                    e
-                ))
-            })
-        } else {
-            // Honest miss: no synthetic fallback. Mirrors Linux behaviour —
-            // callers must handle FileNotFound instead of receiving fake bytes.
-            Err(hakille_core::HakilleError::StorageError(format!(
-                "File not found: {}",
-                path.0
-            )))
-        }
+        hakille_substrate::read_confined_file(&self.virtual_fs_root, path).await
     }
 
     async fn write_file(
@@ -363,17 +290,7 @@ impl Substrate for WindowsSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Write,
         )?;
-        let local_path = self.resolve_path(path)?;
-        if let Some(parent) = local_path.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
-        }
-        tokio::fs::write(&local_path, data).await.map_err(|e| {
-            hakille_core::HakilleError::StorageError(format!(
-                "Write error {}: {}",
-                local_path.display(),
-                e
-            ))
-        })
+        hakille_substrate::write_confined_file(&self.virtual_fs_root, path, data).await
     }
 
     async fn list_dir(
@@ -386,24 +303,7 @@ impl Substrate for WindowsSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Read,
         )?;
-        let local_path = self.resolve_path(path)?;
-        if local_path.exists() && local_path.is_dir() {
-            let mut entries = Vec::new();
-            if let Ok(mut read_dir) = tokio::fs::read_dir(&local_path).await {
-                while let Ok(Some(entry)) = read_dir.next_entry().await {
-                    if let Some(name) = entry.file_name().to_str() {
-                        entries.push(VirtualPath(name.to_string()));
-                    }
-                }
-            }
-            Ok(entries)
-        } else {
-            // HONNÊTE : aucun contenu synthétique. Répertoire absent → Err.
-            Err(hakille_core::HakilleError::StorageError(format!(
-                "Directory not found: {}",
-                path.0
-            )))
-        }
+        hakille_substrate::list_confined_dir(&self.virtual_fs_root, path).await
     }
 
     async fn delete_file(&self, path: &VirtualPath, cap: &CapabilityToken) -> Result<()> {
@@ -412,24 +312,10 @@ impl Substrate for WindowsSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Delete,
         )?;
-        let local_path = self.resolve_path(path)?;
-        if local_path.exists() {
-            tokio::fs::remove_file(&local_path).await.map_err(|e| {
-                hakille_core::HakilleError::StorageError(format!(
-                    "Delete error {}: {}",
-                    local_path.display(),
-                    e
-                ))
-            })?;
-        }
-        Ok(())
+        hakille_substrate::delete_confined_file(&self.virtual_fs_root, path).await
     }
 
     async fn http_request(&self, req: HttpRequest, cap: &CapabilityToken) -> Result<HttpResponse> {
-        // Network capability (GET ⇒ Read, others ⇒ Write) including expiry
-        // is enforced first; without it egress is refused explicitly.
-        // Then the shared allowlist policy applies (loopback-only by
-        // default) and the real fetch runs over rustls TLS (10 s, 5 MiB cap).
         let action = if req.method.eq_ignore_ascii_case("get") {
             hakille_core::CapabilityAction::Read
         } else {
@@ -510,11 +396,11 @@ impl Substrate for WindowsSubstrate {
         }
     }
 
-    async fn stop_camera_capture(&self, _handle: CameraStreamHandle) -> Result<()> {
+    async fn stop_camera_capture(&self, handle: CameraStreamHandle) -> Result<()> {
         tracing::warn!(
             "stop_camera_capture(handle) without capability is deprecated; use stop_camera_capture_with_cap(handle, cap) with Camera/Read ownership proof"
         );
-        Ok(())
+        self.stop_camera_stream_inner(handle).await
     }
 
     async fn capture_camera_frame(
@@ -566,8 +452,13 @@ impl Substrate for WindowsSubstrate {
             CapabilityScope::Sensor,
             hakille_core::CapabilityAction::Read,
         )?;
-        // Real screen capture using native Win32 GDI APIs
-        WindowsScreenCapturer::capture_primary_display()
+        tokio::task::spawn_blocking(WindowsScreenCapturer::capture_primary_display)
+            .await
+            .map_err(|e| {
+                hakille_core::HakilleError::SubstrateError(format!(
+                    "tâche de capture d'écran Windows échouée : {e}"
+                ))
+            })?
     }
 
     async fn inject_input(&self, action: InputAction, cap: &CapabilityToken) -> Result<()> {
@@ -576,8 +467,14 @@ impl Substrate for WindowsSubstrate {
             CapabilityScope::GuiInput,
             hakille_core::CapabilityAction::Execute,
         )?;
-        // Real native input injection via SendInput / mouse_event / keybd_event
-        WindowsInputInjector::inject(&action)
+        // Déporte sur thread bloquant pour ne jamais geler les workers Tokio (sleep sur drag/double-click).
+        tokio::task::spawn_blocking(move || WindowsInputInjector::inject(&action))
+            .await
+            .map_err(|e| {
+                hakille_core::HakilleError::SubstrateError(format!(
+                    "tâche d'injection d'entrée Windows échouée : {e}"
+                ))
+            })?
     }
 
     async fn spawn_sandboxed(
@@ -585,12 +482,7 @@ impl Substrate for WindowsSubstrate {
         _wasm: &[u8],
         caps: Vec<CapabilityToken>,
     ) -> Result<ProcessHandle> {
-        // Pinned-root enforcement: every delegated cap MUST verify against the
-        // pinned authority root. No silent unpinned fallback — without a
-        // trusted root, refuse (error logged in `require_trusted_root`).
         let root = self.require_trusted_root("spawn_sandboxed")?;
-        // Caller must prove it holds at least one delegable capability;
-        // spawned sandbox receives only attenuated `caps` (verified by caller).
         for c in &caps {
             hakille_core::verify_capability_with_root_key(
                 c,
@@ -628,8 +520,6 @@ impl Substrate for WindowsSubstrate {
                 ))
             })?;
         }
-        // Aucun moteur WASM n'est relié à cette API : ne jamais inventer
-        // un handle de processus. Le runtime des agents de référence est distinct.
         Err(hakille_core::HakilleError::SubstrateError(
             "spawn_sandboxed indisponible : moteur WASM non raccordé au substrat windows; aucun processus lancé"
                 .to_string(),
@@ -664,15 +554,12 @@ impl Substrate for WindowsSubstrate {
     }
 
     fn thermal_state(&self) -> ThermalState {
-        // Honest: no thermal binding is linked (reading the package
-        // temperature requires a WMI / MSACPI thermal-zone binding that
-        // win32_ffi intentionally does not expose). Unknown, not invented.
         ThermalState::Unknown
     }
 
     async fn send_notification(
         &self,
-        request: hakille_substrate::NotificationRequest,
+        _request: hakille_substrate::NotificationRequest,
         cap: &CapabilityToken,
     ) -> Result<hakille_substrate::NotificationHandle> {
         self.enforce(
@@ -680,35 +567,15 @@ impl Substrate for WindowsSubstrate {
             CapabilityScope::Notification,
             hakille_core::CapabilityAction::Write,
         )?;
-
-        tracing::info!(
-            id = %request.id,
-            title = %request.title,
-            urgency = ?request.urgency,
-            category = ?request.category,
-            "WindowsSubstrate: Dispatching notification"
-        );
-
-        #[cfg(windows)]
-        {
-            let _info_flags = match request.urgency {
-                hakille_substrate::NotificationUrgency::Low
-                | hakille_substrate::NotificationUrgency::Normal => 0x00000001,
-                hakille_substrate::NotificationUrgency::High => 0x00000002,
-                hakille_substrate::NotificationUrgency::Critical => 0x00000003,
-            };
-        }
-
-        Ok(hakille_substrate::NotificationHandle {
-            id: request.id,
-            channel: "windows_shell_notify".to_string(),
-            delivered_at_ms: chrono::Utc::now().timestamp_millis() as u64,
-        })
+        // HONNÊTE : aucun binding Shell_NotifyIcon / WinRT ToastNotification n'est raccordé.
+        Err(hakille_core::HakilleError::SubstrateError(
+            "notification Windows indisponible : binding Shell_NotifyIcon/WinRT Toast non raccordé ; aucune notification affichée".to_string(),
+        ))
     }
 
     async fn dismiss_notification(
         &self,
-        handle: &hakille_substrate::NotificationHandle,
+        _handle: &hakille_substrate::NotificationHandle,
         cap: &CapabilityToken,
     ) -> Result<()> {
         self.enforce(
@@ -716,7 +583,8 @@ impl Substrate for WindowsSubstrate {
             CapabilityScope::Notification,
             hakille_core::CapabilityAction::Delete,
         )?;
-        tracing::debug!(id = %handle.id, "WindowsSubstrate: Dismissed notification");
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "fermeture de notification Windows indisponible : binding Shell_NotifyIcon/WinRT Toast non raccordé".to_string(),
+        ))
     }
 }

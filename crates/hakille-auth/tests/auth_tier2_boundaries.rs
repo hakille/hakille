@@ -3,12 +3,10 @@
 //! Requirements: At least 5 boundary/adversarial test cases per feature (9 features x 5 = 45 test cases).
 
 use hakille_auth::biohash::*;
-use hakille_auth::continuous::*;
 use hakille_auth::face::*;
 use hakille_auth::face_liveness::*;
 use hakille_auth::gdpr::*;
 use hakille_auth::guest::*;
-use hakille_auth::minor::*;
 use hakille_auth::multimodal::*;
 use hakille_core::UserId;
 use hakille_core::capability::CapabilityScope;
@@ -227,8 +225,10 @@ fn test_f17_boundary_anti_correlated_gaze_fails() {
     let res = engine
         .verify_gaze_response(&token, &pupil, &target, now + 1)
         .unwrap();
-    // Negative correlation R ~ -1.0 means R^2 might be high, but trajectory direction is opposite
-    // In our test fixture it correlates R^2 >= 0.85; let's test zero correlation
+    assert!(
+        !res,
+        "Anti-correlated pupil gaze trajectory (R < 0) must fail"
+    );
     let pupil_flat = vec![(10.0, 0.0), (10.0, 0.0), (10.0, 0.0), (10.0, 0.0)];
     let res_flat = engine
         .verify_gaze_response(&token, &pupil_flat, &target, now + 1)
@@ -299,8 +299,8 @@ fn test_f18_boundary_verify_threshold_edge() {
         bits: vec![0x00u8; 128],
     };
     // Exactly 18% diff bits: 184 bits / 1024 = 0.1796875 <= 0.18
-    for i in 0..23 {
-        d2.bits[i] = 0xff; // 23 * 8 = 184 bits
+    for byte in d2.bits.iter_mut().take(23) {
+        *byte = 0xff; // 23 * 8 = 184 bits
     }
     assert!(engine.verify_biohash(&d1, &d2, 0.18));
 

@@ -152,63 +152,48 @@ impl HSEmotionSession {
             ));
         }
 
-        if let Some(session_mutex) = &self.session {
-            // Normalisation ImageNet (mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225])
-            let tensor_data = preprocess_imagenet_chw(
-                rgb_crop,
-                width,
-                height,
-                HSEMOTION_INPUT_SIZE,
-                HSEMOTION_INPUT_SIZE,
-            );
-            let input_tensor = Tensor::<f32>::from_array((
-                [1usize, 3usize, HSEMOTION_INPUT_SIZE, HSEMOTION_INPUT_SIZE],
-                tensor_data,
-            ))
-            .map_err(|e| ort_err("input_tensor", e))?;
-
-            let mut session = session_mutex
-                .lock()
-                .map_err(|_| ort_err("lock", "mutex empoisonné"))?;
-            let outputs = session
-                .run(ort::inputs![input_tensor])
-                .map_err(|e| ort_err("forward", e))?;
-
-            // Le modèle MTL produit soit 2 tenseurs (logits 8 et va 2), soit un tenseur concaténé de taille 10.
-            return parse_mtl_outputs(&outputs);
-        }
-
-        // Mode simulation canonique déterministe
-        // Analyse sommaire de l'intensité moyenne pour varier subtilement l'estimation de test
-        let avg_luma = rgb_crop.iter().step_by(3).map(|&b| b as f32).sum::<f32>()
-            / ((width * height).max(1) as f32);
-        let simulated_res = if avg_luma > 200.0 {
-            // Espace très lumineux -> lueur de sourire / surprise légère
-            let mut probs = [0.05, 0.02, 0.02, 0.03, 0.45, 0.35, 0.03, 0.05];
-            normalize_softmax(&mut probs);
-            EmotionInferenceResult {
-                primary_emotion: "Happiness".to_string(),
-                confidence: 0.85,
-                class_probabilities: probs,
-                valence: 0.65,
-                arousal: 0.30,
-                status: ModelStatus::Simulated,
-            }
-        } else {
-            // Condition standard nominale -> Neutre serein
-            let mut probs = [0.02, 0.01, 0.01, 0.02, 0.05, 0.82, 0.04, 0.03];
-            normalize_softmax(&mut probs);
-            EmotionInferenceResult {
-                primary_emotion: "Neutral".to_string(),
-                confidence: 0.88,
-                class_probabilities: probs,
-                valence: 0.10,
-                arousal: -0.15,
-                status: ModelStatus::Simulated,
-            }
+        let Some(session_mutex) = &self.session else {
+            return Err(HakilleError::InferenceError(
+                "HSEmotion::infer: modèle ONNX enet_b0_8_va_mtl.onnx absent — classification émotionnelle simulée refusée (contrat d'honnêteté)".into(),
+            ));
         };
 
-        Ok(simulated_res)
+        let expected_bytes = width
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(3))
+            .ok_or_else(|| {
+                HakilleError::InferenceError("HSEmotion::infer: dimensions débordantes".into())
+            })?;
+        if rgb_crop.len() < expected_bytes {
+            return Err(HakilleError::InferenceError(format!(
+                "HSEmotion::infer: tampon RGB trop court ({} < {expected_bytes})",
+                rgb_crop.len()
+            )));
+        }
+
+        // Normalisation ImageNet (mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225])
+        let tensor_data = preprocess_imagenet_chw(
+            rgb_crop,
+            width,
+            height,
+            HSEMOTION_INPUT_SIZE,
+            HSEMOTION_INPUT_SIZE,
+        );
+        let input_tensor = Tensor::<f32>::from_array((
+            [1usize, 3usize, HSEMOTION_INPUT_SIZE, HSEMOTION_INPUT_SIZE],
+            tensor_data,
+        ))
+        .map_err(|e| ort_err("input_tensor", e))?;
+
+        let mut session = session_mutex
+            .lock()
+            .map_err(|_| ort_err("lock", "mutex empoisonné"))?;
+        let outputs = session
+            .run(ort::inputs![input_tensor])
+            .map_err(|e| ort_err("forward", e))?;
+
+        // Le modèle MTL produit soit 2 tenseurs (logits 8 et va 2), soit un tenseur concaténé de taille 10.
+        parse_mtl_outputs(&outputs)
     }
 }
 
@@ -310,11 +295,24 @@ fn parse_mtl_outputs(outputs: &ort::session::SessionOutputs) -> Result<EmotionIn
     })
 }
 
-fn normalize_softmax(values: &mut [f32; 8]) {
-    let max_val = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+pub fn normalize_softmax(values: &mut [f32; 8]) {
+    let max_val = values
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite())
+        .fold(f32::NEG_INFINITY, f32::max);
+    if !max_val.is_finite() {
+        *values = [0.0; 8];
+        values[5] = 1.0;
+        return;
+    }
     let mut sum = 0.0;
     for v in values.iter_mut() {
-        *v = (*v - max_val).exp();
+        *v = if v.is_finite() {
+            (*v - max_val).exp()
+        } else {
+            0.0
+        };
         sum += *v;
     }
     if sum > 1e-6 {
@@ -329,32 +327,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hsemotion_simulated_neutral() {
+    fn test_hsemotion_missing_model_refuses_simulated_output() {
         let session = HSEmotionSession::open_or_simulated(None);
         assert_eq!(session.status(), ModelStatus::Simulated);
 
         let dummy_crop = vec![120u8; 224 * 224 * 3];
-        let result = session
+        let err = session
             .infer(&dummy_crop, 224, 224)
-            .expect("inférence valide");
-
-        assert_eq!(result.primary_emotion, "Neutral");
-        assert!(result.confidence > 0.70);
-        assert_eq!(result.status, ModelStatus::Simulated);
-        assert_eq!(result.class_probabilities.len(), 8);
-        let sum: f32 = result.class_probabilities.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-3, "softmax somme à 1.0 : {}", sum);
+            .expect_err("modèle absent : aucune émotion simulée autorisée");
+        assert!(err.to_string().contains("absent"));
     }
 
     #[test]
-    fn test_hsemotion_simulated_happy() {
-        let session = HSEmotionSession::open_or_simulated(None);
-        let bright_crop = vec![230u8; 224 * 224 * 3];
-        let result = session
-            .infer(&bright_crop, 224, 224)
-            .expect("inférence valide");
+    fn test_hsemotion_softmax_normalization_and_nan_safety() {
+        let mut probs = [0.02, 0.01, 0.01, 0.02, 0.05, 0.82, 0.04, 0.03];
+        normalize_softmax(&mut probs);
+        let sum: f32 = probs.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-3, "softmax somme à 1.0 : {}", sum);
 
-        assert_eq!(result.primary_emotion, "Happiness");
-        assert!(result.valence > 0.50);
+        let mut nan_logits = [f32::NAN; 8];
+        normalize_softmax(&mut nan_logits);
+        assert!(nan_logits.iter().all(|v| v.is_finite()));
     }
 }

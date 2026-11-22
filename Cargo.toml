@@ -6,6 +6,7 @@ members = [
     "crates/hakille-substrate",
     "crates/hakille-memory",
     "crates/hakille-spatial",
+    "crates/hakille-home",
     "crates/hakille-kernel",
     "crates/hakille-perception",
     "crates/hakille-inference",
@@ -62,7 +63,7 @@ license = "Apache-2.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 biscuit-auth = "5"
-ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+ed25519-dalek = { version = "2", features = ["serde", "rand_core", "zeroize"] }
 chacha20poly1305 = "0.10"
 rand = "0.8"
 thiserror = "2"
@@ -104,9 +105,13 @@ opt-level = 3
 [profile.dev.package.tokenizers]
 opt-level = 3
 
-# Le catalogue contient plusieurs Go : garder les SHA-256 obligatoires sans
-# ralentir chaque ouverture de modèles avec une boucle cryptographique debug.
+# Le catalogue contient plusieurs Go : garder les SHA-256 et vérifications Ed25519
+# obligatoires sans ralentir les tests debug avec une boucle arithmétique non optimisée.
 [profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.ed25519-dalek]
 opt-level = 3
 
 

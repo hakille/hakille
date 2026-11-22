@@ -10,6 +10,7 @@ use std::collections::HashSet;
 pub struct BiscuitCapabilityManager {
     pub authority: CapabilityAuthority,
     revocation_list: HashSet<Vec<u8>>,
+    revoked_block_ids: HashSet<Vec<u8>>,
 }
 
 impl Default for BiscuitCapabilityManager {
@@ -23,6 +24,7 @@ impl BiscuitCapabilityManager {
         Self {
             authority: CapabilityAuthority::new(),
             revocation_list: HashSet::new(),
+            revoked_block_ids: HashSet::new(),
         }
     }
 
@@ -103,17 +105,35 @@ impl BiscuitCapabilityManager {
         Ok(child_biscuit)
     }
 
+    /// Revoke a capability token and its entire attenuation lineage by recording
+    /// both its serialized bytes and its terminal block revocation identifier.
     pub fn revoke_token(&mut self, token: &CapabilityToken) -> Result<(), HakilleError> {
         let bytes = token.to_vec()?;
         self.revocation_list.insert(bytes);
+        if let Some(last_id) = token.biscuit.revocation_identifiers().into_iter().last() {
+            self.revoked_block_ids.insert(last_id);
+        }
         Ok(())
     }
 
     pub fn revoke_token_bytes(&mut self, token_bytes: Vec<u8>) {
+        if let Ok(tok) = CapabilityToken::from_vec(token_bytes.clone(), &self.root_public_key())
+            && let Some(last_id) = tok.biscuit.revocation_identifiers().into_iter().last()
+        {
+            self.revoked_block_ids.insert(last_id);
+        }
         self.revocation_list.insert(token_bytes);
     }
 
     pub fn is_revoked(&self, token: &CapabilityToken) -> bool {
+        if token
+            .biscuit
+            .revocation_identifiers()
+            .iter()
+            .any(|id| self.revoked_block_ids.contains(id))
+        {
+            return true;
+        }
         if let Ok(bytes) = token.to_vec() {
             self.revocation_list.contains(&bytes)
         } else {
@@ -122,7 +142,13 @@ impl BiscuitCapabilityManager {
     }
 
     pub fn is_revoked_bytes(&self, token_bytes: &[u8]) -> bool {
-        self.revocation_list.contains(token_bytes)
+        if self.revocation_list.contains(token_bytes) {
+            return true;
+        }
+        if let Ok(tok) = CapabilityToken::from_vec(token_bytes.to_vec(), &self.root_public_key()) {
+            return self.is_revoked(&tok);
+        }
+        false
     }
 
     pub fn revocation_count(&self) -> usize {

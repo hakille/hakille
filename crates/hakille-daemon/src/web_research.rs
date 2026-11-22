@@ -27,6 +27,7 @@ enum SearchProvider {
 pub struct WebResearch {
     provider: SearchProvider,
     transport: WebTransport,
+    per_call_timeout: Duration,
 }
 #[derive(Default)]
 struct WebTransport {
@@ -93,8 +94,24 @@ impl WebResearch {
         Ok(Self {
             provider,
             transport: WebTransport::from_env()?,
+            per_call_timeout: Duration::from_secs(8),
         })
     }
+
+    /// Aligne le délai HTTP par appel sur `ResearchPolicy::per_call_ms`.
+    #[allow(dead_code)]
+    pub fn with_per_call_timeout_ms(mut self, per_call_ms: u64) -> Self {
+        self.per_call_timeout = Duration::from_millis(per_call_ms.clamp(100, 60_000));
+        self
+    }
+}
+
+fn canonical_host(url: &Url) -> Option<String> {
+    url.host_str().map(|raw| {
+        raw.trim_matches(['[', ']'])
+            .trim_end_matches('.')
+            .to_ascii_lowercase()
+    })
 }
 
 fn validate_configured_endpoint(url: &Url) -> Result<(), String> {
@@ -110,10 +127,9 @@ fn validate_configured_endpoint(url: &Url) -> Result<(), String> {
                 .into(),
         );
     }
+    let host = canonical_host(url).unwrap_or_default();
     // HTTP est réservé au service explicitement configuré sur la boucle locale.
-    if url.scheme() == "http"
-        && !matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
-    {
+    if url.scheme() == "http" && !matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1") {
         return Err("SearXNG : HTTPS requis hors de la boucle locale".into());
     }
     Ok(())
@@ -171,11 +187,9 @@ fn validate_public_url(url: &Url) -> WebResult<()> {
             "page refusée : HTTPS public sur le port 443, sans identifiants, requis",
         ));
     }
-    let host = url
-        .host_str()
-        .ok_or_else(|| ToolFailure::permanent("hôte absent"))?
-        .trim_matches(['[', ']']);
-    if host == "localhost"
+    let host = canonical_host(url).ok_or_else(|| ToolFailure::permanent("hôte absent"))?;
+    if host.is_empty()
+        || host == "localhost"
         || host.ends_with(".localhost")
         || host.ends_with(".local")
         || host.ends_with(".internal")
@@ -196,11 +210,8 @@ fn validate_public_url(url: &Url) -> WebResult<()> {
 
 async fn public_addresses(url: &Url) -> WebResult<Vec<SocketAddr>> {
     validate_public_url(url)?;
-    let host = url
-        .host_str()
-        .expect("hôte validé")
-        .trim_matches(['[', ']']);
-    let addresses: Vec<_> = tokio::net::lookup_host((host, 443))
+    let host = canonical_host(url).expect("hôte validé");
+    let addresses: Vec<_> = tokio::net::lookup_host((host.as_str(), 443))
         .await
         .map_err(|_| ToolFailure::transient("résolution DNS impossible"))?
         .collect();
@@ -226,15 +237,18 @@ async fn get_once(
     headers: HeaderMap,
     configured_endpoint: bool,
     transport: &WebTransport,
+    timeout: Duration,
 ) -> WebResult<reqwest::Response> {
+    let connect_timeout = Duration::from_secs(4).min(timeout);
     let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
-        .timeout(Duration::from_secs(8))
-        .connect_timeout(Duration::from_secs(4))
+        .timeout(timeout)
+        .connect_timeout(connect_timeout)
         .user_agent("Hakille/0.1 (recherche explicite; lecture seule)");
-    // Aucun proxy ambiant implicite. Le proxy explicitement configuré est
-    // une frontière de confiance réseau : sa résolution finale est déléguée.
+    // Aucun proxy ambiant implicite. Lorsqu'un proxy explicite est configuré,
+    // la résolution DNS finale lui est déléguée (les hôtes locaux / IP privées
+    // littérales restent bloqués par `validate_public_url`).
     if let Some(proxy) = &transport.proxy {
         builder = builder.proxy(proxy.clone());
     }
@@ -242,13 +256,16 @@ async fn get_once(
         builder = builder.add_root_certificate(certificate.clone());
     }
     if !configured_endpoint {
-        let addresses = public_addresses(url).await?;
-        builder = builder.resolve_to_addrs(
-            url.host_str()
-                .expect("hôte validé")
-                .trim_matches(['[', ']']),
-            &addresses,
-        );
+        validate_public_url(url)?;
+        if transport.proxy.is_none() {
+            let addresses = public_addresses(url).await?;
+            builder = builder.resolve_to_addrs(
+                url.host_str()
+                    .expect("hôte validé")
+                    .trim_matches(['[', ']']),
+                &addresses,
+            );
+        }
     }
     builder
         .build()
@@ -284,40 +301,110 @@ async fn bounded_body(mut response: reqwest::Response) -> WebResult<Vec<u8>> {
     Ok(body)
 }
 
+/// Détecte les caractères de formatage invisibles Unicode (`Cf`, BiDi overrides,
+/// zero-width, tag characters U+E0000..=U+E007F) utilisés pour le smuggling de prompts.
+fn is_hidden_format_char(c: char) -> bool {
+    let cp = c as u32;
+    matches!(
+        cp,
+        0x00AD
+            | 0x061C
+            | 0x180E
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x206F
+            | 0xFEFF
+            | 0xFFF9..=0xFFFB
+            | 0xE0000..=0xE007F
+    )
+}
+
+fn sanitize_web_text(input: &str, allow_whitespace: bool) -> String {
+    input
+        .chars()
+        .filter(|&c| {
+            if is_hidden_format_char(c) {
+                return false;
+            }
+            if c.is_control() {
+                allow_whitespace && c.is_whitespace()
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+fn is_hidden_inline_style(style: &str) -> bool {
+    let compact: String = style
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect();
+    compact.contains("display:none")
+        || compact.contains("visibility:hidden")
+        || compact.contains("opacity:0;")
+        || compact.ends_with("opacity:0")
+        || compact.contains("font-size:0")
+}
+
+fn is_hidden_element(elem: &scraper::node::Element) -> bool {
+    matches!(
+        elem.name(),
+        "script" | "style" | "noscript" | "template" | "head" | "svg"
+    ) || elem.attr("hidden").is_some()
+        || elem
+            .attr("aria-hidden")
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case("true"))
+        || elem.attr("style").is_some_and(is_hidden_inline_style)
+}
+
+/// Extraction HTML en O(N) via parcours explicite par pile avec suivi de la
+/// profondeur masquée (élimine le parcours O(N²) `ancestors().any(...)` et les
+/// débordements de pile sur DOM profondément imbriqué).
 fn extract_html(body: &str) -> (String, String) {
     let html = Html::parse_document(body);
     let title_sel = Selector::parse("title").expect("sélecteur statique");
-    let title = html
+    let raw_title = html
         .select(&title_sel)
         .next()
         .map(|e| e.text().collect::<String>())
         .unwrap_or_default();
+
     let mut output = String::new();
-    for node in html.root_element().descendants() {
-        let Some(text) = node.value().as_text() else {
+    // Pile explicite `(noeud, est_masqué)` : complexité O(N) stricte, pas de récursion.
+    let mut stack = vec![(html.tree.root(), false)];
+    while let Some((node, parent_hidden)) = stack.pop() {
+        let hidden = parent_hidden || node.value().as_element().is_some_and(is_hidden_element);
+        if hidden {
             continue;
-        };
-        let hidden = node.ancestors().any(|a| {
-            a.value().as_element().is_some_and(|e| {
-                matches!(
-                    e.name(),
-                    "script" | "style" | "noscript" | "template" | "head" | "svg"
-                ) || e.attr("hidden").is_some()
-                    || e.attr("aria-hidden") == Some("true")
-            })
-        });
-        if !hidden {
-            output.extend(
-                text.chars()
-                    .filter(|c| !c.is_control() || c.is_whitespace()),
-            );
-            output.push(' ');
+        }
+        if let Some(text) = node.value().as_text() {
+            let clean = sanitize_web_text(text, true);
+            if !clean.is_empty() {
+                output.push_str(&clean);
+                output.push(' ');
+            }
+            continue;
+        }
+        // Empiler les enfants en ordre inverse pour préserver l'ordre de lecture gauche→droite.
+        let children: Vec<_> = node.children().collect();
+        for child in children.into_iter().rev() {
+            stack.push((child, false));
         }
     }
+
+    let clean_title = sanitize_web_text(&raw_title, true);
     (
-        title.split_whitespace().collect::<Vec<_>>().join(" "),
+        clean_title.split_whitespace().collect::<Vec<_>>().join(" "),
         output.split_whitespace().collect::<Vec<_>>().join(" "),
     )
+}
+
+async fn extract_html_blocking(body: String) -> WebResult<(String, String)> {
+    tokio::task::spawn_blocking(move || extract_html(&body))
+        .await
+        .map_err(|_| ToolFailure::permanent("extraction HTML interrompue"))
 }
 
 #[async_trait]
@@ -372,7 +459,14 @@ impl ResearchBackend for WebResearch {
             }
         }
         // Aucune redirection du fournisseur : aucun risque d'envoyer sa clé ailleurs.
-        let response = get_once(&url, headers, configured, &self.transport).await?;
+        let response = get_once(
+            &url,
+            headers,
+            configured,
+            &self.transport,
+            self.per_call_timeout,
+        )
+        .await?;
         let body = bounded_body(response).await?;
         let json: serde_json::Value = serde_json::from_slice(&body)
             .map_err(|_| ToolFailure::permanent("réponse de recherche JSON invalide"))?;
@@ -382,23 +476,37 @@ impl ResearchBackend for WebResearch {
         }
         .and_then(|v| v.as_array())
         .ok_or_else(|| ToolFailure::permanent("schéma de résultats de recherche invalide"))?;
-        let mut hits = Vec::new();
-        for item in array.iter().take(limit.min(5)) {
-            let Some(url) = item.get("url").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let snippet = item
-                .get("description")
-                .or_else(|| item.get("content"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            hits.push(SearchHit {
-                url: url.into(),
-                title: extract_html(title).1,
-                snippet: extract_html(snippet).1,
-            });
-        }
+        let raw_items: Vec<(String, String, String)> = array
+            .iter()
+            .take(limit.min(5))
+            .filter_map(|item| {
+                let url = item.get("url").and_then(|v| v.as_str())?.to_string();
+                let title = item
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let snippet = item
+                    .get("description")
+                    .or_else(|| item.get("content"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                Some((url, title, snippet))
+            })
+            .collect();
+        let hits = tokio::task::spawn_blocking(move || {
+            raw_items
+                .into_iter()
+                .map(|(url, title, snippet)| SearchHit {
+                    url,
+                    title: extract_html(&title).1,
+                    snippet: extract_html(&snippet).1,
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .map_err(|_| ToolFailure::permanent("extraction des résultats interrompue"))?;
         Ok(hits)
     }
     async fn read(&self, raw: &str) -> WebResult<WebPage> {
@@ -410,7 +518,14 @@ impl ResearchBackend for WebResearch {
             if !visited.insert(url.to_string()) {
                 return Err(ToolFailure::permanent("boucle de redirections"));
             }
-            let response = get_once(&url, HeaderMap::new(), false, &self.transport).await?;
+            let response = get_once(
+                &url,
+                HeaderMap::new(),
+                false,
+                &self.transport,
+                self.per_call_timeout,
+            )
+            .await?;
             if response.status().is_redirection() {
                 let location = response
                     .headers()
@@ -450,13 +565,10 @@ impl ResearchBackend for WebResearch {
             let (title, text) = if mime == "text/plain" {
                 (url.host_str().unwrap_or("").to_owned(), body)
             } else {
-                extract_html(&body)
+                extract_html_blocking(body).await?
             };
-            let text: String = text
-                .chars()
-                .filter(|c| !c.is_control() || c.is_whitespace())
-                .collect();
-            let title: String = title.chars().filter(|c| !c.is_control()).collect();
+            let text = sanitize_web_text(&text, true);
+            let title = sanitize_web_text(&title, false);
             let truncated = text.chars().count() > MAX_TEXT_CHARS;
             return Ok(WebPage {
                 title,
@@ -503,6 +615,8 @@ mod tests {
             "file:///etc/passwd",
             "http://example.org",
             "https://localhost",
+            "https://localhost./",
+            "https://foo.local./bar",
             "https://user:secret@example.org",
             "https://example.org:444",
             "https://2130706433",
@@ -517,10 +631,31 @@ mod tests {
     #[test]
     fn web_html_parser_excludes_active_and_hidden_content() {
         let (title, text) = extract_html(
-            "<title>Source &amp; test</title><body><script>steal()</script><style>secret</style><div hidden>caché</div><p>Texte &amp; preuve</p><div aria-hidden='true'>invisible</div><template>instruction</template><p>日本語</p>",
+            "<title>Source &amp; test</title><body><script>steal()</script><style>secret</style><div hidden>caché</div><p>Texte &amp; preuve</p><div aria-hidden='TRUE'>invisible</div><span style='display: none'>prompt caché</span><span style='visibility: hidden'>autre caché</span><template>instruction</template><p>日本語</p>",
         );
         assert_eq!(title, "Source & test");
         assert_eq!(text, "Texte & preuve 日本語");
+    }
+    #[test]
+    fn web_html_parser_strips_bidi_and_tag_smuggling_and_handles_deep_dom() {
+        let smuggled = format!(
+            "<p>A{}B{}C</p>",
+            '\u{202E}',  // RLO BiDi override
+            '\u{E0041}'  // Unicode Tag character
+        );
+        let (_, clean) = extract_html(&smuggled);
+        assert_eq!(clean, "ABC");
+
+        let mut deep = String::new();
+        for _ in 0..1000 {
+            deep.push_str("<div>");
+        }
+        deep.push_str("contenu profond");
+        for _ in 0..1000 {
+            deep.push_str("</div>");
+        }
+        let (_, deep_text) = extract_html(&deep);
+        assert_eq!(deep_text, "contenu profond");
     }
     #[test]
     fn web_only_explicit_loopback_provider_allows_http() {
@@ -571,6 +706,7 @@ mod http_tests {
         let backend = WebResearch {
             provider: SearchProvider::Searx { endpoint },
             transport: WebTransport::default(),
+            per_call_timeout: Duration::from_secs(8),
         };
         let hits = backend.search("mémoire & raisonnement", 3).await.unwrap();
         let request = server.await.unwrap();
@@ -587,6 +723,7 @@ mod http_tests {
         let backend = WebResearch {
             provider: SearchProvider::Searx { endpoint },
             transport: WebTransport::default(),
+            per_call_timeout: Duration::from_secs(8),
         };
         let error = backend.search("question", 3).await.unwrap_err();
         assert_eq!(error.message, "HTTP 302");
@@ -607,9 +744,15 @@ mod http_tests {
             ),
         ] {
             let (url, server) = serve_once(response).await;
-            let response = get_once(&url, HeaderMap::new(), true, &WebTransport::default())
-                .await
-                .unwrap();
+            let response = get_once(
+                &url,
+                HeaderMap::new(),
+                true,
+                &WebTransport::default(),
+                Duration::from_secs(8),
+            )
+            .await
+            .unwrap();
             let error = bounded_body(response).await.unwrap_err();
             assert!(error.message.contains("volumineuse"), "{}", error.message);
             assert!(!error.retryable);
@@ -621,6 +764,7 @@ mod http_tests {
         let backend = WebResearch {
             provider: SearchProvider::None,
             transport: WebTransport::default(),
+            per_call_timeout: Duration::from_secs(8),
         };
         let error = backend
             .read("https://127.0.0.1/metadata")

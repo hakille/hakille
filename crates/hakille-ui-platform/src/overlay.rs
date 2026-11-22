@@ -29,9 +29,17 @@ impl OverlayBackend {
         }
     }
 
-    /// `true` ssi un backend d'overlay est réellement implémenté pour cet OS.
+    /// `true` ssi un backend d'overlay est défini dans la table cible pour cet OS.
     pub fn is_implemented(self) -> bool {
         self != Self::Unsupported
+    }
+
+    /// `true` ssi l'effet compositeur natif (Acrylic/wlr-layer-shell/MacPopover) est
+    /// effectivement raccordé au niveau OS. Actuellement `false` : Windows utilise
+    /// `WS_EX_LAYERED` + clé couleur `0x010101` et les autres OS utilisent une fenêtre
+    /// winit sans bordure opaque.
+    pub fn is_natively_wired(self) -> bool {
+        false
     }
 }
 

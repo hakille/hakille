@@ -84,9 +84,27 @@ impl MinorProfile {
             ));
         }
 
+        if approval.guardian_user_id != *guardian_id {
+            return Err(HakilleError::CapabilityDenied(
+                "Guardian approval user ID does not match the caller guardian ID.".to_string(),
+            ));
+        }
+
         if approval.minor_user_id != self.member.user_id {
             return Err(HakilleError::CapabilityDenied(
                 "Guardian approval does not target this minor.".to_string(),
+            ));
+        }
+
+        if approval.approved_amount_cents == 0 {
+            return Err(HakilleError::CapabilityDenied(
+                "Guardian approval amount must be strictly positive.".to_string(),
+            ));
+        }
+
+        if approval.signature_proof.is_empty() {
+            return Err(HakilleError::CapabilityDenied(
+                "Guardian approval signature proof is empty.".to_string(),
             ));
         }
 
@@ -94,6 +112,20 @@ impl MinorProfile {
             return Err(HakilleError::CapabilityExpired);
         }
 
+        Ok(())
+    }
+
+    /// Validate guardian co-signing with cryptographic HMAC-SHA256 verification against the guardian's key.
+    pub fn validate_guardian_cosign_with_key(
+        &self,
+        guardian_id: &UserId,
+        approval: &GuardianApproval,
+        guardian_key: &[u8; 32],
+    ) -> Result<(), HakilleError> {
+        self.validate_guardian_cosign(guardian_id, approval)?;
+        if !approval.verify_hmac(guardian_key) {
+            return Err(HakilleError::AuthenticationFailed);
+        }
         Ok(())
     }
 }
@@ -108,6 +140,59 @@ pub struct GuardianApproval {
     pub created_at: Timestamp,
     pub expires_at: Timestamp,
     pub signature_proof: Vec<u8>,
+}
+
+impl GuardianApproval {
+    /// Computes canonical HMAC-SHA256 over the approval fields.
+    pub fn compute_hmac(&self, key: &[u8; 32]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+
+        let mut ipad = [0x36u8; 64];
+        let mut opad = [0x5cu8; 64];
+        for i in 0..32 {
+            ipad[i] ^= key[i];
+            opad[i] ^= key[i];
+        }
+
+        let mut inner = Sha256::new();
+        inner.update(ipad);
+        inner.update(b"hakille-guardian-approval-v1:");
+        inner.update(self.guardian_user_id.0.as_bytes());
+        inner.update(self.minor_user_id.0.as_bytes());
+        inner.update(self.approved_amount_cents.to_le_bytes());
+        inner.update((self.purpose.len() as u64).to_le_bytes());
+        inner.update(self.purpose.as_bytes());
+        inner.update(self.created_at.0.timestamp_millis().to_le_bytes());
+        inner.update(self.expires_at.0.timestamp_millis().to_le_bytes());
+        let inner_digest = inner.finalize();
+
+        let mut outer = Sha256::new();
+        outer.update(opad);
+        outer.update(inner_digest);
+        let digest = outer.finalize();
+
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&digest);
+        out
+    }
+
+    /// Populates `self.signature_proof` with the HMAC-SHA256 digest under `key`.
+    pub fn sign_hmac(&mut self, key: &[u8; 32]) {
+        self.signature_proof = self.compute_hmac(key).to_vec();
+    }
+
+    /// Constant-time verification of `self.signature_proof` against `key`.
+    pub fn verify_hmac(&self, key: &[u8; 32]) -> bool {
+        if self.signature_proof.len() != 32 {
+            return false;
+        }
+        let expected = self.compute_hmac(key);
+        let mut diff = 0u8;
+        for (a, b) in expected.iter().zip(self.signature_proof.iter()) {
+            diff |= a ^ b;
+        }
+        diff == 0
+    }
 }
 
 pub fn default_minor_restrictions(category: &AgeCategory) -> Vec<Restriction> {

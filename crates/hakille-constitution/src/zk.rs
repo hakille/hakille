@@ -17,15 +17,37 @@ pub const MAX_ZK_PROOF_BYTES: usize = 256;
 pub const HAKILLE_ZK_MAGIC: [u8; 4] = [0x48, 0x4b, 0x5a, 0x01];
 
 /// Canonical SHA-256 hash of the Hakille Sovereign Constitution Rules 1 to 10.
+///
+/// Computed over the actual rule identifiers, categories, priorities, enforcement modes,
+/// and descriptions of `Constitution::default_v1()`.
 pub fn canonical_constitution_hash() -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"HAKILLE_CONSTITUTION_SOVEREIGN_RULES_1_TO_10");
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&hasher.finalize());
-    out
+    static HASH: std::sync::LazyLock<[u8; 32]> = std::sync::LazyLock::new(|| {
+        let constitution = crate::rules::Constitution::default_v1();
+        let mut hasher = Sha256::new();
+        hasher.update(b"HAKILLE_CONSTITUTION_SOVEREIGN_RULES_1_TO_10_V1:");
+        hasher.update(constitution.version.to_string().as_bytes());
+        for rule in &constitution.rules {
+            hasher.update(b"|");
+            hasher.update((rule.id.len() as u32).to_le_bytes());
+            hasher.update(rule.id.as_bytes());
+            hasher.update(
+                format!(
+                    "{:?}:{:?}:{}",
+                    rule.category, rule.enforcement, rule.priority
+                )
+                .as_bytes(),
+            );
+            hasher.update((rule.description.len() as u32).to_le_bytes());
+            hasher.update(rule.description.as_bytes());
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&hasher.finalize());
+        out
+    });
+    *HASH
 }
 
-/// Helper to compute a canonical 32-byte public action digest.
+/// Helper to compute a canonical 32-byte public action digest with length-prefixed fields.
 pub fn compute_action_digest(
     action_id: &str,
     subject_did: &str,
@@ -35,14 +57,12 @@ pub fn compute_action_digest(
 ) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"HAKILLE_ACTION_DIGEST_V1:");
-    hasher.update(action_id.as_bytes());
-    hasher.update(b":");
-    hasher.update(subject_did.as_bytes());
-    hasher.update(b":");
-    hasher.update(tenant_id.as_bytes());
-    hasher.update(b":");
+    for field in [action_id, subject_did, tenant_id] {
+        hasher.update((field.len() as u32).to_le_bytes());
+        hasher.update(field.as_bytes());
+    }
     hasher.update(timestamp.to_le_bytes());
-    hasher.update(b":");
+    hasher.update((resource.len() as u32).to_le_bytes());
     hasher.update(resource.as_bytes());
     let mut out = [0u8; 32];
     out.copy_from_slice(&hasher.finalize());
@@ -138,9 +158,11 @@ impl ConstitutionalWitness {
 
     /// Canonical serialized representation of private witness wires for hashing.
     pub fn canonical_wire_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(128);
+        let mut bytes = Vec::with_capacity(144);
         bytes.extend_from_slice(&self.audit_entry_hash);
-        bytes.push(self.requested_scope.datalog_name().as_bytes()[0]);
+        let scope_name = self.requested_scope.datalog_name();
+        bytes.extend_from_slice(&(scope_name.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(scope_name.as_bytes());
         bytes.push(match self.requested_action {
             CapabilityAction::Read => 1,
             CapabilityAction::Write => 2,
@@ -167,8 +189,8 @@ impl ConstitutionalWitness {
 /// Algebraic evaluation of the 8 fundamental Hakille constitutional rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstitutionalR1csCircuit {
-    /// Rule 1: Zero exfiltration / Untrusted input cannot be executed.
-    /// Constraint: untrusted * is_execute == 0
+    /// Rule 1: Zero exfiltration / Untrusted input cannot be executed or mutate state.
+    /// Constraint: untrusted * is_mutating_or_execute == 0
     pub rule1_residual: i64,
 
     /// Rule 2: Audit log provenance commitment.
@@ -187,7 +209,7 @@ pub struct ConstitutionalR1csCircuit {
     /// Constraint: crisis * (1 - human_routed) == 0
     pub rule5_residual: i64,
 
-    /// Rule 6: Sensitive domain confidence gating ($\tau \ge 0.90$).
+    /// Rule 6: Sensitive domain confidence gating ($\tau \ge 0.90$, finite).
     /// Constraint: is_sensitive * step(0.90 - tau) == 0
     pub rule6_residual: i64,
 
@@ -203,8 +225,14 @@ pub struct ConstitutionalR1csCircuit {
 impl ConstitutionalR1csCircuit {
     /// Evaluate the arithmetic R1CS constraints for a given public context and private witness.
     pub fn evaluate(is_minor: bool, witness: &ConstitutionalWitness) -> Self {
-        let is_execute = witness.requested_action == CapabilityAction::Execute;
-        let rule1_residual = (witness.is_untrusted_input as i64) * (is_execute as i64);
+        let is_mutating_or_execute = matches!(
+            witness.requested_action,
+            CapabilityAction::Execute
+                | CapabilityAction::Write
+                | CapabilityAction::Delete
+                | CapabilityAction::Admin
+        );
+        let rule1_residual = (witness.is_untrusted_input as i64) * (is_mutating_or_execute as i64);
 
         let rule2_residual = if witness.audit_entry_hash == [0u8; 32] {
             1
@@ -224,8 +252,13 @@ impl ConstitutionalR1csCircuit {
             (witness.is_crisis_situation as i64) * ((!witness.routed_to_human_helpline) as i64);
 
         let is_sensitive = witness.is_sensitive_domain
-            || matches!(witness.requested_scope, CapabilityScope::Wallet);
-        let rule6_residual = if is_sensitive && witness.session_tau < 0.90 {
+            || matches!(
+                witness.requested_scope,
+                CapabilityScope::Wallet | CapabilityScope::FullSystem
+            );
+        let tau_valid =
+            witness.session_tau.is_finite() && (0.0..=1.0).contains(&witness.session_tau);
+        let rule6_residual = if !tau_valid || (is_sensitive && witness.session_tau < 0.90) {
             1
         } else {
             0
@@ -331,8 +364,15 @@ pub trait ConstitutionalZkEngine: Send + Sync {
     ) -> Result<(), HakilleError>;
 }
 
-/// Production implementation of the Constitutional Zero-Knowledge Proof Engine.
-pub struct DefaultConstitutionalZkEngine;
+/// Production implementation of the Constitutional Compliance Attestation Engine.
+///
+/// Combines blinded witness commitments (`C_w`, `C_circ`, Fiat-Shamir challenge `c`)
+/// with an Ed25519 signature emitted ONLY after all 8 R1CS constitutional constraints
+/// are verified (`verify_strict`), preventing any caller without a valid witness
+/// and attester key from forging a 196-byte proof.
+pub struct DefaultConstitutionalZkEngine {
+    keypair: hakille_core::KeyPair,
+}
 
 impl Default for DefaultConstitutionalZkEngine {
     fn default() -> Self {
@@ -341,9 +381,17 @@ impl Default for DefaultConstitutionalZkEngine {
 }
 
 impl DefaultConstitutionalZkEngine {
-    /// Create a new engine instance.
+    /// Create a new engine instance with the canonical local constitutional attester key.
     pub fn new() -> Self {
-        Self
+        let mut seed = [0u8; 32];
+        let digest = Sha256::digest(b"HAKILLE_CONSTITUTION_ATTESTER_DEFAULT_KEY_V1");
+        seed.copy_from_slice(&digest);
+        Self::with_keypair(hakille_core::KeyPair::from_bytes(&seed))
+    }
+
+    /// Create an engine instance pinned to a specific Ed25519 keypair.
+    pub fn with_keypair(keypair: hakille_core::KeyPair) -> Self {
+        Self { keypair }
     }
 
     /// Compute public instance digest: $H_x = \text{SHA256}(x)$
@@ -368,6 +416,23 @@ impl DefaultConstitutionalZkEngine {
         let mut out = [0u8; 32];
         out.copy_from_slice(&hasher.finalize());
         out
+    }
+
+    fn signing_transcript(
+        instance_hash: &[u8; 32],
+        witness_commitment: &[u8; 32],
+        circuit_commitment: &[u8; 32],
+        challenge: &[u8; 32],
+        attester_pubkey: &[u8; 32],
+    ) -> Vec<u8> {
+        let mut msg = Vec::with_capacity(192);
+        msg.extend_from_slice(b"HAKILLE_ZK_ATTESTATION_SIG_V1:");
+        msg.extend_from_slice(instance_hash);
+        msg.extend_from_slice(witness_commitment);
+        msg.extend_from_slice(circuit_commitment);
+        msg.extend_from_slice(challenge);
+        msg.extend_from_slice(attester_pubkey);
+        msg
     }
 }
 
@@ -403,7 +468,7 @@ impl ConstitutionalZkEngine for DefaultConstitutionalZkEngine {
 
         // 3. Sample a 256-bit cryptographic blinding salt $r_{\text{blind}}$
         let mut blinding_salt = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut blinding_salt);
+        rand::rngs::OsRng.fill_bytes(&mut blinding_salt);
 
         // 4. Witness commitment $C_w$
         let mut w_hasher = Sha256::new();
@@ -430,42 +495,26 @@ impl ConstitutionalZkEngine for DefaultConstitutionalZkEngine {
         let mut challenge = [0u8; 32];
         challenge.copy_from_slice(&fs_hasher.finalize());
 
-        // 7. Masked response evaluations
-        let mut resp_circ_hasher = Sha256::new();
-        resp_circ_hasher.update(b"HAKILLE_ZK_RESP_SATISFIED:");
-        resp_circ_hasher.update(challenge);
-        resp_circ_hasher.update(blinding_salt);
-        resp_circ_hasher.update(instance_hash);
-        let mut resp_circ = [0u8; 32];
-        resp_circ.copy_from_slice(&resp_circ_hasher.finalize());
-
-        let mut resp_bind_hasher = Sha256::new();
-        resp_bind_hasher.update(b"HAKILLE_ZK_RESP_BINDING:");
-        resp_bind_hasher.update(challenge);
-        resp_bind_hasher.update(witness_commitment);
-        resp_bind_hasher.update(blinding_salt);
-        let mut resp_bind = [0u8; 32];
-        resp_bind.copy_from_slice(&resp_bind_hasher.finalize());
-
-        let mut tag_hasher = Sha256::new();
-        tag_hasher.update(b"HAKILLE_ZK_PROOF_TAG:");
-        tag_hasher.update(challenge);
-        tag_hasher.update(resp_circ);
-        tag_hasher.update(resp_bind);
-        tag_hasher.update(instance_hash);
-        let mut proof_tag = [0u8; 32];
-        proof_tag.copy_from_slice(&tag_hasher.finalize());
+        // 7. Attester public key (32 B) + Ed25519 signature (64 B) over transcript
+        let attester_pubkey = self.keypair.verifying_key.to_bytes();
+        let transcript = Self::signing_transcript(
+            &instance_hash,
+            &witness_commitment,
+            &circuit_commitment,
+            &challenge,
+            &attester_pubkey,
+        );
+        let sig = self.keypair.sign(&transcript);
 
         // 8. Assemble concise proof bytes:
-        // Magic (4 B) + C_w (32 B) + C_circ (32 B) + c (32 B) + s_circ (32 B) + s_bind (32 B) + proof_tag (32 B) = 196 B <= 256 B
+        // Magic (4 B) + C_w (32 B) + C_circ (32 B) + c (32 B) + pubkey (32 B) + sig (64 B) = 196 B <= 256 B
         let mut proof_bytes = Vec::with_capacity(196);
         proof_bytes.extend_from_slice(&HAKILLE_ZK_MAGIC);
         proof_bytes.extend_from_slice(&witness_commitment);
         proof_bytes.extend_from_slice(&circuit_commitment);
         proof_bytes.extend_from_slice(&challenge);
-        proof_bytes.extend_from_slice(&resp_circ);
-        proof_bytes.extend_from_slice(&resp_bind);
-        proof_bytes.extend_from_slice(&proof_tag);
+        proof_bytes.extend_from_slice(&attester_pubkey);
+        proof_bytes.extend_from_slice(&sig.0);
 
         debug_assert!(proof_bytes.len() <= MAX_ZK_PROOF_BYTES);
 
@@ -516,14 +565,18 @@ impl ConstitutionalZkEngine for DefaultConstitutionalZkEngine {
         let mut challenge = [0u8; 32];
         challenge.copy_from_slice(&proof.proof_bytes[68..100]);
 
-        let mut resp_circ = [0u8; 32];
-        resp_circ.copy_from_slice(&proof.proof_bytes[100..132]);
+        let mut attester_pubkey = [0u8; 32];
+        attester_pubkey.copy_from_slice(&proof.proof_bytes[100..132]);
 
-        let mut resp_bind = [0u8; 32];
-        resp_bind.copy_from_slice(&proof.proof_bytes[132..164]);
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes.copy_from_slice(&proof.proof_bytes[132..196]);
 
-        let mut proof_tag = [0u8; 32];
-        proof_tag.copy_from_slice(&proof.proof_bytes[164..196]);
+        if attester_pubkey != self.keypair.verifying_key.to_bytes() {
+            return Err(HakilleError::ConstitutionViolation(
+                "ZK proof verification failed: untrusted constitutional attester public key"
+                    .to_string(),
+            ));
+        }
 
         // 4. Reconstruct public instance hash $H_x$
         let instance_hash = Self::compute_instance_hash(
@@ -548,20 +601,23 @@ impl ConstitutionalZkEngine for DefaultConstitutionalZkEngine {
             ));
         }
 
-        // 6. Verify algebraic proof tag $T'$
-        let mut tag_hasher = Sha256::new();
-        tag_hasher.update(b"HAKILLE_ZK_PROOF_TAG:");
-        tag_hasher.update(challenge);
-        tag_hasher.update(resp_circ);
-        tag_hasher.update(resp_bind);
-        tag_hasher.update(instance_hash);
-        let expected_tag = tag_hasher.finalize();
-
-        if proof_tag != expected_tag.as_slice() {
-            return Err(HakilleError::ConstitutionViolation(
-                "ZK proof verification failed: algebraic proof tag mismatch".to_string(),
-            ));
-        }
+        // 6. Verify Ed25519 signature strictly over transcript
+        let transcript = Self::signing_transcript(
+            &instance_hash,
+            &witness_commitment,
+            &circuit_commitment,
+            &challenge,
+            &attester_pubkey,
+        );
+        let sig = hakille_core::Ed25519Signature::from_bytes(&sig_bytes);
+        self.keypair
+            .verifying_key
+            .verify_strict(&transcript, &sig)
+            .map_err(|e| {
+                HakilleError::ConstitutionViolation(format!(
+                    "ZK proof verification failed: invalid Ed25519 attestation signature ({e})"
+                ))
+            })?;
 
         Ok(())
     }

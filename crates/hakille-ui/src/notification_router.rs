@@ -256,8 +256,10 @@ mod tests {
     #[test]
     fn test_fatigue_alert_bypasses_budget_and_promotes_urgency() {
         let mut router = NotificationRouter::new(0); // 0 crédits disponibles
-        let mut cognitive = CognitiveState::default();
-        cognitive.perclos_drowsiness_score = 0.22; // Somnolence avérée > 0.15
+        let cognitive = CognitiveState {
+            perclos_drowsiness_score: 0.22, // Somnolence avérée > 0.15
+            ..Default::default()
+        };
 
         let fatigue_req = NotificationRequest::new("fatigue", "Pause Requise", "Vigilance faible")
             .with_category(NotificationCategory::Cognitive)
@@ -281,9 +283,11 @@ mod tests {
     #[test]
     fn test_meeting_and_third_parties_prevents_voice_leak() {
         let mut router = NotificationRouter::new(3);
-        let mut cognitive = CognitiveState::default();
-        cognitive.in_meeting = true;
-        cognitive.third_parties_present = true;
+        let cognitive = CognitiveState {
+            in_meeting: true,
+            third_parties_present: true,
+            ..Default::default()
+        };
 
         let critical_req = NotificationRequest::new("crit", "Alerte Sécurité", "Détail")
             .with_urgency(NotificationUrgency::Critical);
@@ -307,8 +311,10 @@ mod tests {
     #[test]
     fn test_gaze_aware_micro_pulse_for_low_urgency_focused_user() {
         let mut router = NotificationRouter::new(3);
-        let mut cognitive = CognitiveState::default();
-        cognitive.user_looking_at_screen = true;
+        let cognitive = CognitiveState {
+            user_looking_at_screen: true,
+            ..Default::default()
+        };
 
         let low_req = NotificationRequest::new("info", "Sync terminée", "Triplets synchronisés")
             .with_urgency(NotificationUrgency::Low);

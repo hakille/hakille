@@ -132,6 +132,46 @@ pub struct AgentDto {
     pub sha256: String,
 }
 
+/// DTO d'un appareil domotique exposé au HUD (extension additive v1).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct HomeDeviceDto {
+    pub id: String,
+    pub name: String,
+    pub room: String,
+    pub protocol: String,
+    pub category: String,
+    pub endpoint: String,
+    pub status: String,
+    pub summary: String,
+    pub power_w: f64,
+    pub pose_3d: [f32; 3],
+    pub is_critical: bool,
+}
+
+/// DTO du bilan énergétique souverain (extension additive v1).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct HomeEnergyDto {
+    pub solar_w: f64,
+    pub load_w: f64,
+    pub ev_w: f64,
+    pub hvac_w: f64,
+    pub net_grid_w: f64,
+    pub battery_soc_pct: Option<f32>,
+    pub self_consumption_pct: f32,
+    pub measured_devices: usize,
+    pub verdict: String,
+}
+
+/// DTO descriptif d'un protocole domotique supporté (extension additive v1).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct HomeProtocolStatusDto {
+    pub protocol: String,
+    pub display_name: String,
+    pub transport_mode: String,
+    pub default_port: Option<u16>,
+    pub honesty_note: String,
+}
+
 // ============================================================================
 // DTOs Perceptuels & Cognitifs Multimodaux (M1 Additif v1)
 // ============================================================================
@@ -593,6 +633,23 @@ pub enum UiToKernel {
     MediaGalleryRequest {
         limit: usize,
     },
+    /// Liste les appareils, protocoles et bilan énergétique domotique (additif v1).
+    HomeDevicesRequest,
+    /// Déclenche une découverte réseau LAN réelle (mDNS / SSDP / ONVIF).
+    HomeDiscoverRequest {
+        protocol: Option<String>,
+    },
+    /// Exécute ou prévisualise une commande domotique via le hub souverain.
+    HomeCommandRequest {
+        device_id: String,
+        action: String,
+        params_json: String,
+    },
+    /// Signale le début du maintien continu de 600 ms pour l'approbation d'une
+    /// carte d'action (additif v1 — horodatage monotone côté démon).
+    BeginApprovalHold {
+        card_id: u64,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -711,6 +768,19 @@ pub enum KernelToUi {
     /// Galerie des artefacts générés récents.
     MediaGalleryReply {
         artifacts: Vec<MediaArtifactDto>,
+    },
+    /// Réponse domotique unifiée : appareils, protocoles et bilan énergétique (additif v1).
+    HomeDevicesReply {
+        devices: Vec<HomeDeviceDto>,
+        protocols: Vec<HomeProtocolStatusDto>,
+        energy: HomeEnergyDto,
+    },
+    /// Réponse à une commande domotique ou découverte réelle (additif v1).
+    HomeCommandReply {
+        device_id: String,
+        executed_on_wire: bool,
+        summary: String,
+        receipt_sha256: Option<String>,
     },
 }
 
@@ -1388,5 +1458,65 @@ mod tests {
             let back: KernelMessage = serde_json::from_str(&json).unwrap();
             assert_eq!(back.inner, msg);
         }
+    }
+
+    #[test]
+    fn test_home_extension_roundtrip_v1() {
+        let reqs = [
+            UiToKernel::HomeDevicesRequest,
+            UiToKernel::HomeDiscoverRequest {
+                protocol: Some("matter".into()),
+            },
+            UiToKernel::HomeCommandRequest {
+                device_id: "matter-lamp-1".into(),
+                action: "set_power".into(),
+                params_json: "{\"on\":true}".into(),
+            },
+        ];
+        for r in reqs {
+            let msg = UiMessage::new(r.clone());
+            assert!(msg.check().is_ok());
+            let json = serde_json::to_string(&msg).unwrap();
+            let back: UiMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.inner, r);
+        }
+
+        let reply = KernelMessage::new(KernelToUi::HomeDevicesReply {
+            devices: vec![HomeDeviceDto {
+                id: "hue-1".into(),
+                name: "Suspension Salon".into(),
+                room: "salon".into(),
+                protocol: "philips-hue".into(),
+                category: "color_light".into(),
+                endpoint: "192.168.1.20:443".into(),
+                status: "en-ligne".into(),
+                summary: "80%".into(),
+                power_w: 11.4,
+                pose_3d: [0.0, 2.2, -3.0],
+                is_critical: false,
+            }],
+            protocols: vec![HomeProtocolStatusDto {
+                protocol: "matter".into(),
+                display_name: "Matter 1.3".into(),
+                transport_mode: "UDP :5540".into(),
+                default_port: Some(5540),
+                honesty_note: "Codec actif".into(),
+            }],
+            energy: HomeEnergyDto {
+                solar_w: 3200.0,
+                load_w: 1100.0,
+                ev_w: 0.0,
+                hvac_w: 450.0,
+                net_grid_w: -2100.0,
+                battery_soc_pct: Some(82.0),
+                self_consumption_pct: 34.4,
+                measured_devices: 2,
+                verdict: "Surplus solaire".into(),
+            },
+        });
+        assert!(reply.check().is_ok());
+        let json = serde_json::to_string(&reply).unwrap();
+        let back: KernelMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, reply);
     }
 }

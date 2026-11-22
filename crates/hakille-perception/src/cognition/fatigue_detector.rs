@@ -104,7 +104,7 @@ impl FatigueDetector {
             }
         } else if let Some(start) = self.current_closed_start {
             let closure_dur = now.duration_since(start).as_secs_f32();
-            if closure_dur >= 0.08 && closure_dur <= 0.80 {
+            if (0.08..=0.80).contains(&closure_dur) {
                 self.total_blinks += 1;
             }
             self.current_closed_start = None;

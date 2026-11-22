@@ -255,31 +255,70 @@ fn read_f32_tensor_raw(
     shape: &[usize],
     offsets: (u64, u64),
 ) -> Result<Vec<f32>> {
+    const MAX_RVQ_TENSOR_BYTES: u64 = 256 * 1024 * 1024;
     if dtype != "F32" {
         return Err(HakilleError::InferenceError(format!(
             "RVQ: dtype {} non supporté (lecture F32 LE uniquement, refus honnête)",
             dtype
         )));
     }
-    let expect: usize = shape.iter().product();
-    let byte_len = (offsets.1 - offsets.0) as usize;
-    if byte_len != expect * 4 {
+    if offsets.0 > offsets.1 {
         return Err(HakilleError::InferenceError(format!(
-            "RVQ: taille incohérente pour le tenseur ({} octets, attendu {})",
-            byte_len,
-            expect * 4
+            "RVQ: offsets inversés ({} > {})",
+            offsets.0, offsets.1
+        )));
+    }
+    let expect: usize = shape
+        .iter()
+        .try_fold(1usize, |acc, &d| acc.checked_mul(d))
+        .ok_or_else(|| {
+            HakilleError::InferenceError("RVQ: produit des dimensions débordant".into())
+        })?;
+    let expected_bytes = expect
+        .checked_mul(4)
+        .ok_or_else(|| HakilleError::InferenceError("RVQ: taille en octets débordante".into()))?;
+    let raw_byte_len = offsets.1 - offsets.0;
+    if raw_byte_len > MAX_RVQ_TENSOR_BYTES {
+        return Err(HakilleError::InferenceError(format!(
+            "RVQ: tenseur trop volumineux ({raw_byte_len} octets > 256 Mio)"
+        )));
+    }
+    let byte_len = usize::try_from(raw_byte_len)
+        .map_err(|_| HakilleError::InferenceError("RVQ: taille de tenseur débordante".into()))?;
+    if byte_len != expected_bytes {
+        return Err(HakilleError::InferenceError(format!(
+            "RVQ: taille incohérente pour le tenseur ({byte_len} octets, attendu {expected_bytes})"
         )));
     }
     let mut file = File::open(path).map_err(|e| {
         HakilleError::InferenceError(format!("RVQ: ouverture {}: {}", path.display(), e))
     })?;
-    file.seek(SeekFrom::Start(8 + header_size + offsets.0))
+    let file_len = file
+        .metadata()
+        .map_err(|e| HakilleError::InferenceError(format!("RVQ: stat {}: {}", path.display(), e)))?
+        .len();
+    let start_pos = 8u64
+        .checked_add(header_size)
+        .and_then(|v| v.checked_add(offsets.0))
+        .ok_or_else(|| HakilleError::InferenceError("RVQ: offset de début débordant".into()))?;
+    let end_pos = start_pos
+        .checked_add(raw_byte_len)
+        .ok_or_else(|| HakilleError::InferenceError("RVQ: offset de fin débordant".into()))?;
+    // Vérifier contre la taille réelle du fichier AVANT toute allocation.
+    if end_pos > file_len {
+        return Err(HakilleError::InferenceError(format!(
+            "RVQ: tenseur tronqué ({end_pos} > taille fichier {file_len})"
+        )));
+    }
+    file.seek(SeekFrom::Start(start_pos))
         .map_err(|e| HakilleError::InferenceError(format!("RVQ: seek: {}", e)))?;
     let mut buf = vec![0u8; byte_len];
     file.read_exact(&mut buf)
         .map_err(|e| HakilleError::InferenceError(format!("RVQ: lecture poids: {}", e)))?;
     Ok(buf
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect())
 }
@@ -311,6 +350,12 @@ pub fn load_acoustic_from_file(
         let usage_info = model.tensors.get(&usage_name).ok_or_else(|| {
             HakilleError::InferenceError(format!("RVQ: tenseur manquant {}", usage_name))
         })?;
+        if sum_info.shape.len() != 2 {
+            return Err(HakilleError::InferenceError(format!(
+                "RVQ: shape non-2D {:?} pour {}",
+                sum_info.shape, embed_name
+            )));
+        }
         // Shapes relues du header (vérification, pas de constante).
         let (entries, dim) = (sum_info.shape[0], sum_info.shape[1]);
         if entries == 0 || entries > u16::MAX as usize || dim == 0 {

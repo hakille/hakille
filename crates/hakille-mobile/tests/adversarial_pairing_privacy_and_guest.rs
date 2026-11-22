@@ -687,3 +687,100 @@ fn test_rollback_on_rejected_mutation_and_tombstone_filtering_on_memory_reply() 
         "Rejected forget_memory must not add row-2 to tombstones"
     );
 }
+
+#[test]
+fn test_guest_pass_pin_monotonic_tick_and_owner_data_isolation() {
+    let bridge = setup_connected_bridge();
+    let start: Value = serde_json::from_str(
+        &bridge.dispatch_json(
+            json!({
+                "type": "start_guest_pass",
+                "name": "Invité",
+                "power": "calc.basic",
+                "duration_secs": 1800,
+                "owner_pin": "4321"
+            })
+            .to_string(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(start["ok"], true);
+    // Le PIN (ni son condensat) n'apparaît jamais dans le snapshot.
+    assert!(!start.to_string().contains("4321"));
+
+    // Un second pass ne peut pas écraser le premier (évasion du PIN).
+    let second: Value = serde_json::from_str(&bridge.dispatch_json(
+        json!({ "type": "start_guest_pass", "name": "X", "power": "y" }).to_string(),
+    ))
+    .unwrap();
+    assert_eq!(second["ok"], false);
+
+    // Données et canaux du propriétaire inaccessibles, changement de hub refusé.
+    for action in [
+        json!({ "type": "load_memory", "query": null, "limit": 10 }),
+        json!({ "type": "remember", "text": "secret" }),
+        json!({ "type": "load_journal", "limit": 10 }),
+        json!({ "type": "ghost_action_accept", "id": "g1" }),
+        json!({ "type": "set_hub", "hub_id": "autre-hub" }),
+    ] {
+        let res: Value = serde_json::from_str(&bridge.dispatch_json(action.to_string())).unwrap();
+        assert_eq!(res["ok"], false, "{action} doit être refusé en mode invité");
+    }
+
+    // Pass protégé par PIN : impossible de falsifier l'avance temporelle pour
+    // forcer l'expiration ou contourner le PIN propriétaire.
+    for spoof_secs in [600, 1800] {
+        let spoof: Value = serde_json::from_str(&bridge.dispatch_json(
+            json!({ "type": "tick_guest_pass", "elapsed_secs": spoof_secs }).to_string(),
+        ))
+        .unwrap();
+        assert_eq!(
+            spoof["ok"], false,
+            "avance temporelle falsifiée ({spoof_secs}s) doit être refusée"
+        );
+        assert_eq!(spoof["snapshot"]["guest_pass"]["expired"], false);
+    }
+
+    // Révocation : sans PIN ou mauvais PIN → refus ; bon PIN → accepté.
+    for bad in [
+        json!({ "type": "revoke_guest_pass" }),
+        json!({ "type": "revoke_guest_pass", "owner_pin": "0000" }),
+    ] {
+        let res: Value = serde_json::from_str(&bridge.dispatch_json(bad.to_string())).unwrap();
+        assert_eq!(res["ok"], false);
+        assert!(!res["snapshot"]["guest_pass"].is_null());
+    }
+    let ok: Value = serde_json::from_str(
+        &bridge
+            .dispatch_json(json!({ "type": "revoke_guest_pass", "owner_pin": "4321" }).to_string()),
+    )
+    .unwrap();
+    assert_eq!(ok["ok"], true);
+    assert!(ok["snapshot"]["guest_pass"].is_null());
+
+    // Temps monotone : sur un pass sans PIN, impossible de reculer le compteur.
+    let start_nopin: Value = serde_json::from_str(
+        &bridge.dispatch_json(
+            json!({
+                "type": "start_guest_pass",
+                "name": "InvitéSansPin",
+                "power": "salon.lumieres",
+                "duration_secs": 1800
+            })
+            .to_string(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(start_nopin["ok"], true);
+    let tick: Value = serde_json::from_str(
+        &bridge
+            .dispatch_json(json!({ "type": "tick_guest_pass", "elapsed_secs": 600 }).to_string()),
+    )
+    .unwrap();
+    assert_eq!(tick["ok"], true);
+    let rollback: Value = serde_json::from_str(
+        &bridge.dispatch_json(json!({ "type": "tick_guest_pass", "elapsed_secs": 10 }).to_string()),
+    )
+    .unwrap();
+    assert_eq!(rollback["ok"], false);
+}

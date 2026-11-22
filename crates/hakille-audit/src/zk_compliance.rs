@@ -1,16 +1,27 @@
-//! Preuves de Conformité Zero-Knowledge (§35) :
-//! Vérification d'intégrité et de respect des 10 Règles Constitutionnelles de Hakille
-//! sans révéler les données sous-jacentes (engagements masqués SHA-256 + signatures Ed25519).
+//! Attestations de Conformité à Engagement Masqué (§35) :
 //!
-//! Principes souverains de Hakille :
-//! - 100% Rust natif, zéro dépendance cloud, fail-closed par construction.
-//! - Engagements parfaits masqués : $\text{Commit}(x, r) = \text{SHA256}(x \parallel r)$.
-//! - Les secrets et données d'audit restent hermétiquement scellés en local.
+//! Contrat d'honnêteté cryptographique :
+//! - Ce module produit des **attestations signées à engagement masqué**
+//!   (`Commit(action_id, payload, nonce) = SHA256(domaine || len(id) || id || len(payload) || payload || nonce)`
+//!   + signature Ed25519 de l'autorité d'audit).
+//! - Il ne s'agit PAS d'une preuve SNARK/STARK non interactive prouvant sans
+//!   confiance l'exécution d'un prédicat arbitraire : le vérificateur DOIT
+//!   épingler la clé publique de l'autorité (`verify_proof_signature_pinned`).
+//! - Les paramètres d'action restent masqués jusqu'à une ouverture explicite en
+//!   enclave privée (`verify_commitment_opening`).
 
-use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use thiserror::Error;
+
+const COMMITMENT_DOMAIN: &[u8] = b"hakille:compliance:commit:v2:";
+const PROOF_SIGN_DOMAIN: &[u8] = b"hakille:compliance:sig:v2:";
+
+/// Fenêtre maximale par défaut d'admissibilité temporelle (24 h + 60 s de dérive horloge).
+pub const DEFAULT_MAX_PROOF_AGE_MS: u64 = 24 * 60 * 60 * 1000;
+pub const MAX_FUTURE_SKEW_MS: u64 = 60 * 1000;
 
 /// Les 10 Règles d'Or de la Constitution de Souveraineté Hakille.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -58,7 +69,7 @@ impl ConstitutionalRule {
     }
 }
 
-/// Erreurs de vérification de preuve ZK.
+/// Erreurs de vérification d'attestation masquée.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ZkVerifyError {
     #[error("Empreinte d'engagement invalide ou corrompue")]
@@ -67,18 +78,20 @@ pub enum ZkVerifyError {
     InvalidSignature,
     #[error("Clé de vérification Ed25519 mal formée")]
     InvalidVerifyingKey,
+    #[error("Clé signataire non épinglée / autorité non reconnue")]
+    UntrustedAuthority,
     #[error("Règle constitutionnelle hors bornes : {0}")]
     UnknownRule(u8),
     #[error("Horodatage hors fenêtre d'admissibilité")]
     ExpiredOrFutureTimestamp,
 }
 
-/// Preuve de conformité Zero-Knowledge scellée.
+/// Attestation de conformité à engagement masqué scellée par une autorité Ed25519.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ZkComplianceProof {
     pub proof_id: String,
     pub rule: ConstitutionalRule,
-    /// Engagement masqué $H(\text{action\_id} \parallel \text{action\_data} \parallel \text{blinding\_nonce})$
+    /// Engagement masqué `H(domaine || len(id) || id || len(payload) || payload || nonce)`
     pub blinded_commitment: [u8; 32],
     pub blinding_nonce_hash: [u8; 32],
     pub timestamp_ms: u64,
@@ -86,12 +99,46 @@ pub struct ZkComplianceProof {
     pub signature_bytes: Vec<u8>,
 }
 
-/// Générateur de preuves de conformité Zero-Knowledge côté agent ou noyau.
+fn compute_commitment(
+    action_id: &str,
+    action_payload: &[u8],
+    blinding_nonce: &[u8; 32],
+) -> [u8; 32] {
+    let mut commit_hasher = Sha256::new();
+    commit_hasher.update(COMMITMENT_DOMAIN);
+    commit_hasher.update((action_id.len() as u64).to_le_bytes());
+    commit_hasher.update(action_id.as_bytes());
+    commit_hasher.update((action_payload.len() as u64).to_le_bytes());
+    commit_hasher.update(action_payload);
+    commit_hasher.update(blinding_nonce);
+    commit_hasher.finalize().into()
+}
+
+fn compute_signing_payload(
+    proof_id: &str,
+    rule: ConstitutionalRule,
+    blinded_commitment: &[u8; 32],
+    blinding_nonce_hash: &[u8; 32],
+    timestamp_ms: u64,
+) -> Vec<u8> {
+    let mut msg =
+        Vec::with_capacity(PROOF_SIGN_DOMAIN.len() + 8 + proof_id.len() + 1 + 32 + 32 + 8);
+    msg.extend_from_slice(PROOF_SIGN_DOMAIN);
+    msg.extend_from_slice(&(proof_id.len() as u64).to_le_bytes());
+    msg.extend_from_slice(proof_id.as_bytes());
+    msg.push(rule.rule_id());
+    msg.extend_from_slice(blinded_commitment);
+    msg.extend_from_slice(blinding_nonce_hash);
+    msg.extend_from_slice(&timestamp_ms.to_le_bytes());
+    msg
+}
+
+/// Générateur d'attestations de conformité à engagement masqué côté autorité/noyau.
 pub struct ZkComplianceProver;
 
 impl ZkComplianceProver {
-    /// Produit une preuve ZK attestant qu'une action respecte une règle constitutionnelle donnée
-    /// sans exposer publiquement les paramètres d'action.
+    /// Produit une attestation signée à engagement masqué pour une action validée
+    /// par l'autorité sous la règle constitutionnelle donnée.
     pub fn prove_compliance(
         action_id: &str,
         action_payload: &[u8],
@@ -102,29 +149,16 @@ impl ZkComplianceProver {
         let now_ms = hakille_core::Timestamp::now().0.timestamp_millis().max(0) as u64;
         let proof_id = format!("zkproof-{}", uuid::Uuid::new_v4());
 
-        // 1. Calcul de l'engagement masqué
-        let mut commit_hasher = Sha256::new();
-        commit_hasher.update(action_id.as_bytes());
-        commit_hasher.update(action_payload);
-        commit_hasher.update(blinding_nonce);
-        let commit_res = commit_hasher.finalize();
-        let mut blinded_commitment = [0u8; 32];
-        blinded_commitment.copy_from_slice(&commit_res);
+        let blinded_commitment = compute_commitment(action_id, action_payload, blinding_nonce);
+        let blinding_nonce_hash: [u8; 32] = Sha256::digest(blinding_nonce).into();
 
-        // 2. Hash du nonce masquant
-        let mut nonce_hasher = Sha256::new();
-        nonce_hasher.update(blinding_nonce);
-        let nonce_res = nonce_hasher.finalize();
-        let mut blinding_nonce_hash = [0u8; 32];
-        blinding_nonce_hash.copy_from_slice(&nonce_res);
-
-        // 3. Signature cryptographique de la preuve
-        let mut msg = Vec::new();
-        msg.extend_from_slice(proof_id.as_bytes());
-        msg.push(rule.rule_id());
-        msg.extend_from_slice(&blinded_commitment);
-        msg.extend_from_slice(&blinding_nonce_hash);
-        msg.extend_from_slice(&now_ms.to_le_bytes());
+        let msg = compute_signing_payload(
+            &proof_id,
+            rule,
+            &blinded_commitment,
+            &blinding_nonce_hash,
+            now_ms,
+        );
 
         let signature = signing_key.sign(&msg);
         let verifying_key = signing_key.verifying_key();
@@ -141,14 +175,31 @@ impl ZkComplianceProver {
     }
 }
 
-/// Vérificateur autonome de preuves ZK (utilisé par l'arbitre d'audit et les pairs du réseau maillé).
+/// Vérificateur autonome d'attestations de conformité (exige une clé publique épinglée en prod).
 pub struct ZkComplianceVerifier;
 
 impl ZkComplianceVerifier {
-    /// Valide l'authenticité de la preuve et vérifie son engagement masqué face à une divulgation optionnelle.
-    pub fn verify_proof_signature(proof: &ZkComplianceProof) -> Result<bool, ZkVerifyError> {
-        let verifying_key = VerifyingKey::from_bytes(&proof.verifying_key_bytes)
-            .map_err(|_| ZkVerifyError::InvalidVerifyingKey)?;
+    /// Vérifie strictement l'authenticité contre une clé publique d'autorité ÉPINGLÉE
+    /// et valide la fraîcheur de l'horodatage (fail-closed).
+    pub fn verify_proof_signature_pinned(
+        proof: &ZkComplianceProof,
+        expected_authority: &VerifyingKey,
+        max_age_ms: u64,
+    ) -> Result<bool, ZkVerifyError> {
+        if !bool::from(
+            proof
+                .verifying_key_bytes
+                .ct_eq(expected_authority.as_bytes()),
+        ) {
+            return Err(ZkVerifyError::UntrustedAuthority);
+        }
+
+        let now_ms = hakille_core::Timestamp::now().0.timestamp_millis().max(0) as u64;
+        if proof.timestamp_ms > now_ms.saturating_add(MAX_FUTURE_SKEW_MS)
+            || now_ms.saturating_sub(proof.timestamp_ms) > max_age_ms
+        {
+            return Err(ZkVerifyError::ExpiredOrFutureTimestamp);
+        }
 
         let sig_array: [u8; 64] = proof
             .signature_bytes
@@ -157,33 +208,42 @@ impl ZkComplianceVerifier {
             .map_err(|_| ZkVerifyError::InvalidSignature)?;
         let signature = ed25519_dalek::Signature::from_bytes(&sig_array);
 
-        let mut msg = Vec::new();
-        msg.extend_from_slice(proof.proof_id.as_bytes());
-        msg.push(proof.rule.rule_id());
-        msg.extend_from_slice(&proof.blinded_commitment);
-        msg.extend_from_slice(&proof.blinding_nonce_hash);
-        msg.extend_from_slice(&proof.timestamp_ms.to_le_bytes());
+        let msg = compute_signing_payload(
+            &proof.proof_id,
+            proof.rule,
+            &proof.blinded_commitment,
+            &proof.blinding_nonce_hash,
+            proof.timestamp_ms,
+        );
 
-        verifying_key
-            .verify(&msg, &signature)
+        expected_authority
+            .verify_strict(&msg, &signature)
             .map(|_| true)
             .map_err(|_| ZkVerifyError::InvalidSignature)
     }
 
-    /// Ouvre l'engagement masqué en présence du nonce et du payload révélés en enclave privée.
+    /// Vérifie la signature auto-déclarée et la fraîcheur (tests/compatibilité uniquement ;
+    /// utiliser [`Self::verify_proof_signature_pinned`] en production).
+    pub fn verify_proof_signature(proof: &ZkComplianceProof) -> Result<bool, ZkVerifyError> {
+        let verifying_key = VerifyingKey::from_bytes(&proof.verifying_key_bytes)
+            .map_err(|_| ZkVerifyError::InvalidVerifyingKey)?;
+        Self::verify_proof_signature_pinned(proof, &verifying_key, DEFAULT_MAX_PROOF_AGE_MS)
+    }
+
+    /// Ouvre l'engagement masqué en présence du nonce et du payload révélés en enclave privée
+    /// (vérifie à la fois `blinding_nonce_hash` et `blinded_commitment` en temps constant).
     pub fn verify_commitment_opening(
         proof: &ZkComplianceProof,
         action_id: &str,
         action_payload: &[u8],
         blinding_nonce: &[u8; 32],
     ) -> bool {
-        let mut commit_hasher = Sha256::new();
-        commit_hasher.update(action_id.as_bytes());
-        commit_hasher.update(action_payload);
-        commit_hasher.update(blinding_nonce);
-        let commit_res = commit_hasher.finalize();
-
-        commit_res.as_slice() == proof.blinded_commitment
+        let nonce_hash: [u8; 32] = Sha256::digest(blinding_nonce).into();
+        let commitment = compute_commitment(action_id, action_payload, blinding_nonce);
+        bool::from(
+            nonce_hash.ct_eq(&proof.blinding_nonce_hash)
+                & commitment.ct_eq(&proof.blinded_commitment),
+        )
     }
 }
 

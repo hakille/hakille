@@ -39,20 +39,22 @@ pub struct WebSubstrate {
     trusted_capability_root: Option<biscuit_auth::PublicKey>,
 }
 
+/// Plafonds mémoire anti-DoS du magasin OPFS en mémoire.
+const MAX_OPFS_FILES: usize = 1024;
+const MAX_OPFS_TOTAL_BYTES: usize = 16 * 1024 * 1024;
+
 impl WebSubstrate {
     pub fn new() -> Self {
         let manifest = PlatformManifest {
             tier: Tier::Guest,
             capabilities_granted: vec![
+                CapabilityScope::Filesystem,
+                CapabilityScope::Network,
                 CapabilityScope::Audio,
                 CapabilityScope::Camera,
                 CapabilityScope::GuiInput,
             ],
-            capabilities_denied: vec![
-                CapabilityScope::FullSystem,
-                CapabilityScope::Filesystem,
-                CapabilityScope::ModelInference,
-            ],
+            capabilities_denied: vec![CapabilityScope::FullSystem, CapabilityScope::ModelInference],
             // Honest: tab memory budget for the WASM sandbox (the live quota
             // comes from navigator.storage.estimate() — no browser binding
             // linked on native targets); labeled budget, not a measurement.
@@ -97,9 +99,8 @@ impl WebSubstrate {
         if let Some(root) = &self.trusted_capability_root {
             hakille_core::verify_capability_with_root_key(cap, root, scope, action)
         } else {
-            // Legacy fallback UNIQUEMENT en debug/tests : vérification
-            // structurelle sans pinning (accepte les tokens auto-signés).
-            // En release, panique fail-closed : `verify_unpinned` est interdit.
+            // Repli legacy UNIQUEMENT en debug/tests ; en release, refus fail-closed
+            // propre (`Err`) sans jamais paniquer le processus.
             #[cfg(debug_assertions)]
             {
                 #[allow(deprecated)]
@@ -109,56 +110,19 @@ impl WebSubstrate {
             }
             #[cfg(not(debug_assertions))]
             {
-                panic!(
-                    "unpinned capability verification forbidden in release; call with_trusted_root in production"
-                );
+                Err(hakille_core::HakilleError::CapabilityDenied(
+                    "vérification non épinglée interdite en release : appeler with_trusted_root en production".into(),
+                ))
             }
         }
     }
 
     /// Resolve a VirtualPath to a logical OPFS key.
-    /// Secure: rejects `..`, absolute paths, drive letters, NUL bytes and
-    /// non-normal components (same rules as native substrates; there is no
-    /// host path to canonicalize in the browser sandbox).
     fn resolve_path(&self, path: &VirtualPath) -> hakille_core::Result<PathBuf> {
-        use std::path::Component;
-        if path.0.contains('\0') {
-            return Err(hakille_core::HakilleError::CapabilityDenied(
-                "NUL byte in virtual path".into(),
-            ));
-        }
-        // Reject Windows drive letters and UNC prefixes early.
-        let lower = path.0.to_ascii_lowercase();
-        if lower.contains(':') || path.0.starts_with(r"\\") {
-            return Err(hakille_core::HakilleError::CapabilityDenied(
-                "absolute / drive path rejected".into(),
-            ));
-        }
+        let segments = hakille_substrate::validate_virtual_components(path)?;
         let mut clean = PathBuf::new();
-        let mut saw_normal = false;
-        for comp in std::path::Path::new(&path.0).components() {
-            match comp {
-                Component::Normal(p) => {
-                    if p == std::ffi::OsStr::new("..") {
-                        return Err(hakille_core::HakilleError::CapabilityDenied(
-                            "path traversal (..) rejected".into(),
-                        ));
-                    }
-                    clean.push(p);
-                    saw_normal = true;
-                }
-                Component::CurDir => {}
-                // Any ParentDir, RootDir, Prefix => reject
-                _ => {
-                    return Err(hakille_core::HakilleError::CapabilityDenied(
-                        "non-normal path component rejected".into(),
-                    ));
-                }
-            }
-        }
-        if !saw_normal {
-            // Empty virtual path means the OPFS root itself (for list_dir).
-            return Ok(PathBuf::new());
+        for seg in segments {
+            clean.push(seg);
         }
         Ok(clean)
     }
@@ -210,9 +174,11 @@ impl Substrate for WebSubstrate {
 
     async fn attest(&self, data: &[u8]) -> Result<SignedAttestation> {
         let sig = self.attestation_keypair.sign(data);
+        // Honnête : dev-attestation locale (clé éphémère, aucune enclave navigateur),
+        // empreinte SHA-256 réelle des octets attestés.
         Ok(SignedAttestation {
-            manifest_hash: format!("sha256-web-guest-{}", data.len()),
-            platform_id: "Wasm-Browser-Client".to_string(),
+            manifest_hash: format!("sha256-{}", hakille_substrate::sha256_hex(data)),
+            platform_id: "Wasm-Browser-Client-dev-attestation".to_string(),
             timestamp: Timestamp::now(),
             signature: sig,
         })
@@ -224,10 +190,11 @@ impl Substrate for WebSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Read,
         )?;
-        // In browser, reads from IndexedDB / Origin Private File System (OPFS).
         let resolved = self.resolve_path(path)?;
         let key = Self::opfs_key(&resolved);
-        let store = self.opfs_store.lock().unwrap();
+        let store = self.opfs_store.lock().map_err(|_| {
+            hakille_core::HakilleError::StorageError("verrou OPFS empoisonné".into())
+        })?;
         store.get(&key).cloned().ok_or_else(|| {
             hakille_core::HakilleError::StorageError(format!("File not found: {}", path.0))
         })
@@ -244,10 +211,27 @@ impl Substrate for WebSubstrate {
             CapabilityScope::Filesystem,
             hakille_core::CapabilityAction::Write,
         )?;
-        // Writes to OPFS.
         let resolved = self.resolve_path(path)?;
         let key = Self::opfs_key(&resolved);
-        let mut store = self.opfs_store.lock().unwrap();
+        let mut store = self.opfs_store.lock().map_err(|_| {
+            hakille_core::HakilleError::StorageError("verrou OPFS empoisonné".into())
+        })?;
+        let is_new = !store.contains_key(&key);
+        if is_new && store.len() >= MAX_OPFS_FILES {
+            return Err(hakille_core::HakilleError::StorageError(format!(
+                "quota OPFS atteint ({MAX_OPFS_FILES} fichiers)"
+            )));
+        }
+        let existing_len = store.get(&key).map_or(0, Vec::len);
+        let current_total: usize = store.values().map(Vec::len).sum();
+        let next_total = current_total
+            .saturating_sub(existing_len)
+            .saturating_add(data.len());
+        if next_total > MAX_OPFS_TOTAL_BYTES {
+            return Err(hakille_core::HakilleError::StorageError(format!(
+                "quota mémoire OPFS dépassé ({next_total} > {MAX_OPFS_TOTAL_BYTES} octets)"
+            )));
+        }
         store.insert(key, data.to_vec());
         Ok(())
     }
@@ -264,7 +248,9 @@ impl Substrate for WebSubstrate {
         )?;
         let resolved = self.resolve_path(path)?;
         let prefix = Self::opfs_key(&resolved);
-        let store = self.opfs_store.lock().unwrap();
+        let store = self.opfs_store.lock().map_err(|_| {
+            hakille_core::HakilleError::StorageError("verrou OPFS empoisonné".into())
+        })?;
         let mut children: Vec<String> = Vec::new();
         for key in store.keys() {
             let rest = if prefix.is_empty() {
@@ -301,18 +287,14 @@ impl Substrate for WebSubstrate {
         )?;
         let resolved = self.resolve_path(path)?;
         let key = Self::opfs_key(&resolved);
-        let mut store = self.opfs_store.lock().unwrap();
+        let mut store = self.opfs_store.lock().map_err(|_| {
+            hakille_core::HakilleError::StorageError("verrou OPFS empoisonné".into())
+        })?;
         store.remove(&key);
         Ok(())
     }
 
     async fn http_request(&self, req: HttpRequest, cap: &CapabilityToken) -> Result<HttpResponse> {
-        // Network capability (GET ⇒ Read, others ⇒ Write) including expiry
-        // is enforced first; without it egress is refused explicitly.
-        // Then the shared allowlist policy applies (loopback-only by
-        // default) and the real fetch runs — `fetch()` under the same
-        // allowlist in a browser build, the shared reqwest fetch (rustls
-        // TLS, 10 s, 5 MiB cap) on native targets.
         let action = if req.method.eq_ignore_ascii_case("get") {
             hakille_core::CapabilityAction::Read
         } else {
@@ -369,14 +351,15 @@ impl Substrate for WebSubstrate {
             CapabilityScope::Camera,
             hakille_core::CapabilityAction::Read,
         )?;
-        // Honest: no getUserMedia wiring — refuse instead of synthesizing frames.
         Err(hakille_core::HakilleError::SubstrateError(
             WEB_CAMERA_UNIMPLEMENTED.into(),
         ))
     }
 
     async fn stop_camera_capture(&self, _handle: CameraStreamHandle) -> Result<()> {
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            WEB_CAMERA_UNIMPLEMENTED.into(),
+        ))
     }
 
     async fn capture_camera_frame(
@@ -389,7 +372,6 @@ impl Substrate for WebSubstrate {
             CapabilityScope::Camera,
             hakille_core::CapabilityAction::Read,
         )?;
-        // Honest: no getUserMedia wiring — refuse instead of synthesizing frames.
         Err(hakille_core::HakilleError::SubstrateError(
             WEB_CAMERA_UNIMPLEMENTED.into(),
         ))
@@ -422,9 +404,6 @@ impl Substrate for WebSubstrate {
         _wasm: &[u8],
         caps: Vec<CapabilityToken>,
     ) -> Result<ProcessHandle> {
-        // Caller must prove it holds at least one delegable capability;
-        // spawned sandbox receives only attenuated `caps` (verified by caller).
-        // Here we enforce that every delegated cap is at least structurally valid.
         let delegable = [
             (
                 CapabilityScope::Filesystem,
@@ -464,8 +443,6 @@ impl Substrate for WebSubstrate {
                 )));
             }
         }
-        // Aucun moteur WASM n'est relié à cette API : ne jamais inventer
-        // un handle de processus. Le runtime des agents de référence est distinct.
         Err(hakille_core::HakilleError::SubstrateError(
             "spawn_sandboxed indisponible : moteur WASM non raccordé au substrat web; aucun processus lancé"
                 .to_string(),
@@ -473,9 +450,6 @@ impl Substrate for WebSubstrate {
     }
 
     fn power_state(&self) -> PowerState {
-        // Browser Battery Status API (`navigator.getBattery()`) is not
-        // wired on native targets; this mains-powered default is a
-        // documented placeholder, not a claimed reading.
         PowerState {
             on_battery: false,
             battery_percent: 100.0,
@@ -484,13 +458,12 @@ impl Substrate for WebSubstrate {
     }
 
     fn thermal_state(&self) -> ThermalState {
-        // Honest: the Compute Pressure API is not wired; Unknown, not invented.
         ThermalState::Unknown
     }
 
     async fn send_notification(
         &self,
-        request: hakille_substrate::NotificationRequest,
+        _request: hakille_substrate::NotificationRequest,
         cap: &CapabilityToken,
     ) -> Result<hakille_substrate::NotificationHandle> {
         self.enforce(
@@ -498,25 +471,15 @@ impl Substrate for WebSubstrate {
             CapabilityScope::Notification,
             hakille_core::CapabilityAction::Write,
         )?;
-
-        tracing::info!(
-            id = %request.id,
-            title = %request.title,
-            urgency = ?request.urgency,
-            category = ?request.category,
-            "WebSubstrate: Dispatching HTML5 Notification API"
-        );
-
-        Ok(hakille_substrate::NotificationHandle {
-            id: request.id,
-            channel: "web_notification_api".to_string(),
-            delivered_at_ms: chrono::Utc::now().timestamp_millis() as u64,
-        })
+        // HONNÊTE : aucun binding JS `Notification` (web-sys) n'est raccordé.
+        Err(hakille_core::HakilleError::SubstrateError(
+            "notification Web indisponible : binding HTML5 Notification API non raccordé ; aucune notification affichée".to_string(),
+        ))
     }
 
     async fn dismiss_notification(
         &self,
-        handle: &hakille_substrate::NotificationHandle,
+        _handle: &hakille_substrate::NotificationHandle,
         cap: &CapabilityToken,
     ) -> Result<()> {
         self.enforce(
@@ -524,7 +487,8 @@ impl Substrate for WebSubstrate {
             CapabilityScope::Notification,
             hakille_core::CapabilityAction::Delete,
         )?;
-        tracing::debug!(id = %handle.id, "WebSubstrate: Dismissed notification");
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "fermeture de notification Web indisponible : binding HTML5 Notification API non raccordé".to_string(),
+        ))
     }
 }

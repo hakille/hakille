@@ -161,44 +161,57 @@ impl FaceMeshEngine {
             ));
         }
 
-        if let Some(session_mutex) = &self.session {
-            let mut session = session_mutex
-                .lock()
-                .map_err(|e| ort_err("lock", format!("{e}")))?;
+        let Some(session_mutex) = &self.session else {
+            return Err(HakilleError::InferenceError(
+                "FaceMeshEngine::detect_landmarks: modèle ONNX facemesh_iris.onnx absent — repères simulés refusés (contrat d'honnêteté)".into(),
+            ));
+        };
 
-            let mut input_buf = vec![0.0f32; 3 * FACEMESH_INPUT_WIDTH * FACEMESH_INPUT_HEIGHT];
-            resize_bilinear_rgb_nchw(
-                rgb_bytes,
-                width,
-                height,
-                &mut input_buf,
-                FACEMESH_INPUT_WIDTH,
-                FACEMESH_INPUT_HEIGHT,
-                NormalizationMode::Centered,
-            );
-
-            let tensor = Tensor::from_array((
-                [1, 3, FACEMESH_INPUT_HEIGHT, FACEMESH_INPUT_WIDTH],
-                input_buf.into_boxed_slice(),
-            ))
-            .map_err(|e| ort_err("tensor", e))?;
-
-            let outputs = session
-                .run(ort::inputs![tensor])
-                .map_err(|e| ort_err("run", e))?;
-
-            let output_tensor = &outputs[0];
-            let (_shape, values) = output_tensor
-                .try_extract_tensor::<f32>()
-                .map_err(|e| ort_err("extract", e))?;
-
-            let landmarks = parse_landmarks_dynamic(values)?;
-            compute_facemesh_metrics(landmarks, ModelStatus::Real)
-        } else {
-            // Mode synthétique déterministe
-            let landmarks = generate_canonical_landmarks();
-            compute_facemesh_metrics(landmarks, ModelStatus::Simulated)
+        let expected_bytes = width
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(3))
+            .ok_or_else(|| {
+                HakilleError::InferenceError("FaceMeshEngine: dimensions débordantes".into())
+            })?;
+        if rgb_bytes.len() < expected_bytes {
+            return Err(HakilleError::InferenceError(format!(
+                "FaceMeshEngine: tampon RGB trop court ({} < {expected_bytes})",
+                rgb_bytes.len()
+            )));
         }
+
+        let mut session = session_mutex
+            .lock()
+            .map_err(|e| ort_err("lock", format!("{e}")))?;
+
+        let mut input_buf = vec![0.0f32; 3 * FACEMESH_INPUT_WIDTH * FACEMESH_INPUT_HEIGHT];
+        resize_bilinear_rgb_nchw(
+            rgb_bytes,
+            width,
+            height,
+            &mut input_buf,
+            FACEMESH_INPUT_WIDTH,
+            FACEMESH_INPUT_HEIGHT,
+            NormalizationMode::Centered,
+        );
+
+        let tensor = Tensor::from_array((
+            [1, 3, FACEMESH_INPUT_HEIGHT, FACEMESH_INPUT_WIDTH],
+            input_buf.into_boxed_slice(),
+        ))
+        .map_err(|e| ort_err("tensor", e))?;
+
+        let outputs = session
+            .run(ort::inputs![tensor])
+            .map_err(|e| ort_err("run", e))?;
+
+        let output_tensor = &outputs[0];
+        let (_shape, values) = output_tensor
+            .try_extract_tensor::<f32>()
+            .map_err(|e| ort_err("extract", e))?;
+
+        let landmarks = parse_landmarks_dynamic(values)?;
+        compute_facemesh_metrics(landmarks, ModelStatus::Real)
     }
 }
 
@@ -375,17 +388,21 @@ mod tests {
     use crate::models::mock::synthetic_face_crop;
 
     #[test]
-    fn test_facemesh_mock_synthetic() {
+    fn test_facemesh_missing_model_refuses_simulated_output_and_metrics_compute() {
         let engine = FaceMeshEngine::mock_synthetic();
         assert!(engine.is_mock());
 
         let crop = synthetic_face_crop(192, 192);
-        let output = engine
+        let err = engine
             .detect_landmarks(&crop, 192, 192)
-            .expect("extraction réussie");
+            .expect_err("modèle absent : repères simulés refusés");
+        assert!(err.to_string().contains("absent"));
 
+        // Vérification directe des métriques géométriques pures.
+        let landmarks = generate_canonical_landmarks();
+        let output = compute_facemesh_metrics(landmarks, ModelStatus::Real)
+            .expect("calcul métriques valide");
         assert_eq!(output.landmarks.len(), 478);
-        assert_eq!(output.status, ModelStatus::Simulated);
         assert!(
             output.left_ear > 0.15 && output.left_ear < 0.45,
             "EAR gauche: {}",

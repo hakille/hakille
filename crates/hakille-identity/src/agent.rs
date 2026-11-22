@@ -25,15 +25,19 @@ pub struct AgentPassport {
 }
 
 impl AgentPassport {
-    /// Compute the canonical SHA-256 hash of this passport's identity fields
+    /// Compute the canonical SHA-256 hash of this passport's identity and capability fields
     pub fn canonical_hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
+        hasher.update((self.agent_did.as_str().len() as u32).to_le_bytes());
         hasher.update(self.agent_did.as_str().as_bytes());
+        hasher.update((self.principal_did.as_str().len() as u32).to_le_bytes());
         hasher.update(self.principal_did.as_str().as_bytes());
         hasher.update(self.tenant_id.0.as_bytes());
         hasher.update(self.max_lifetime_seconds.to_le_bytes());
         hasher.update(self.max_execution_fuel.to_le_bytes());
         hasher.update(self.budget_limit_cents.to_le_bytes());
+        hasher.update((self.biscuit_token_bytes.len() as u32).to_le_bytes());
+        hasher.update(&self.biscuit_token_bytes);
         hasher.update((self.delegation_depth as u64).to_le_bytes());
         hasher.update(self.constitutional_hash);
         let mut out = [0u8; 32];
@@ -48,9 +52,9 @@ impl AgentPassport {
         signing_key.sign(&hash).to_bytes().to_vec()
     }
 
-    /// Verify an Ed25519 signature on this passport
+    /// Verify an Ed25519 signature (`verify_strict`) on this passport
     pub fn verify_signature(&self, public_key_bytes: &[u8; 32], signature_bytes: &[u8]) -> bool {
-        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+        use ed25519_dalek::{Signature, VerifyingKey};
         let Ok(verifying_key) = VerifyingKey::from_bytes(public_key_bytes) else {
             return false;
         };
@@ -59,7 +63,7 @@ impl AgentPassport {
         };
         let sig = Signature::from_bytes(&sig_bytes);
         let hash = self.canonical_hash();
-        verifying_key.verify(&hash, &sig).is_ok()
+        verifying_key.verify_strict(&hash, &sig).is_ok()
     }
 }
 

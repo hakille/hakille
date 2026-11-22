@@ -24,7 +24,6 @@ hakille-voice = { path = "../hakille-voice" }
 hakille-agents = { path = "../hakille-agents" }
 hakille-audit = { path = "../hakille-audit" }
 hakille-sync = { path = "../hakille-sync" }
-hakille-auth = { path = "../hakille-auth" }
 hakille-constitution = { path = "../hakille-constitution" }
 hakille-ui = { path = "../hakille-ui" }
 hakille-ui-protocol = { path = "../hakille-ui-protocol" }
@@ -33,6 +32,7 @@ hakille-keystore = { path = "../hakille-keystore" }
 hakille-design = { path = "../hakille-design" }
 hakille-metrics = { path = "../hakille-metrics" }
 hakille-media = { path = "../hakille-media" }
+hakille-home = { path = "../hakille-home" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 biscuit-auth = { workspace = true }

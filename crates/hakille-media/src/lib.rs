@@ -408,8 +408,17 @@ mod tests {
         assert!(CloudMediaBackend::validate_cloud_url("https://127.0.0.1:8080").is_err());
         assert!(CloudMediaBackend::validate_cloud_url("https://192.168.1.5").is_err());
         assert!(CloudMediaBackend::validate_cloud_url("https://api.openai.com").is_ok());
+        assert!(CloudMediaBackend::validate_cloud_url("https://[::ffff:127.0.0.1]/").is_err());
+        assert!(
+            CloudMediaBackend::validate_cloud_url("https://[::ffff:169.254.169.254]/").is_err()
+        );
+        assert!(CloudMediaBackend::validate_cloud_url("https://user:pass@api.openai.com").is_err());
         assert!(LoopbackMediaServerBackend::validate_loopback_url("http://127.0.0.1:8188").is_ok());
         assert!(LoopbackMediaServerBackend::validate_loopback_url("http://8.8.8.8:8188").is_err());
+        assert!(
+            LoopbackMediaServerBackend::validate_loopback_url("http://user@127.0.0.1:8188")
+                .is_err()
+        );
 
         // 7. SLERP préserve la norme sur vecteurs orthogonaux.
         let mid = slerp_latents(&[1.0, 0.0], &[0.0, 1.0], 0.5);

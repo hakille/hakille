@@ -253,6 +253,11 @@ impl System2Engine {
         context_triplets: &[String],
         trust_level: &TrustLevel,
     ) -> Result<System2Plan> {
+        if *trust_level == TrustLevel::Untrusted {
+            return Err(HakilleError::CapabilityDenied(
+                "System 2 refuse tout contenu non fiable (TrustLevel::Untrusted)".into(),
+            ));
+        }
         if self.provider != ProviderId::LocalGguf {
             return Err(HakilleError::InferenceError(format!(
                 "provider {} non implémenté dans S2 ; aucun appel local de substitution",

@@ -148,6 +148,7 @@ fn verify_metadata_validation_and_node_type() {
         predicate_names: vec![],
         subject_labels: vec![],
         predicate_labels: vec![],
+        last_decayed: vec![],
     };
     assert!(snap.triplets.is_empty());
 }

@@ -136,12 +136,111 @@ pub struct ConstitutionAmendment {
     pub affected_rules: Vec<String>,
     pub proposed_at: Timestamp,
     pub status: AmendmentStatus,
+    #[serde(default)]
+    pub approvers: Vec<UserId>,
 }
 
-/// Endossement simple de la fondation (sans crypto lourde) : identifiant
-/// de la fondation + signature hexadécimale opaque.
+impl ConstitutionAmendment {
+    /// Enregistre le vote d'approbation d'un votant unique (anti-Sybil).
+    /// Retourne `false` si `voter` est le proposant ou a déjà voté.
+    pub fn record_approval(&mut self, voter: UserId) -> bool {
+        if voter == self.proposed_by || self.approvers.contains(&voter) {
+            return false;
+        }
+        self.approvers.push(voter);
+        true
+    }
+
+    /// Nombre de votants distincts ayant approuvé l'amendement.
+    pub fn unique_approvals(&self) -> u32 {
+        self.approvers.len() as u32
+    }
+
+    /// Payload canonique à signer pour un endossement Ed25519 de la fondation.
+    pub fn canonical_signing_bytes(&self, foundation_id: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"hakille-foundation-endorsement-v1\0");
+        out.extend_from_slice(&(foundation_id.len() as u32).to_le_bytes());
+        out.extend_from_slice(foundation_id.as_bytes());
+        out.extend_from_slice(self.proposed_by.0.as_bytes());
+        out.extend_from_slice(&(self.change_description.len() as u32).to_le_bytes());
+        out.extend_from_slice(self.change_description.as_bytes());
+        out.extend_from_slice(&(self.affected_rules.len() as u32).to_le_bytes());
+        for rule in &self.affected_rules {
+            out.extend_from_slice(&(rule.len() as u32).to_le_bytes());
+            out.extend_from_slice(rule.as_bytes());
+        }
+        out.extend_from_slice(&self.proposed_at.0.timestamp().to_le_bytes());
+        out
+    }
+}
+
+/// Endossement cryptographique Ed25519 de la fondation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FoundationEndorsement {
     pub foundation_id: String,
     pub signature_hex: String,
+}
+
+impl FoundationEndorsement {
+    /// Signe un amendement avec la paire de clés Ed25519 de la fondation.
+    pub fn sign(
+        foundation_id: impl Into<String>,
+        amendment: &ConstitutionAmendment,
+        keypair: &hakille_core::KeyPair,
+    ) -> Self {
+        let foundation_id = foundation_id.into();
+        let payload = amendment.canonical_signing_bytes(&foundation_id);
+        let sig = keypair.sign(&payload);
+        let signature_hex: String = sig.0.iter().map(|b| format!("{b:02x}")).collect();
+        Self {
+            foundation_id,
+            signature_hex,
+        }
+    }
+
+    /// Vérifie mathématiquement la signature Ed25519 (`verify_strict`) de l'endossement.
+    pub fn verify(
+        &self,
+        amendment: &ConstitutionAmendment,
+        verifying_key: &hakille_core::Ed25519VerifyingKey,
+    ) -> hakille_core::Result<()> {
+        if self.foundation_id.trim().is_empty() {
+            return Err(hakille_core::HakilleError::ConstitutionViolation(
+                "foundation_id must not be empty".into(),
+            ));
+        }
+        if self.signature_hex.len() != 128 {
+            return Err(hakille_core::HakilleError::ConstitutionViolation(
+                "invalid foundation signature hex length (expected 128 hex chars)".into(),
+            ));
+        }
+        let mut sig_bytes = [0u8; 64];
+        for (i, chunk) in self
+            .signature_hex
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .enumerate()
+        {
+            let hex_str = std::str::from_utf8(chunk).map_err(|_| {
+                hakille_core::HakilleError::ConstitutionViolation(
+                    "non-UTF8 foundation signature hex".into(),
+                )
+            })?;
+            sig_bytes[i] = u8::from_str_radix(hex_str, 16).map_err(|_| {
+                hakille_core::HakilleError::ConstitutionViolation(
+                    "invalid hex byte in foundation signature".into(),
+                )
+            })?;
+        }
+        let sig = hakille_core::Ed25519Signature::from_bytes(&sig_bytes);
+        let payload = amendment.canonical_signing_bytes(&self.foundation_id);
+        verifying_key.verify_strict(&payload, &sig).map_err(|e| {
+            hakille_core::HakilleError::ConstitutionViolation(format!(
+                "foundation endorsement Ed25519 verification failed: {e}"
+            ))
+        })
+    }
 }

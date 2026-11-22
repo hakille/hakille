@@ -75,7 +75,8 @@ impl MockKernel {
 
         if self.policy == MockAuthorityPolicy::Detached {
             match &msg.inner {
-                UiToKernel::Approve { .. }
+                UiToKernel::BeginApprovalHold { .. }
+                | UiToKernel::Approve { .. }
                 | UiToKernel::Edit { .. }
                 | UiToKernel::Reject { .. }
                 | UiToKernel::HudSubmit { .. }
@@ -97,7 +98,10 @@ impl MockKernel {
                 | UiToKernel::MediaEnginesRequest
                 | UiToKernel::MediaGenerateRequest(_)
                 | UiToKernel::MediaJobCancel { .. }
-                | UiToKernel::MediaGalleryRequest { .. } => {
+                | UiToKernel::MediaGalleryRequest { .. }
+                | UiToKernel::HomeDevicesRequest
+                | UiToKernel::HomeDiscoverRequest { .. }
+                | UiToKernel::HomeCommandRequest { .. } => {
                     return Err(
                         "daemon requis: opération refusée en mode détaché (fail-closed)".into(),
                     );
@@ -254,7 +258,7 @@ impl MockKernel {
             UiToKernel::NotificationDismiss { id } => Ok(Some(KernelToUi::Toast {
                 text: format!("Notification {id} masquée"),
             })),
-            UiToKernel::GhostActionAccept { id } => {
+            UiToKernel::GhostActionAccept { id: _ } => {
                 let audit_id = self.next_audit_id;
                 self.next_audit_id += 1;
                 Ok(Some(KernelToUi::JournalAppended { id: audit_id }))
@@ -280,6 +284,25 @@ impl MockKernel {
             UiToKernel::MediaGalleryRequest { .. } => {
                 Ok(Some(KernelToUi::MediaGalleryReply { artifacts: vec![] }))
             }
+            UiToKernel::HomeDevicesRequest | UiToKernel::HomeDiscoverRequest { .. } => {
+                Ok(Some(KernelToUi::HomeDevicesReply {
+                    devices: Vec::new(),
+                    protocols: Vec::new(),
+                    energy: hakille_ui_protocol::HomeEnergyDto::default(),
+                }))
+            }
+            UiToKernel::HomeCommandRequest { device_id, .. } => {
+                Ok(Some(KernelToUi::HomeCommandReply {
+                    device_id,
+                    executed_on_wire: false,
+                    summary: "Aucun appareil physique relié au harnais E2E (zéro simulation)"
+                        .into(),
+                    receipt_sha256: None,
+                }))
+            }
+            UiToKernel::BeginApprovalHold { .. } => Ok(Some(KernelToUi::Presence(
+                hakille_ui_protocol::PresenceState::DecisionRequired,
+            ))),
         }
     }
 

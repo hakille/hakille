@@ -141,48 +141,60 @@ impl SSRNetSession {
             ));
         }
 
-        if let Some(session_mutex) = &self.session {
-            let tensor_data = preprocess_image_normalized(
-                rgb_crop,
-                width,
-                height,
-                SSRNET_INPUT_SIZE,
-                SSRNET_INPUT_SIZE,
-            );
-            let input_tensor = Tensor::<f32>::from_array((
-                [1usize, 3usize, SSRNET_INPUT_SIZE, SSRNET_INPUT_SIZE],
-                tensor_data,
-            ))
-            .map_err(|e| ort_err("input_tensor", e))?;
+        let Some(session_mutex) = &self.session else {
+            return Err(HakilleError::InferenceError(
+                "SSRNet::infer: modèle ONNX ssrnet_age.onnx absent — estimation simulée refusée (contrat d'honnêteté / Règle 7)".into(),
+            ));
+        };
 
-            let mut session = session_mutex
-                .lock()
-                .map_err(|_| ort_err("lock", "mutex empoisonné"))?;
-            let outputs = session
-                .run(ort::inputs![input_tensor])
-                .map_err(|e| ort_err("forward", e))?;
-
-            let (_shape, values) = outputs[0]
-                .try_extract_tensor::<f32>()
-                .map_err(|e| ort_err("extract_output", e))?;
-
-            let raw_age = if !values.is_empty() {
-                values[0].clamp(0.0, 100.0)
-            } else {
-                return Err(HakilleError::InferenceError("SSRNet: sortie vide".into()));
-            };
-
-            return Ok(build_age_result(raw_age, 0.90, ModelStatus::Real));
+        let expected_bytes = width
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(3))
+            .ok_or_else(|| {
+                HakilleError::InferenceError("SSRNet::infer: dimensions débordantes".into())
+            })?;
+        if rgb_crop.len() < expected_bytes {
+            return Err(HakilleError::InferenceError(format!(
+                "SSRNet::infer: tampon RGB trop court ({} < {expected_bytes})",
+                rgb_crop.len()
+            )));
         }
 
-        // Mode simulation canonique déterministe
-        // Calibré sur un profil adulte type (28.5 ans) pour les tests nominaux
-        let simulated_age = 28.5f32;
-        Ok(build_age_result(
-            simulated_age,
-            0.92,
-            ModelStatus::Simulated,
+        let tensor_data = preprocess_image_normalized(
+            rgb_crop,
+            width,
+            height,
+            SSRNET_INPUT_SIZE,
+            SSRNET_INPUT_SIZE,
+        );
+        let input_tensor = Tensor::<f32>::from_array((
+            [1usize, 3usize, SSRNET_INPUT_SIZE, SSRNET_INPUT_SIZE],
+            tensor_data,
         ))
+        .map_err(|e| ort_err("input_tensor", e))?;
+
+        let mut session = session_mutex
+            .lock()
+            .map_err(|_| ort_err("lock", "mutex empoisonné"))?;
+        let outputs = session
+            .run(ort::inputs![input_tensor])
+            .map_err(|e| ort_err("forward", e))?;
+
+        let (_shape, values) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| ort_err("extract_output", e))?;
+
+        let raw_age = match values.first().copied() {
+            Some(v) if v.is_finite() => v.clamp(0.0, 100.0),
+            Some(_) => {
+                return Err(HakilleError::InferenceError(
+                    "SSRNet: sortie non finie (NaN/Inf)".into(),
+                ));
+            }
+            None => return Err(HakilleError::InferenceError("SSRNet: sortie vide".into())),
+        };
+
+        Ok(build_age_result(raw_age, 0.90, ModelStatus::Real))
     }
 }
 
@@ -227,7 +239,18 @@ pub fn build_age_result(
     confidence: f32,
     status: ModelStatus,
 ) -> AgeEstimationResult {
-    // Ecart-type d'incertitude typique SSR-Net : ~3.0 ans
+    // Ecart-type d'incertitude typique SSR-Net : ~3.16 ans.
+    // Fail-closed : un âge non fini (NaN/Inf) active la protection mineur.
+    if !estimated_age.is_finite() {
+        return AgeEstimationResult {
+            estimated_age: 0.0,
+            age_bracket: (0.0, 0.0),
+            is_minor: true,
+            minor_probability: 1.0,
+            confidence: 0.0,
+            status,
+        };
+    }
     let sigma = 3.16f32;
     let min_age = (estimated_age - sigma).max(0.0);
     let max_age = estimated_age + sigma;
@@ -237,7 +260,7 @@ pub fn build_age_result(
     let z = (MINOR_AGE_THRESHOLD - estimated_age) / sigma;
     let minor_probability = approximate_normal_cdf(z);
 
-    // Règle 7 : Si P(âge < 18) > 0.85 ou l'âge moyen < 18, protection obligatoire
+    // Règle 7 : Si P(âge < 18) >= 0.85 ou l'âge moyen < 18, protection obligatoire
     let is_minor =
         minor_probability >= MINOR_CONFIDENCE_THRESHOLD || estimated_age < MINOR_AGE_THRESHOLD;
 
@@ -246,7 +269,11 @@ pub fn build_age_result(
         age_bracket: (min_age, max_age),
         is_minor,
         minor_probability,
-        confidence,
+        confidence: if confidence.is_finite() {
+            confidence.clamp(0.0, 1.0)
+        } else {
+            0.0
+        },
         status,
     }
 }
@@ -263,27 +290,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ssrnet_simulated_nominal() {
+    fn test_ssrnet_missing_model_refuses_simulated_adult_fallback() {
         let session = SSRNetSession::open_or_simulated(None);
         assert_eq!(session.status(), ModelStatus::Simulated);
 
         let dummy_crop = vec![128u8; 64 * 64 * 3];
-        let res = session
+        let err = session
             .infer(&dummy_crop, 64, 64)
-            .expect("inférence réussie");
-
-        assert_eq!(res.status, ModelStatus::Simulated);
-        assert!((res.estimated_age - 28.5).abs() < 1e-3);
-        assert!(!res.is_minor, "un adulte de 28.5 ans n'est pas un mineur");
-        assert!(res.minor_probability < 0.05);
-        assert!(res.age_bracket.0 < res.estimated_age);
-        assert!(res.age_bracket.1 > res.estimated_age);
+            .expect_err("modèle absent : aucune estimation adulte simulée autorisée");
+        assert!(err.to_string().contains("absent"));
     }
 
     #[test]
     fn test_minor_protection_enforcement_rule_7() {
         // Test d'un enfant de 12 ans -> doit activer is_minor
-        let child_res = build_age_result(12.0, 0.95, ModelStatus::Simulated);
+        let child_res = build_age_result(12.0, 0.95, ModelStatus::Real);
         assert!(
             child_res.is_minor,
             "Enfant de 12 ans doit être protégé (Règle 7)"
@@ -291,14 +312,18 @@ mod tests {
         assert!(child_res.minor_probability > 0.95);
 
         // Test d'un jeune de 17.5 ans -> incertitude penche vers mineur
-        let borderline_res = build_age_result(17.5, 0.90, ModelStatus::Simulated);
+        let borderline_res = build_age_result(17.5, 0.90, ModelStatus::Real);
         assert!(
             borderline_res.is_minor,
             "17.5 ans < 18 ans active la protection"
         );
 
+        // NaN -> fail-closed mineur
+        let nan_res = build_age_result(f32::NAN, 0.90, ModelStatus::Real);
+        assert!(nan_res.is_minor, "NaN doit activer la protection mineur");
+
         // Test d'un adulte de 35 ans -> adulte confirmé
-        let adult_res = build_age_result(35.0, 0.95, ModelStatus::Simulated);
+        let adult_res = build_age_result(35.0, 0.95, ModelStatus::Real);
         assert!(!adult_res.is_minor);
         assert!(adult_res.minor_probability < 1e-3);
     }

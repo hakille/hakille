@@ -34,8 +34,9 @@ impl GeneralityTracker {
     }
 
     pub fn record_task(&mut self, domain: TaskDomain) {
-        *self.domain_counts.entry(domain).or_insert(0) += 1;
-        self.total_tasks += 1;
+        let entry = self.domain_counts.entry(domain).or_insert(0);
+        *entry = entry.saturating_add(1);
+        self.total_tasks = self.total_tasks.saturating_add(1);
     }
 
     /// Computes Shannon entropy of tasks handled across different domains,
@@ -83,11 +84,11 @@ impl GeneralityTracker {
         }
     }
 
-    /// Persistance JSON simple via `std::fs`.
+    /// Persistance JSON atomique via fichier temporaire.
     pub fn save_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
         let json = serde_json::to_string_pretty(&self.to_snapshot())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(path, json)
+        crate::atomic_write_json(path, &json)
     }
 
     /// Recharge depuis un fichier JSON écrit par [`Self::save_to_file`].
@@ -95,9 +96,14 @@ impl GeneralityTracker {
         let content = std::fs::read_to_string(path)?;
         let snap: GeneralitySnapshot = serde_json::from_str(&content)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let total_tasks = snap
+            .domain_counts
+            .values()
+            .copied()
+            .fold(0usize, usize::saturating_add);
         Ok(Self {
             domain_counts: snap.domain_counts,
-            total_tasks: snap.total_tasks,
+            total_tasks,
         })
     }
 }

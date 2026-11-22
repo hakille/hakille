@@ -300,11 +300,11 @@ fn test_adversarial_hkdf_delimiter_collision_boundary_analysis() {
     )
     .unwrap();
 
-    // Notice that without delimiter sanitization, info string is identical ("hakille:v1:memory-partition:a:b:c").
-    // We document this boundary condition explicitly in our Challenger findings:
-    assert_eq!(
+    // Le cadrage par préfixe de longueur (`hakille:v2:`) élimine la collision
+    // entre `MemoryPartition("a:b") + tenant "c"` et `MemoryPartition("a") + tenant "b:c"`.
+    assert_ne!(
         k1, k2,
-        "Confirmed boundary vulnerability: unescaped colon delimiter in partition/tenant ID causes collision"
+        "Le cadrage HKDF préfixé par longueur doit empêcher toute collision de délimiteur ':'"
     );
 }
 
@@ -598,16 +598,15 @@ fn test_adversarial_xchacha20_forged_aad_fingerprint_bypass() {
 
 #[test]
 fn test_adversarial_xchacha20_aad_delimiter_injection_boundary() {
-    // Probe: Can an adversary craft fields with \x1f to produce identical AAD bytes for different field assignments?
+    // Vérifie qu'une injection du délimiteur \x1f ne peut plus créer de collision inter-champs.
     let b1 = AadBinding::new("t1", "u1\x1ftable1", "rec1", "foo", 1);
     let b2 = AadBinding::new("t1", "u1", "table1", "rec1\x1ffoo", 1);
 
-    // Confirm that if input fields contain raw 0x1f delimiters, they serialize to identical AAD byte vectors
     let aad1 = b1.to_bytes();
     let aad2 = b2.to_bytes();
 
-    assert_eq!(
+    assert_ne!(
         aad1, aad2,
-        "Boundary condition confirmed: 0x1f injection in unvalidated fields allows cross-field AAD byte collision"
+        "L'encodage AAD préfixé par longueur doit empêcher toute collision par injection 0x1f"
     );
 }

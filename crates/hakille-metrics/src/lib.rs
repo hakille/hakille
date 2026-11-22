@@ -40,11 +40,11 @@ impl MetricsSnapshot {
         self.clone()
     }
 
-    /// Persistance JSON simple via `std::fs`.
+    /// Persistance JSON atomique via fichier temporaire.
     pub fn save_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(path, json)
+        atomic_write_json(path, &json)
     }
 
     pub fn load_from_file(path: &std::path::Path) -> std::io::Result<Self> {
@@ -55,6 +55,29 @@ impl MetricsSnapshot {
     }
 }
 
+pub(crate) fn atomic_write_json(path: &std::path::Path, json: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp_path = path.with_extension(format!("tmp.{}", std::process::id()));
+    {
+        use std::io::Write;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&tmp_path)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp_path, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -62,6 +85,8 @@ mod tests {
     #[test]
     fn test_continuity_tracker_rate() {
         let mut tracker = ContinuityTracker::new();
+        assert!(!tracker.has_measurements());
+        assert_eq!(tracker.continuity_rate_checked(), None);
         assert_eq!(tracker.continuity_rate(), 1.0);
 
         // 3 tasks without re-explanation, 1 requiring re-explanation
@@ -70,13 +95,18 @@ mod tests {
         tracker.record_task("t3", false, 1);
         tracker.record_task("t4", true, 4);
 
+        assert!(tracker.has_measurements());
         assert_eq!(tracker.total_tasks(), 4);
         assert_eq!(tracker.continuity_rate(), 0.75);
+        assert_eq!(tracker.continuity_rate_checked(), Some(0.75));
     }
 
     #[test]
     fn test_bounded_initiative_compliance() {
         let mut tracker = BoundedInitiativeTracker::new();
+        assert!(!tracker.has_measurements());
+        assert_eq!(tracker.compliance_rate_checked(), None);
+        assert_eq!(tracker.acceptance_rate_checked(), None);
         assert_eq!(tracker.compliance_rate(), 1.0);
 
         // 9 compliant proposals, 1 exceeding capability
@@ -85,7 +115,10 @@ mod tests {
         }
         tracker.record_proposal("p_bad", false, false);
 
+        assert!(tracker.has_measurements());
         assert_eq!(tracker.compliance_rate(), 0.9);
+        assert_eq!(tracker.compliance_rate_checked(), Some(0.9));
+        assert_eq!(tracker.acceptance_rate_checked(), Some(0.9));
     }
 
     #[test]
@@ -126,5 +159,17 @@ mod tests {
         assert!(drifted.is_some());
         let alert = drifted.unwrap();
         assert!(alert.cosine_drift > alert.threshold);
+
+        // NaN or zero vector must fail closed with an alert
+        assert!(
+            detector
+                .evaluate_current_vector(&[f64::NAN, 1.0, 1.0, 1.0, 1.0])
+                .is_some()
+        );
+        assert!(
+            detector
+                .evaluate_current_vector(&[0.0, 0.0, 0.0, 0.0, 0.0])
+                .is_some()
+        );
     }
 }

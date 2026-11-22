@@ -49,11 +49,11 @@ pub fn reference_agent_cards() -> Vec<AgentCard> {
         AgentCard {
             id: "agent-home".into(),
             name: "Smart Home Agent".into(),
-            required_caps: vec!["Network(Read+Write)".into(), "Sensor(Read)".into()],
-            real: "Discovery + on/off + brightness clamp + température + lock".into(),
-            demo: "4 devices mock — pas de MQTT/Zigbee ; unlock exige validation".into(),
+            required_caps: vec!["Network(Read+Execute)".into(), "Sensor(Read)".into()],
+            real: "19 codecs/transports LAN (Matter, MQTT, CoAP, KNX, Modbus, Hue, Shelly, OCPP, HA, ONVIF) + HomeLanGuard + redb".into(),
+            demo: "0 appareil fictif ; exige appareil LAN ou passerelle série réelle ; Tier 3 exige maintien 600 ms".into(),
             needs_validation: true,
-            badge: "DOMOTIQUE SIMULÉE".into(),
+            badge: "DOMOTIQUE LAN 19 PROTOCOLES".into(),
         },
         AgentCard {
             id: "agent-wallet-readonly".into(),

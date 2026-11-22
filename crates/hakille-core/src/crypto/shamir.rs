@@ -39,43 +39,39 @@ impl SecretShare {
     }
 
     pub fn verify_checksum(&self) -> bool {
-        self.checksum == Self::compute_checksum(self.index, &self.data)
+        use subtle::ConstantTimeEq;
+        let expected = Self::compute_checksum(self.index, &self.data);
+        bool::from(self.checksum.ct_eq(&expected))
     }
 }
 
-/// Multiplication in Galois Field GF(2^8) with irreducible polynomial x^8 + x^4 + x^3 + x + 1 (0x11b)
+/// Multiplication en temps constant (sans branchement) dans GF(2^8), polynôme 0x11b.
 pub fn gf_mul(mut a: u8, mut b: u8) -> u8 {
     let mut p = 0u8;
     for _ in 0..8 {
-        if (b & 1) != 0 {
-            p ^= a;
-        }
-        let hi_bit_set = (a & 0x80) != 0;
-        a <<= 1;
-        if hi_bit_set {
-            a ^= 0x1b; // polynomial 0x11b reduced
-        }
+        let bit_mask = (b & 1).wrapping_neg(); // 0x00 ou 0xff
+        p ^= a & bit_mask;
+        let hi_mask = (a >> 7).wrapping_neg(); // 0x00 ou 0xff
+        a = (a << 1) ^ (0x1b & hi_mask);
         b >>= 1;
     }
     p
 }
 
-/// Multiplicative inverse in GF(2^8) via Fermat's Little Theorem: a^-1 = a^254
+/// Inverse multiplicatif en temps constant dans GF(2^8) via Fermat : a^-1 = a^254.
 pub fn gf_inv(a: u8) -> u8 {
-    if a == 0 {
-        return 0;
-    }
     let mut res = 1u8;
     let mut base = a;
-    let mut exp = 254u8;
-    while exp > 0 {
-        if (exp & 1) != 0 {
+    // 254 = 0b1111_1110 : boucle fixe de 8 itérations, masque sans branchement sur a == 0.
+    for bit in 0..8 {
+        if ((254u8 >> bit) & 1) != 0 {
             res = gf_mul(res, base);
         }
         base = gf_mul(base, base);
-        exp >>= 1;
     }
-    res
+    // Si a == 0, retourne 0 sans branchement.
+    let nonzero_mask = (a != 0) as u8;
+    res & nonzero_mask.wrapping_neg()
 }
 
 /// Split a 32-byte secret into `total` shares with reconstruction threshold `threshold`
@@ -92,7 +88,7 @@ pub fn split_secret(
 
     // For each byte position of the 32-byte secret, generate a random polynomial of degree (threshold - 1)
     for byte_idx in 0..32 {
-        let mut poly = vec![0u8; threshold as usize];
+        let mut poly = zeroize::Zeroizing::new(vec![0u8; threshold as usize]);
         poly[0] = secret[byte_idx]; // constant term is the secret byte
 
         for item in poly.iter_mut().take(threshold as usize).skip(1) {
@@ -113,12 +109,14 @@ pub fn split_secret(
     }
 
     let mut shares = Vec::with_capacity(total as usize);
-    for (i, data) in shares_data.into_iter().enumerate() {
+    for (i, data) in shares_data.iter_mut().enumerate() {
         let index = (i + 1) as u8;
-        let checksum = SecretShare::compute_checksum(index, &data);
+        let checksum = SecretShare::compute_checksum(index, data);
+        let copy = *data;
+        data.zeroize();
         shares.push(SecretShare {
             index,
-            data,
+            data: copy,
             checksum,
         });
     }

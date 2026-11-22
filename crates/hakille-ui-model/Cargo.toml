@@ -7,7 +7,6 @@ description = "Hakille UI model: stable headless frontier (snapshot + viewmodels
 
 [dependencies]
 hakille-ui = { path = "../hakille-ui" }
-hakille-design = { path = "../hakille-design" }
 hakille-ui-protocol = { path = "../hakille-ui-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }

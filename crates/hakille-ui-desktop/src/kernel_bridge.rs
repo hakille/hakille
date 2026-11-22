@@ -33,11 +33,12 @@ impl KernelStub for DenyAllKernel {
     fn submit(&mut self, msg: UiMessage) -> Result<KernelToUi, BridgeError> {
         msg.check().map_err(BridgeError::Protocol)?;
         match &msg.inner {
-            UiToKernel::Approve { .. } | UiToKernel::Edit { .. } | UiToKernel::Reject { .. } => {
-                Err(BridgeError::DaemonRequired(
-                    "noyau non branché — carte en attente".into(),
-                ))
-            }
+            UiToKernel::BeginApprovalHold { .. }
+            | UiToKernel::Approve { .. }
+            | UiToKernel::Edit { .. }
+            | UiToKernel::Reject { .. } => Err(BridgeError::DaemonRequired(
+                "noyau non branché — carte en attente".into(),
+            )),
             UiToKernel::HudSubmit { .. } => Err(BridgeError::DaemonRequired(
                 "noyau non branché — requête HUD en attente".into(),
             )),
@@ -82,6 +83,11 @@ impl KernelStub for DenyAllKernel {
             | UiToKernel::MediaJobCancel { .. }
             | UiToKernel::MediaGalleryRequest { .. } => Err(BridgeError::DaemonRequired(
                 "noyau non branché — moteur génératif média réel requis".into(),
+            )),
+            UiToKernel::HomeDevicesRequest
+            | UiToKernel::HomeDiscoverRequest { .. }
+            | UiToKernel::HomeCommandRequest { .. } => Err(BridgeError::DaemonRequired(
+                "noyau non branché — SovereignHomeHub réel requis".into(),
             )),
         }
     }

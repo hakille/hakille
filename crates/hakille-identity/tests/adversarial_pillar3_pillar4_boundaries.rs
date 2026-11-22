@@ -2,7 +2,7 @@
 //!
 //! Evaluates exact numerical and security boundaries:
 //! - Pillar 3: Inactivity clause at 89.9 days vs 90.0 days, grace expiry at 103.9 days vs 104.0 days,
-//!             heartbeat reset during grace, invalid / tampered trustee shares, legal vs intimate partition shredding.
+//!   heartbeat reset during grace, invalid / tampered trustee shares, legal vs intimate partition shredding.
 //! - Pillar 4: Delegation depth boundary D = 4 vs D = 5, parent escrow exhaustion and refund on settlement.
 
 use chrono::{Duration, Utc};

@@ -1,8 +1,8 @@
 //! DTO du cœur mobile. Aucun jeton de transport ou clé n'est conservé ici.
 use hakille_ipc::Frame;
 use hakille_ui_protocol::{
-    ActionCard, AgentDto, GhostActionDto, JournalEntryDto, KernelToUi, MemoryRowDto,
-    PrivacyGuardEvent, StatusDto,
+    ActionCard, AgentDto, GhostActionDto, HomeDeviceDto, HomeEnergyDto, HomeProtocolStatusDto,
+    JournalEntryDto, KernelToUi, MemoryRowDto, PrivacyGuardEvent, StatusDto,
 };
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +52,19 @@ pub enum MobileAction {
     RunAgent {
         name: String,
         input_json: String,
+    },
+    LoadHomeDevices {},
+    DiscoverHome {
+        #[serde(default)]
+        protocol: Option<String>,
+    },
+    SendHomeCommand {
+        device_id: String,
+        action: String,
+        #[serde(default)]
+        params_json: String,
+        #[serde(default)]
+        confirm_hold_ms: Option<u64>,
     },
     BeginApproval {
         card_id: u64,
@@ -115,11 +128,31 @@ pub enum MobileAction {
         power: String,
         #[serde(default)]
         duration_secs: Option<u32>,
+        /// PIN propriétaire optionnel : s'il est fourni, la révocation
+        /// anticipée exigera le même PIN (seul son condensat SHA-256 est
+        /// gardé en mémoire vive, jamais sérialisé ni persisté).
+        #[serde(default)]
+        owner_pin: Option<OwnerPin>,
     },
     TickGuestPass {
         elapsed_secs: u32,
     },
-    RevokeGuestPass {},
+    RevokeGuestPass {
+        #[serde(default)]
+        owner_pin: Option<OwnerPin>,
+    },
+}
+
+/// PIN propriétaire transmis par le shell natif. Le `Debug` est masqué pour
+/// qu'aucun journal ni trace de panique ne divulgue le secret.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct OwnerPin(pub String);
+
+impl std::fmt::Debug for OwnerPin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OwnerPin(<masqué>)")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +161,7 @@ pub enum MutationKind {
     Submit,
     Remember,
     RunAgent,
+    HomeCommand,
     Approve,
     Reject,
     Undo,
@@ -140,6 +174,7 @@ impl MutationKind {
             "submit" => Some(Self::Submit),
             "remember" => Some(Self::Remember),
             "run_agent" => Some(Self::RunAgent),
+            "home_command" => Some(Self::HomeCommand),
             "approve" => Some(Self::Approve),
             "reject" => Some(Self::Reject),
             "undo" => Some(Self::Undo),
@@ -152,6 +187,7 @@ impl MutationKind {
             Self::Submit => "submit",
             Self::Remember => "remember",
             Self::RunAgent => "run_agent",
+            Self::HomeCommand => "home_command",
             Self::Approve => "approve",
             Self::Reject => "reject",
             Self::Undo => "undo",
@@ -571,6 +607,14 @@ pub struct MobileSnapshot {
     pub privacy_guard: Option<PrivacyGuardEvent>,
     pub privacy_veil_active: bool,
     pub guest_pass: Option<GuestPassDto>,
+    #[serde(default)]
+    pub home_devices: Vec<HomeDeviceDto>,
+    #[serde(default)]
+    pub home_protocols: Vec<HomeProtocolStatusDto>,
+    #[serde(default)]
+    pub home_energy: Option<HomeEnergyDto>,
+    #[serde(default)]
+    pub last_home_receipt: Option<String>,
 }
 
 impl Default for MobileSnapshot {
@@ -615,6 +659,10 @@ impl Default for MobileSnapshot {
             privacy_guard: None,
             privacy_veil_active: false,
             guest_pass: None,
+            home_devices: vec![],
+            home_protocols: vec![],
+            home_energy: None,
+            last_home_receipt: None,
         }
     }
 }

@@ -15,6 +15,7 @@ use hakille_substrate::{
 };
 
 /// Unified host substrate enum wrapping all concrete platform substrates.
+#[allow(clippy::large_enum_variant)]
 pub enum HostSubstrate {
     Linux(hakille_substrate_linux::LinuxSubstrate),
     Windows(hakille_substrate_windows::WindowsSubstrate),

@@ -33,7 +33,109 @@ impl Default for ModelDownloader {
 }
 
 const MAX_ATTEMPTS: usize = 3;
+const MAX_REDIRECTS: usize = 10;
 const UNKNOWN_SIZE_LIMIT: u64 = 8 * 1024 * 1024 * 1024;
+
+fn parse_host_ip(host: &str) -> Option<std::net::IpAddr> {
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
+    bare.parse::<std::net::IpAddr>().ok()
+}
+
+fn is_loopback_host(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if let Some(ip) = parse_host_ip(host) {
+        return ip.is_loopback();
+    }
+    let trimmed = host.trim_end_matches('.');
+    trimmed.eq_ignore_ascii_case("localhost")
+        || trimmed.to_ascii_lowercase().ends_with(".localhost")
+}
+
+fn is_public_unicast_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let [a, b, _, _] = v4.octets();
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 198 && (b == 18 || b == 19)))
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_public_unicast_ip(std::net::IpAddr::V4(mapped));
+            }
+            let seg0 = v6.segments()[0];
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (seg0 & 0xfe00) == 0xfc00
+                || (seg0 & 0xffc0) == 0xfe80)
+        }
+    }
+}
+
+async fn validate_download_url(
+    url: &reqwest::Url,
+    allow_loopback: bool,
+    previous_scheme: Option<&str>,
+) -> Result<()> {
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(invalid("URL d'artefact : identifiants embarqués refusés"));
+    }
+    let loopback = is_loopback_host(url);
+    match url.scheme() {
+        "https" => {}
+        "http" if allow_loopback && loopback => {}
+        "http" => {
+            return Err(invalid(
+                "URL d'artefact : HTTPS obligatoire hors loopback local",
+            ));
+        }
+        _ => {
+            return Err(invalid("URL d'artefact : schéma HTTPS requis"));
+        }
+    }
+    if previous_scheme == Some("https") && url.scheme() != "https" {
+        return Err(invalid("Redirection HTTPS -> HTTP refusée"));
+    }
+    if loopback && !allow_loopback {
+        return Err(invalid("Redirection vers loopback refusée (SSRF)"));
+    }
+    if !allow_loopback {
+        let Some(host) = url.host_str() else {
+            return Err(invalid("Hôte d'URL absent"));
+        };
+        if let Some(ip) = parse_host_ip(host) {
+            if !is_public_unicast_ip(ip) {
+                return Err(invalid(format!("Adresse IP non publique refusée : {ip}")));
+            }
+        } else if previous_scheme.is_some() {
+            let port = url.port_or_known_default().unwrap_or(443);
+            let lookup_host_name = host.trim_end_matches('.');
+            if let Ok(addrs) = tokio::net::lookup_host((lookup_host_name, port)).await {
+                for addr in addrs {
+                    if !is_public_unicast_ip(addr.ip()) {
+                        return Err(invalid(format!(
+                            "Redirection vers IP non publique refusée ({host} -> {})",
+                            addr.ip()
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 fn storage(error: impl std::fmt::Display) -> HakilleError {
     HakilleError::StorageError(error.to_string())
@@ -94,7 +196,11 @@ impl ModelDownloader {
     #[cfg(test)]
     pub(crate) fn local_test_client() -> Self {
         Self {
-            client: Ok(reqwest::Client::builder().no_proxy().build().unwrap()),
+            client: Ok(reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap()),
         }
     }
 
@@ -102,12 +208,74 @@ impl ModelDownloader {
         Self {
             client: reqwest::Client::builder()
                 .user_agent("Hakille-Cognitive-OS/0.1.0")
-                .redirect(reqwest::redirect::Policy::limited(10))
+                .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(20))
                 .read_timeout(Duration::from_secs(60))
                 .build()
                 .map_err(|e| e.to_string()),
         }
+    }
+
+    async fn verify_file_async(
+        path: PathBuf,
+        expected_size: Option<u64>,
+        expected_sha256: Option<String>,
+    ) -> Result<bool> {
+        tokio::task::spawn_blocking(move || {
+            Self::verify_file(&path, expected_size, expected_sha256.as_deref())
+        })
+        .await
+        .map_err(|e| invalid(format!("Vérification SHA-256 interrompue : {e}")))?
+    }
+
+    async fn hash_file_partial_async(path: PathBuf, max_bytes: u64) -> Result<(u64, Sha256)> {
+        tokio::task::spawn_blocking(move || Self::hash_file_partial(&path, max_bytes))
+            .await
+            .map_err(|e| invalid(format!("Calcul SHA-256 partiel interrompu : {e}")))?
+    }
+
+    async fn send_with_validated_redirects(
+        client: &reqwest::Client,
+        initial_url: reqwest::Url,
+        offset: u64,
+        allow_loopback: bool,
+        filename: &str,
+    ) -> Result<reqwest::Response> {
+        let mut current = initial_url;
+        for hop in 0..=MAX_REDIRECTS {
+            let mut request = client
+                .get(current.clone())
+                .header(ACCEPT_ENCODING, "identity");
+            if offset > 0 {
+                request = request.header(RANGE, format!("bytes={offset}-"));
+            }
+            let response = request.send().await.map_err(|e| {
+                invalid(format!(
+                    "Connexion impossible pour {filename} : {}",
+                    e.without_url()
+                ))
+            })?;
+            if response.status().is_redirection() {
+                if hop == MAX_REDIRECTS {
+                    return Err(invalid(format!(
+                        "Trop de redirections (> {MAX_REDIRECTS}) pour {filename}"
+                    )));
+                }
+                let location = response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| invalid("Redirection HTTP sans en-tête Location valide"))?;
+                let next = current
+                    .join(location)
+                    .map_err(|_| invalid("URL de redirection invalide"))?;
+                validate_download_url(&next, allow_loopback, Some(current.scheme())).await?;
+                current = next;
+                continue;
+            }
+            return Ok(response);
+        }
+        Err(invalid("Limite de redirections atteinte"))
     }
 
     /// Vérifie aussi les fichiers déjà présents. Un cache corrompu reste en place
@@ -133,14 +301,8 @@ impl ModelDownloader {
             ));
         }
         let parsed = reqwest::Url::parse(url).map_err(|_| invalid("URL d'artefact invalide"))?;
-        if !matches!(parsed.scheme(), "https" | "http")
-            || !parsed.username().is_empty()
-            || parsed.password().is_some()
-        {
-            return Err(invalid(
-                "URL d'artefact : HTTP(S) sans identifiants attendu",
-            ));
-        }
+        let allow_loopback = is_loopback_host(&parsed);
+        validate_download_url(&parsed, allow_loopback, None).await?;
         let client = self
             .client
             .as_ref()
@@ -156,7 +318,13 @@ impl ModelDownloader {
             .ok_or_else(|| invalid("Nom d'artefact absent"))?
             .to_string_lossy()
             .into_owned();
-        if Self::verify_file(destination, expected_size, expected_sha256)? {
+        if Self::verify_file_async(
+            destination.to_path_buf(),
+            expected_size,
+            expected_sha256.map(str::to_string),
+        )
+        .await?
+        {
             return Ok(destination.to_path_buf());
         }
         let part_path = append_suffix(destination, ".part");
@@ -165,7 +333,12 @@ impl ModelDownloader {
             let partial_size = regular_file_size(&part_path)?.unwrap_or(0);
             if partial_size > 0
                 && expected_sha256.is_some()
-                && Self::verify_file(&part_path, expected_size, expected_sha256)?
+                && Self::verify_file_async(
+                    part_path.clone(),
+                    expected_size,
+                    expected_sha256.map(str::to_string),
+                )
+                .await?
             {
                 tokio::fs::rename(&part_path, destination)
                     .await
@@ -179,23 +352,30 @@ impl ModelDownloader {
                     .unwrap_or(partial_size < UNKNOWN_SIZE_LIMIT);
             let offset = if can_resume { partial_size } else { 0 };
             let (_, mut hasher) = if offset > 0 {
-                Self::hash_file_partial(&part_path, offset)?
+                Self::hash_file_partial_async(part_path.clone(), offset).await?
             } else {
                 (0, Sha256::new())
             };
-            let mut request = client
-                .get(parsed.clone())
-                .header(ACCEPT_ENCODING, "identity");
-            if offset > 0 {
-                request = request.header(RANGE, format!("bytes={offset}-"));
-            }
-            let response = match request.send().await {
+            let response = match Self::send_with_validated_redirects(
+                client,
+                parsed.clone(),
+                offset,
+                allow_loopback,
+                &filename,
+            )
+            .await
+            {
                 Ok(response) => response,
-                Err(e) => {
-                    last_error = invalid(format!(
-                        "Connexion impossible pour {filename} : {}",
-                        e.without_url()
-                    ));
+                Err(err) => {
+                    let msg = err.to_string();
+                    // Ne pas réessayer un refus de sécurité (redirection/SSRF/TLS).
+                    if msg.contains("refusée")
+                        || msg.contains("HTTPS")
+                        || msg.contains("redirection")
+                    {
+                        return Err(err);
+                    }
+                    last_error = err;
                     if attempt + 1 < MAX_ATTEMPTS {
                         tokio::time::sleep(Duration::from_millis(200)).await;
                     }
@@ -478,9 +658,35 @@ mod tests {
     }
     fn downloader() -> ModelDownloader {
         // Les tests locaux ne dépendent pas d'une configuration proxy de la machine.
-        ModelDownloader {
-            client: Ok(reqwest::Client::builder().no_proxy().build().unwrap()),
-        }
+        ModelDownloader::local_test_client()
+    }
+
+    #[tokio::test]
+    async fn external_plaintext_http_and_downgrade_redirects_are_refused() {
+        let dir = TestDir::new();
+        let path = dir.0.join("model.onnx");
+        let err = downloader()
+            .download_file("http://example.com/model.onnx", &path, Some(8), None, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("HTTPS"));
+
+        let https_url = reqwest::Url::parse("https://example.com/a").unwrap();
+        assert!(validate_download_url(&https_url, false, None).await.is_ok());
+
+        let http_downgrade = reqwest::Url::parse("http://example.com/b").unwrap();
+        assert!(
+            validate_download_url(&http_downgrade, false, Some("https"))
+                .await
+                .is_err()
+        );
+
+        let ssrf_loopback = reqwest::Url::parse("https://127.0.0.1/secret").unwrap();
+        assert!(
+            validate_download_url(&ssrf_loopback, false, Some("https"))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

@@ -22,6 +22,12 @@ pub struct TokenVerifier {
     pub repo_root: PathBuf,
 }
 
+impl Default for TokenVerifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TokenVerifier {
     pub fn new() -> Self {
         // Resolve monorepo root
@@ -147,17 +153,17 @@ impl TokenVerifier {
         let braise_hex = "#FF7A2F";
         for (sec, keys) in color_doc {
             for (k, v) in keys {
-                if let TokenVal::Str(s) = v {
-                    if s.eq_ignore_ascii_case(braise_hex) {
-                        let is_allowed_section = sec.contains("braise")
-                            || sec.contains("validation")
-                            || sec.contains("hold-progress")
-                            || sec.contains("decision-ring");
-                        if !is_allowed_section {
-                            return Err(format!(
-                                "Braise (#FF7A2F) is strictly forbidden in {sec}.{k}; allowed only in validation, hold-progress, decision-ring"
-                            ));
-                        }
+                if let TokenVal::Str(s) = v
+                    && s.eq_ignore_ascii_case(braise_hex)
+                {
+                    let is_allowed_section = sec.contains("braise")
+                        || sec.contains("validation")
+                        || sec.contains("hold-progress")
+                        || sec.contains("decision-ring");
+                    if !is_allowed_section {
+                        return Err(format!(
+                            "Braise (#FF7A2F) is strictly forbidden in {sec}.{k}; allowed only in validation, hold-progress, decision-ring"
+                        ));
                     }
                 }
             }

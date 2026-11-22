@@ -113,10 +113,12 @@ impl CovertBlinkDetector {
         }
 
         // Global sequence timeout check
-        if let Some(seq_start) = self.sequence_start_at {
-            if now.duration_since(seq_start) > self.max_sequence_duration {
-                self.reset();
-            }
+        if let Some(seq_start) = self.sequence_start_at
+            && now
+                .checked_duration_since(seq_start)
+                .is_none_or(|d| d > self.max_sequence_duration)
+        {
+            self.reset();
         }
 
         // Left eye covert closed
@@ -130,13 +132,13 @@ impl CovertBlinkDetector {
         // Left eye reopened
         if ocular == OcularState::BilateralOpen {
             if let Some(closed_start) = self.current_closed_start.take() {
-                let duration = now.duration_since(closed_start);
-
-                if duration >= self.min_blink_duration && duration <= self.max_blink_duration {
+                if let Some(duration) = now.checked_duration_since(closed_start)
+                    && duration >= self.min_blink_duration
+                    && duration <= self.max_blink_duration
+                {
                     return self.advance_state(now);
-                } else {
-                    self.reset();
                 }
+                self.reset();
             }
         } else if ocular == OcularState::RightEyeCovertClosed {
             self.reset();
@@ -155,8 +157,9 @@ impl CovertBlinkDetector {
             }
             DistressTriggerState::Blink1Detected => {
                 let last = self.last_blink_completed_at.unwrap_or(now);
-                let elapsed = now.duration_since(last);
-                if elapsed <= self.max_inter_blink_interval {
+                if let Some(elapsed) = now.checked_duration_since(last)
+                    && elapsed <= self.max_inter_blink_interval
+                {
                     self.state = DistressTriggerState::Blink2Detected;
                     self.last_blink_completed_at = Some(now);
                     false
@@ -169,8 +172,9 @@ impl CovertBlinkDetector {
             }
             DistressTriggerState::Blink2Detected => {
                 let last = self.last_blink_completed_at.unwrap_or(now);
-                let elapsed = now.duration_since(last);
-                if elapsed <= self.max_inter_blink_interval {
+                if let Some(elapsed) = now.checked_duration_since(last)
+                    && elapsed <= self.max_inter_blink_interval
+                {
                     self.state = DistressTriggerState::Triggered;
                     self.reset();
                     true // 3rd rapid covert blink confirmed!

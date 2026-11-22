@@ -3,7 +3,7 @@ use hakille_core::{
     HakilleError, KeyPair, Result, Timestamp, VerifyEd25519,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// An explicit cryptographic record of authorized capability permissions (§20i).
@@ -27,11 +27,14 @@ impl ConsentRecord {
         if self.revoked_at.is_some() {
             return false;
         }
-        if let Some(ref until) = self.valid_until {
-            let now = chrono::Utc::now();
-            if now > until.0 {
-                return false;
-            }
+        let now = chrono::Utc::now();
+        if now < self.valid_from.0 {
+            return false;
+        }
+        if let Some(ref until) = self.valid_until
+            && now > until.0
+        {
+            return false;
         }
         true
     }
@@ -58,19 +61,17 @@ pub struct ConsentRegistry {
     revocations: RevocationStore,
 }
 
-/// F5 : révocation par token (nonce/jti). `HashMap` persistée via le
-/// `ConsentRegistry` (sérialisée avec lui) : `register` (émission) /
-/// `revoke` (compromis, motif obligatoire) / `check` (fail-closed) /
-/// `is_revoked` / `reason`.
+/// F5 : révocation par token (nonce/jti). `BTreeMap`/`BTreeSet` pour garantir une
+/// sérialisation JSON canonique et déterministe (indispensable pour `save_signed`/`load_signed`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RevocationStore {
     /// Tokens émis suivis (nonce/jti). Optionnel mais recommandé : permet
     /// de distinguer "jamais émis" de "émis puis révoqué" dans les audits.
     #[serde(default)]
-    issued: HashSet<String>,
+    issued: BTreeSet<String>,
     /// Tokens révoqués : jti → motif (non vide exigé).
     #[serde(default)]
-    revoked: HashMap<String, String>,
+    revoked: BTreeMap<String, String>,
 }
 
 impl RevocationStore {
@@ -210,13 +211,16 @@ impl ConsentRegistry {
     /// d'enforcement refusent tout token déjà révoqué ici.
     pub fn revoke_grant(&mut self, grant_id: &str, reason: impl Into<String>) -> bool {
         if let Some(record) = self.records.iter_mut().find(|r| r.grant_id == grant_id) {
-            let reason = reason.into();
+            let raw_reason = reason.into();
+            let effective_reason = if raw_reason.trim().is_empty() {
+                "révoqué".to_string()
+            } else {
+                raw_reason
+            };
             record.revoked_at = Some(Timestamp::now());
-            record.revocation_reason = Some(reason.clone());
-            // Branchement F5 : le grant révoqué devient un jti révoqué.
-            // (Motif garanti non vide ici via le record ; en cas d'échec
-            //  interne improbable, le record reste révoqué : fail-closed.)
-            let _ = self.revocations.revoke(grant_id, reason);
+            record.revocation_reason = Some(effective_reason.clone());
+            // Branchement F5 : le grant révoqué devient obligatoirement un jti révoqué.
+            let _ = self.revocations.revoke(grant_id, effective_reason);
             true
         } else {
             false
@@ -276,27 +280,22 @@ impl ConsentRegistry {
             .any(|r| &r.subject_actor == actor && r.covers_scope(scope, action))
     }
 
-    /// Persiste le registre en JSON (fichier). Pas de `redb` ici pour éviter
-    /// une dépendance lourde dans ce module ; le journal d'audit reste la
-    /// source horodatée, ce fichier est un snapshot de consentements.
+    /// Persiste le registre en JSON de façon atomique (fichier temporaire + rename, mode 0600 Unix).
     pub fn save_to_file(&self, path: impl AsRef<Path>) -> Result<()> {
         let json = serde_json::to_vec_pretty(self)
             .map_err(|e| HakilleError::SerializationError(e.to_string()))?;
-        std::fs::write(path.as_ref(), json)
-            .map_err(|e| HakilleError::StorageError(e.to_string()))?;
-        Ok(())
+        write_atomic_private(path.as_ref(), &json)
     }
 
-    /// Recharge un registre persisté via `save_to_file`.
+    /// Recharge un registre persisté via `save_to_file` (taille bornée à 16 Mio).
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self> {
-        let bytes =
-            std::fs::read(path.as_ref()).map_err(|e| HakilleError::StorageError(e.to_string()))?;
+        let bytes = read_bounded_file(path.as_ref(), MAX_CONSENT_FILE_BYTES)?;
         serde_json::from_slice(&bytes).map_err(|e| HakilleError::SerializationError(e.to_string()))
     }
 
     /// Persiste le registre signé : JSON `{payload, signature}` où
-    /// `payload` = registre sérialisé canonique et `signature` = Ed25519
-    /// (via `hakille-core::KeyPair`) sur ces octets.
+    /// `payload` = registre sérialisé canonique (BTreeMap/BTreeSet) et `signature` = Ed25519
+    /// (via `hakille-core::KeyPair`) sur ces octets, écrit atomiquement en mode 0600.
     pub fn save_signed(&self, path: impl AsRef<Path>, keypair: &KeyPair) -> Result<()> {
         let payload = serde_json::to_vec(self)
             .map_err(|e| HakilleError::SerializationError(e.to_string()))?;
@@ -308,19 +307,16 @@ impl ConsentRegistry {
         };
         let json = serde_json::to_vec_pretty(&file)
             .map_err(|e| HakilleError::SerializationError(e.to_string()))?;
-        std::fs::write(path.as_ref(), json)
-            .map_err(|e| HakilleError::StorageError(e.to_string()))?;
-        Ok(())
+        write_atomic_private(path.as_ref(), &json)
     }
 
     /// Recharge un registre persisté via `save_signed` en vérifiant la
-    /// signature Ed25519 (fail-closed si invalide).
+    /// signature Ed25519 (fail-closed si invalide, taille bornée à 16 Mio).
     pub fn load_signed(
         path: impl AsRef<Path>,
         verifying_key: &Ed25519VerifyingKey,
     ) -> Result<Self> {
-        let bytes =
-            std::fs::read(path.as_ref()).map_err(|e| HakilleError::StorageError(e.to_string()))?;
+        let bytes = read_bounded_file(path.as_ref(), MAX_CONSENT_FILE_BYTES)?;
         let file: SignedConsentFile = serde_json::from_slice(&bytes)
             .map_err(|e| HakilleError::SerializationError(e.to_string()))?;
         let payload_bytes = serde_json::to_vec(&file.payload)
@@ -332,6 +328,56 @@ impl ConsentRegistry {
             .map_err(|e| HakilleError::CryptoError(format!("signature consent invalide: {}", e)))?;
         Ok(file.payload)
     }
+}
+
+const MAX_CONSENT_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
+fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|e| HakilleError::StorageError(e.to_string()))?;
+    let mut buf = Vec::new();
+    file.take(max_bytes + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| HakilleError::StorageError(e.to_string()))?;
+    if buf.len() as u64 > max_bytes {
+        return Err(HakilleError::StorageError(format!(
+            "fichier de consentement trop volumineux (> {max_bytes} octets)"
+        )));
+    }
+    Ok(buf)
+}
+
+fn write_atomic_private(path: &Path, data: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("consent.json");
+    let tmp = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts
+        .open(&tmp)
+        .map_err(|e| HakilleError::StorageError(e.to_string()))?;
+    f.write_all(data).and_then(|_| f.sync_all()).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        HakilleError::StorageError(e.to_string())
+    })?;
+    drop(f);
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        HakilleError::StorageError(e.to_string())
+    })?;
+    Ok(())
 }
 
 /// Enveloppe `{payload, signature}` stockée par `save_signed`.

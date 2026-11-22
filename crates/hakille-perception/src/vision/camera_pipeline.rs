@@ -146,86 +146,7 @@ impl CameraPipeline {
             Some(g) => g,
             None => return absent(LightingCondition::Dark),
         };
-        let (mean_lum, std_lum) = cv::luminance_stats(&gray);
-
-        let lighting = if mean_lum < Self::DARK_BELOW as f32 {
-            LightingCondition::Dark
-        } else if mean_lum < Self::DIM_BELOW as f32 {
-            LightingCondition::Dim
-        } else if mean_lum < Self::DAYLIGHT_ABOVE as f32 {
-            LightingCondition::IndoorAdequate
-        } else {
-            LightingCondition::Daylight
-        };
-
-        // 3. Uniforme (bruit seul) →Absent honnête, jamais de sujet inventé.
-        if std_lum < Self::NOISE_FLOOR_CONTRAST {
-            return absent(lighting);
-        }
-
-        // 4. Densités de contours centre vs périphérie (mesures).
-        let w = frame.width as usize;
-        let h = frame.height as usize;
-        let sobel = cv::sobel_magnitude(&gray, w, h);
-        // Seuil adaptatif mesuré sur cette frame (moyenne + écart-type).
-        let n = sobel.len() as f32;
-        let m_mean = sobel.iter().map(|&v| v as f32).sum::<f32>() / n;
-        let m_var = sobel
-            .iter()
-            .map(|&v| (v as f32 - m_mean).powi(2))
-            .sum::<f32>()
-            / n;
-        let edge_thresh = m_mean + m_var.sqrt();
-        let center_density =
-            cv::edge_density_in_rect(&sobel, w, h, edge_thresh, 0.25, 1.0 / 3.0, 0.75, 2.0 / 3.0);
-        let total_edges = sobel.iter().filter(|&&v| v as f32 > edge_thresh).count();
-        let center_area =
-            ((0.75 - 0.25) * w as f32) as usize * ((2.0 / 3.0 - 1.0 / 3.0) * h as f32) as usize;
-        let total_area = w * h;
-        let periphery_density = if total_area > center_area {
-            (total_edges.saturating_sub((center_density * center_area as f32).round() as usize))
-                as f32
-                / (total_area - center_area) as f32
-        } else {
-            0.0
-        };
-
-        let has_central_subject =
-            center_density > periphery_density && center_density > Self::MIN_CENTRAL_DENSITY;
-        let has_peripheral_subject =
-            periphery_density > center_density && periphery_density > Self::MIN_CENTRAL_DENSITY;
-
-        let (user_presence, people_count, gaze_focused) =
-            if has_central_subject && has_peripheral_subject {
-                // Proxy géométrique binaire : comptage exact impossible sans modèle.
-                (UserPresence::MultiplePeopleDetected { count: 2 }, 2, false)
-            } else if has_central_subject {
-                // Comparaison pure, aucun seuil : le regard est « focalisé » si le
-                // centre porte au moins autant de structure que la périphérie.
-                let attentive = center_density >= periphery_density;
-                let presence = if attentive {
-                    UserPresence::Present
-                } else {
-                    UserPresence::Distracted
-                };
-                (presence, 1, attentive)
-            } else {
-                return absent(lighting);
-            };
-
-        // 5. Distance : taille relative de la plus grande région centrale
-        //    non-fond (mesure cv), convertie par approximation sténopé.
-        let distance_m = self.estimate_distance(&gray, frame.width, frame.height);
-
-        VisualSceneContext {
-            user_presence,
-            estimated_distance_m: distance_m,
-            user_gaze_focused_on_device: gaze_focused,
-            people_count,
-            lighting,
-            privacy_preserving_frame_hash: frame_hash,
-            timestamp: Timestamp::now(),
-        }
+        self.analyze_gray_frame(&gray, frame.width, frame.height, frame_hash)
     }
 
     /// Process a normalized VideoFrame (e.g. from VideoFrameBridge).
@@ -261,7 +182,27 @@ impl CameraPipeline {
             Some(g) => g,
             None => return absent(LightingCondition::Dark),
         };
-        let (mean_lum, std_lum) = cv::luminance_stats(&gray);
+        self.analyze_gray_frame(&gray, frame.width, frame.height, frame_hash)
+    }
+
+    fn analyze_gray_frame(
+        &self,
+        gray: &[u8],
+        width: u32,
+        height: u32,
+        frame_hash: [u8; 32],
+    ) -> VisualSceneContext {
+        let absent = |lighting| VisualSceneContext {
+            user_presence: UserPresence::Absent,
+            estimated_distance_m: 0.0,
+            user_gaze_focused_on_device: false,
+            people_count: 0,
+            lighting,
+            privacy_preserving_frame_hash: frame_hash,
+            timestamp: Timestamp::now(),
+        };
+
+        let (mean_lum, std_lum) = cv::luminance_stats(gray);
 
         let lighting = if mean_lum < Self::DARK_BELOW as f32 {
             LightingCondition::Dark
@@ -273,14 +214,16 @@ impl CameraPipeline {
             LightingCondition::Daylight
         };
 
+        // 3. Uniforme (bruit seul) → Absent honnête, jamais de sujet inventé.
         if std_lum < Self::NOISE_FLOOR_CONTRAST {
             return absent(lighting);
         }
 
-        let w = frame.width as usize;
-        let h = frame.height as usize;
-        let sobel = cv::sobel_magnitude(&gray, w, h);
-        let n = sobel.len() as f32;
+        // 4. Densités de contours centre vs périphérie (mesures).
+        let w = width as usize;
+        let h = height as usize;
+        let sobel = cv::sobel_magnitude(gray, w, h);
+        let n = sobel.len().max(1) as f32;
         let m_mean = sobel.iter().map(|&v| v as f32).sum::<f32>() / n;
         let m_var = sobel
             .iter()
@@ -302,27 +245,31 @@ impl CameraPipeline {
             0.0
         };
 
-        let has_central_subject =
-            center_density > periphery_density && center_density > Self::MIN_CENTRAL_DENSITY;
-        let has_peripheral_subject =
-            periphery_density > center_density && periphery_density > Self::MIN_CENTRAL_DENSITY;
+        // Conditions géométriques atteignables :
+        // - centre seul fort (> MIN_CENTRAL_DENSITY) et périphérie faible (< 25 % du centre) -> Present (attentif) ;
+        // - centre ET périphérie tous deux significatifs (évite le faux positif de débordement Sobel 1 px sur la frontière centrale) -> MultiplePeopleDetected (proxy binaire) ;
+        // - périphérie seule forte (sujet décentré / regard détourné) -> Distracted ;
+        // - sinon -> Absent.
+        let has_central_subject = center_density > Self::MIN_CENTRAL_DENSITY;
+        let has_peripheral_subject = periphery_density > Self::MIN_CENTRAL_DENSITY;
+        let has_distinct_peripheral_subject =
+            has_peripheral_subject && periphery_density >= center_density * 0.25;
 
         let (user_presence, people_count, gaze_focused) =
-            if has_central_subject && has_peripheral_subject {
+            if has_central_subject && has_distinct_peripheral_subject {
+                // Proxy géométrique binaire : comptage exact impossible sans modèle.
                 (UserPresence::MultiplePeopleDetected { count: 2 }, 2, false)
             } else if has_central_subject {
-                let attentive = center_density >= periphery_density;
-                let presence = if attentive {
-                    UserPresence::Present
-                } else {
-                    UserPresence::Distracted
-                };
-                (presence, 1, attentive)
+                (UserPresence::Present, 1, true)
+            } else if has_peripheral_subject {
+                (UserPresence::Distracted, 1, false)
             } else {
                 return absent(lighting);
             };
 
-        let distance_m = self.estimate_distance(&gray, frame.width, frame.height);
+        // 5. Distance : taille relative de la plus grande région centrale
+        //    non-fond (mesure cv), convertie par approximation sténopé.
+        let distance_m = self.estimate_distance(gray, width, height);
 
         VisualSceneContext {
             user_presence,
@@ -374,6 +321,71 @@ impl CameraPipeline {
             ctx.people_count,
             ctx.estimated_distance_m,
             ctx.lighting.as_str(),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn draw_rect(buf: &mut [u8], w: usize, x0: usize, y0: usize, x1: usize, y1: usize, val: u8) {
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let idx = (y * w + x) * 3;
+                buf[idx] = val;
+                buf[idx + 1] = val;
+                buf[idx + 2] = val;
+            }
+        }
+    }
+
+    fn frame(w: usize, h: usize, data: Vec<u8>) -> CameraFrame {
+        CameraFrame {
+            width: w as u32,
+            height: h as u32,
+            data,
+            format: hakille_substrate::ImageFormat::Rgb8,
+            timestamp_ms: 1000,
+        }
+    }
+
+    #[test]
+    fn camera_pipeline_reaches_all_four_presence_states() {
+        let mut pipeline = CameraPipeline::new(CameraConfig {
+            width: 640,
+            height: 480,
+            fps: 30,
+            facing: hakille_substrate::CameraFacing::Front,
+        });
+        let (w, h) = (640usize, 480usize);
+
+        // 1. Uniform frame -> Absent
+        let blank = frame(w, h, vec![100u8; w * h * 3]);
+        let ctx = pipeline.process_frame(&blank);
+        assert_eq!(ctx.user_presence, UserPresence::Absent);
+
+        // 2. Centered subject only -> Present
+        let mut centered = vec![120u8; w * h * 3];
+        draw_rect(&mut centered, w, 240, 180, 400, 300, 20);
+        let ctx = pipeline.process_frame(&frame(w, h, centered));
+        assert_eq!(ctx.user_presence, UserPresence::Present);
+
+        // 3. Peripheral subject only -> Distracted
+        let mut side_only = vec![120u8; w * h * 3];
+        draw_rect(&mut side_only, w, 10, 10, 130, 130, 20);
+        let ctx = pipeline.process_frame(&frame(w, h, side_only));
+        assert_eq!(ctx.user_presence, UserPresence::Distracted);
+
+        // 4. Both centered and strong peripheral subjects -> MultiplePeopleDetected
+        let mut multi = vec![120u8; w * h * 3];
+        draw_rect(&mut multi, w, 260, 190, 380, 290, 20);
+        draw_rect(&mut multi, w, 10, 10, 150, 460, 20);
+        draw_rect(&mut multi, w, 490, 10, 630, 460, 20);
+        let ctx = pipeline.process_frame(&frame(w, h, multi));
+        assert_eq!(
+            ctx.user_presence,
+            UserPresence::MultiplePeopleDetected { count: 2 }
         );
     }
 }

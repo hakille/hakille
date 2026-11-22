@@ -13,11 +13,46 @@ pub struct AppContainerProfile {
     pub is_active: bool,
 }
 
+/// Valide le nom de profil AppContainer (un seul segment sûr sans traversée).
+pub fn validate_container_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 128
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.contains(':')
+        || name.contains('\0')
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(hakille_core::HakilleError::CapabilityDenied(format!(
+            "nom de profil AppContainer invalide : '{name}'"
+        )));
+    }
+    Ok(())
+}
+
 impl AppContainerProfile {
+    pub fn try_new(
+        name: &str,
+        capabilities: Vec<CapabilityScope>,
+        base_dir: Option<PathBuf>,
+    ) -> Result<Self> {
+        validate_container_name(name)?;
+        Ok(Self::new(name, capabilities, base_dir))
+    }
+
     pub fn new(name: &str, capabilities: Vec<CapabilityScope>, base_dir: Option<PathBuf>) -> Self {
-        let package_name = format!("Hakille.AppContainer.{}", name);
+        let safe_name: String = name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .collect();
+        let package_name = format!("Hakille.AppContainer.{}", safe_name);
         // Deterministic AppContainer SID generation format: S-1-15-2-<hash1>-<hash2>-<hash3>-<hash4>
-        let hash = name.bytes().fold(0x811c9dc5u32, |acc, b| {
+        let hash = safe_name.bytes().fold(0x811c9dc5u32, |acc, b| {
             (acc ^ b as u32).wrapping_mul(0x01000193)
         });
         let package_sid = format!(
@@ -77,6 +112,12 @@ impl AppContainerProfile {
 
     /// Ensure the AppContainer isolated working directory exists on disk with proper folder structure.
     pub fn ensure_storage(&self) -> Result<()> {
+        let Some(suffix) = self.package_name.strip_prefix("Hakille.AppContainer.") else {
+            return Err(hakille_core::HakilleError::CapabilityDenied(
+                "préfixe package_name AppContainer invalide".into(),
+            ));
+        };
+        validate_container_name(suffix)?;
         if !self.isolated_folder.exists() {
             std::fs::create_dir_all(&self.isolated_folder).map_err(|e| {
                 hakille_core::HakilleError::StorageError(format!(
@@ -99,16 +140,23 @@ impl AppContainerSandbox {
         isolated_folder: &str,
     ) -> Result<AppContainerProfile> {
         let mut profile =
-            AppContainerProfile::new(name, capabilities, Some(PathBuf::from(isolated_folder)));
+            AppContainerProfile::try_new(name, capabilities, Some(PathBuf::from(isolated_folder)))?;
         profile.ensure_storage()?;
         profile.is_active = true;
         Ok(profile)
     }
 
     pub fn teardown(profile: &mut AppContainerProfile) -> Result<()> {
+        let Some(suffix) = profile.package_name.strip_prefix("Hakille.AppContainer.") else {
+            return Err(hakille_core::HakilleError::CapabilityDenied(
+                "teardown AppContainer refusé : package_name invalide".into(),
+            ));
+        };
+        validate_container_name(suffix)?;
         profile.is_active = false;
-        if profile.isolated_folder.exists() {
-            // Clean up temporary sandboxed files
+        if let Ok(meta) = std::fs::symlink_metadata(&profile.isolated_folder)
+            && !meta.file_type().is_symlink()
+        {
             let _ = std::fs::remove_dir_all(&profile.isolated_folder);
         }
         Ok(())

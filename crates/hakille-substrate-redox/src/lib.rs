@@ -20,8 +20,8 @@ mod tests {
         let manifest = substrate.manifest();
         assert_eq!(manifest.tier, Tier::Sovereign);
         assert_eq!(manifest.os_name, "Redox");
-        assert!(manifest.has_tpm);
-        assert!(manifest.has_secure_enclave);
+        assert!(!manifest.has_tpm);
+        assert!(!manifest.has_secure_enclave);
         // Honnêteté manifeste: FullSystem REFUSÉ tant que l'enforcement Biscuit
         // de bout en bout n'est pas complet (handles de table = jetons porteurs).
         assert!(
@@ -39,7 +39,14 @@ mod tests {
             .attest(b"redox-nonce")
             .await
             .expect("Attestation failed");
-        assert_eq!(attestation.platform_id, "Redox-Sovereign-Dedicated-Node");
+        assert_eq!(
+            attestation.platform_id,
+            "Redox-Substrate-Host-dev-attestation"
+        );
+        assert_eq!(
+            attestation.manifest_hash,
+            format!("sha256-{}", hakille_substrate::sha256_hex(b"redox-nonce"))
+        );
         assert!(!attestation.signature.0.is_empty());
     }
 

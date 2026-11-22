@@ -109,14 +109,11 @@ fn test_t1_f05_05_precision_preservation_in_waveform_floats() {
     let json = serde_json::to_string(&payload).unwrap();
     let decoded: VoiceWaveformPayload = serde_json::from_str(&json).unwrap();
 
-    for i in 0..21 {
-        let diff = (original[i] - decoded.amplitudes[i]).abs();
+    for (i, (orig, dec)) in original.iter().zip(decoded.amplitudes.iter()).enumerate() {
+        let diff = (orig - dec).abs();
         assert!(
             diff < 0.0001,
-            "Precision loss at index {}: original {}, decoded {}",
-            i,
-            original[i],
-            decoded.amplitudes[i]
+            "Precision loss at index {i}: original {orig}, decoded {dec}"
         );
     }
 }

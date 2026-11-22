@@ -149,7 +149,7 @@ fn test_adversarial_shamir_duplicate_share_indices_rejected() {
     share_diff_data.data[0] ^= 0x01;
     // recompute commitment so it passes commitment check
     let mut h = Sha256::new();
-    h.update(&[share_diff_data.index]);
+    h.update([share_diff_data.index]);
     h.update(&share_diff_data.data);
     share_diff_data.commitment.copy_from_slice(&h.finalize());
 
@@ -209,7 +209,7 @@ fn test_adversarial_shamir_forged_share_local_commitment_bypasses_share_integrit
     let mut forged_share = shares[0].clone();
     forged_share.data = vec![0x66u8; 32]; // Forged data
     let mut h = Sha256::new();
-    h.update(&[forged_share.index]);
+    h.update([forged_share.index]);
     h.update(&forged_share.data);
     forged_share.commitment.copy_from_slice(&h.finalize());
 
@@ -514,8 +514,8 @@ fn test_adversarial_fuzzy_extractor_noise_tolerance_bounds() {
     // 16 distributed bit flips (1 error per block across 16 different seed bits)
     // Bit indices 0, 1, 2, ..., 15 in the quantized vector belong to different seed bits
     let mut probe_16_dist = base_embedding.clone();
-    for i in 0..16 {
-        probe_16_dist[i] = -0.5;
+    for val in probe_16_dist.iter_mut().take(16) {
+        *val = -0.5;
     }
     assert_eq!(
         fe.reproduce(&probe_16_dist, &helper, &commit).unwrap(),
@@ -609,8 +609,8 @@ fn test_adversarial_fuzzy_extractor_delta_threshold_dead_code_behavior() {
     let (_key, helper, commit) = fe.generate(&base).unwrap();
 
     let mut probe_12_errors = base.clone();
-    for i in 0..12 {
-        probe_12_errors[i] = -0.5; // flips 12 bits across 12 distinct seed positions
+    for val in probe_12_errors.iter_mut().take(12) {
+        *val = -0.5; // flips 12 bits across 12 distinct seed positions
     }
 
     let dist = FuzzyExtractor::hamming_distance(

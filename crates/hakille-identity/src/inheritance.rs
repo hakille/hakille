@@ -144,7 +144,21 @@ pub struct InheritanceVaultRecord {
 pub struct InheritanceVaultEngine;
 
 impl InheritanceVaultEngine {
+    /// Calcule une empreinte SHA-256 tronquée à 16 octets avec séparation de domaine
+    /// afin de ne jamais exposer en clair la première moitié de la clé maîtresse successorale.
+    pub fn compute_estate_key_fingerprint(master_estate_key: &[u8; 32]) -> [u8; 16] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"hakille:inheritance:estate_key_fingerprint:v1:");
+        hasher.update(master_estate_key);
+        let digest = hasher.finalize();
+        let mut fingerprint = [0u8; 16];
+        fingerprint.copy_from_slice(&digest[..16]);
+        fingerprint
+    }
+
     /// Create a new InheritanceVaultRecord in Armed state
+    #[allow(clippy::too_many_arguments)]
     pub fn create_vault(
         owner_user_id: UserId,
         owner_did: Did,
@@ -239,15 +253,15 @@ impl InheritanceVaultEngine {
                     vault.updated_at = current_time;
                 }
             }
-            InheritanceVaultState::InactivityGracePeriod { .. } => {
-                if vault.inactivity_clause.is_grace_expired(current_time) {
-                    vault.state = InheritanceVaultState::QuorumPending {
-                        collected_shares: Vec::new(),
-                        required_threshold: vault.threshold_k,
-                        total_trustees: vault.total_trustees_n,
-                    };
-                    vault.updated_at = current_time;
-                }
+            InheritanceVaultState::InactivityGracePeriod { .. }
+                if vault.inactivity_clause.is_grace_expired(current_time) =>
+            {
+                vault.state = InheritanceVaultState::QuorumPending {
+                    collected_shares: Vec::new(),
+                    required_threshold: vault.threshold_k,
+                    total_trustees: vault.total_trustees_n,
+                };
+                vault.updated_at = current_time;
             }
             _ => {}
         }
@@ -291,8 +305,7 @@ impl InheritanceVaultEngine {
                     let reconstructed = reconstruct_secret(collected_shares)
                         .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
 
-                    let mut fingerprint = [0u8; 16];
-                    fingerprint.copy_from_slice(&reconstructed[..16]);
+                    let fingerprint = Self::compute_estate_key_fingerprint(&reconstructed);
 
                     vault.state = InheritanceVaultState::Unlocked {
                         unlocked_at: Utc::now(),
@@ -310,7 +323,7 @@ impl InheritanceVaultEngine {
         }
     }
 
-    /// Shreading of the intimate partition: destroys private journal & intimate records
+    /// Shredding of the intimate partition: destroys private journal & intimate records
     /// while preserving legal estate document tokens.
     pub fn shred_intimate_partition(
         vault: &mut InheritanceVaultRecord,
@@ -327,7 +340,7 @@ impl InheritanceVaultEngine {
         vault: &mut InheritanceVaultRecord,
         zk_store: &mut RedbZkStore,
     ) -> Result<(), HakilleError> {
-        let _ = zk_store.shred_vault_intimate_partition(&vault.vault_id);
+        let _ = zk_store.shred_vault_all_partitions(&vault.vault_id);
         vault.legal_partition_blind_tokens.clear();
         vault.intimate_partition_blind_tokens.clear();
         vault.state = InheritanceVaultState::CryptoShredded {
@@ -510,13 +523,21 @@ mod tests {
                 .unwrap();
         assert_eq!(sub2, Some(master_estate_key));
 
-        // State is now Unlocked with correct fingerprint
+        // State is now Unlocked with domain-separated fingerprint (no raw key leak)
         match &vault.state {
             InheritanceVaultState::Unlocked {
                 estate_key_fingerprint,
                 ..
             } => {
-                assert_eq!(*estate_key_fingerprint, master_estate_key[..16]);
+                assert_eq!(
+                    *estate_key_fingerprint,
+                    InheritanceVaultEngine::compute_estate_key_fingerprint(&master_estate_key)
+                );
+                assert_ne!(
+                    *estate_key_fingerprint,
+                    master_estate_key[..16],
+                    "fingerprint must never expose raw estate key bytes"
+                );
             }
             other => panic!("Expected Unlocked state, got {:?}", other),
         }

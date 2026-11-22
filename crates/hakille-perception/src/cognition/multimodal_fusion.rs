@@ -115,6 +115,33 @@ impl MultimodalCognitiveEngine {
         // 4. Inférence Pose 17 points
         let pose_res: PoseInferenceResult = self.pose.infer(rgb_data, width, height)?;
 
+        Ok(self.fuse_observations(
+            now_instant,
+            timestamp,
+            width,
+            height,
+            &fm_res,
+            &em_res,
+            &age_res,
+            &pose_res,
+            voice_pitch,
+        ))
+    }
+
+    /// Fusionne des sorties vérifiées des 4 moteurs de vision et de la prosodie vocale.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fuse_observations(
+        &mut self,
+        now_instant: Instant,
+        timestamp: Timestamp,
+        width: usize,
+        height: usize,
+        fm_res: &FaceMeshOutput,
+        em_res: &EmotionInferenceResult,
+        age_res: &AgeEstimationResult,
+        pose_res: &PoseInferenceResult,
+        voice_pitch: Option<&YinPitchResult>,
+    ) -> UserMultimodalSnapshot {
         // 5. Estimation de la Stature métrique et profil physique
         let physical_profile = self.height_estimator.estimate_profile(
             &pose_res.skeleton,
@@ -141,7 +168,7 @@ impl MultimodalCognitiveEngine {
         );
 
         // 8. Fusion bayésienne tardive émotions Vision + Audio
-        let fused_emotion = fuse_emotions(&em_res, voice_pitch);
+        let fused_emotion = fuse_emotions(em_res, voice_pitch);
 
         let demographics = DemographicsEstimation {
             estimated_age: age_res.estimated_age,
@@ -150,13 +177,13 @@ impl MultimodalCognitiveEngine {
             confidence: age_res.confidence,
         };
 
-        Ok(UserMultimodalSnapshot {
+        UserMultimodalSnapshot {
             timestamp,
             emotion: fused_emotion,
             demographics,
             physique: physical_profile,
             attention: attention_profile,
-        })
+        }
     }
 
     /// Convertit le snapshot en événements pour diffusion sur le bus IPC.
@@ -172,25 +199,26 @@ impl MultimodalCognitiveEngine {
 
         let presence = UserPresenceDto {
             kind: UserPresenceKind::Present,
-            confidence: 0.95,
+            confidence: snapshot.physique.confidence.clamp(0.0, 1.0),
             distance_meters: Some(snapshot.physique.camera_distance_m),
             people_count: 1,
             timestamp_ms: ts_ms,
         };
 
+        let attention_score = if snapshot.attention.is_screen_focused {
+            (1.0 - snapshot.attention.perclos_score).clamp(0.0, 1.0)
+        } else {
+            (0.5 * (1.0 - snapshot.attention.perclos_score)).clamp(0.0, 1.0)
+        };
         let attention = AttentionLevelDto {
             level: if snapshot.attention.is_screen_focused {
                 AttentionKind::Focused
             } else {
                 AttentionKind::Distracted
             },
-            score: if snapshot.attention.is_screen_focused {
-                0.92
-            } else {
-                0.40
-            },
+            score: attention_score,
             gaze_on_screen: snapshot.attention.is_screen_focused,
-            fixation_duration_ms: 1200,
+            fixation_duration_ms: 0,
             timestamp_ms: ts_ms,
         };
 
@@ -242,7 +270,7 @@ impl MultimodalCognitiveEngine {
                 },
                 perclos_p80: snapshot.attention.perclos_score,
                 ear: snapshot.attention.eye_aspect_ratio,
-                mar: 0.15,
+                mar: 0.0,
                 yawn_count: snapshot.attention.recent_yawn_count as u32,
                 recommendation: "Prenez une pause de 10 minutes pour soulager vos yeux."
                     .to_string(),
@@ -324,19 +352,61 @@ fn fuse_emotions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hakille_inference::{
+        ModelStatus,
+        facemesh_onnx::{compute_facial_metrics, generate_canonical_landmarks},
+        pose_onnx::{calculate_neck_angle, generate_canonical_seated_skeleton},
+        ssrnet_onnx::build_age_result,
+    };
+
+    fn fixture_observations() -> (
+        FaceMeshOutput,
+        EmotionInferenceResult,
+        AgeEstimationResult,
+        PoseInferenceResult,
+    ) {
+        let fm = compute_facial_metrics(
+            generate_canonical_landmarks(640.0, 480.0),
+            ModelStatus::Real,
+        );
+        let em = EmotionInferenceResult {
+            primary_emotion: "Neutral".to_string(),
+            confidence: 0.88,
+            class_probabilities: [0.02, 0.01, 0.01, 0.02, 0.05, 0.82, 0.04, 0.03],
+            valence: 0.10,
+            arousal: -0.15,
+            status: ModelStatus::Real,
+        };
+        let age = build_age_result(28.5, 0.90, ModelStatus::Real);
+        let skeleton = generate_canonical_seated_skeleton(640.0, 480.0);
+        let neck_angle_deg = calculate_neck_angle(&skeleton);
+        let pose = PoseInferenceResult {
+            posture: skeleton.posture,
+            skeleton,
+            neck_angle_deg,
+            confidence: 0.90,
+            status: ModelStatus::Real,
+        };
+        (fm, em, age, pose)
+    }
 
     #[test]
-    fn test_multimodal_cognitive_engine_e2e_nominal() {
+    fn test_multimodal_process_frame_refuses_when_onnx_absent_and_fusion_works() {
         let mut engine = MultimodalCognitiveEngine::new();
         let dummy_rgb = vec![128u8; 640 * 480 * 3];
         let now = Instant::now();
         let ts = Timestamp::now();
 
-        let snapshot = engine
-            .process_frame(now, ts, &dummy_rgb, 640, 480, None)
-            .expect("process_frame nominal réussi");
+        // Honnêteté : sans poids ONNX sur disque, process_frame DOIT retourner Err.
+        assert!(
+            engine
+                .process_frame(now, ts.clone(), &dummy_rgb, 640, 480, None)
+                .is_err()
+        );
 
-        // Vérifications de validité de bout en bout
+        let (fm, em, age, pose) = fixture_observations();
+        let snapshot = engine.fuse_observations(now, ts, 640, 480, &fm, &em, &age, &pose, None);
+
         assert_eq!(snapshot.emotion.primary_emotion, "Neutral");
         assert!(snapshot.emotion.confidence > 0.70);
         assert!(!snapshot.demographics.is_minor);
@@ -348,7 +418,6 @@ mod tests {
         assert!(snapshot.attention.is_screen_focused);
         assert!(!snapshot.attention.is_drowsy);
 
-        // Création des événements IPC
         let (user_ctx, emotion_evt, fatigue_evt) = engine.create_ipc_events(&snapshot);
         assert_eq!(user_ctx.primary_emotion, "Neutral");
         assert!(emotion_evt.is_some());
@@ -361,11 +430,9 @@ mod tests {
     #[test]
     fn test_multimodal_audio_fusion_influence() {
         let mut engine = MultimodalCognitiveEngine::new();
-        let dummy_rgb = vec![128u8; 640 * 480 * 3];
         let now = Instant::now();
         let ts = Timestamp::now();
 
-        // Audio voisé aigu avec fort jitter (voix agitée/surprise)
         let agitated_voice = YinPitchResult {
             f0_hz: Some(320.0),
             is_voiced: true,
@@ -376,9 +443,18 @@ mod tests {
             shimmer_local: Some(4.0),
         };
 
-        let snapshot = engine
-            .process_frame(now, ts, &dummy_rgb, 640, 480, Some(&agitated_voice))
-            .expect("process_frame avec audio réussi");
+        let (fm, em, age, pose) = fixture_observations();
+        let snapshot = engine.fuse_observations(
+            now,
+            ts,
+            640,
+            480,
+            &fm,
+            &em,
+            &age,
+            &pose,
+            Some(&agitated_voice),
+        );
 
         assert!(
             snapshot.emotion.arousal > 0.0,

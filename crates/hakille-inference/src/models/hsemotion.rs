@@ -132,90 +132,87 @@ impl HsEmotionEngine {
             ));
         }
 
-        if let Some(session_mutex) = &self.session {
-            let mut session = session_mutex
-                .lock()
-                .map_err(|e| ort_err("lock", format!("{e}")))?;
+        let Some(session_mutex) = &self.session else {
+            return Err(HakilleError::InferenceError(
+                "HsEmotionEngine::infer_emotion: modèle ONNX enet_b0_8_va_mtl.onnx absent — classification simulée refusée (contrat d'honnêteté)".into(),
+            ));
+        };
 
-            let mut input_buf = vec![0.0f32; 3 * HSEMOTION_INPUT_SIZE * HSEMOTION_INPUT_SIZE];
-            resize_bilinear_rgb_nchw(
-                rgb_crop,
-                width,
-                height,
-                &mut input_buf,
-                HSEMOTION_INPUT_SIZE,
-                HSEMOTION_INPUT_SIZE,
-                NormalizationMode::ImageNet,
-            );
+        let expected_bytes = width
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(3))
+            .ok_or_else(|| {
+                HakilleError::InferenceError("HsEmotionEngine: dimensions débordantes".into())
+            })?;
+        if rgb_crop.len() < expected_bytes {
+            return Err(HakilleError::InferenceError(format!(
+                "HsEmotionEngine: tampon RGB trop court ({} < {expected_bytes})",
+                rgb_crop.len()
+            )));
+        }
 
-            let tensor = Tensor::from_array((
-                [1, 3, HSEMOTION_INPUT_SIZE, HSEMOTION_INPUT_SIZE],
-                input_buf.into_boxed_slice(),
-            ))
-            .map_err(|e| ort_err("tensor", e))?;
+        let mut session = session_mutex
+            .lock()
+            .map_err(|e| ort_err("lock", format!("{e}")))?;
 
-            let outputs = session
-                .run(ort::inputs![tensor])
-                .map_err(|e| ort_err("run", e))?;
+        let mut input_buf = vec![0.0f32; 3 * HSEMOTION_INPUT_SIZE * HSEMOTION_INPUT_SIZE];
+        resize_bilinear_rgb_nchw(
+            rgb_crop,
+            width,
+            height,
+            &mut input_buf,
+            HSEMOTION_INPUT_SIZE,
+            HSEMOTION_INPUT_SIZE,
+            NormalizationMode::ImageNet,
+        );
 
-            // Tête 1 : 8 classes logits
-            let (_shape_cls, logits) = outputs[0]
-                .try_extract_tensor::<f32>()
-                .map_err(|e| ort_err("extract_cls", e))?;
+        let tensor = Tensor::from_array((
+            [1, 3, HSEMOTION_INPUT_SIZE, HSEMOTION_INPUT_SIZE],
+            input_buf.into_boxed_slice(),
+        ))
+        .map_err(|e| ort_err("tensor", e))?;
 
-            let probs = softmax_8(&logits[0..8.min(logits.len())]);
-            let mut best_idx = 0;
-            let mut best_p = f32::NEG_INFINITY;
-            for (i, &p) in probs.iter().enumerate() {
-                if p > best_p {
-                    best_p = p;
-                    best_idx = i;
-                }
+        let outputs = session
+            .run(ort::inputs![tensor])
+            .map_err(|e| ort_err("run", e))?;
+
+        // Tête 1 : 8 classes logits
+        let (_shape_cls, logits) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| ort_err("extract_cls", e))?;
+
+        let probs = softmax_8(&logits[0..8.min(logits.len())]);
+        let mut best_idx = 0;
+        let mut best_p = f32::NEG_INFINITY;
+        for (i, &p) in probs.iter().enumerate() {
+            if p > best_p {
+                best_p = p;
+                best_idx = i;
             }
+        }
 
-            // Tête 2 : Valence / Arousal continu (si présent dans le modèle MTL)
-            let (valence, arousal) = if outputs.len() > 1 {
-                let (_shape_va, va) = outputs[1]
-                    .try_extract_tensor::<f32>()
-                    .map_err(|e| ort_err("extract_va", e))?;
-                if va.len() >= 2 {
-                    (va[0].clamp(-1.0, 1.0), va[1].clamp(-1.0, 1.0))
-                } else {
-                    derive_circumplex_from_class(best_idx)
-                }
+        // Tête 2 : Valence / Arousal continu (si présent dans le modèle MTL)
+        let (valence, arousal) = if outputs.len() > 1 {
+            let (_shape_va, va) = outputs[1]
+                .try_extract_tensor::<f32>()
+                .map_err(|e| ort_err("extract_va", e))?;
+            if va.len() >= 2 {
+                (va[0].clamp(-1.0, 1.0), va[1].clamp(-1.0, 1.0))
             } else {
                 derive_circumplex_from_class(best_idx)
-            };
-
-            Ok(EmotionInferenceResult {
-                primary_emotion: EMOTION_CLASSES[best_idx].to_string(),
-                confidence: best_p,
-                class_probabilities: probs,
-                valence,
-                arousal,
-                status: ModelStatus::Real,
-            })
-        } else {
-            // Mode synthétique déterministe
-            let (probs, valence, arousal) = mock_predict_emotion(rgb_crop, width, height);
-            let mut best_idx = 0;
-            let mut best_p = 0.0f32;
-            for (i, &p) in probs.iter().enumerate() {
-                if p > best_p {
-                    best_p = p;
-                    best_idx = i;
-                }
             }
+        } else {
+            derive_circumplex_from_class(best_idx)
+        };
 
-            Ok(EmotionInferenceResult {
-                primary_emotion: EMOTION_CLASSES[best_idx].to_string(),
-                confidence: best_p,
-                class_probabilities: probs,
-                valence,
-                arousal,
-                status: ModelStatus::Simulated,
-            })
-        }
+        Ok(EmotionInferenceResult {
+            primary_emotion: EMOTION_CLASSES[best_idx].to_string(),
+            confidence: best_p,
+            class_probabilities: probs,
+            valence,
+            arousal,
+            status: ModelStatus::Real,
+        })
     }
 }
 
@@ -276,63 +273,27 @@ fn derive_circumplex_from_class(idx: usize) -> (f32, f32) {
     }
 }
 
-fn mock_predict_emotion(rgb: &[u8], width: usize, height: usize) -> ([f32; 8], f32, f32) {
-    let mut avg_r = 0u64;
-    let mut avg_g = 0u64;
-    let mut avg_b = 0u64;
-    let total_pixels = width * height;
-
-    for chunk in rgb.chunks_exact(3) {
-        avg_r += chunk[0] as u64;
-        avg_g += chunk[1] as u64;
-        avg_b += chunk[2] as u64;
-    }
-
-    let r = avg_r as f32 / total_pixels.max(1) as f32;
-    let g = avg_g as f32 / total_pixels.max(1) as f32;
-    let b = avg_b as f32 / total_pixels.max(1) as f32;
-
-    let mut probs = [0.03f32; 8];
-    // Équilibre physiologique par défaut : Neutre / Joie
-    if r > b && r > g {
-        // Tons chauds : Happiness / Neutral
-        probs[4] = 0.65; // Happiness
-        probs[5] = 0.20; // Neutral
-        probs[7] = 0.05; // Surprise
-    } else {
-        probs[5] = 0.75; // Neutral dominant
-        probs[4] = 0.10;
-        probs[6] = 0.05;
-    }
-
-    let (val, ar) = if probs[4] > probs[5] {
-        (0.65, 0.40)
-    } else {
-        (0.05, 0.0)
-    };
-
-    (probs, val, ar)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::mock::synthetic_face_crop;
 
     #[test]
-    fn test_hsemotion_mock_synthetic() {
+    fn test_hsemotion_missing_model_refuses_simulated_output_and_softmax() {
         let engine = HsEmotionEngine::mock_synthetic();
         assert!(engine.is_mock());
 
         let crop = synthetic_face_crop(224, 224);
-        let result = engine
+        let err = engine
             .infer_emotion(&crop, 224, 224)
-            .expect("inférence réussie");
+            .expect_err("modèle absent : émotion simulée refusée");
+        assert!(err.to_string().contains("absent"));
 
-        assert_eq!(result.status, ModelStatus::Simulated);
-        assert!(!result.primary_emotion.is_empty());
-        assert!(result.confidence > 0.40);
-        assert!(result.valence >= -1.0 && result.valence <= 1.0);
-        assert!(result.arousal >= -1.0 && result.arousal <= 1.0);
+        let probs = softmax_8(&[0.1, 0.2, 0.0, -0.5, 2.5, 1.0, -1.0, 0.3]);
+        let sum: f32 = probs.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-4);
+        let (val, ar) = derive_circumplex_from_class(4);
+        assert!((-1.0..=1.0).contains(&val));
+        assert!((-1.0..=1.0).contains(&ar));
     }
 }

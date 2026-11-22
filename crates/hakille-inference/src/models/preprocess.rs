@@ -80,6 +80,7 @@ impl LetterboxTransform {
 
 /// Redimensionne une image RGB brute (HWC interleaved) vers un tampon tenseur planar NCHW `[3, dst_h, dst_w]`.
 /// Zéro allocation tas : le tampon de sortie `dst` doit faire `3 * dst_w * dst_h` floats.
+/// Retourne sans paniquer si les dimensions sont nulles ou les tampons insuffisants.
 pub fn resize_bilinear_rgb_nchw(
     src: &[u8],
     src_w: usize,
@@ -89,8 +90,21 @@ pub fn resize_bilinear_rgb_nchw(
     dst_h: usize,
     norm: NormalizationMode,
 ) {
-    assert_eq!(src.len(), src_w * src_h * 3, "src buffer size mismatch");
-    assert_eq!(dst.len(), 3 * dst_w * dst_h, "dst buffer size mismatch");
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return;
+    }
+    let Some(expected_src) = src_w.checked_mul(src_h).and_then(|n| n.checked_mul(3)) else {
+        return;
+    };
+    let Some(plane_size) = dst_w.checked_mul(dst_h) else {
+        return;
+    };
+    let Some(expected_dst) = plane_size.checked_mul(3) else {
+        return;
+    };
+    if src.len() < expected_src || dst.len() < expected_dst {
+        return;
+    }
 
     let x_ratio = if dst_w > 1 {
         (src_w - 1) as f32 / (dst_w - 1) as f32
@@ -103,13 +117,12 @@ pub fn resize_bilinear_rgb_nchw(
         0.0
     };
 
-    let plane_size = dst_w * dst_h;
-    let (dst_r, rest) = dst.split_at_mut(plane_size);
+    let (dst_r, rest) = dst[..expected_dst].split_at_mut(plane_size);
     let (dst_g, dst_b) = rest.split_at_mut(plane_size);
 
     for y in 0..dst_h {
         let src_y = y as f32 * y_ratio;
-        let y0 = src_y.floor() as usize;
+        let y0 = (src_y.floor() as usize).min(src_h - 1);
         let y1 = (y0 + 1).min(src_h - 1);
         let y_diff = src_y - y0 as f32;
         let inv_y_diff = 1.0 - y_diff;
@@ -120,7 +133,7 @@ pub fn resize_bilinear_rgb_nchw(
 
         for x in 0..dst_w {
             let src_x = x as f32 * x_ratio;
-            let x0 = src_x.floor() as usize;
+            let x0 = (src_x.floor() as usize).min(src_w - 1);
             let x1 = (x0 + 1).min(src_w - 1);
             let x_diff = src_x - x0 as f32;
             let inv_x_diff = 1.0 - x_diff;
@@ -174,20 +187,75 @@ pub fn letterbox_rgb_nchw(
     dst_h: usize,
     norm: NormalizationMode,
 ) -> LetterboxTransform {
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return LetterboxTransform {
+            scale: 1.0,
+            pad_x: 0.0,
+            pad_y: 0.0,
+            original_w: src_w,
+            original_h: src_h,
+            target_w: dst_w,
+            target_h: dst_h,
+        };
+    }
+    let Some(expected_src) = src_w.checked_mul(src_h).and_then(|n| n.checked_mul(3)) else {
+        return LetterboxTransform {
+            scale: 1.0,
+            pad_x: 0.0,
+            pad_y: 0.0,
+            original_w: src_w,
+            original_h: src_h,
+            target_w: dst_w,
+            target_h: dst_h,
+        };
+    };
+    let Some(plane_size) = dst_w.checked_mul(dst_h) else {
+        return LetterboxTransform {
+            scale: 1.0,
+            pad_x: 0.0,
+            pad_y: 0.0,
+            original_w: src_w,
+            original_h: src_h,
+            target_w: dst_w,
+            target_h: dst_h,
+        };
+    };
+    let Some(expected_dst) = plane_size.checked_mul(3) else {
+        return LetterboxTransform {
+            scale: 1.0,
+            pad_x: 0.0,
+            pad_y: 0.0,
+            original_w: src_w,
+            original_h: src_h,
+            target_w: dst_w,
+            target_h: dst_h,
+        };
+    };
+    if src.len() < expected_src || dst.len() < expected_dst {
+        return LetterboxTransform {
+            scale: 1.0,
+            pad_x: 0.0,
+            pad_y: 0.0,
+            original_w: src_w,
+            original_h: src_h,
+            target_w: dst_w,
+            target_h: dst_h,
+        };
+    }
+
     let scale_w = dst_w as f32 / src_w as f32;
     let scale_h = dst_h as f32 / src_h as f32;
     let scale = scale_w.min(scale_h);
 
-    let new_w = (src_w as f32 * scale).round() as usize;
-    let new_h = (src_h as f32 * scale).round() as usize;
+    let new_w = ((src_w as f32 * scale).round() as usize).clamp(1, dst_w);
+    let new_h = ((src_h as f32 * scale).round() as usize).clamp(1, dst_h);
 
     let pad_x = ((dst_w - new_w) as f32 * 0.5).floor();
     let pad_y = ((dst_h - new_h) as f32 * 0.5).floor();
 
     // Remplissage neutre par défaut (114 / 255 pour standard YOLO / ImageNet)
     let (pad_r, pad_g, pad_b) = norm.normalize(114, 114, 114);
-    let plane_size = dst_w * dst_h;
-    let (dst_r, rest) = dst.split_at_mut(plane_size);
+    let (dst_r, rest) = dst[..expected_dst].split_at_mut(plane_size);
     let (dst_g, dst_b) = rest.split_at_mut(plane_size);
     dst_r.fill(pad_r);
     dst_g.fill(pad_g);
@@ -210,7 +278,7 @@ pub fn letterbox_rgb_nchw(
 
     for y in 0..new_h {
         let src_y = y as f32 * y_ratio;
-        let y0 = src_y.floor() as usize;
+        let y0 = (src_y.floor() as usize).min(src_h - 1);
         let y1 = (y0 + 1).min(src_h - 1);
         let y_diff = src_y - y0 as f32;
         let inv_y_diff = 1.0 - y_diff;
@@ -230,7 +298,7 @@ pub fn letterbox_rgb_nchw(
             }
 
             let src_x = x as f32 * x_ratio;
-            let x0 = src_x.floor() as usize;
+            let x0 = (src_x.floor() as usize).min(src_w - 1);
             let x1 = (x0 + 1).min(src_w - 1);
             let x_diff = src_x - x0 as f32;
             let inv_x_diff = 1.0 - x_diff;

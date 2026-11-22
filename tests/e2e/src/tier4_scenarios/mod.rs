@@ -4,21 +4,14 @@
 
 use crate::harness::E2eHarness;
 use crate::harness::a11y_inspector::A11yInspector;
-use crate::harness::frame_inspector::FrameInspector;
-use crate::harness::gestures::{GestureSimulator, HoldOutcome};
+use crate::harness::gestures::HoldOutcome;
 use crate::harness::mock_kernel::MockKernel;
-use hakille_design::HOLD_TO_CONFIRM_MS;
 use hakille_design::brand::wire_count;
-use hakille_ui::{InitiativeOrigin, PresenceState, SilenceBudgetTracker};
-use hakille_ui_desktop::a11y::{ActionCardA11y, build_shell_tree};
-use hakille_ui_desktop::app::{HudAction, HudApp, HudInput, PointerTarget};
-use hakille_ui_desktop::renderer::{SoftwareRenderer, card_buttons};
-use hakille_ui_desktop::runtime::{FrameBudget, HeadlessRuntime, RuntimeEvent};
-use hakille_ui_model::StableSnapshot;
-use hakille_ui_model::snapshot::{EVAPORATE_MS, HUD_HEIGHT, HUD_WIDTH};
+use hakille_ui::{InitiativeOrigin, SilenceBudgetTracker};
+use hakille_ui_desktop::a11y::ActionCardA11y;
+use hakille_ui_desktop::app::HudAction;
 use hakille_ui_protocol::{
-    ActionCard, DataExit, JournalEntryDto, KernelMessage, KernelToUi, MemoryRowDto, Money,
-    Provenance, StatusDto, UiMessage, UiToKernel,
+    ActionCard, DataExit, KernelToUi, Money, Provenance, UiMessage, UiToKernel,
 };
 use std::time::Duration;
 

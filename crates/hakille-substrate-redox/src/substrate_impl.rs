@@ -56,8 +56,9 @@ impl RedoxSubstrate {
             // Honest: no orbital/sys VRAM discovery binding is linked;
             // unknown, not a 16 GiB claim.
             gpu_vram_bytes: None,
-            has_secure_enclave: true,
-            has_tpm: true,
+            // Honnête : aucun pilote d'enclave matérielle ou TPM raccordé.
+            has_secure_enclave: false,
+            has_tpm: false,
             battery_powered: false,
             // Honest: no `sys:` thermal envelope source linked; unknown.
             thermal_envelope_watts: None,
@@ -93,9 +94,8 @@ impl RedoxSubstrate {
         if let Some(root) = &self.trusted_capability_root {
             hakille_core::verify_capability_with_root_key(cap, root, scope, action)
         } else {
-            // Legacy fallback UNIQUEMENT en debug/tests : vérification
-            // structurelle sans pinning (accepte les tokens auto-signés).
-            // En release, panique fail-closed : `verify_unpinned` est interdit.
+            // Repli legacy UNIQUEMENT en debug/tests ; en release, refus fail-closed
+            // propre (`Err`) sans jamais paniquer le processus.
             #[cfg(debug_assertions)]
             {
                 #[allow(deprecated)]
@@ -105,21 +105,14 @@ impl RedoxSubstrate {
             }
             #[cfg(not(debug_assertions))]
             {
-                panic!(
-                    "unpinned capability verification forbidden in release; call with_trusted_root in production"
-                );
+                Err(hakille_core::HakilleError::CapabilityDenied(
+                    "vérification non épinglée interdite en release : appeler with_trusted_root en production".into(),
+                ))
             }
         }
     }
 
     /// Bind a Biscuit `CapabilityToken` to a `RedoxCapabilityTable` handle.
-    /// The token is verified (pinned when `with_trusted_root` is set, else
-    /// structurally via unpinned), then a table handle with the matching
-    /// Redox rights is allocated and checked.
-    /// Honesty note: table handles are revocable bearer handles — the
-    /// binding performed here is verification + allocation, not a
-    /// cryptographic derivation of the handle from the Biscuit bytes.
-    /// `FullSystem` stays denied until that end-to-end binding exists.
     fn bind_table_handle(
         &self,
         cap: &CapabilityToken,
@@ -132,7 +125,10 @@ impl RedoxSubstrate {
         let fd = self
             .capability_table
             .allocate_handle("disk:", resource, redox_rights);
-        self.capability_table.verify_access(fd, redox_rights)?;
+        if let Err(e) = self.capability_table.verify_access(fd, redox_rights) {
+            let _ = self.capability_table.revoke_handle(fd);
+            return Err(e);
+        }
         Ok(fd)
     }
 
@@ -154,49 +150,9 @@ impl RedoxSubstrate {
     }
 
     /// Resolve a VirtualPath to a clean `disk:`-relative key.
-    /// Secure: rejects `..`, absolute paths, drive letters, NUL bytes and
-    /// non-normal components (same rules as other substrates).
     fn resolve_key(&self, path: &VirtualPath) -> hakille_core::Result<String> {
-        use std::path::Component;
-        if path.0.contains('\0') {
-            return Err(hakille_core::HakilleError::CapabilityDenied(
-                "NUL byte in virtual path".into(),
-            ));
-        }
-        // Reject Windows drive letters and UNC prefixes early.
-        let lower = path.0.to_ascii_lowercase();
-        if lower.contains(':') || path.0.starts_with(r"\\") {
-            return Err(hakille_core::HakilleError::CapabilityDenied(
-                "absolute / drive path rejected".into(),
-            ));
-        }
-        let mut parts: Vec<String> = Vec::new();
-        let mut saw_normal = false;
-        for comp in std::path::Path::new(&path.0).components() {
-            match comp {
-                Component::Normal(p) => {
-                    if p == std::ffi::OsStr::new("..") {
-                        return Err(hakille_core::HakilleError::CapabilityDenied(
-                            "path traversal (..) rejected".into(),
-                        ));
-                    }
-                    parts.push(p.to_string_lossy().into_owned());
-                    saw_normal = true;
-                }
-                Component::CurDir => {}
-                // Any ParentDir, RootDir, Prefix => reject
-                _ => {
-                    return Err(hakille_core::HakilleError::CapabilityDenied(
-                        "non-normal path component rejected".into(),
-                    ));
-                }
-            }
-        }
-        if !saw_normal {
-            // Empty virtual path means the VirtualFS root itself (for list_dir).
-            return Ok(String::new());
-        }
-        Ok(parts.join("/"))
+        let segments = hakille_substrate::validate_virtual_components(path)?;
+        Ok(segments.join("/"))
     }
 
     pub fn virtual_fs_root(&self) -> &Path {
@@ -226,9 +182,11 @@ impl Substrate for RedoxSubstrate {
 
     async fn attest(&self, data: &[u8]) -> Result<SignedAttestation> {
         let sig = self.attestation_keypair.sign(data);
+        // Honnête : dev-attestation locale (clé éphémère, pas de TPM/enclave),
+        // empreinte SHA-256 réelle des octets attestés.
         Ok(SignedAttestation {
-            manifest_hash: format!("sha256-redox-sovereign-{}", data.len()),
-            platform_id: "Redox-Sovereign-Dedicated-Node".to_string(),
+            manifest_hash: format!("sha256-{}", hakille_substrate::sha256_hex(data)),
+            platform_id: "Redox-Substrate-Host-dev-attestation".to_string(),
             timestamp: Timestamp::now(),
             signature: sig,
         })
@@ -243,21 +201,15 @@ impl Substrate for RedoxSubstrate {
             CAP_READ,
             &key,
         )?;
-
-        let handle = self.scheme_handler.disk().open(&key, 0)?;
-        let mut buf = vec![0u8; 4096];
-        let bytes_read = self.scheme_handler.disk().read(handle, &mut buf)?;
-        self.scheme_handler.disk().close(handle)?;
+        let res = self.scheme_handler.disk().read_all(&key);
         let _ = self.capability_table.revoke_handle(fd);
 
-        if bytes_read > 0 {
-            buf.truncate(bytes_read);
-            Ok(buf)
-        } else {
-            Err(hakille_core::HakilleError::StorageError(format!(
+        match res? {
+            Some(buf) => Ok(buf),
+            None => Err(hakille_core::HakilleError::StorageError(format!(
                 "File not found: {}",
                 path.0
-            )))
+            ))),
         }
     }
 
@@ -276,11 +228,16 @@ impl Substrate for RedoxSubstrate {
             &key,
         )?;
 
-        let handle = self.scheme_handler.disk().open(&key, 0)?;
-        self.scheme_handler.disk().write(handle, data)?;
-        self.scheme_handler.disk().close(handle)?;
+        let op_res = (|| -> Result<()> {
+            let handle = self.scheme_handler.disk().open(&key, 0)?;
+            let write_res = self.scheme_handler.disk().write(handle, data);
+            let close_res = self.scheme_handler.disk().close(handle);
+            write_res?;
+            close_res?;
+            Ok(())
+        })();
         let _ = self.capability_table.revoke_handle(fd);
-        Ok(())
+        op_res
     }
 
     async fn list_dir(
@@ -322,10 +279,6 @@ impl Substrate for RedoxSubstrate {
     }
 
     async fn http_request(&self, req: HttpRequest, cap: &CapabilityToken) -> Result<HttpResponse> {
-        // Network capability (GET ⇒ Read, others ⇒ Write) including expiry
-        // is enforced first; without it egress is refused explicitly.
-        // Then the shared allowlist policy applies (loopback-only by
-        // default) and the real fetch runs over rustls TLS (10 s, 5 MiB cap).
         let action = if req.method.eq_ignore_ascii_case("get") {
             hakille_core::CapabilityAction::Read
         } else {
@@ -382,14 +335,15 @@ impl Substrate for RedoxSubstrate {
             CapabilityScope::Camera,
             hakille_core::CapabilityAction::Read,
         )?;
-        // Honest: no orbital camera wiring — refuse instead of synthesizing frames.
         Err(hakille_core::HakilleError::SubstrateError(
             REDOX_CAMERA_UNIMPLEMENTED.into(),
         ))
     }
 
     async fn stop_camera_capture(&self, _handle: CameraStreamHandle) -> Result<()> {
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            REDOX_CAMERA_UNIMPLEMENTED.into(),
+        ))
     }
 
     async fn capture_camera_frame(
@@ -402,7 +356,6 @@ impl Substrate for RedoxSubstrate {
             CapabilityScope::Camera,
             hakille_core::CapabilityAction::Read,
         )?;
-        // Honest: no orbital camera wiring — refuse instead of synthesizing frames.
         Err(hakille_core::HakilleError::SubstrateError(
             REDOX_CAMERA_UNIMPLEMENTED.into(),
         ))
@@ -436,9 +389,6 @@ impl Substrate for RedoxSubstrate {
         _wasm: &[u8],
         caps: Vec<CapabilityToken>,
     ) -> Result<ProcessHandle> {
-        // Caller must prove it holds at least one delegable capability;
-        // spawned sandbox receives only attenuated `caps` (verified by caller).
-        // Here we enforce that every delegated cap is at least structurally valid.
         let delegable = [
             (
                 CapabilityScope::Filesystem,
@@ -478,8 +428,6 @@ impl Substrate for RedoxSubstrate {
                 )));
             }
         }
-        // Aucun moteur WASM n'est relié à cette API : ne jamais inventer
-        // un handle de processus. Le runtime des agents de référence est distinct.
         Err(hakille_core::HakilleError::SubstrateError(
             "spawn_sandboxed indisponible : moteur WASM non raccordé au substrat redox; aucun processus lancé"
                 .to_string(),
@@ -487,10 +435,6 @@ impl Substrate for RedoxSubstrate {
     }
 
     fn power_state(&self) -> PowerState {
-        // Sovereign-node default: mains-powered. No `sys:` power binding is
-        // linked yet (sys:power exists in the scheme table but is not wired
-        // to a live sensor), so this documented default stands in place of
-        // a measurement — not a claimed reading.
         PowerState {
             on_battery: false,
             battery_percent: 100.0,
@@ -499,13 +443,12 @@ impl Substrate for RedoxSubstrate {
     }
 
     fn thermal_state(&self) -> ThermalState {
-        // Honest: no `sys:` thermal binding is linked; Unknown, not invented.
         ThermalState::Unknown
     }
 
     async fn send_notification(
         &self,
-        request: hakille_substrate::NotificationRequest,
+        _request: hakille_substrate::NotificationRequest,
         cap: &CapabilityToken,
     ) -> Result<hakille_substrate::NotificationHandle> {
         self.enforce(
@@ -513,25 +456,15 @@ impl Substrate for RedoxSubstrate {
             CapabilityScope::Notification,
             hakille_core::CapabilityAction::Write,
         )?;
-
-        tracing::info!(
-            id = %request.id,
-            title = %request.title,
-            urgency = ?request.urgency,
-            category = ?request.category,
-            "RedoxSubstrate: Dispatching to orbital:notify scheme"
-        );
-
-        Ok(hakille_substrate::NotificationHandle {
-            id: request.id,
-            channel: "redox_orbital_scheme".to_string(),
-            delivered_at_ms: chrono::Utc::now().timestamp_millis() as u64,
-        })
+        // HONNÊTE : aucun scheme noyau `orbital:notify` n'est raccordé.
+        Err(hakille_core::HakilleError::SubstrateError(
+            "notification Redox indisponible : scheme orbital:notify non raccordé ; aucune notification émise".to_string(),
+        ))
     }
 
     async fn dismiss_notification(
         &self,
-        handle: &hakille_substrate::NotificationHandle,
+        _handle: &hakille_substrate::NotificationHandle,
         cap: &CapabilityToken,
     ) -> Result<()> {
         self.enforce(
@@ -539,7 +472,9 @@ impl Substrate for RedoxSubstrate {
             CapabilityScope::Notification,
             hakille_core::CapabilityAction::Delete,
         )?;
-        tracing::debug!(id = %handle.id, "RedoxSubstrate: Dismissed notification");
-        Ok(())
+        Err(hakille_core::HakilleError::SubstrateError(
+            "fermeture de notification Redox indisponible : scheme orbital:notify non raccordé"
+                .to_string(),
+        ))
     }
 }

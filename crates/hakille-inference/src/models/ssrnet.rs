@@ -182,84 +182,95 @@ impl SsrNetEngine {
             return Err(HakilleError::InferenceError("SSRNet: entrée vide".into()));
         }
 
-        if let Some(session_mutex) = &self.session {
-            let mut session = session_mutex
-                .lock()
-                .map_err(|e| ort_err("lock", format!("{e}")))?;
+        let Some(session_mutex) = &self.session else {
+            return Err(HakilleError::InferenceError(
+                "SsrNetEngine::estimate_age: modèle ONNX ssrnet_age.onnx absent — estimation simulée refusée (contrat d'honnêteté / Règle 7)".into(),
+            ));
+        };
 
-            let mut input_buf = vec![0.0f32; 3 * SSRNET_INPUT_SIZE * SSRNET_INPUT_SIZE];
-            resize_bilinear_rgb_nchw(
-                rgb_crop,
-                width,
-                height,
-                &mut input_buf,
-                SSRNET_INPUT_SIZE,
-                SSRNET_INPUT_SIZE,
-                NormalizationMode::Centered,
-            );
-
-            let tensor = Tensor::from_array((
-                [1, 3, SSRNET_INPUT_SIZE, SSRNET_INPUT_SIZE],
-                input_buf.into_boxed_slice(),
-            ))
-            .map_err(|e| ort_err("tensor", e))?;
-
-            let outputs = session
-                .run(ort::inputs![tensor])
-                .map_err(|e| ort_err("run", e))?;
-
-            let (_shape, values) = outputs[0]
-                .try_extract_tensor::<f32>()
-                .map_err(|e| ort_err("extract", e))?;
-
-            let raw_age = if !values.is_empty() { values[0] } else { 30.0 };
-            let estimated_age = raw_age.clamp(1.0, 95.0);
-
-            // Estimation de genre si une 2e tête ou valeur est présente
-            let gender = if values.len() > 1 {
-                if values[1] > 0.5 {
-                    GenderKind::Female
-                } else {
-                    GenderKind::Male
-                }
-            } else {
-                GenderKind::Unknown
-            };
-
-            let (is_minor, minor_prob) = calculate_minor_flag(estimated_age);
-
-            Ok(AgeEstimationResult {
-                estimated_age,
-                age_bracket: (
-                    (estimated_age - 3.2).max(0.0),
-                    (estimated_age + 3.2).min(100.0),
-                ),
-                age_group: AgeGroup::from_age(estimated_age),
-                gender,
-                is_minor,
-                minor_probability: minor_prob,
-                confidence: 0.90,
-                status: ModelStatus::Real,
-            })
-        } else {
-            // Mode synthétique déterministe
-            let (estimated_age, gender) = mock_estimate_age(rgb_crop, width, height);
-            let (is_minor, minor_prob) = calculate_minor_flag(estimated_age);
-
-            Ok(AgeEstimationResult {
-                estimated_age,
-                age_bracket: (
-                    (estimated_age - 3.5).max(0.0),
-                    (estimated_age + 3.5).min(100.0),
-                ),
-                age_group: AgeGroup::from_age(estimated_age),
-                gender,
-                is_minor,
-                minor_probability: minor_prob,
-                confidence: 0.88,
-                status: ModelStatus::Simulated,
-            })
+        let expected_bytes = width
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(3))
+            .ok_or_else(|| {
+                HakilleError::InferenceError("SsrNetEngine: dimensions débordantes".into())
+            })?;
+        if rgb_crop.len() < expected_bytes {
+            return Err(HakilleError::InferenceError(format!(
+                "SsrNetEngine: tampon RGB trop court ({} < {expected_bytes})",
+                rgb_crop.len()
+            )));
         }
+
+        let mut session = session_mutex
+            .lock()
+            .map_err(|e| ort_err("lock", format!("{e}")))?;
+
+        let mut input_buf = vec![0.0f32; 3 * SSRNET_INPUT_SIZE * SSRNET_INPUT_SIZE];
+        resize_bilinear_rgb_nchw(
+            rgb_crop,
+            width,
+            height,
+            &mut input_buf,
+            SSRNET_INPUT_SIZE,
+            SSRNET_INPUT_SIZE,
+            NormalizationMode::Centered,
+        );
+
+        let tensor = Tensor::from_array((
+            [1, 3, SSRNET_INPUT_SIZE, SSRNET_INPUT_SIZE],
+            input_buf.into_boxed_slice(),
+        ))
+        .map_err(|e| ort_err("tensor", e))?;
+
+        let outputs = session
+            .run(ort::inputs![tensor])
+            .map_err(|e| ort_err("run", e))?;
+
+        let (_shape, values) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| ort_err("extract", e))?;
+
+        let raw_age = match values.first().copied() {
+            Some(v) if v.is_finite() => v,
+            Some(_) => {
+                return Err(HakilleError::InferenceError(
+                    "SsrNetEngine: sortie âge non finie (NaN/Inf)".into(),
+                ));
+            }
+            None => {
+                return Err(HakilleError::InferenceError(
+                    "SsrNetEngine: sortie vide".into(),
+                ));
+            }
+        };
+        let estimated_age = raw_age.clamp(1.0, 95.0);
+
+        // Estimation de genre si une 2e tête ou valeur est présente
+        let gender = if values.len() > 1 {
+            if values[1] > 0.5 {
+                GenderKind::Female
+            } else {
+                GenderKind::Male
+            }
+        } else {
+            GenderKind::Unknown
+        };
+
+        let (is_minor, minor_prob) = calculate_minor_flag(estimated_age);
+
+        Ok(AgeEstimationResult {
+            estimated_age,
+            age_bracket: (
+                (estimated_age - 3.2).max(0.0),
+                (estimated_age + 3.2).min(100.0),
+            ),
+            age_group: AgeGroup::from_age(estimated_age),
+            gender,
+            is_minor,
+            minor_probability: minor_prob,
+            confidence: 0.90,
+            status: ModelStatus::Real,
+        })
     }
 }
 
@@ -284,27 +295,18 @@ pub fn resolve_ssrnet_path(models_dir: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// Calcule le drapeau de minorité selon la loi normale $\mathcal{N}(\mu, \sigma^2)$ avec $\sigma \approx 3.2$ ans.
-fn calculate_minor_flag(age: f32) -> (bool, f32) {
+/// Règle Constitutionnelle 7 (fail-closed) : tout âge `< 18.0`, non fini (`NaN`/`Inf`),
+/// ou dont $P(\text{âge} < 18) \ge 0.85$ active `is_minor = true`.
+pub fn calculate_minor_flag(age: f32) -> (bool, f32) {
+    if !age.is_finite() {
+        return (true, 1.0);
+    }
     let sigma = 3.2f32;
     let z = (MINOR_AGE_THRESHOLD - age) / sigma;
     // Approximation sigmoïdale de la fonction CDF normale
     let p_minor = 1.0 / (1.0 + (-1.702 * z).exp());
-    let is_minor = p_minor >= MINOR_CONFIDENCE_THRESHOLD;
+    let is_minor = p_minor >= MINOR_CONFIDENCE_THRESHOLD || age < MINOR_AGE_THRESHOLD;
     (is_minor, p_minor)
-}
-
-fn mock_estimate_age(rgb: &[u8], width: usize, height: usize) -> (f32, GenderKind) {
-    let mut avg_lum = 0u64;
-    for chunk in rgb.chunks_exact(3) {
-        let lum = (chunk[0] as u64 * 299 + chunk[1] as u64 * 587 + chunk[2] as u64 * 114) / 1000;
-        avg_lum += lum;
-    }
-    let total = (width * height).max(1) as u64;
-    let lum = (avg_lum / total) as f32;
-
-    // Déterminisme stable pour adulte typique (~28 ans)
-    let age = (25.0 + (lum % 15.0)).clamp(18.0, 65.0);
-    (age, GenderKind::Male)
 }
 
 #[cfg(test)]
@@ -313,20 +315,15 @@ mod tests {
     use crate::models::mock::synthetic_face_crop;
 
     #[test]
-    fn test_ssrnet_mock_synthetic() {
+    fn test_ssrnet_missing_model_refuses_simulated_adult_age() {
         let engine = SsrNetEngine::mock_synthetic();
         assert!(engine.is_mock());
 
         let crop = synthetic_face_crop(64, 64);
-        let result = engine
+        let err = engine
             .estimate_age(&crop, 64, 64)
-            .expect("estimation réussie");
-
-        assert_eq!(result.status, ModelStatus::Simulated);
-        assert!(result.estimated_age >= 18.0 && result.estimated_age <= 50.0);
-        assert_eq!(result.is_minor, false);
-        assert!(result.age_bracket.0 < result.estimated_age);
-        assert!(result.age_bracket.1 > result.estimated_age);
+            .expect_err("modèle absent : estimation simulée refusée");
+        assert!(err.to_string().contains("absent"));
     }
 
     #[test]
@@ -335,6 +332,20 @@ mod tests {
         let (is_minor_child, prob_child) = calculate_minor_flag(10.0);
         assert!(is_minor_child, "Enfant de 10 ans doit déclencher is_minor");
         assert!(prob_child > 0.95);
+
+        // Adolescents de 16, 17, 17.9 ans : TOUJOURS mineurs (Règle 7)
+        for age in [16.0f32, 17.0, 17.9] {
+            let (is_minor, _) = calculate_minor_flag(age);
+            assert!(
+                is_minor,
+                "Adolescent de {age} ans doit être protégé (Règle 7)"
+            );
+        }
+
+        // NaN : fail-closed mineur
+        let (is_minor_nan, prob_nan) = calculate_minor_flag(f32::NAN);
+        assert!(is_minor_nan);
+        assert_eq!(prob_nan, 1.0);
 
         // Adulte de 30 ans : minor_prob doit être quasi-nulle
         let (is_minor_adult, prob_adult) = calculate_minor_flag(30.0);

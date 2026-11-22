@@ -210,7 +210,7 @@ impl SoftwareRenderer {
         let h = scene.height.max(1) as usize;
         let mut px = vec![0u8; w * h * 4];
         let (br, bg, bb) = self.backdrop_rgb(scene.theme_dark);
-        for chunk in px.chunks_exact_mut(4) {
+        for chunk in px.as_chunks_mut::<4>().0 {
             chunk[0] = br;
             chunk[1] = bg;
             chunk[2] = bb;
@@ -609,8 +609,13 @@ impl WgpuRenderer {
     }
 
     pub fn render(&mut self, scene: &Scene) -> Result<Vec<u8>, RendererError> {
+        if matches!(self.status, GpuStatus::Active) {
+            self.status = GpuStatus::FallbackSoftware(
+                "pipeline wgpu non actif — rendu logiciel CPU utilisé".into(),
+            );
+        }
         match &self.status {
-            GpuStatus::Active => Ok(self.software.paint(scene)),
+            GpuStatus::Active => unreachable!("statut reclassé en FallbackSoftware"),
             GpuStatus::FallbackSoftware(_) => Ok(self.software.paint(scene)),
             GpuStatus::Failed(e) => Err(RendererError::GpuUnavailable(e.clone())),
         }
@@ -1303,11 +1308,7 @@ pub fn media_studio_scene(
     let line_height = 20.0;
     let max_lines = (((footer_y - 16.0 - content_top) / line_height).floor()).max(0.0) as usize;
     let mut y = content_top;
-    let mut rendered = 0usize;
-    for line in &view.lines {
-        if rendered >= max_lines {
-            break;
-        }
+    for line in view.lines.iter().take(max_lines) {
         let (color, weight) = match line.kind {
             ConsultLineKind::Normal => (text1, WEIGHT_NORMAL),
             ConsultLineKind::Muted => (text2, WEIGHT_NORMAL),
@@ -1320,7 +1321,6 @@ pub fn media_studio_scene(
         });
         s.text_weighted(left, y, 13.0, weight, color, text);
         y += line_height;
-        rendered += 1;
     }
 
     s.text(
@@ -1519,7 +1519,9 @@ mod tests {
         s.text(8.0, 32.0, 20.0, Color::from_hex(0xFFFFFF), "Hakille");
         let px = r.paint(&s);
         let ink = px
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|c| c[0] != 0x0B || c[1] != 0x0C || c[2] != 0x0F)
             .count();
         assert!(ink > 50, "glyphes réellement peints (ink={ink})");
@@ -1740,7 +1742,9 @@ mod tests {
         s.text(8.0, 32.0, 20.0, Color::from_hex(0xFFFFFF), "語");
         let px = r.paint(&s);
         let ink = px
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|c| c[0] != 0x0B || c[1] != 0x0C || c[2] != 0x0F)
             .count();
         assert!(ink > 20, "glyphe de repli réellement peint (ink={ink})");
@@ -1838,7 +1842,7 @@ mod tests {
         };
         // Vignette 4×4 rouge/vert/bleu/orange saturée pour vérifier le blitting RGBA réel.
         let mut pixels = vec![0u8; 4 * 4 * 4];
-        for px in pixels.chunks_exact_mut(4) {
+        for px in pixels.as_chunks_mut::<4>().0 {
             px.copy_from_slice(&[0xFF, 0x7A, 0x2F, 0xFF]);
         }
         let preview = MediaStudioPreview {

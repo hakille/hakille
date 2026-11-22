@@ -183,7 +183,9 @@ fn test_t1_f01_04_uncertainty_proportioned_voice_hedging() {
             "Must never apologize: {text}"
         );
         assert!(
-            !text.chars().any(|c| c >= '\u{1F600}' && c <= '\u{1F64F}'),
+            !text
+                .chars()
+                .any(|c| ('\u{1F600}'..='\u{1F64F}').contains(&c)),
             "Must never contain emojis: {text}"
         );
     }

@@ -110,6 +110,11 @@ impl EgressPolicy {
         let host = url
             .host_str()
             .ok_or_else(|| HakilleError::SubstrateError("egress denied: URL has no host".into()))?;
+        if url.scheme() == "http" && !is_loopback_host(host) {
+            return Err(HakilleError::SubstrateError(format!(
+                "egress denied: HTTP en clair interdit hors loopback pour '{host}' (HTTPS requis)"
+            )));
+        }
         if !self.is_host_allowed(host) {
             if self.allowlist.is_empty() {
                 return Err(HakilleError::SubstrateError(format!(
@@ -154,6 +159,42 @@ pub fn is_loopback_host(host: &str) -> bool {
     }
 }
 
+/// Vérifie qu'une adresse IP résolue est publiquement routable (bloque loopback,
+/// RFC 1918, CGNAT, link-local/IMDS 169.254.0.0/16, multicast, ULA, IPv4-mapped privées).
+fn is_public_unicast_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, _, _] = v4.octets();
+            let is_cgnat = a == 100 && (64..=127).contains(&b);
+            let is_benchmark = a == 198 && (b == 18 || b == 19);
+            let is_reserved = a >= 240;
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || is_cgnat
+                || is_benchmark
+                || is_reserved)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_public_unicast_ip(IpAddr::V4(mapped));
+            }
+            let seg0 = v6.segments()[0];
+            let is_ula = (seg0 & 0xfe00) == 0xfc00;
+            let is_link_local = (seg0 & 0xffc0) == 0xfe80;
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || is_ula
+                || is_link_local)
+        }
+    }
+}
+
 fn normalize_allowlist_entry(entry: &str) -> String {
     let entry = entry.trim().trim_end_matches('.').to_ascii_lowercase();
     // Full-URL form (`https://example.com:8443/path`) ⇒ extract host.
@@ -191,9 +232,67 @@ fn strip_port(host_port: &str) -> &str {
     }
 }
 
+/// Résout `host:port` et valide toutes les IP résolues contre SSRF / DNS rebinding.
+async fn resolve_and_validate_addrs(
+    url: &reqwest::Url,
+    policy: &EgressPolicy,
+) -> hakille_core::Result<(String, Vec<std::net::SocketAddr>)> {
+    use hakille_core::HakilleError;
+    let host = url
+        .host_str()
+        .ok_or_else(|| HakilleError::SubstrateError("egress denied: URL has no host".into()))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| HakilleError::SubstrateError("egress denied: port inconnu".into()))?;
+    let host_clean = normalize_host(host);
+    let is_explicit_ip_literal = host_clean.parse::<IpAddr>().is_ok();
+    let host_is_loopback = is_loopback_host(&host_clean);
+
+    let resolved: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host_clean.as_str(), port))
+        .await
+        .map_err(|e| {
+            HakilleError::SubstrateError(format!("egress fetch failed: résolution DNS: {e}"))
+        })?
+        .collect();
+    if resolved.is_empty() {
+        return Err(HakilleError::SubstrateError(
+            "egress denied: résolution DNS vide".into(),
+        ));
+    }
+    for addr in &resolved {
+        let ip = addr.ip();
+        if policy.is_loopback_only() || host_is_loopback {
+            if !ip.is_loopback() {
+                return Err(HakilleError::SubstrateError(format!(
+                    "egress denied: hôte loopback résolu vers IP non-loopback ({ip})"
+                )));
+            }
+        } else if !is_explicit_ip_literal && !is_public_unicast_ip(ip) {
+            return Err(HakilleError::SubstrateError(format!(
+                "egress denied: SSRF bloqué (IP privée/interne résolue {ip})"
+            )));
+        }
+    }
+    Ok((host_clean, resolved))
+}
+
+/// En-têtes interdits en entrée pour prévenir le HTTP smuggling / contournement d'hôte.
+fn is_forbidden_request_header(name: &reqwest::header::HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "host"
+            | "proxy-authorization"
+            | "proxy-connection"
+            | "transfer-encoding"
+            | "content-length"
+            | "te"
+            | "upgrade"
+    )
+}
+
 /// Real egress fetch: allowlist-checked HTTPS request via reqwest
-/// (rustls TLS, 10 s timeout, 5 MiB cap). Capability enforcement
-/// (Network scope + expiry) MUST happen in the caller beforehand.
+/// (rustls TLS, 10 s timeout, 5 MiB cap, `.no_proxy()`, DNS pinning anti-rebinding).
+/// Capability enforcement (Network scope + expiry) MUST happen in the caller beforehand.
 pub async fn fetch_via_egress(
     req: HttpRequest,
     policy: &EgressPolicy,
@@ -205,52 +304,114 @@ pub async fn fetch_via_egress(
             req.body.len()
         )));
     }
-    let url = policy.check_url(&req.url)?;
-    let method = parse_method(&req.method)?;
+    let mut current_url = policy.check_url(&req.url)?;
+    let mut current_method = parse_method(&req.method)?;
+    let mut current_body = req.body;
+    let initial_origin = (
+        current_url.scheme().to_string(),
+        normalize_host(current_url.host_str().unwrap_or("")),
+        current_url.port_or_known_default(),
+    );
 
-    let redirect_policy = policy.clone();
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-            if attempt.previous().len() >= EGRESS_MAX_REDIRECTS {
-                return attempt.error("egress denied: trop de redirections");
-            }
-            if attempt
-                .previous()
-                .last()
-                .is_some_and(|url| url.scheme() == "https")
-                && attempt.url().scheme() != "https"
-            {
-                return attempt.error("egress denied: redirection HTTPS vers HTTP interdite");
-            }
-            match redirect_policy.check_url(attempt.url().as_str()) {
-                Ok(_) => attempt.follow(),
-                Err(_) => attempt.error("egress denied: destination de redirection interdite"),
-            }
-        }))
-        .timeout(Duration::from_secs(EGRESS_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| {
-            HakilleError::SubstrateError(format!("egress denied: failed to build TLS client: {e}"))
-        })?;
-
-    let mut builder = client.request(method, url);
+    let mut validated_headers = Vec::with_capacity(req.headers.len());
     for (name, value) in &req.headers {
         let header_name =
             reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
                 HakilleError::SubstrateError(format!("egress denied: invalid header name: {e}"))
             })?;
+        if is_forbidden_request_header(&header_name) {
+            return Err(HakilleError::SubstrateError(format!(
+                "egress denied: en-tête interdit '{}'",
+                header_name.as_str()
+            )));
+        }
         let header_value = reqwest::header::HeaderValue::from_str(value).map_err(|e| {
             HakilleError::SubstrateError(format!("egress denied: invalid header value: {e}"))
         })?;
-        builder = builder.header(header_name, header_value);
-    }
-    if !req.body.is_empty() {
-        builder = builder.body(req.body);
+        validated_headers.push((header_name, header_value));
     }
 
-    let mut response = builder.send().await.map_err(|e| {
-        HakilleError::SubstrateError(format!("egress fetch failed: {}", e.without_url()))
-    })?;
+    let mut redirects_followed = 0usize;
+    let mut response = loop {
+        let (dns_host, addrs) = resolve_and_validate_addrs(&current_url, policy).await?;
+        let mut client_builder = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(EGRESS_TIMEOUT_SECS));
+        if dns_host.parse::<IpAddr>().is_err() {
+            client_builder = client_builder.resolve_to_addrs(&dns_host, &addrs);
+        }
+        let client = client_builder.build().map_err(|e| {
+            HakilleError::SubstrateError(format!("egress denied: failed to build TLS client: {e}"))
+        })?;
+
+        let same_origin = (
+            current_url.scheme(),
+            normalize_host(current_url.host_str().unwrap_or("")),
+            current_url.port_or_known_default(),
+        ) == (
+            initial_origin.0.as_str(),
+            initial_origin.1.clone(),
+            initial_origin.2,
+        );
+
+        let mut builder = client.request(current_method.clone(), current_url.clone());
+        for (header_name, header_value) in &validated_headers {
+            if !same_origin
+                && matches!(
+                    header_name.as_str(),
+                    "authorization" | "cookie" | "x-api-key"
+                )
+            {
+                continue;
+            }
+            builder = builder.header(header_name.clone(), header_value.clone());
+        }
+        if !current_body.is_empty() {
+            builder = builder.body(current_body.clone());
+        }
+
+        let resp = builder.send().await.map_err(|e| {
+            HakilleError::SubstrateError(format!("egress fetch failed: {}", e.without_url()))
+        })?;
+
+        let status = resp.status();
+        if status.is_redirection()
+            && let Some(loc_hdr) = resp.headers().get(reqwest::header::LOCATION)
+        {
+            if redirects_followed >= EGRESS_MAX_REDIRECTS {
+                return Err(HakilleError::SubstrateError(
+                    "egress denied: trop de redirections".into(),
+                ));
+            }
+            let loc_str = loc_hdr.to_str().map_err(|_| {
+                HakilleError::SubstrateError("egress denied: Location invalide".into())
+            })?;
+            let next_url = current_url.join(loc_str).map_err(|e| {
+                HakilleError::SubstrateError(format!(
+                    "egress denied: URL de redirection invalide: {e}"
+                ))
+            })?;
+            if current_url.scheme() == "https" && next_url.scheme() != "https" {
+                return Err(HakilleError::SubstrateError(
+                    "egress denied: redirection HTTPS vers HTTP interdite".into(),
+                ));
+            }
+            let next_url = policy.check_url(next_url.as_str())?;
+            if matches!(status.as_u16(), 301..=303)
+                && !matches!(current_method, reqwest::Method::GET | reqwest::Method::HEAD)
+            {
+                current_method = reqwest::Method::GET;
+                current_body.clear();
+            }
+            current_url = next_url;
+            redirects_followed += 1;
+            continue;
+        }
+
+        break resp;
+    };
+
     let status_code = response.status().as_u16();
     if let Some(declared) = response.content_length()
         && declared > EGRESS_MAX_BODY_BYTES as u64

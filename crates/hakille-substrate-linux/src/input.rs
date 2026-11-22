@@ -117,11 +117,49 @@ impl LinuxInputInjector {
     }
 
     pub fn recorded_events(&self) -> Vec<LinuxInputEvent> {
-        self.recorded_events.lock().unwrap().clone()
+        self.recorded_events
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     pub fn clear_recorded_events(&self) {
-        self.recorded_events.lock().unwrap().clear();
+        if let Ok(mut g) = self.recorded_events.lock() {
+            g.clear();
+        }
+    }
+
+    /// Table exacte des codes evdev Linux (`input-event-codes.h`, disposition QWERTY).
+    pub fn ascii_letter_to_evdev(ch: char) -> Option<u16> {
+        match ch.to_ascii_lowercase() {
+            'q' => Some(16),
+            'w' => Some(17),
+            'e' => Some(18),
+            'r' => Some(19),
+            't' => Some(20),
+            'y' => Some(21),
+            'u' => Some(22),
+            'i' => Some(23),
+            'o' => Some(24),
+            'p' => Some(25),
+            'a' => Some(30),
+            's' => Some(31),
+            'd' => Some(32),
+            'f' => Some(33),
+            'g' => Some(34),
+            'h' => Some(35),
+            'j' => Some(36),
+            'k' => Some(37),
+            'l' => Some(38),
+            'z' => Some(44),
+            'x' => Some(45),
+            'c' => Some(46),
+            'v' => Some(47),
+            'b' => Some(48),
+            'n' => Some(49),
+            'm' => Some(50),
+            _ => None,
+        }
     }
 
     pub fn key_to_evdev(key: &Key) -> u16 {
@@ -150,7 +188,6 @@ impl LinuxInputInjector {
 
         match action {
             InputAction::Click { x, y, button } => {
-                // Emit both absolute positioning and relative delta for wide driver support
                 events.push(LinuxInputEvent::abs(ABS_X, *x));
                 events.push(LinuxInputEvent::abs(ABS_Y, *y));
                 events.push(LinuxInputEvent::rel(REL_X, *x));
@@ -192,19 +229,20 @@ impl LinuxInputInjector {
             InputAction::Type { text } => {
                 for ch in text.chars() {
                     if ch.is_ascii_uppercase() {
-                        events.push(LinuxInputEvent::key(KEY_LEFTSHIFT, true));
-                        let code = KEY_A + (ch.to_ascii_lowercase() as u16 - 'a' as u16);
-                        events.push(LinuxInputEvent::key(code, true));
-                        events.push(LinuxInputEvent::syn());
-                        events.push(LinuxInputEvent::key(code, false));
-                        events.push(LinuxInputEvent::key(KEY_LEFTSHIFT, false));
-                        events.push(LinuxInputEvent::syn());
+                        if let Some(code) = Self::ascii_letter_to_evdev(ch) {
+                            events.push(LinuxInputEvent::key(KEY_LEFTSHIFT, true));
+                            events.push(LinuxInputEvent::key(code, true));
+                            events.push(LinuxInputEvent::syn());
+                            events.push(LinuxInputEvent::key(code, false));
+                            events.push(LinuxInputEvent::key(KEY_LEFTSHIFT, false));
+                            events.push(LinuxInputEvent::syn());
+                        }
                     } else {
                         let code = match ch {
                             ' ' => KEY_SPACE,
                             '\n' | '\r' => KEY_ENTER,
                             '\t' => KEY_TAB,
-                            'a'..='z' => KEY_A + (ch as u16 - 'a' as u16),
+                            'a'..='z' => Self::ascii_letter_to_evdev(ch).unwrap_or(KEY_SPACE),
                             '1'..='9' => KEY_1 + (ch as u16 - '1' as u16),
                             '0' => KEY_0,
                             '.' => KEY_DOT,
@@ -233,7 +271,7 @@ impl LinuxInputInjector {
             InputAction::Scroll { direction, amount } => {
                 let val = match direction {
                     ScrollDirection::Up => *amount,
-                    ScrollDirection::Down => -amount,
+                    ScrollDirection::Down => amount.saturating_neg(),
                     ScrollDirection::Left | ScrollDirection::Right => *amount,
                 };
                 events.push(LinuxInputEvent::rel(REL_WHEEL, val));
@@ -261,27 +299,18 @@ impl LinuxInputInjector {
         events
     }
 
-    pub fn inject(&self, action: &InputAction) -> Result<(), String> {
-        // HONNÊTE : tentative d'ouverture réelle de /dev/uinput. Si le
-        // périphérique est absent ou inaccessible (EACCES — l'utilisateur doit
-        // appartenir au groupe `input` ou recevoir une règle udev), on retourne
-        // une erreur explicite au lieu d'enregistrer silencieusement des
-        // événements qui n'ont jamais atteint le noyau.
+    pub fn inject(&self, _action: &InputAction) -> Result<(), String> {
+        // HONNÊTE : tant que les ioctls UI_DEV_SETUP / UI_DEV_CREATE et l'écriture
+        // noyau `struct input_event` ne sont pas raccordés, on ne retourne JAMAIS
+        // un faux `Ok(())` même si `/dev/uinput` est ouvrable.
         match std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open("/dev/uinput")
         {
-            Ok(_) => {
-                // Descripteur obtenu : preuve d'accès uinput. L'écriture
-                // complète des ioctls UI_DEV_SETUP/UI_DEV_CREATE reste un
-                // travail suivi ; on enregistre les événements traduits pour
-                // rejeu une fois le device virtuel créé.
-                let events = self.translate_action(action);
-                let mut recorded = self.recorded_events.lock().unwrap();
-                recorded.extend(events);
-                Ok(())
-            }
+            Ok(_) => Err(
+                "uinput non raccordé : /dev/uinput est accessible mais la création du périphérique virtuel (UI_DEV_CREATE) et l'émission d'événements noyau ne sont pas encore implémentées ; aucun événement émis".to_string(),
+            ),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!(
                 "uinput indisponible (/dev/uinput absent) : injection impossible — {}",
                 e

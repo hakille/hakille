@@ -24,12 +24,17 @@ pub struct ContinuousAuth;
 impl ContinuousAuth {
     pub fn start_session(user_id: UserId, initial_confidence: f64) -> AuthSession {
         let now = Timestamp::now();
+        let clean_confidence = if initial_confidence.is_finite() {
+            initial_confidence.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         AuthSession {
             user_id,
             started_at: now.clone(),
             last_verified: now,
-            confidence_score: initial_confidence,
-            is_fully_authenticated: initial_confidence >= 0.8,
+            confidence_score: clean_confidence,
+            is_fully_authenticated: clean_confidence >= 0.8,
         }
     }
 
@@ -38,19 +43,30 @@ impl ContinuousAuth {
         new_embedding: &[f32],
         stored: &[f32],
     ) -> f64 {
+        if !session.confidence_score.is_finite() {
+            session.confidence_score = 0.0;
+        }
         let similarity = Self::cosine_similarity(new_embedding, stored);
-        session.confidence_score = (session.confidence_score + similarity) / 2.0;
+        let updated = (session.confidence_score + similarity) / 2.0;
+        session.confidence_score = if updated.is_finite() {
+            updated.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         // Toute ré-évaluation réussie rafraîchit la preuve de présence.
         session.last_verified = Timestamp::now();
         session.is_fully_authenticated = session.confidence_score >= 0.8;
         session.confidence_score
     }
 
-    /// Session valide si `score >= min` ET preuve récente (< 15 min).
+    /// Session valide si `score >= min` (finis) ET preuve récente (< 15 min).
     /// Le timeout borne la réutilisation d'une session volée/inactive
     /// (fail-closed au-delà de 15 min sans re-vérification).
     pub fn is_valid(session: &AuthSession, min_confidence: f64) -> bool {
-        if session.confidence_score < min_confidence {
+        if !session.confidence_score.is_finite()
+            || !min_confidence.is_finite()
+            || session.confidence_score < min_confidence
+        {
             return false;
         }
         let elapsed = chrono::Utc::now().signed_duration_since(session.last_verified.0);
@@ -61,18 +77,23 @@ impl ContinuousAuth {
         if a.len() != b.len() || a.is_empty() {
             return 0.0;
         }
-        let mut dot = 0.0;
-        let mut norm_a = 0.0;
-        let mut norm_b = 0.0;
-        for (x, y) in a.iter().zip(b.iter()) {
-            dot += x * y;
-            norm_a += x * x;
-            norm_b += y * y;
+        let mut dot = 0.0f64;
+        let mut norm_a = 0.0f64;
+        let mut norm_b = 0.0f64;
+        for (&x, &y) in a.iter().zip(b.iter()) {
+            if !x.is_finite() || !y.is_finite() {
+                return 0.0;
+            }
+            let xf = x as f64;
+            let yf = y as f64;
+            dot += xf * yf;
+            norm_a += xf * xf;
+            norm_b += yf * yf;
         }
         if norm_a == 0.0 || norm_b == 0.0 {
             return 0.0;
         }
-        (dot / (norm_a.sqrt() * norm_b.sqrt())) as f64
+        (dot / (norm_a.sqrt() * norm_b.sqrt())).clamp(-1.0, 1.0)
     }
 }
 
@@ -97,8 +118,8 @@ impl RevocableTokenCommitment {
         OsRng.fill_bytes(&mut salt);
 
         let mut hasher = Sha256::new();
-        hasher.update(&token);
-        hasher.update(&salt);
+        hasher.update(token);
+        hasher.update(salt);
         let hash = hasher.finalize();
 
         let mut commitment_hash = [0u8; 32];
@@ -118,7 +139,7 @@ impl RevocableTokenCommitment {
     pub fn verify_token(&self, candidate_token: &[u8; 32]) -> bool {
         let mut hasher = Sha256::new();
         hasher.update(candidate_token);
-        hasher.update(&self.salt);
+        hasher.update(self.salt);
         let computed = hasher.finalize();
 
         // Constant-time comparison
@@ -170,6 +191,11 @@ impl ZkSessionStorage {
         storage_key: &[u8; 32],
         duration_minutes: i64,
     ) -> Result<(SessionPersistenceRecord, [u8; 32]), HakilleError> {
+        if duration_minutes <= 0 {
+            return Err(HakilleError::CapabilityDenied(
+                "La durée de persistance de session doit être strictement positive".to_string(),
+            ));
+        }
         let session_id = Uuid::new_v4();
         let blinded_user_index = compute_blind_index(&session.user_id.0.to_string(), blind_key);
         let (token_commitment, raw_token) = RevocableTokenCommitment::generate();
@@ -312,10 +338,10 @@ impl ZkSessionStorage {
             .collect();
 
         for id in &expired_ids {
-            if let Some(rec) = self.sessions.remove(id) {
-                if let Some(list) = self.blinded_user_index_map.get_mut(&rec.blinded_user_index) {
-                    list.retain(|x| x != id);
-                }
+            if let Some(rec) = self.sessions.remove(id)
+                && let Some(list) = self.blinded_user_index_map.get_mut(&rec.blinded_user_index)
+            {
+                list.retain(|x| x != id);
             }
         }
 

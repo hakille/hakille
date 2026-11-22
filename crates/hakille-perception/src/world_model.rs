@@ -23,19 +23,23 @@ pub struct WorldModel {
 }
 
 impl WorldModel {
+    /// Initialise un modèle du monde **fail-closed** : aucune présence, distance
+    /// ni luminosité n'est supposée avant une observation capteur réelle.
+    /// `is_private_environment()` reste `false` tant qu'un unique utilisateur
+    /// n'a pas été observé.
     pub fn new(initial_location: impl Into<String>) -> Self {
         Self {
             current_state: SituationalState {
                 location_context: initial_location.into(),
                 present_speakers: HashSet::new(),
                 active_application: None,
-                ambient_noise_level_db: 35.0,
-                user_present: true,
-                user_attentive: true,
+                ambient_noise_level_db: 0.0,
+                user_present: false,
+                user_attentive: false,
                 third_parties_present: false,
-                people_count: 1,
-                lighting_condition: "Daylight".to_string(),
-                user_distance_m: 0.6,
+                people_count: 0,
+                lighting_condition: "Unknown".to_string(),
+                user_distance_m: 0.0,
                 in_meeting: false,
                 last_updated: Timestamp::now(),
             },
@@ -68,7 +72,9 @@ impl WorldModel {
     }
 
     pub fn update_noise_level(&mut self, db: f32) {
-        self.current_state.ambient_noise_level_db = db;
+        if db.is_finite() {
+            self.current_state.ambient_noise_level_db = db.clamp(0.0, 160.0);
+        }
         self.current_state.last_updated = Timestamp::now();
     }
 
@@ -85,7 +91,11 @@ impl WorldModel {
         self.current_state.people_count = people_count;
         self.current_state.third_parties_present =
             people_count > 1 || self.current_state.present_speakers.len() > 1;
-        self.current_state.user_distance_m = distance_m;
+        self.current_state.user_distance_m = if distance_m.is_finite() && distance_m >= 0.0 {
+            distance_m
+        } else {
+            0.0
+        };
         self.current_state.lighting_condition = lighting.into();
         self.current_state.last_updated = Timestamp::now();
     }

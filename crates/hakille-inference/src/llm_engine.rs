@@ -195,15 +195,72 @@ fn shared_callback(callback: StreamCallback) -> std::sync::Arc<std::sync::Mutex<
 fn dispatch_stream_event(registry: &std::sync::Mutex<StreamRegistry>, event: &TokenEvent) {
     let callback = match registry.lock() {
         Ok(guard) => guard.callback.clone(),
-        Err(_) => return,
+        Err(poisoned) => poisoned.into_inner().callback.clone(),
     };
     if let Some(callback) = callback {
         // Le registre reste libre pour un retrait/remplacement. Le verrou du
         // callback sérialise deux émetteurs sans perdre leurs événements.
-        if let Ok(mut callback) = callback.lock() {
-            callback(event);
+        // `catch_unwind` empêche un callback défaillant d'empoisonner GLOBAL_ENGINE.
+        let panicked = match callback.lock() {
+            Ok(mut cb) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                cb(event);
+            }))
+            .is_err(),
+            Err(_) => true,
+        };
+        if panicked {
+            tracing::warn!(
+                "Callback de streaming global en panique — détaché pour protéger GLOBAL_ENGINE"
+            );
+            let mut guard = match registry.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            if guard
+                .callback
+                .as_ref()
+                .is_some_and(|cur| std::sync::Arc::ptr_eq(cur, &callback))
+            {
+                guard.callback = None;
+            }
         }
     }
+}
+
+/// Garde RAII retirant automatiquement le callback global de streaming à sa
+/// destruction (même en cas de retour anticipé ou de panique), sans effacer
+/// un callback ultérieur installé par une autre session.
+pub struct TokenStreamGuard {
+    registered: std::sync::Arc<std::sync::Mutex<StreamCallback>>,
+}
+
+impl Drop for TokenStreamGuard {
+    fn drop(&mut self) {
+        let mut guard = match STREAM_CALLBACK.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if guard
+            .callback
+            .as_ref()
+            .is_some_and(|cur| std::sync::Arc::ptr_eq(cur, &self.registered))
+        {
+            guard.callback = None;
+        }
+    }
+}
+
+/// Installe un callback global de streaming protégé par une garde RAII.
+/// Préférer `generate_with_control` avec un callback par appel pour isoler
+/// totalement des sessions concurrentes.
+pub fn install_token_stream_callback(cb: StreamCallback) -> TokenStreamGuard {
+    let shared = shared_callback(cb);
+    let mut guard = match STREAM_CALLBACK.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    guard.callback = Some(std::sync::Arc::clone(&shared));
+    TokenStreamGuard { registered: shared }
 }
 
 /// Enregistre (ou remplace) le callback global de streaming.
@@ -1041,7 +1098,15 @@ impl QwenEngine {
                 token_id: next_token,
                 text_delta: stream_state.push_token(&self.tokenizer, &generated),
             };
-            on_token(&event);
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                on_token(&event);
+            }))
+            .is_err()
+            {
+                tracing::warn!(
+                    "Callback local de streaming en panique — ignoré pour protéger le moteur Qwen"
+                );
+            }
             dispatch_stream_event(&STREAM_CALLBACK, &event);
             control.check()?;
             if generated.len() >= max_tokens {
@@ -1169,28 +1234,48 @@ static GLOBAL_ENGINE: std::sync::OnceLock<std::sync::Mutex<QwenEngine>> =
 /// - Si le checkpoint/tokenizer manque : `Err` LOUD (jamais de fallback
 ///   synthétique). L'initialisation est sérialisée : aucun double chargement
 ///   de plusieurs centaines de Mio lors de deux premiers appels concurrents.
-pub fn global_qwen_engine() -> Result<std::sync::MutexGuard<'static, QwenEngine>> {
+///
+/// Retourne le moteur global en vérifiant l'échéance et l'annulation AVANT
+/// d'engager le chargement paresseux du GGUF (~10-60s).
+pub fn global_qwen_engine_with_control(
+    control: GenerationControl<'_>,
+) -> Result<std::sync::MutexGuard<'static, QwenEngine>> {
+    control.check()?;
     if let Some(m) = GLOBAL_ENGINE.get() {
-        return m.lock().map_err(|e| {
+        let guard = m.lock().map_err(|e| {
             HakilleError::InferenceError(format!("Mutex moteur Qwen empoisonné : {}", e))
-        });
+        })?;
+        control.check()?;
+        return Ok(guard);
     }
     let _initialization = ENGINE_INITIALIZATION
         .lock()
         .map_err(|_| HakilleError::InferenceError("Initialisation Qwen empoisonnée".into()))?;
+    control.check()?;
     if let Some(engine) = GLOBAL_ENGINE.get() {
-        return engine
+        let guard = engine
             .lock()
-            .map_err(|_| HakilleError::InferenceError("Moteur Qwen empoisonné".into()));
+            .map_err(|_| HakilleError::InferenceError("Moteur Qwen empoisonné".into()))?;
+        control.check()?;
+        return Ok(guard);
     }
     let engine = match GLOBAL_PATHS.get() {
         Some((gguf, tokenizer)) => QwenEngine::load_with_paths(gguf, tokenizer)?,
         None => QwenEngine::load_default()?,
     };
     let _ = GLOBAL_ENGINE.set(std::sync::Mutex::new(engine));
-    GLOBAL_ENGINE.get().unwrap().lock().map_err(|e| {
-        HakilleError::InferenceError(format!("Mutex moteur Qwen empoisonné après init : {}", e))
-    })
+    control.check()?;
+    GLOBAL_ENGINE
+        .get()
+        .ok_or_else(|| HakilleError::InferenceError("Moteur Qwen non initialisé".into()))?
+        .lock()
+        .map_err(|e| {
+            HakilleError::InferenceError(format!("Mutex moteur Qwen empoisonné après init : {}", e))
+        })
+}
+
+pub fn global_qwen_engine() -> Result<std::sync::MutexGuard<'static, QwenEngine>> {
+    global_qwen_engine_with_control(GenerationControl::default())
 }
 
 // ---------------------------------------------------------------------------
@@ -1350,6 +1435,26 @@ mod llm_engine_tests {
             worker.join().unwrap();
         }
         assert_eq!(calls.load(Ordering::Relaxed), 400);
+    }
+
+    #[test]
+    fn panicking_stream_callback_is_caught_and_detached() {
+        use std::sync::Mutex;
+        let registry = Mutex::new(StreamRegistry {
+            callback: Some(shared_callback(Box::new(|_| {
+                panic!("panique simulée dans le callback de streaming");
+            }))),
+        });
+        let event = TokenEvent {
+            index: 0,
+            token_id: 7,
+            text_delta: "boom".into(),
+        };
+        dispatch_stream_event(&registry, &event);
+        assert!(
+            registry.lock().unwrap().callback.is_none(),
+            "le callback en panique doit être détaché sans empoisonner le registre"
+        );
     }
 
     #[test]

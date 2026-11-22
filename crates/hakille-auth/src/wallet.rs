@@ -73,7 +73,13 @@ impl WalletManager {
     pub fn check_budget(&self, wallet: &WalletCapability, amount: u64) -> Result<()> {
         self.check_cap_validity(wallet)?;
         let current_spent = self.spent.get(wallet).copied().unwrap_or(0);
-        if current_spent + amount > wallet.max_amount_cents {
+        let projected_total = current_spent.checked_add(amount).ok_or_else(|| {
+            HakilleError::CapabilityDenied(format!(
+                "Wallet budget arithmetic overflow: requested {}, current spent {}",
+                amount, current_spent
+            ))
+        })?;
+        if projected_total > wallet.max_amount_cents {
             return Err(HakilleError::CapabilityDenied(format!(
                 "Wallet budget exceeded: requested {}, current spent {}, limit {}",
                 amount, current_spent, wallet.max_amount_cents
@@ -117,7 +123,7 @@ impl WalletManager {
     ) -> Result<()> {
         self.check_budget_for(wallet, amount, currency, &category)?;
         let current_spent = self.spent.entry(wallet.clone()).or_insert(0);
-        *current_spent += amount;
+        *current_spent = current_spent.saturating_add(amount);
         self.records.push(SpendRecord {
             amount,
             timestamp: Timestamp::now(),
@@ -143,14 +149,19 @@ impl WalletManager {
         self.records
             .iter()
             .filter(|r| r.timestamp.0.date_naive() == today)
-            .map(|r| r.amount)
-            .sum()
+            .fold(0u64, |acc, r| acc.saturating_add(r.amount))
     }
 
     /// Plafond journalier global : refuse si `déjà_dépensé_aujourd'hui + amount > daily_limit_cents`.
     pub fn check_daily_cap(&self, amount: u64, daily_limit_cents: u64) -> Result<()> {
         let spent_today = self.daily_spent_cents();
-        if spent_today.saturating_add(amount) > daily_limit_cents {
+        let projected = spent_today.checked_add(amount).ok_or_else(|| {
+            HakilleError::CapabilityDenied(format!(
+                "Plafond journalier dépassé (overflow) : déjà {}c + {}c > limite {}c",
+                spent_today, amount, daily_limit_cents
+            ))
+        })?;
+        if projected > daily_limit_cents {
             return Err(HakilleError::CapabilityDenied(format!(
                 "Plafond journalier dépassé : déjà {}c + {}c > limite {}c",
                 spent_today, amount, daily_limit_cents
@@ -159,16 +170,36 @@ impl WalletManager {
         Ok(())
     }
 
-    /// Persiste `spent` + `records` en JSON (snapshot).
+    /// Persiste `spent` + `records` en JSON (snapshot) par écriture atomique.
     pub fn save_to_file(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
         let snap = WalletSnapshot {
             spent: self.spent.iter().map(|(k, v)| (k.clone(), *v)).collect(),
             records: self.records.clone(),
         };
         let json = serde_json::to_vec_pretty(&snap)
             .map_err(|e| HakilleError::SerializationError(e.to_string()))?;
-        std::fs::write(path.as_ref(), json)
-            .map_err(|e| HakilleError::StorageError(e.to_string()))?;
+
+        let tmp_path = path.with_extension("json.tmp");
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&tmp_path)
+                .map_err(|e| HakilleError::StorageError(e.to_string()))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+            }
+            file.write_all(&json)
+                .map_err(|e| HakilleError::StorageError(e.to_string()))?;
+            file.sync_all()
+                .map_err(|e| HakilleError::StorageError(e.to_string()))?;
+        }
+        std::fs::rename(&tmp_path, path).map_err(|e| HakilleError::StorageError(e.to_string()))?;
         Ok(())
     }
 
@@ -187,7 +218,7 @@ impl WalletManager {
     /// Strict Constitutional Rule 7 & Privilege Step-Up Guard (§30e, F21, F23).
     /// Enforces:
     /// 1. Minors under 18 and holders of Restriction::NoWallet are unconditionally denied.
-    /// 2. Session confidence must satisfy tau >= 0.90 for high-privilege crypto-wallet operations.
+    /// 2. Session confidence must be finite and satisfy tau >= 0.90 for high-privilege crypto-wallet operations.
     pub fn verify_stepup_and_rule7(
         &self,
         session_tau: f32,
@@ -200,9 +231,9 @@ impl WalletManager {
             ));
         }
 
-        if session_tau < 0.90 {
+        if !session_tau.is_finite() || session_tau < 0.90 {
             return Err(HakilleError::CapabilityDenied(format!(
-                "Privilege step-up required: crypto-wallet operations require session confidence >= 0.90, current is {:.2}",
+                "Privilege step-up required: crypto-wallet operations require finite session confidence >= 0.90, current is {:.2}",
                 session_tau
             )));
         }
@@ -212,6 +243,7 @@ impl WalletManager {
 
     /// Provision a guarded wallet capability requiring step-up authentication (tau >= 0.90)
     /// and strictly enforcing the Rule 7 Minor NoWallet invariant.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_guarded_wallet_cap(
         &self,
         user_id: UserId,
@@ -230,7 +262,7 @@ impl WalletManager {
     /// Authorize and cryptographically sign a financial transaction.
     /// Invariants enforced:
     /// - Rule 7: Absolute denial for minors
-    /// - F21: Continuous confidence tau >= 0.90
+    /// - F21: Continuous confidence tau >= 0.90 (and finite)
     /// - Budget limit within wallet capability
     /// - Currency and category match
     /// - Ledger spend record appended
@@ -253,19 +285,7 @@ impl WalletManager {
             tx.category.clone(),
         )?;
 
-        // Cryptographically sign canonical transaction payload with signing key
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(signing_key);
-        hasher.update(tx.tx_id.as_bytes());
-        hasher.update(&tx.amount_cents.to_le_bytes());
-        hasher.update(tx.currency.as_bytes());
-        hasher.update(tx.recipient.as_bytes());
-        hasher.update(&tx.nonce.to_le_bytes());
-        let digest = hasher.finalize();
-
-        let mut signature_digest = [0u8; 32];
-        signature_digest.copy_from_slice(&digest);
+        let signature_digest = tx.compute_hmac_signature(signing_key);
 
         Ok(SignedTransactionProof {
             transaction: tx,
@@ -289,6 +309,47 @@ pub struct WalletTransaction {
     pub timestamp: Timestamp,
 }
 
+impl WalletTransaction {
+    /// Computes a domain-separated, length-prefixed HMAC-SHA256 signature over the canonical transaction fields.
+    pub fn compute_hmac_signature(&self, signing_key: &[u8; 32]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+
+        let mut ipad = [0x36u8; 64];
+        let mut opad = [0x5cu8; 64];
+        for i in 0..32 {
+            ipad[i] ^= signing_key[i];
+            opad[i] ^= signing_key[i];
+        }
+
+        let mut inner = Sha256::new();
+        inner.update(ipad);
+        inner.update(b"hakille-wallet-tx-v1:");
+        inner.update(self.tx_id.as_bytes());
+        inner.update(self.amount_cents.to_le_bytes());
+        inner.update((self.currency.len() as u64).to_le_bytes());
+        inner.update(self.currency.as_bytes());
+        inner.update((self.recipient.len() as u64).to_le_bytes());
+        inner.update(self.recipient.as_bytes());
+        inner.update((self.description.len() as u64).to_le_bytes());
+        inner.update(self.description.as_bytes());
+        let cat_str = format!("{:?}", self.category);
+        inner.update((cat_str.len() as u64).to_le_bytes());
+        inner.update(cat_str.as_bytes());
+        inner.update(self.nonce.to_le_bytes());
+        inner.update(self.timestamp.0.timestamp_millis().to_le_bytes());
+        let inner_digest = inner.finalize();
+
+        let mut outer = Sha256::new();
+        outer.update(opad);
+        outer.update(inner_digest);
+        let digest = outer.finalize();
+
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&digest);
+        out
+    }
+}
+
 /// Attestation proof of an authorized, signed wallet transaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedTransactionProof {
@@ -296,6 +357,18 @@ pub struct SignedTransactionProof {
     pub signature_digest: [u8; 32],
     pub authorized_at_confidence: f32,
     pub authorized_at: Timestamp,
+}
+
+impl SignedTransactionProof {
+    /// Constant-time verification of the transaction proof signature against `signing_key`.
+    pub fn verify(&self, signing_key: &[u8; 32]) -> bool {
+        let expected = self.transaction.compute_hmac_signature(signing_key);
+        let mut diff = 0u8;
+        for (a, b) in expected.iter().zip(self.signature_digest.iter()) {
+            diff |= a ^ b;
+        }
+        diff == 0
+    }
 }
 
 #[cfg(test)]

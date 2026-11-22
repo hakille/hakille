@@ -125,6 +125,107 @@ impl ReplicationEngine {
                 remote.tombstone_times.insert(tombstone, time.clone());
             }
         }
+        if delta
+            .tombstone_times
+            .keys()
+            .any(|id| !remote.tombstones.contains(id))
+        {
+            return Err(hakille_core::HakilleError::SerializationError(
+                "Horodatage de tombstone sans tombstone correspondante dans le delta".into(),
+            ));
+        }
+        remote.vector_clock = delta.clock;
+        sync_state.merge(&remote)
+    }
+
+    /// Chiffre l'état de réplication avec XChaCha20-Poly1305 (nonce 192 bits) et liaison AAD
+    /// au domaine tenant et au nœud émetteur.
+    pub fn build_encrypted_delta_with_aad(
+        sync_state: &CrdtSync,
+        encryption_key: &[u8; 32],
+        tenant_id: &str,
+        sender_node_id: &str,
+    ) -> Result<hakille_core::crypto::XChaChaBlob> {
+        let delta = Self::build_delta(sync_state, None, None);
+        for triplet in &delta.new_triplets {
+            crate::crdt::canonical_triplet(triplet)?;
+        }
+        let serialized = serde_json::to_vec(&delta)
+            .map_err(|e| hakille_core::HakilleError::SerializationError(e.to_string()))?;
+        if serialized.len() > 32 * 1024 * 1024 {
+            return Err(hakille_core::HakilleError::SerializationError(
+                "État de réplication limité à 32 Mio".into(),
+            ));
+        }
+        let aad = hakille_core::crypto::AadBinding::new(
+            tenant_id,
+            "crdt_replication",
+            "replication_delta",
+            sender_node_id,
+            1,
+        )
+        .to_bytes();
+        hakille_core::crypto::XChaChaCipher::encrypt(&serialized, encryption_key, &aad)
+            .map_err(|e| hakille_core::HakilleError::CryptoError(e.to_string()))
+    }
+
+    /// Déchiffre et applique un delta XChaCha20-Poly1305 lié par AAD au tenant et au nœud émetteur.
+    pub fn apply_encrypted_delta_with_aad(
+        sync_state: &mut CrdtSync,
+        blob: &hakille_core::crypto::XChaChaBlob,
+        decryption_key: &[u8; 32],
+        tenant_id: &str,
+        expected_sender_node_id: &str,
+    ) -> Result<()> {
+        if blob.ciphertext.len() > 32 * 1024 * 1024 + 16 {
+            return Err(hakille_core::HakilleError::SerializationError(
+                "État de réplication limité à 32 Mio".into(),
+            ));
+        }
+        let aad = hakille_core::crypto::AadBinding::new(
+            tenant_id,
+            "crdt_replication",
+            "replication_delta",
+            expected_sender_node_id,
+            1,
+        )
+        .to_bytes();
+        let decrypted = hakille_core::crypto::XChaChaCipher::decrypt(blob, decryption_key, &aad)
+            .map_err(|e| hakille_core::HakilleError::CryptoError(e.to_string()))?;
+        let delta: ReplicationDelta = serde_json::from_slice(&decrypted)
+            .map_err(|e| hakille_core::HakilleError::SerializationError(e.to_string()))?;
+
+        let mut remote = CrdtSync::new();
+        for triplet in delta.new_triplets {
+            if remote
+                .elements
+                .insert(triplet.id.clone(), triplet)
+                .is_some()
+            {
+                return Err(hakille_core::HakilleError::SerializationError(
+                    "ID de triplet dupliqué dans le delta".into(),
+                ));
+            }
+        }
+        for tombstone in delta.new_tombstones {
+            if !remote.tombstones.insert(tombstone.clone()) {
+                return Err(hakille_core::HakilleError::SerializationError(
+                    "Tombstone dupliquée dans le delta".into(),
+                ));
+            }
+            if let Some(time) = delta.tombstone_times.get(&tombstone) {
+                remote.tombstone_times.insert(tombstone, time.clone());
+            }
+        }
+        if delta
+            .tombstone_times
+            .keys()
+            .any(|id| !remote.tombstones.contains(id))
+        {
+            return Err(hakille_core::HakilleError::SerializationError(
+                "Horodatage de tombstone sans tombstone correspondante dans le delta".into(),
+            ));
+        }
         remote.vector_clock = delta.clock;
         sync_state.merge(&remote)
     }

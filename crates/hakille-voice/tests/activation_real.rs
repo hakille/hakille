@@ -42,8 +42,10 @@ fn fixture_pcm(fixtures_dir: &Path, manifest: &Value, name: &str) -> Vec<f32> {
     assert!(samples > 0 && samples <= 16_000 * 12);
     assert_eq!(bytes.len(), samples * 4, "PCM f32 LE complet : {name}");
     let pcm: Vec<f32> = bytes
-        .chunks_exact(4)
-        .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("sample de 4 octets")))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&bytes| f32::from_le_bytes(bytes))
         .collect();
     assert!(
         pcm.iter()

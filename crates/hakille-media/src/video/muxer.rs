@@ -110,15 +110,37 @@ impl FfmpegMuxer {
         output: &Path,
         container: VideoContainer,
     ) -> MediaResult<()> {
+        // Canonicalise les entrées locales : empêche l'injection d'options
+        // (`-foo`) ou de schémas réseau (`http://...`) dans les arguments `-i`.
+        let video_canon = std::fs::canonicalize(video_in)?;
+        if !video_canon.is_file() {
+            return Err(MediaError::InvalidRequest(
+                "entrée vidéo ffmpeg introuvable ou non régulière".into(),
+            ));
+        }
+        let audio_canon = match audio_in {
+            Some(a) => {
+                let c = std::fs::canonicalize(a)?;
+                if !c.is_file() {
+                    return Err(MediaError::InvalidRequest(
+                        "entrée audio ffmpeg introuvable ou non régulière".into(),
+                    ));
+                }
+                Some(c)
+            }
+            None => None,
+        };
+
         let mut cmd = Command::new(&self.binary);
-        cmd.arg("-y")
+        cmd.arg("-nostdin")
+            .arg("-y")
             .arg("-hide_banner")
             .arg("-loglevel")
             .arg("error")
             .arg("-i")
-            .arg(video_in);
+            .arg(&video_canon);
 
-        if let Some(audio) = audio_in {
+        if let Some(audio) = &audio_canon {
             cmd.arg("-i").arg(audio);
         }
 

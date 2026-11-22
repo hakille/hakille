@@ -622,8 +622,10 @@ mod whisper_engine_tests {
             let bytes = std::fs::read(path).unwrap();
             assert_eq!(bytes.len() % 4, 0);
             let pcm: Vec<f32> = bytes
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|&b| f32::from_le_bytes(b))
                 .collect();
             assert!(engine.transcribe(&pcm, None, Some(Instant::now())).is_err());
             let result = engine
@@ -731,8 +733,10 @@ mod whisper_engine_tests {
             let bytes = std::fs::read(fixture["pcm"].as_str().unwrap()).unwrap();
             assert_eq!(bytes.len() % 4, 0);
             let pcm: Vec<f32> = bytes
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|&b| f32::from_le_bytes(b))
                 .collect();
             let language = match forced_language.as_deref() {
                 Some("fixture") => fixture["voice"].as_str().unwrap().split('-').next(),

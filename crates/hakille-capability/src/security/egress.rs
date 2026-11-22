@@ -36,10 +36,16 @@ impl SecretRef {
     }
 }
 
+#[derive(Clone)]
+struct StoredSecret {
+    value: Zeroizing<String>,
+    allowed_hosts: Vec<String>,
+}
+
 /// Zero-knowledge secret repository holding credentials in zeroized memory.
 #[derive(Default, Clone)]
 pub struct SecretVault {
-    secrets: Arc<RwLock<HashMap<String, Zeroizing<String>>>>,
+    secrets: Arc<RwLock<HashMap<String, StoredSecret>>>,
 }
 
 impl SecretVault {
@@ -51,7 +57,35 @@ impl SecretVault {
     /// Stores a secret securely in zeroized memory.
     pub async fn store_secret(&self, secret_id: impl Into<String>, secret_value: String) {
         let mut map = self.secrets.write().await;
-        map.insert(secret_id.into(), Zeroizing::new(secret_value));
+        map.insert(
+            secret_id.into(),
+            StoredSecret {
+                value: Zeroizing::new(secret_value),
+                allowed_hosts: Vec::new(),
+            },
+        );
+    }
+
+    /// Stores a secret bound to an explicit destination host allowlist (anti-exfiltration).
+    pub async fn store_secret_for_hosts(
+        &self,
+        secret_id: impl Into<String>,
+        secret_value: String,
+        allowed_hosts: Vec<String>,
+    ) {
+        let normalized_hosts = allowed_hosts
+            .into_iter()
+            .map(|h| h.trim().to_ascii_lowercase())
+            .filter(|h| !h.is_empty())
+            .collect();
+        let mut map = self.secrets.write().await;
+        map.insert(
+            secret_id.into(),
+            StoredSecret {
+                value: Zeroizing::new(secret_value),
+                allowed_hosts: normalized_hosts,
+            },
+        );
     }
 
     /// Removes a secret from the vault. Memory is zeroized on drop.
@@ -81,7 +115,26 @@ impl SecretVault {
         .await
     }
 
+    /// Injects an Authorization Bearer header after verifying the target destination host against the secret's allowlist.
+    pub async fn inject_authorization_header_for_host(
+        &self,
+        secret_ref: &SecretRef,
+        target_host: &str,
+        headers: &mut reqwest::header::HeaderMap,
+    ) -> Result<(), SecretVaultError> {
+        self.inject_header_for_host(
+            secret_ref,
+            target_host,
+            reqwest::header::AUTHORIZATION,
+            Some("Bearer "),
+            headers,
+        )
+        .await
+    }
+
     /// Injects a custom HTTP header containing the referenced secret.
+    /// If the secret was provisioned with an explicit host allowlist, calling `inject_header`
+    /// without a target host returns `SecretVaultError::Unauthorized`.
     pub async fn inject_header(
         &self,
         secret_ref: &SecretRef,
@@ -90,10 +143,54 @@ impl SecretVault {
         headers: &mut reqwest::header::HeaderMap,
     ) -> Result<(), SecretVaultError> {
         let map = self.secrets.read().await;
-        let secret = map
+        let stored = map
             .get(&secret_ref.0)
             .ok_or_else(|| SecretVaultError::SecretNotFound(secret_ref.0.clone()))?;
 
+        if !stored.allowed_hosts.is_empty() {
+            return Err(SecretVaultError::Unauthorized(format!(
+                "Secret '{}' is restricted to allowed hosts {:?}",
+                secret_ref.0, stored.allowed_hosts
+            )));
+        }
+
+        Self::write_sensitive_header(&secret_ref.0, &stored.value, header_name, prefix, headers)
+    }
+
+    /// Injects a custom HTTP header after verifying `target_host` against the secret's host allowlist.
+    pub async fn inject_header_for_host(
+        &self,
+        secret_ref: &SecretRef,
+        target_host: &str,
+        header_name: reqwest::header::HeaderName,
+        prefix: Option<&str>,
+        headers: &mut reqwest::header::HeaderMap,
+    ) -> Result<(), SecretVaultError> {
+        let map = self.secrets.read().await;
+        let stored = map
+            .get(&secret_ref.0)
+            .ok_or_else(|| SecretVaultError::SecretNotFound(secret_ref.0.clone()))?;
+
+        let norm_target = target_host.trim().to_ascii_lowercase();
+        if norm_target.is_empty()
+            || (!stored.allowed_hosts.is_empty() && !stored.allowed_hosts.contains(&norm_target))
+        {
+            return Err(SecretVaultError::Unauthorized(format!(
+                "Destination host '{}' is not authorized for secret '{}'",
+                target_host, secret_ref.0
+            )));
+        }
+
+        Self::write_sensitive_header(&secret_ref.0, &stored.value, header_name, prefix, headers)
+    }
+
+    fn write_sensitive_header(
+        secret_id: &str,
+        secret: &Zeroizing<String>,
+        header_name: reqwest::header::HeaderName,
+        prefix: Option<&str>,
+        headers: &mut reqwest::header::HeaderMap,
+    ) -> Result<(), SecretVaultError> {
         let header_str = match prefix {
             Some(p) => format!("{}{}", p, secret.as_str()),
             None => secret.as_str().to_string(),
@@ -101,7 +198,7 @@ impl SecretVault {
 
         let mut header_value =
             reqwest::header::HeaderValue::from_str(&header_str).map_err(|e| {
-                SecretVaultError::InvalidHeaderValue(secret_ref.0.clone(), e.to_string())
+                SecretVaultError::InvalidHeaderValue(secret_id.to_string(), e.to_string())
             })?;
         header_value.set_sensitive(true);
 

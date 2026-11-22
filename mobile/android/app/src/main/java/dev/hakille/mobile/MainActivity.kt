@@ -42,6 +42,9 @@ import kotlinx.serialization.json.*
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Android 13+ : pas d'aperçu du contenu (cartes, mémoire, journal) dans
+        // l'écran des applications récentes.
+        if (android.os.Build.VERSION.SDK_INT >= 33) setRecentsScreenshotEnabled(false)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.auto(
@@ -332,10 +335,11 @@ class MainActivity : ComponentActivity() {
                                     dev.hakille.mobile.ui.GuestPassPanel(
                                         guestPass = snapshot.objectOrNull("guest_pass"),
                                         busy = busy,
-                                        onStartGuestPass = { name, power, dur ->
-                                            model.startGuestPass(name, power, dur)
+                                        onStartGuestPass = { name, power, dur, pin ->
+                                            model.startGuestPass(name, power, dur, pin)
                                         },
-                                        onRevokeGuestPass = model::revokeGuestPass
+                                        onRevokeGuestPass = { pin -> model.revokeGuestPass(pin) },
+                                        onTickGuestPass = { secs -> model.tickGuestPass(secs) }
                                     )
                                 }
                                 item("autonomy-ladder") {
@@ -403,7 +407,9 @@ class MainActivity : ComponentActivity() {
         busy = busy,
         onApprove = { id -> model.dispatch("approve") { put("card_id", id) } },
         onReject = { id -> model.dispatch("reject") { put("card_id", id) } },
-        onEdit = { id -> model.dispatch("edit_card") { put("card_id", id) } },
+        // Pas d'action « edit_card » côté cœur : aucun bouton Modifier factice.
+        onEdit = null,
+        onBeginApproval = { id -> model.dispatch("begin_approval") { put("card_id", id) } },
         onRequestWhy = { id -> model.requestWhy(id.toString(), "card") },
         onCancelApproval = { model.dispatch("cancel_approval") }
     )

@@ -161,14 +161,19 @@ impl GgufModel {
             ));
         }
 
+        const MAX_GGUF_METADATA_BYTES: u64 = 64 * 1024 * 1024;
+        let metadata_limit = file_len.min(MAX_GGUF_METADATA_BYTES);
+        let mut cursor_pos: u64 = 24;
+
         // 2. Read metadata KV pairs
         let mut metadata = HashMap::new();
         let mut metadata_raw = HashMap::new();
 
         for _ in 0..header.metadata_kv_count {
-            let key = Self::read_string(&mut reader)?;
-            let val_type = Self::read_u32(&mut reader)?;
-            let val = Self::read_value(&mut reader, val_type, file_len)?;
+            let key = Self::read_string_bounded(&mut reader, &mut cursor_pos, metadata_limit)?;
+            let val_type = Self::read_u32_tracked(&mut reader, &mut cursor_pos)?;
+            let val =
+                Self::read_value_bounded(&mut reader, val_type, &mut cursor_pos, metadata_limit)?;
             if metadata.contains_key(&key) {
                 return Err(HakilleError::InferenceError(format!(
                     "Métadonnée GGUF dupliquée : {key}"
@@ -176,11 +181,7 @@ impl GgufModel {
             }
             metadata.insert(key.clone(), val.to_display_string());
             metadata_raw.insert(key, val);
-            if reader
-                .stream_position()
-                .map_err(|e| HakilleError::InferenceError(e.to_string()))?
-                > 64 * 1024 * 1024
-            {
+            if cursor_pos > MAX_GGUF_METADATA_BYTES {
                 return Err(HakilleError::InferenceError(
                     "Métadonnées GGUF supérieures à 64 Mio".into(),
                 ));
@@ -192,8 +193,8 @@ impl GgufModel {
         let mut estimated_params = 0u64;
 
         for _ in 0..header.tensor_count {
-            let name = Self::read_string(&mut reader)?;
-            let n_dims = Self::read_u32(&mut reader)?;
+            let name = Self::read_string_bounded(&mut reader, &mut cursor_pos, file_len)?;
+            let n_dims = Self::read_u32_tracked(&mut reader, &mut cursor_pos)?;
             if !(1..=4).contains(&n_dims) {
                 return Err(HakilleError::InferenceError(format!(
                     "Nombre de dimensions GGUF invalide : {n_dims}"
@@ -201,14 +202,14 @@ impl GgufModel {
             }
             let mut dimensions = Vec::with_capacity(n_dims as usize);
             for _ in 0..n_dims {
-                let dimension = Self::read_u64(&mut reader)?;
+                let dimension = Self::read_u64_tracked(&mut reader, &mut cursor_pos)?;
                 if dimension == 0 {
                     return Err(HakilleError::InferenceError("Dimension GGUF nulle".into()));
                 }
                 dimensions.push(dimension);
             }
-            let tensor_type = Self::read_u32(&mut reader)?;
-            let offset = Self::read_u64(&mut reader)?;
+            let tensor_type = Self::read_u32_tracked(&mut reader, &mut cursor_pos)?;
+            let offset = Self::read_u64_tracked(&mut reader, &mut cursor_pos)?;
 
             // Accumulate parameter count for weight matrices
             if !dimensions.is_empty() {
@@ -383,61 +384,132 @@ impl GgufModel {
         Ok(f64::from_le_bytes(buf))
     }
 
-    fn read_string<R: Read>(reader: &mut R) -> Result<String> {
-        let len = usize::try_from(Self::read_u64(reader)?).map_err(|_| {
-            HakilleError::InferenceError("Longueur de chaîne GGUF débordante".into())
-        })?;
-        if len > 16 * 1024 * 1024 {
+    fn read_u32_tracked<R: Read>(reader: &mut R, pos: &mut u64) -> Result<u32> {
+        let v = Self::read_u32(reader)?;
+        *pos = pos.saturating_add(4);
+        Ok(v)
+    }
+
+    fn read_u64_tracked<R: Read>(reader: &mut R, pos: &mut u64) -> Result<u64> {
+        let v = Self::read_u64(reader)?;
+        *pos = pos.saturating_add(8);
+        Ok(v)
+    }
+
+    fn read_string_bounded<R: Read>(reader: &mut R, pos: &mut u64, max_end: u64) -> Result<String> {
+        let raw_len = Self::read_u64_tracked(reader, pos)?;
+        let remaining = max_end.saturating_sub(*pos);
+        if raw_len > 16 * 1024 * 1024 || raw_len > remaining {
             return Err(HakilleError::InferenceError(format!(
-                "String length {} exceeds safety threshold",
-                len
+                "Longueur de chaîne GGUF {} supérieure au budget restant ({} octets)",
+                raw_len, remaining
             )));
         }
+        let len = usize::try_from(raw_len).map_err(|_| {
+            HakilleError::InferenceError("Longueur de chaîne GGUF débordante".into())
+        })?;
         let mut buf = vec![0u8; len];
         reader
             .read_exact(&mut buf)
             .map_err(|e| HakilleError::InferenceError(format!("Read string bytes error: {}", e)))?;
+        *pos = pos.saturating_add(raw_len);
         String::from_utf8(buf).map_err(|e| {
             HakilleError::InferenceError(format!("Invalid UTF-8 in GGUF string: {}", e))
         })
     }
 
-    /// Un seek au-delà d'EOF réussit sur File : vérifier explicitement la
-    /// borne pour ne pas accepter un vocabulaire GGUF tronqué.
-    fn skip_exact<R: Read + Seek>(reader: &mut R, count: u64, file_len: u64) -> Result<()> {
-        let current = reader
-            .stream_position()
-            .map_err(|e| HakilleError::InferenceError(e.to_string()))?;
-        let target = current
+    /// Ignore exactement `count` octets sans vider inutilement le tampon pour les
+    /// petits sauts (évite les millions de syscalls `lseek` sur les tableaux de
+    /// vocabulaire) tout en vérifiant strictement la borne `max_end`.
+    fn skip_exact_bounded<R: Read + Seek>(
+        reader: &mut R,
+        count: u64,
+        pos: &mut u64,
+        max_end: u64,
+    ) -> Result<()> {
+        let target = pos
             .checked_add(count)
-            .filter(|target| *target <= file_len)
+            .filter(|target| *target <= max_end)
             .ok_or_else(|| {
                 HakilleError::InferenceError("Tableau GGUF tronqué ou taille débordante".into())
             })?;
-        reader
-            .seek(SeekFrom::Start(target))
-            .map_err(|e| HakilleError::InferenceError(e.to_string()))?;
+        if count <= 1024 {
+            let mut sink = [0u8; 1024];
+            reader
+                .read_exact(&mut sink[..count as usize])
+                .map_err(|e| HakilleError::InferenceError(e.to_string()))?;
+        } else {
+            let delta = i64::try_from(count)
+                .map_err(|_| HakilleError::InferenceError("Saut GGUF débordant".into()))?;
+            reader
+                .seek(SeekFrom::Current(delta))
+                .map_err(|e| HakilleError::InferenceError(e.to_string()))?;
+        }
+        *pos = target;
         Ok(())
     }
 
+    #[cfg(test)]
     fn read_value<R: Read + Seek>(
         reader: &mut R,
         value_type: u32,
         file_len: u64,
     ) -> Result<GgufValue> {
+        let mut pos = reader
+            .stream_position()
+            .map_err(|e| HakilleError::InferenceError(e.to_string()))?;
+        Self::read_value_bounded(reader, value_type, &mut pos, file_len)
+    }
+
+    fn read_value_bounded<R: Read + Seek>(
+        reader: &mut R,
+        value_type: u32,
+        pos: &mut u64,
+        max_end: u64,
+    ) -> Result<GgufValue> {
         match value_type {
-            0 => Ok(GgufValue::Uint8(Self::read_u8(reader)?)),
-            1 => Ok(GgufValue::Int8(Self::read_u8(reader)? as i8)),
-            2 => Ok(GgufValue::Uint16(Self::read_u16(reader)?)),
-            3 => Ok(GgufValue::Int16(Self::read_i16(reader)?)),
-            4 => Ok(GgufValue::Uint32(Self::read_u32(reader)?)),
-            5 => Ok(GgufValue::Int32(Self::read_i32(reader)?)),
-            6 => Ok(GgufValue::Float32(Self::read_f32(reader)?)),
-            7 => Ok(GgufValue::Bool(Self::read_u8(reader)? != 0)),
-            8 => Ok(GgufValue::String(Self::read_string(reader)?)),
+            0 => {
+                let v = Self::read_u8(reader)?;
+                *pos = pos.saturating_add(1);
+                Ok(GgufValue::Uint8(v))
+            }
+            1 => {
+                let v = Self::read_u8(reader)? as i8;
+                *pos = pos.saturating_add(1);
+                Ok(GgufValue::Int8(v))
+            }
+            2 => {
+                let v = Self::read_u16(reader)?;
+                *pos = pos.saturating_add(2);
+                Ok(GgufValue::Uint16(v))
+            }
+            3 => {
+                let v = Self::read_i16(reader)?;
+                *pos = pos.saturating_add(2);
+                Ok(GgufValue::Int16(v))
+            }
+            4 => Ok(GgufValue::Uint32(Self::read_u32_tracked(reader, pos)?)),
+            5 => {
+                let v = Self::read_i32(reader)?;
+                *pos = pos.saturating_add(4);
+                Ok(GgufValue::Int32(v))
+            }
+            6 => {
+                let v = Self::read_f32(reader)?;
+                *pos = pos.saturating_add(4);
+                Ok(GgufValue::Float32(v))
+            }
+            7 => {
+                let v = Self::read_u8(reader)? != 0;
+                *pos = pos.saturating_add(1);
+                Ok(GgufValue::Bool(v))
+            }
+            8 => Ok(GgufValue::String(Self::read_string_bounded(
+                reader, pos, max_end,
+            )?)),
             9 => {
-                let elem_type = Self::read_u32(reader)?;
-                let array_len = Self::read_u64(reader)?;
+                let elem_type = Self::read_u32_tracked(reader, pos)?;
+                let array_len = Self::read_u64_tracked(reader, pos)?;
                 if elem_type == 9 || elem_type > 12 || array_len > 4_000_000 {
                     return Err(HakilleError::InferenceError(
                         "Tableau GGUF imbriqué, type inconnu ou taille excessive".into(),
@@ -458,12 +530,12 @@ impl GgufModel {
                         let total_bytes = elem_size.checked_mul(array_len).ok_or_else(|| {
                             HakilleError::InferenceError("Taille de tableau GGUF débordante".into())
                         })?;
-                        Self::skip_exact(reader, total_bytes, file_len)?;
+                        Self::skip_exact_bounded(reader, total_bytes, pos, max_end)?;
                     } else if elem_type == 8 {
-                        // String array: skip each string efficiently
+                        // String array: skip each string without flushing BufReader on short entries
                         for _ in 0..array_len {
-                            let str_len = Self::read_u64(reader)?;
-                            Self::skip_exact(reader, str_len, file_len)?;
+                            let str_len = Self::read_u64_tracked(reader, pos)?;
+                            Self::skip_exact_bounded(reader, str_len, pos, max_end)?;
                         }
                     } else {
                         return Err(HakilleError::InferenceError(format!(
@@ -479,14 +551,22 @@ impl GgufModel {
                 } else {
                     let mut items = Vec::with_capacity(array_len as usize);
                     for _ in 0..array_len {
-                        items.push(Self::read_value(reader, elem_type, file_len)?);
+                        items.push(Self::read_value_bounded(reader, elem_type, pos, max_end)?);
                     }
                     Ok(GgufValue::Array(items))
                 }
             }
-            10 => Ok(GgufValue::Uint64(Self::read_u64(reader)?)),
-            11 => Ok(GgufValue::Int64(Self::read_i64(reader)?)),
-            12 => Ok(GgufValue::Float64(Self::read_f64(reader)?)),
+            10 => Ok(GgufValue::Uint64(Self::read_u64_tracked(reader, pos)?)),
+            11 => {
+                let v = Self::read_i64(reader)?;
+                *pos = pos.saturating_add(8);
+                Ok(GgufValue::Int64(v))
+            }
+            12 => {
+                let v = Self::read_f64(reader)?;
+                *pos = pos.saturating_add(8);
+                Ok(GgufValue::Float64(v))
+            }
             other => Err(HakilleError::InferenceError(format!(
                 "Unknown GGUF value type: {}",
                 other

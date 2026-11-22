@@ -371,10 +371,31 @@ impl CapabilityAuthority {
         self.verify_pinned_with_resource(token, required_scope, required_action, required_resource)
     }
 
-    /// Vérification épinglée + révocation par nonce/jti : refuse si
-    /// `is_revoked(nonce)` est vrai. Les tokens sans `token_nonce` sont
-    /// acceptés ici (compatibilité) mais NE DOIVENT PAS être émis pour les
-    /// domaines sensibles (toujours un nonce/jti + `enforce_with_revocation`).
+    /// Vérification épinglée + liaisons cryptographiques optionnelles (`resource`, `token_aud`, `token_nonce`)
+    /// dans UN SEUL passage authorizer Biscuit (fail-closed, anti-TOCTOU).
+    pub fn verify_pinned_with_bindings(
+        &self,
+        token: &CapabilityToken,
+        required_scope: CapabilityScope,
+        required_action: CapabilityAction,
+        required_resource: Option<&str>,
+        required_audience: Option<&str>,
+        required_nonce: Option<&str>,
+    ) -> Result<()> {
+        verify_capability_with_root_key_and_bindings(
+            token,
+            &self.root_keypair.public(),
+            required_scope,
+            required_action,
+            required_resource,
+            required_audience,
+            required_nonce,
+        )
+    }
+
+    /// Vérification épinglée + révocation par nonce/jti ET `revocation_identifiers()` Biscuit :
+    /// épingle la signature AVANT toute lecture de fait, puis refuse si le nonce ou l'un
+    /// des identifiants de révocation Biscuit (résistant à l'atténuation hors-ligne) est révoqué.
     pub fn verify_pinned_with_revocation(
         &self,
         token: &CapabilityToken,
@@ -382,15 +403,13 @@ impl CapabilityAuthority {
         required_action: CapabilityAction,
         is_revoked: &dyn Fn(&str) -> bool,
     ) -> Result<()> {
-        let (_, nonce, _) = token_binding_facts(token);
-        if let Some(n) = nonce
-            && is_revoked(&n)
-        {
-            return Err(HakilleError::CapabilityDenied(format!(
-                "token révoqué (nonce/jti {n})"
-            )));
-        }
-        self.verify_pinned(token, required_scope, required_action)
+        verify_capability_with_root_key_and_revocation(
+            token,
+            &self.root_keypair.public(),
+            required_scope,
+            required_action,
+            is_revoked,
+        )
     }
 
     /// Atténue un token parent pour restreindre STRICTEMENT l'accès aux
@@ -533,6 +552,101 @@ pub fn verify_capability_with_root_key_and_resource(
     Ok(())
 }
 
+/// Vérification épinglée + liaisons cryptographiques optionnelles (`resource`,
+/// `token_aud`, `token_nonce`) vérifiées atomiquement dans un seul passage
+/// d'authorizer Biscuit contre le bloc d'autorité épinglé.
+pub fn verify_capability_with_root_key_and_bindings(
+    token: &CapabilityToken,
+    root_public_key: &biscuit_auth::PublicKey,
+    required_scope: CapabilityScope,
+    required_action: CapabilityAction,
+    required_resource: Option<&str>,
+    required_audience: Option<&str>,
+    required_nonce: Option<&str>,
+) -> Result<()> {
+    if let Some(res) = required_resource {
+        validate_binding_value(res)?;
+    }
+    if let Some(aud) = required_audience {
+        validate_binding_value(aud)?;
+    }
+    if let Some(nonce) = required_nonce {
+        validate_binding_value(nonce)?;
+    }
+    if token.is_expired() {
+        return Err(HakilleError::CapabilityExpired);
+    }
+    let bytes = token
+        .biscuit
+        .to_vec()
+        .map_err(|e| HakilleError::CapabilityDenied(format!("token serialization: {e}")))?;
+    let pinned = Biscuit::from(bytes, *root_public_key)
+        .map_err(|e| HakilleError::CapabilityDenied(format!("root key pin mismatch: {e}")))?;
+    let mut authorizer = pinned
+        .authorizer()
+        .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+    let s = required_scope.datalog_name();
+    let a = format!("{:?}", required_action).to_lowercase();
+    let now_ts = chrono::Utc::now().timestamp();
+    authorizer
+        .add_fact(format!("time({now_ts})").as_str())
+        .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+    authorizer
+        .add_fact(format!("operation(\"{s}\", \"{a}\")").as_str())
+        .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+    authorizer
+        .add_check(format!("check if right(\"{s}\", \"{a}\")").as_str())
+        .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+    if let Some(res) = required_resource {
+        authorizer
+            .add_check(format!("check if resource(\"{res}\")").as_str())
+            .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+    }
+    if let Some(aud) = required_audience {
+        authorizer
+            .add_check(format!("check if token_aud(\"{aud}\")").as_str())
+            .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+    }
+    if let Some(nonce) = required_nonce {
+        authorizer
+            .add_check(format!("check if token_nonce(\"{nonce}\")").as_str())
+            .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+    }
+    authorizer
+        .allow()
+        .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+    let limits = biscuit_auth::AuthorizerLimits {
+        max_time: std::time::Duration::from_millis(500),
+        ..Default::default()
+    };
+    authorizer.authorize_with_limits(limits).map_err(|e| {
+        if token.is_expired() {
+            HakilleError::CapabilityExpired
+        } else {
+            HakilleError::CapabilityDenied(e.to_string())
+        }
+    })?;
+    Ok(())
+}
+
+/// Retourne les identifiants cryptographiques de révocation Biscuit (un par
+/// bloc) encodés en hexadécimal minuscule.
+pub fn token_revocation_ids_hex(token: &CapabilityToken) -> Result<Vec<String>> {
+    Ok(token
+        .biscuit
+        .revocation_identifiers()
+        .into_iter()
+        .map(|bytes| {
+            let mut s = String::with_capacity(bytes.len() * 2);
+            for b in bytes {
+                use std::fmt::Write;
+                let _ = write!(&mut s, "{b:02x}");
+            }
+            s
+        })
+        .collect())
+}
+
 /// Alias d'enforcement F4 (fonction libre) : même garantie que
 /// `verify_capability_with_root_key_and_resource`.
 pub fn enforce_with_resource(
@@ -551,7 +665,10 @@ pub fn enforce_with_resource(
     )
 }
 
-/// Vérification épinglée avec clé publique racine + vérification de révocation par nonce/jti.
+/// Vérification épinglée avec clé publique racine + vérification de révocation
+/// (identifiants natifs Biscuit ET `token_nonce` du bloc d'autorité 0).
+/// La signature cryptographique contre `root_public_key` est vérifiée AVANT
+/// toute lecture de faits ou de liste de révocation.
 pub fn verify_capability_with_root_key_and_revocation(
     token: &CapabilityToken,
     root_public_key: &biscuit_auth::PublicKey,
@@ -559,6 +676,14 @@ pub fn verify_capability_with_root_key_and_revocation(
     required_action: CapabilityAction,
     is_revoked: &dyn Fn(&str) -> bool,
 ) -> Result<()> {
+    verify_capability_with_root_key(token, root_public_key, required_scope, required_action)?;
+    for rev_id in token_revocation_ids_hex(token)? {
+        if is_revoked(&rev_id) {
+            return Err(HakilleError::CapabilityDenied(format!(
+                "token révoqué (revocation_id {rev_id})"
+            )));
+        }
+    }
     let (_, nonce, _) = token_binding_facts(token);
     if let Some(n) = nonce
         && is_revoked(&n)
@@ -567,7 +692,7 @@ pub fn verify_capability_with_root_key_and_revocation(
             "token révoqué (nonce/jti {n})"
         )));
     }
-    verify_capability_with_root_key(token, root_public_key, required_scope, required_action)
+    Ok(())
 }
 
 /// Alias d'enforcement avec révocation.
@@ -715,28 +840,17 @@ pub fn verify_cognitive_inference_with_root_key(
     Ok(())
 }
 
-/// Faits de liaison `(resource, nonce/jti, aud)` décodés depuis tous les blocs.
-/// `None` = fait absent (token legacy sans liaison).
+/// Extrait les faits de liaison `(resource, token_nonce, token_aud)` depuis le bloc
+/// autorité 0 uniquement (un bloc d'atténuation tiers ne peut jamais forger un fait racine).
 pub fn token_binding_facts(
     token: &CapabilityToken,
 ) -> (Option<String>, Option<String>, Option<String>) {
-    let mut resource = None;
-    let mut nonce = None;
-    let mut aud = None;
-    for i in 0..token.biscuit.block_count() {
-        let Ok(src) = token.biscuit.print_block_source(i) else {
-            continue;
-        };
-        if resource.is_none() {
-            resource = parse_single_string_fact(&src, "resource");
-        }
-        if nonce.is_none() {
-            nonce = parse_single_string_fact(&src, "token_nonce");
-        }
-        if aud.is_none() {
-            aud = parse_single_string_fact(&src, "token_aud");
-        }
-    }
+    let Ok(src) = token.biscuit.print_block_source(0) else {
+        return (None, None, None);
+    };
+    let resource = parse_single_string_fact(&src, "resource");
+    let nonce = parse_single_string_fact(&src, "token_nonce");
+    let aud = parse_single_string_fact(&src, "token_aud");
     (resource, nonce, aud)
 }
 
@@ -762,6 +876,23 @@ fn parse_single_string_fact(src: &str, name: &str) -> Option<String> {
     let after = &src[idx + needle.len()..];
     let end = after.find('"')?;
     Some(after[..end].to_string())
+}
+
+/// Extrait toutes les occurrences de `name("value")` dans une source de bloc.
+fn parse_all_string_facts(src: &str, name: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let needle = format!("{name}(\"");
+    let mut rest = src;
+    while let Some(idx) = rest.find(&needle) {
+        let after = &rest[idx + needle.len()..];
+        if let Some(end) = after.find('"') {
+            out.insert(after[..end].to_string());
+            rest = &after[end + 1..];
+        } else {
+            break;
+        }
+    }
+    out
 }
 
 /// Legacy structural verification WITHOUT root-key pinning.
@@ -824,19 +955,63 @@ pub fn verify_capability_unpinned(
 // Helpers internes : décodage des droits effectifs et bornes temporelles.
 // ---------------------------------------------------------------------------
 
-/// Droits effectifs `(scope, action)` décodés depuis les faits
-/// `right("scope", "action")` de tous les blocs.
+/// Droits effectifs `(scope, action)` décodés depuis le bloc autorité 0
+/// puis intersectés avec chaque bloc d'atténuation `1..block_count()`.
 fn effective_rights(
     token: &CapabilityToken,
 ) -> Result<std::collections::HashSet<(String, String)>> {
-    let mut rights = std::collections::HashSet::new();
-    for i in 0..token.biscuit.block_count() {
+    if token.biscuit.block_count() == 0 {
+        return Ok(std::collections::HashSet::new());
+    }
+    let auth_src = token
+        .biscuit
+        .print_block_source(0)
+        .map_err(|_| HakilleError::AttenuationViolation)?;
+    let mut rights: std::collections::HashSet<(String, String)> =
+        parse_right_facts(&auth_src).into_iter().collect();
+
+    for i in 1..token.biscuit.block_count() {
         let src = token
             .biscuit
             .print_block_source(i)
             .map_err(|_| HakilleError::AttenuationViolation)?;
-        for (s, a) in parse_right_facts(&src) {
-            rights.insert((s, a));
+        if src.contains("check if false") {
+            return Ok(std::collections::HashSet::new());
+        }
+        let allowed_scopes = parse_all_string_facts(&src, "allowed_scope");
+        let allowed_actions = parse_all_string_facts(&src, "allowed_action");
+        if !allowed_scopes.is_empty() {
+            rights.retain(|(s, _)| {
+                allowed_scopes.contains(s) || (s == "fullsystem" && !allowed_scopes.is_empty())
+            });
+            // Si le parent détenait fullsystem, matérialise l'atténuation sur les scopes restreints
+            let had_full = rights.iter().any(|(s, _)| s == "fullsystem");
+            if had_full {
+                let actions_for_full: Vec<String> = rights
+                    .iter()
+                    .filter(|(s, _)| s == "fullsystem")
+                    .map(|(_, a)| a.clone())
+                    .collect();
+                rights.retain(|(s, _)| s != "fullsystem");
+                for sc in &allowed_scopes {
+                    for ac in &actions_for_full {
+                        rights.insert((sc.clone(), ac.clone()));
+                    }
+                }
+            }
+        }
+        if !allowed_actions.is_empty() {
+            let had_admin_scopes: Vec<String> = rights
+                .iter()
+                .filter(|(_, a)| a == "admin")
+                .map(|(s, _)| s.clone())
+                .collect();
+            rights.retain(|(_, a)| allowed_actions.contains(a));
+            for sc in had_admin_scopes {
+                for ac in &allowed_actions {
+                    rights.insert((sc.clone(), ac.clone()));
+                }
+            }
         }
     }
     Ok(rights)

@@ -1,6 +1,9 @@
 use crate::win32_ffi::*;
 use hakille_core::{HakilleError, Result};
-use hakille_substrate::{ImageFormat, ScreenCapture};
+#[cfg(windows)]
+use hakille_substrate::ImageFormat;
+use hakille_substrate::ScreenCapture;
+#[cfg(windows)]
 use std::mem::size_of;
 
 pub struct WindowsScreenCapturer;
@@ -16,27 +19,71 @@ impl WindowsScreenCapturer {
         #[cfg(not(windows))]
         {
             let _ = Self::display_dimensions();
-            return Err(HakilleError::SubstrateError(
+            Err(HakilleError::SubstrateError(
                 "capture d'écran non implémentée hors Windows — refus explicite (aucune frame fabriquée)"
                     .into(),
-            ));
+            ))
         }
         #[cfg(windows)]
         {
+            struct ScreenDcGuard(isize);
+            impl Drop for ScreenDcGuard {
+                fn drop(&mut self) {
+                    if self.0 != 0 {
+                        unsafe {
+                            ReleaseDC(0, self.0);
+                        }
+                    }
+                }
+            }
+            struct MemDcGuard(isize);
+            impl Drop for MemDcGuard {
+                fn drop(&mut self) {
+                    if self.0 != 0 {
+                        unsafe {
+                            DeleteDC(self.0);
+                        }
+                    }
+                }
+            }
+            struct BitmapGuard(isize);
+            impl Drop for BitmapGuard {
+                fn drop(&mut self) {
+                    if self.0 != 0 {
+                        unsafe {
+                            DeleteObject(self.0);
+                        }
+                    }
+                }
+            }
+
             let (width, height) = Self::display_dimensions();
+            if width <= 0 || height <= 0 {
+                return Err(HakilleError::SubstrateError(format!(
+                    "dimensions d'écran Windows invalides ({width}x{height})"
+                )));
+            }
+            let Some(byte_len) = (width as usize)
+                .checked_mul(height as usize)
+                .and_then(|p| p.checked_mul(4))
+            else {
+                return Err(HakilleError::SubstrateError(
+                    "dépassement arithmétique sur la taille du framebuffer GDI".into(),
+                ));
+            };
 
             unsafe {
-                let hdc_screen = GetDC(0);
-                if hdc_screen != 0 {
-                    let hdc_mem = CreateCompatibleDC(hdc_screen);
-                    if hdc_mem != 0 {
-                        let hbm = CreateCompatibleBitmap(hdc_screen, width, height);
-                        if hbm != 0 {
-                            let old_obj = SelectObject(hdc_mem, hbm);
-
-                            // BitBlt from screen to memory DC
+                let hdc_screen = ScreenDcGuard(GetDC(0));
+                if hdc_screen.0 != 0 {
+                    let hdc_mem = MemDcGuard(CreateCompatibleDC(hdc_screen.0));
+                    if hdc_mem.0 != 0 {
+                        let hbm = BitmapGuard(CreateCompatibleBitmap(hdc_screen.0, width, height));
+                        if hbm.0 != 0 {
+                            let old_obj = SelectObject(hdc_mem.0, hbm.0);
                             let blit_ok =
-                                BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, 0, 0, SRCCOPY);
+                                BitBlt(hdc_mem.0, 0, 0, width, height, hdc_screen.0, 0, 0, SRCCOPY);
+                            // MSDN GetDIBits : le bitmap NE DOIT PLUS être sélectionné dans un DC.
+                            SelectObject(hdc_mem.0, old_obj);
 
                             if blit_ok != 0 {
                                 let mut bmi = BITMAPINFO::default();
@@ -48,24 +95,17 @@ impl WindowsScreenCapturer {
                                 bmi.bmiHeader.biBitCount = 32;
                                 bmi.bmiHeader.biCompression = BI_RGB;
 
-                                let pixel_count = (width * height) as usize;
-                                let mut raw_pixels = vec![0u8; pixel_count * 4];
+                                let mut raw_pixels = vec![0u8; byte_len];
 
                                 let dib_ok = GetDIBits(
-                                    hdc_mem,
-                                    hbm,
+                                    hdc_mem.0,
+                                    hbm.0,
                                     0,
                                     height as u32,
                                     raw_pixels.as_mut_ptr(),
                                     &mut bmi,
                                     DIB_RGB_COLORS,
                                 );
-
-                                // Clean up GDI handles
-                                SelectObject(hdc_mem, old_obj);
-                                DeleteObject(hbm);
-                                DeleteDC(hdc_mem);
-                                ReleaseDC(0, hdc_screen);
 
                                 if dib_ok != 0 {
                                     // GDI 32-bit is BGRA. Convert in-place to RGBA
@@ -74,7 +114,6 @@ impl WindowsScreenCapturer {
                                         let r = chunk[2];
                                         chunk[0] = r;
                                         chunk[2] = b;
-                                        // Ensure full opacity
                                         chunk[3] = 255;
                                     }
 
@@ -85,18 +124,8 @@ impl WindowsScreenCapturer {
                                         format: ImageFormat::Rgba8,
                                     });
                                 }
-                            } else {
-                                SelectObject(hdc_mem, old_obj);
-                                DeleteObject(hbm);
-                                DeleteDC(hdc_mem);
-                                ReleaseDC(0, hdc_screen);
                             }
-                        } else {
-                            DeleteDC(hdc_mem);
-                            ReleaseDC(0, hdc_screen);
                         }
-                    } else {
-                        ReleaseDC(0, hdc_screen);
                     }
                 }
             }

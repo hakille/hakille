@@ -39,18 +39,24 @@ impl ContinuityTracker {
         });
     }
 
-    pub fn continuity_rate(&self) -> f64 {
-        if self.records.is_empty() {
-            return 1.0;
-        }
+    pub fn has_measurements(&self) -> bool {
+        !self.records.is_empty()
+    }
 
+    pub fn continuity_rate_checked(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
         let without_re_explanation = self
             .records
             .iter()
             .filter(|r| !r.required_re_explanation)
             .count();
+        Some(without_re_explanation as f64 / self.records.len() as f64)
+    }
 
-        without_re_explanation as f64 / self.records.len() as f64
+    pub fn continuity_rate(&self) -> f64 {
+        self.continuity_rate_checked().unwrap_or(1.0)
     }
 
     pub fn total_tasks(&self) -> usize {
@@ -66,11 +72,11 @@ impl ContinuityTracker {
         }
     }
 
-    /// Persistance JSON simple via `std::fs`.
+    /// Persistance JSON atomique via fichier temporaire.
     pub fn save_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
         let json = serde_json::to_string_pretty(&self.to_snapshot())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(path, json)
+        crate::atomic_write_json(path, &json)
     }
 
     pub fn load_from_file(path: &std::path::Path) -> std::io::Result<Self> {

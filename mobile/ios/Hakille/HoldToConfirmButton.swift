@@ -15,6 +15,9 @@ public struct HoldToConfirmButton: View {
 
     public let onConfirmed: () -> Void
     public let onCancelled: () -> Void
+    /// Début réel du maintien (ou armement lecteur d'écran) : l'hôte doit
+    /// envoyer `begin_approval` au cœur, qui exige 600 ms avant `approve`.
+    public let onHoldBegan: () -> Void
     public let label: String
     public let confirmedLabel: String
     public let isEnabled: Bool
@@ -35,13 +38,15 @@ public struct HoldToConfirmButton: View {
         confirmedLabel: String = "Action validée",
         isEnabled: Bool = true,
         onConfirmed: @escaping () -> Void,
-        onCancelled: @escaping () -> Void = {}
+        onCancelled: @escaping () -> Void = {},
+        onHoldBegan: @escaping () -> Void = {}
     ) {
         self.label = label
         self.confirmedLabel = confirmedLabel
         self.isEnabled = isEnabled
         self.onConfirmed = onConfirmed
         self.onCancelled = onCancelled
+        self.onHoldBegan = onHoldBegan
     }
 
     private var braiseColor: Color {
@@ -119,6 +124,7 @@ public struct HoldToConfirmButton: View {
                         progress = 0.0
                         // Monotonic system uptime avoids backward jump crashes
                         pressStartTime = ProcessInfo.processInfo.systemUptime
+                        onHoldBegan()
                         mediumHaptic.prepare()
                         heavyHaptic.prepare()
                         mediumHaptic.impactOccurred() // 10ms haptic tick at 0ms
@@ -161,6 +167,7 @@ public struct HoldToConfirmButton: View {
             guard isEnabled && !isConfirmed else { return }
             if !accessibleArmed {
                 accessibleArmed = true
+                onHoldBegan()
                 mediumHaptic.impactOccurred()
             } else {
                 accessibleArmed = false

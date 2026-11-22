@@ -128,8 +128,22 @@ impl TensorBuffer {
                 k, k2
             )));
         }
+        let expected_a = m.checked_mul(k).ok_or_else(|| {
+            HakilleError::InferenceError("Débordement dimensions matmul (A)".into())
+        })?;
+        let expected_b = k2.checked_mul(n).ok_or_else(|| {
+            HakilleError::InferenceError("Débordement dimensions matmul (B)".into())
+        })?;
+        let expected_out = m.checked_mul(n).ok_or_else(|| {
+            HakilleError::InferenceError("Débordement dimensions matmul (sortie)".into())
+        })?;
+        if self.data.len() < expected_a || other.data.len() < expected_b {
+            return Err(HakilleError::InferenceError(
+                "Matmul: tampon de données plus court que la forme déclarée".into(),
+            ));
+        }
 
-        let mut out = vec![0.0f32; m * n];
+        let mut out = vec![0.0f32; expected_out];
         for i in 0..m {
             for j in 0..n {
                 let mut sum = 0.0f32;
@@ -206,6 +220,22 @@ impl SafetensorsModel {
                 e
             ))
         })?;
+        let file_len = file
+            .metadata()
+            .map_err(|e| {
+                HakilleError::InferenceError(format!(
+                    "Failed to stat safetensors file {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?
+            .len();
+
+        if file_len < 8 {
+            return Err(HakilleError::InferenceError(
+                "Fichier safetensors tronqué (< 8 octets)".into(),
+            ));
+        }
 
         let mut len_buf = [0u8; 8];
         file.read_exact(&mut len_buf).map_err(|e| {
@@ -213,12 +243,24 @@ impl SafetensorsModel {
         })?;
 
         let header_size = u64::from_le_bytes(len_buf);
-        if header_size > 50 * 1024 * 1024 {
+        const MAX_HEADER_BYTES: u64 = 50 * 1024 * 1024;
+        if header_size == 0 || header_size > MAX_HEADER_BYTES {
             return Err(HakilleError::InferenceError(format!(
-                "Safetensors header size {} exceeds maximum threshold",
+                "Safetensors header size {} invalide ou supérieur à 50 Mio",
                 header_size
             )));
         }
+        let header_end = 8u64.checked_add(header_size).ok_or_else(|| {
+            HakilleError::InferenceError("Safetensors header size débordant".into())
+        })?;
+        // Vérifier contre la taille réelle du fichier AVANT d'allouer json_buf (anti-OOM).
+        if header_end > file_len {
+            return Err(HakilleError::InferenceError(format!(
+                "En-tête safetensors tronqué : {} octets déclarés, fichier de {} octets",
+                header_end, file_len
+            )));
+        }
+        let payload_len = file_len - header_end;
 
         let mut json_buf = vec![0u8; header_size as usize];
         file.read_exact(&mut json_buf).map_err(|e| {
@@ -255,31 +297,62 @@ impl SafetensorsModel {
                     .and_then(|d| d.as_str())
                     .unwrap_or("F32")
                     .to_string();
-                let shape: Vec<usize> = v
-                    .get("shape")
-                    .and_then(|s| s.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|x| x.as_u64().map(|n| n as usize))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let shape: Vec<usize> = match v.get("shape").and_then(|s| s.as_array()) {
+                    Some(arr) => {
+                        let mut dims = Vec::with_capacity(arr.len());
+                        for x in arr {
+                            let d = x
+                                .as_u64()
+                                .and_then(|n| usize::try_from(n).ok())
+                                .ok_or_else(|| {
+                                    HakilleError::InferenceError(format!(
+                                        "Dimension safetensors invalide pour '{k}'"
+                                    ))
+                                })?;
+                            dims.push(d);
+                        }
+                        dims
+                    }
+                    None => Vec::new(),
+                };
                 let data_offsets = v
                     .get("data_offsets")
                     .and_then(|o| o.as_array())
-                    .map(|arr| {
-                        let start = arr.first().and_then(|x| x.as_u64()).unwrap_or(0);
-                        let end = arr.get(1).and_then(|x| x.as_u64()).unwrap_or(0);
-                        (start, end)
+                    .and_then(|arr| {
+                        let start = arr.first()?.as_u64()?;
+                        let end = arr.get(1)?.as_u64()?;
+                        Some((start, end))
                     })
-                    .unwrap_or((0, 0));
+                    .ok_or_else(|| {
+                        HakilleError::InferenceError(format!(
+                            "Offsets safetensors absents ou invalides pour '{k}'"
+                        ))
+                    })?;
+
+                if data_offsets.0 > data_offsets.1 || data_offsets.1 > payload_len {
+                    return Err(HakilleError::InferenceError(format!(
+                        "Offsets safetensors hors fichier pour '{k}': {:?} > {payload_len}",
+                        data_offsets
+                    )));
+                }
 
                 let params: usize = if shape.is_empty() {
                     1
                 } else {
-                    shape.iter().product()
+                    shape
+                        .iter()
+                        .try_fold(1usize, |acc, &d| acc.checked_mul(d))
+                        .ok_or_else(|| {
+                            HakilleError::InferenceError(format!(
+                                "Produit des dimensions safetensors débordant pour '{k}'"
+                            ))
+                        })?
                 };
-                total_parameters += params;
+                total_parameters = total_parameters.checked_add(params).ok_or_else(|| {
+                    HakilleError::InferenceError(
+                        "Nombre total de paramètres safetensors débordant".into(),
+                    )
+                })?;
                 data_size_bytes = data_size_bytes.max(data_offsets.1);
 
                 tensors.insert(
@@ -369,8 +442,12 @@ impl EmbeddingLayer {
                 token_id, self.vocab_size
             )));
         }
-        let start = token_id * self.hidden_dim;
-        let end = start + self.hidden_dim;
+        let start = token_id
+            .checked_mul(self.hidden_dim)
+            .ok_or_else(|| HakilleError::InferenceError("Débordement index d'embedding".into()))?;
+        let end = start
+            .checked_add(self.hidden_dim)
+            .ok_or_else(|| HakilleError::InferenceError("Débordement fin d'embedding".into()))?;
         if end > self.weights.len() {
             return Err(HakilleError::InferenceError(
                 "Embedding weights out of bounds".into(),
@@ -388,22 +465,40 @@ impl NeuralSampler {
         logits.argmax()
     }
 
+    /// Sélection déterministe du meilleur logit fini dans le top-k (température
+    /// et softmax conservés pour normalisation ; NaN/Inf exclus).
     pub fn sample_top_k(logits: &TensorBuffer, k: usize, temperature: f32) -> usize {
         if logits.data.is_empty() {
             return 0;
         }
-        let temp = if temperature > 0.0 { temperature } else { 1.0 };
-        let mut indexed: Vec<(usize, f32)> = logits.data.iter().cloned().enumerate().collect();
-        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let temp = if temperature.is_finite() && temperature > 0.0 {
+            temperature
+        } else {
+            1.0
+        };
+        let mut indexed: Vec<(usize, f32)> = logits
+            .data
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, v)| v.is_finite())
+            .collect();
+        if indexed.is_empty() {
+            return 0;
+        }
+        indexed.sort_by(|a, b| b.1.total_cmp(&a.1));
         indexed.truncate(k.max(1));
 
-        let max_val = indexed.first().map(|x| x.1 / temp).unwrap_or(0.0);
-        let exps: Vec<f32> = indexed
-            .iter()
-            .map(|(_, val)| ((val / temp) - max_val).exp())
-            .collect();
-        let _sum_exp: f32 = exps.iter().sum();
-
-        indexed[0].0
+        let max_val = indexed[0].1 / temp;
+        let mut best_idx = indexed[0].0;
+        let mut best_prob = -1.0f32;
+        for &(idx, val) in &indexed {
+            let p = ((val / temp) - max_val).exp();
+            if p > best_prob {
+                best_prob = p;
+                best_idx = idx;
+            }
+        }
+        best_idx
     }
 }

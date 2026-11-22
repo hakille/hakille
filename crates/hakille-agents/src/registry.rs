@@ -1,7 +1,7 @@
 use hakille_core::{CapabilityScope, HakilleError, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentManifest {
@@ -125,20 +125,12 @@ impl AgentRegistry {
         self.check_writable()
     }
 
-    /// Hash canonique 32 octets d'un manifest (JSON des champs).
-    /// Dérivé sans dépendance externe (4× SipHash à domaines séparés) :
-    /// fingerprint anti-substitution, pas un ancrage cryptographique externe.
-    /// Pour un ancrage fort, fournir `expected_hash` calculé côté
-    /// distribution vérifiée (SHA-256) — la comparaison reste stricte.
+    /// Hash SHA-256 canonique 32 octets d'un manifest (JSON déterministe des champs).
     pub fn manifest_hash(manifest: &AgentManifest) -> [u8; 32] {
         let bytes = serde_json::to_vec(manifest).unwrap_or_default();
+        let digest = Sha256::digest(&bytes);
         let mut out = [0u8; 32];
-        for (i, chunk) in out.chunks_mut(8).enumerate() {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            (i as u8).hash(&mut h);
-            bytes.hash(&mut h);
-            chunk.copy_from_slice(&h.finish().to_be_bytes());
-        }
+        out.copy_from_slice(&digest);
         out
     }
 

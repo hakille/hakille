@@ -151,45 +151,48 @@ impl AgentCapabilityVerifier {
         child_scope: CapabilityScope,
         child_action: CapabilityAction,
     ) -> Result<()> {
-        // 1. Le jeton enfant doit dériver du parent : même bloc d'autorité
-        //    (Biscuit `append` conserve le bloc 0) et au moins un bloc de plus.
-        if child_token.biscuit.block_count() <= parent_token.biscuit.block_count() {
+        // 1. Le parent doit être cryptographiquement valide sous l'autorité épinglée
+        //    et couvrir le couple (child_scope, child_action).
+        self.authority
+            .verify(parent_token, child_scope.clone(), child_action.clone())
+            .map_err(|_| HakilleError::AttenuationViolation)?;
+
+        // 2. Le jeton enfant doit dériver du parent : tous les blocs du parent
+        //    doivent être préservés à l'identique en préfixe, et l'enfant doit
+        //    porter au moins un bloc d'atténuation supplémentaire.
+        let parent_blocks = parent_token.biscuit.block_count();
+        let child_blocks = child_token.biscuit.block_count();
+        if child_blocks <= parent_blocks {
             return Err(HakilleError::AttenuationViolation);
         }
-        let parent_authority = parent_token
-            .biscuit
-            .print_block_source(0)
-            .map_err(|_| HakilleError::AttenuationViolation)?;
-        let child_authority = child_token
-            .biscuit
-            .print_block_source(0)
-            .map_err(|_| HakilleError::AttenuationViolation)?;
-        if parent_authority != child_authority {
-            return Err(HakilleError::AttenuationViolation);
+        for idx in 0..parent_blocks {
+            let parent_src = parent_token
+                .biscuit
+                .print_block_source(idx)
+                .map_err(|_| HakilleError::AttenuationViolation)?;
+            let child_src = child_token
+                .biscuit
+                .print_block_source(idx)
+                .map_err(|_| HakilleError::AttenuationViolation)?;
+            if parent_src != child_src {
+                return Err(HakilleError::AttenuationViolation);
+            }
         }
 
-        // 2. Décodage des droits effectifs des deux tokens : enfant ⊆ parent.
-        //    Expiry : les checks temporels ajoutés par l'enfant (blocs au-delà
-        //    de ceux du parent) doivent être <= expiry du parent — comparer le
-        //    min global serait vide de sens car l'enfant embarque les checks
-        //    du parent (min global toujours <= parent). Fail-closed si absent.
+        // 3. Décodage par intersection monotone des droits effectifs : enfant ⊆ parent.
         let (parent_rights, _) = effective_rights(parent_token)?;
         let (child_rights, _) = effective_rights(child_token)?;
         if !child_rights.is_subset(&parent_rights) {
             return Err(HakilleError::AttenuationViolation);
         }
-        let parent_expiry =
-            min_expiry_in_blocks(parent_token, 0..parent_token.biscuit.block_count())?;
-        let child_added_expiry = min_expiry_in_blocks(
-            child_token,
-            parent_token.biscuit.block_count()..child_token.biscuit.block_count(),
-        )?;
+        let parent_expiry = min_expiry_in_blocks(parent_token, 0..parent_blocks)?;
+        let child_added_expiry = min_expiry_in_blocks(child_token, parent_blocks..child_blocks)?;
         match (parent_expiry, child_added_expiry) {
             (Some(p), Some(c)) if c <= p => {}
             _ => return Err(HakilleError::AttenuationViolation),
         }
 
-        // 3. Le couple (scope, action) demandé doit appartenir aux droits
+        // 4. Le couple (scope, action) demandé doit appartenir aux droits
         //    effectifs de l'enfant ET passer la vérification cryptographique.
         let s = format!("{:?}", child_scope).to_lowercase();
         let a = format!("{:?}", child_action).to_lowercase();
@@ -207,12 +210,11 @@ impl AgentCapabilityVerifier {
 type EffectiveRights = (std::collections::HashSet<(String, String)>, Option<i64>);
 
 /// Droits effectifs d'un token Biscuit décodés depuis ses blocs :
-/// `rights` = paires (scope, action) autorisées, `expiry` = plus petit
-/// `time <= N` trouvé dans tous les blocs (fail-closed si absent).
+/// chaque bloc d'atténuation restreint par **intersection** les scopes/actions
+/// autorisés par les blocs précédents (jamais d'union entre blocs).
 fn effective_rights(token: &CapabilityToken) -> Result<EffectiveRights> {
-    let mut root_rights = std::collections::HashSet::new();
-    let mut allowed_scopes: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut allowed_actions: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut effective: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
     let mut expiry: Option<i64> = None;
 
     for i in 0..token.biscuit.block_count() {
@@ -220,27 +222,25 @@ fn effective_rights(token: &CapabilityToken) -> Result<EffectiveRights> {
             .biscuit
             .print_block_source(i)
             .map_err(|_| HakilleError::AttenuationViolation)?;
-        for (s, a) in parse_right_facts(&src) {
-            root_rights.insert((s, a));
+        if i == 0 {
+            for (s, a) in parse_right_facts(&src) {
+                effective.insert((s, a));
+            }
         }
         let (scopes, actions) = parse_allowed_facts(&src);
-        allowed_scopes.extend(scopes);
-        allowed_actions.extend(actions);
+        if !scopes.is_empty() {
+            let scope_set: std::collections::HashSet<String> = scopes.into_iter().collect();
+            effective.retain(|(s, _)| scope_set.contains(s));
+        }
+        if !actions.is_empty() {
+            let action_set: std::collections::HashSet<String> = actions.into_iter().collect();
+            effective.retain(|(_, a)| action_set.contains(a));
+        }
         for exp in parse_expiry_checks(&src) {
             expiry = Some(expiry.map_or(exp, |e: i64| e.min(exp)));
         }
     }
 
-    // Sans bloc d'atténuation, l'effectif = les droits racine. Sinon,
-    // intersection avec le produit scopes×actions autorisés.
-    let effective = if allowed_scopes.is_empty() || allowed_actions.is_empty() {
-        root_rights
-    } else {
-        root_rights
-            .into_iter()
-            .filter(|(s, a)| allowed_scopes.contains(s) && allowed_actions.contains(a))
-            .collect()
-    };
     Ok((effective, expiry))
 }
 

@@ -263,6 +263,13 @@ fn test_cryptographic_forget_records_tombstone() {
             .unwrap()
             .starts_with("sha256-receipt-")
     );
+    // Condensat SHA-256 réel : 64 caractères hexadécimaux, pas un identifiant recopié.
+    let digest = receipts[0]["verification_token"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("sha256-receipt-");
+    assert_eq!(digest.len(), 64);
+    assert!(digest.chars().all(|c| c.is_ascii_hexdigit()));
 }
 
 #[test]

@@ -192,40 +192,64 @@ pub fn create_fatigue_index_triplet(fatigue_index: f64, confidence: f64) -> Resu
 ///
 /// Aucun tombstone logique n'est créé pour les triplets cognitifs (`preserve_history = false`).
 pub fn prune_cognitive_signals(graph: &mut KnowledgeGraph, cutoff_weight: f64) -> DecayReport {
+    if !cutoff_weight.is_finite() {
+        return DecayReport {
+            nodes_decayed: 0,
+            nodes_removed: 0,
+            nodes_faded: 0,
+            min_weight: 0.0,
+            avg_weight: 0.0,
+        };
+    }
     let now = chrono::Utc::now();
-    let cutoff = cutoff_weight.max(0.0);
+    let cutoff = cutoff_weight.clamp(0.0, 1.0);
+    let active_user = active_user_node_id();
+    let standard_predicates: [PredicateId; 5] =
+        ALL_COGNITIVE_PREDICATES.map(cognitive_predicate_id);
     let mut decayed_count: u64 = 0;
     let mut to_remove = Vec::new();
 
     for id in graph.ids() {
-        if let Some(t) = graph.get_mut(&id) {
-            // Cible sélectivement les inférences personnelles cognitives
+        let prev_decayed = graph.last_decayed_at(&id).cloned();
+        let is_labeled_cognitive = graph
+            .get(&id)
+            .and_then(|t| graph.predicate_label(&t.predicate))
+            .is_some_and(is_cognitive_predicate);
+        let should_stamp = if let Some(t) = graph.get_mut(&id) {
+            // Cible strictement les signaux cognitifs de l'utilisateur actif
+            // (jamais les faits personnels distillés ordinaires `Inferred`).
             let is_cognitive = t.metadata.context == ContextPartition::Personal
-                && (t.metadata.source == TripletSource::Inferred
-                    || t.metadata.decay_rate == COGNITIVE_DECAY_RATE);
+                && t.subject == active_user
+                && (standard_predicates.contains(&t.predicate) || is_labeled_cognitive);
 
             if !is_cognitive || DecayEngine::should_exclude(t) {
-                continue;
+                false
+            } else {
+                let ref_ts = prev_decayed
+                    .as_ref()
+                    .filter(|d| d.0 >= t.metadata.last_activated.0)
+                    .unwrap_or(&t.metadata.last_activated);
+                let dt_secs = (now - ref_ts.0).num_milliseconds().max(0) as f64 / 1000.0;
+
+                let lambda = t.metadata.decay_rate.max(0.0);
+                let before = t.metadata.weight;
+                let after = (before * (-lambda * dt_secs).exp()).clamp(0.0, 1.0);
+
+                t.metadata.weight = after;
+
+                if (before - after).abs() > 1e-12 {
+                    decayed_count += 1;
+                }
+                if after < cutoff {
+                    to_remove.push(id.clone());
+                }
+                true
             }
-
-            let dt_secs = (now - t.metadata.last_activated.0)
-                .num_milliseconds()
-                .max(0) as f64
-                / 1000.0;
-
-            let lambda = t.metadata.decay_rate.max(0.0);
-            let before = t.metadata.weight;
-            let after = before * (-lambda * dt_secs).exp();
-
-            t.metadata.weight = after;
-            t.metadata.last_activated = Timestamp(now);
-
-            if (before - after).abs() > 1e-12 {
-                decayed_count += 1;
-            }
-            if after < cutoff {
-                to_remove.push(id);
-            }
+        } else {
+            false
+        };
+        if should_stamp {
+            graph.set_last_decayed_at(id, Timestamp(now));
         }
     }
 
@@ -339,5 +363,42 @@ mod tests {
         assert_eq!(report.nodes_removed, 1);
         assert_eq!(report.nodes_faded, 0); // Strictement aucun tombstone conservé !
         assert!(!graph.contains(&id));
+    }
+
+    #[test]
+    fn test_prune_cognitive_signals_preserves_personal_inferred_facts() {
+        let mut graph = KnowledgeGraph::new();
+        let subj = graph.resolve_subject("Utilisateur");
+        let pred = graph.resolve_predicate("préférence");
+        let distilled = Triplet {
+            id: KnowledgeGraph::deterministic_triplet_id(
+                &subj,
+                &pred,
+                &NodeValue::Text("Rust".into()),
+            ),
+            subject: subj,
+            predicate: pred,
+            object: NodeValue::Text("Rust".into()),
+            metadata: TripletMetadata {
+                weight: 0.01,
+                created_at: Timestamp::now(),
+                last_activated: Timestamp(chrono::Utc::now() - chrono::Duration::hours(2)),
+                source: TripletSource::Inferred,
+                confidence: 0.8,
+                context: ContextPartition::Personal,
+                trust_level: TrustLevel::User,
+                decay_rate: COGNITIVE_DECAY_RATE,
+            },
+            node_type: Some(NodeType::Preference),
+        };
+        let distilled_id = distilled.id.clone();
+        graph.insert(distilled);
+
+        let report = prune_cognitive_signals(&mut graph, 0.05);
+        assert_eq!(report.nodes_removed, 0);
+        assert!(
+            graph.contains(&distilled_id),
+            "les faits personnels distillés non cognitifs ne doivent jamais être purgés"
+        );
     }
 }

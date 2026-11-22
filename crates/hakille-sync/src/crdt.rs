@@ -649,9 +649,26 @@ impl ConsentCrdtDelta {
         );
     }
 
-    /// Fusion avec politique d'inviolabilité : Revocation-Wins.
-    /// Si l'un des deux réplicas a révoqué le consentement, le résultat est RÉVOQUÉ.
-    pub fn merge(&self, other: &ConsentCrdtDelta) -> Self {
+    /// Vérifie que deux deltas portent sur le même identifiant et périmètre de consentement.
+    pub fn matches_identity(&self, other: &ConsentCrdtDelta) -> bool {
+        self.consent_id == other.consent_id
+            && self.subject == other.subject
+            && self.scope == other.scope
+            && self.action == other.action
+    }
+
+    /// Fusion stricte validée : refuse de fusionner deux deltas portant sur des
+    /// identifiants, sujets, scopes ou actions distincts.
+    pub fn try_merge(&self, other: &ConsentCrdtDelta) -> Result<Self> {
+        if !self.matches_identity(other) {
+            return Err(sync_error(
+                "Incohérence d'identité dans ConsentCrdtDelta::try_merge (consent_id/subject/scope/action distincts)",
+            ));
+        }
+        Ok(self.merge_verified(other))
+    }
+
+    fn merge_verified(&self, other: &ConsentCrdtDelta) -> Self {
         let is_revoked = self.revoked || other.revoked;
         let rev_time = match (self.revocation_timestamp_ms, other.revocation_timestamp_ms) {
             (Some(t1), Some(t2)) => Some(t1.max(t2)),
@@ -669,5 +686,27 @@ impl ConsentCrdtDelta {
             grant_timestamp_ms: self.grant_timestamp_ms.min(other.grant_timestamp_ms),
             revocation_timestamp_ms: rev_time,
         }
+    }
+
+    /// Fusion avec politique d'inviolabilité : Revocation-Wins.
+    /// Si l'un des deux réplicas a révoqué le consentement, le résultat est RÉVOQUÉ.
+    /// Si `other` ne porte pas sur le même `(consent_id, subject, scope, action)`,
+    /// la fusion refuse de mélanger les champs étrangers : si `consent_id` diffère,
+    /// `self` est conservé tel quel ; si `consent_id` est identique mais le périmètre
+    /// diffère (tentative d'altération), le consentement passe en `revoked = true` (fail-closed).
+    pub fn merge(&self, other: &ConsentCrdtDelta) -> Self {
+        if self.matches_identity(other) {
+            return self.merge_verified(other);
+        }
+        if self.consent_id != other.consent_id {
+            return self.clone();
+        }
+        let mut fail_closed = self.clone();
+        let rev_ts = self
+            .revocation_timestamp_ms
+            .or(other.revocation_timestamp_ms)
+            .unwrap_or(self.grant_timestamp_ms.max(other.grant_timestamp_ms));
+        fail_closed.revoke(rev_ts);
+        fail_closed
     }
 }

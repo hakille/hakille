@@ -8,14 +8,13 @@ license.workspace = true
 hakille-core = { path = "../hakille-core" }
 hakille-identity = { path = "../hakille-identity" }
 hakille-ui-protocol = { path = "../hakille-ui-protocol" }
+biscuit-auth = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
-tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
-async-trait = "0.1"
 chacha20poly1305 = { workspace = true }
 sha2 = { workspace = true }
 rand = { workspace = true }

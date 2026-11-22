@@ -292,9 +292,9 @@ fn test_nan_and_infinite_coordinates_do_not_panic() {
 
     // E. Skeleton3D avec NaN ou confiance négative
     let mut skel = BodySkeleton3D::empty();
-    for i in 0..17 {
-        skel.joints[i].confidence = f32::NAN;
-        skel.joints[i].position = Point3D::new(f32::NAN, f32::NAN, f32::NAN);
+    for joint in skel.joints.iter_mut().take(17) {
+        joint.confidence = f32::NAN;
+        joint.position = Point3D::new(f32::NAN, f32::NAN, f32::NAN);
     }
     // Ne doit pas paniquer et doit retourner Upright par repli gracieux
     let posture = skel.classify_posture(0.5);

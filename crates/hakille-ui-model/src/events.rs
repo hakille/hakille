@@ -188,6 +188,33 @@ impl From<KernelToUi> for KernelEvent {
             KernelToUi::MediaGalleryReply { artifacts } => Self::Toast {
                 text: format!("galerie média : {} artefact(s)", artifacts.len()),
             },
+            KernelToUi::HomeDevicesReply {
+                devices,
+                protocols,
+                energy,
+            } => Self::Toast {
+                text: format!(
+                    "domotique : {} appareil(s), {} protocole(s) — {}",
+                    devices.len(),
+                    protocols.len(),
+                    energy.verdict
+                ),
+            },
+            KernelToUi::HomeCommandReply {
+                device_id,
+                executed_on_wire,
+                summary,
+                ..
+            } => Self::Toast {
+                text: format!(
+                    "domotique [{device_id}] {} : {summary}",
+                    if executed_on_wire {
+                        "exécuté"
+                    } else {
+                        "refus/attente"
+                    }
+                ),
+            },
         }
     }
 }

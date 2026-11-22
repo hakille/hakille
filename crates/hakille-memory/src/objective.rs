@@ -155,6 +155,7 @@ impl ObjectiveStore {
     }
 
     pub fn save_to_db(&self, db: &redb::Database) -> hakille_core::Result<()> {
+        use redb::ReadableTable;
         let txn = db
             .begin_write()
             .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?;
@@ -162,6 +163,24 @@ impl ObjectiveStore {
             let mut table = txn
                 .open_table(OBJECTIVES_TABLE)
                 .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?;
+            let stale: Vec<Vec<u8>> = table
+                .iter()
+                .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?
+                .filter_map(|item| {
+                    item.ok().and_then(|(k, _)| {
+                        let key = k.value();
+                        let keep = std::str::from_utf8(key)
+                            .ok()
+                            .is_some_and(|s| self.objectives.contains_key(s));
+                        (!keep).then(|| key.to_vec())
+                    })
+                })
+                .collect();
+            for key in stale {
+                table
+                    .remove(key.as_slice())
+                    .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?;
+            }
             for (id, obj) in &self.objectives {
                 let bytes = bincode::serialize(obj)
                     .map_err(|e| hakille_core::HakilleError::Internal(e.to_string()))?;

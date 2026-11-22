@@ -64,7 +64,7 @@ fn test_t1_f11_02_level2_facts_provenance_list() {
         freshness: "Vérifié".into(),
     };
 
-    let facts = vec![fact1, fact2];
+    let facts = [fact1, fact2];
     assert_eq!(facts.len(), 2);
     assert_eq!(facts[0].kind, "Document");
     assert_eq!(facts[1].source, "Carnet de bénéficiaires vérifié");

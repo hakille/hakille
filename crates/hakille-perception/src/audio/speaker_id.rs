@@ -32,7 +32,7 @@ pub trait SpeakerIdentifier: Send + Sync {
 pub struct CamPlusPlusIdentifier {
     embedding_dim: usize,
     model_path: Option<PathBuf>,
-    cache: std::sync::Mutex<Option<CampplusOnnx>>,
+    cache: Arc<std::sync::Mutex<Option<CampplusOnnx>>>,
 }
 
 impl CamPlusPlusIdentifier {
@@ -40,7 +40,7 @@ impl CamPlusPlusIdentifier {
         Self {
             embedding_dim: 192,
             model_path: None,
-            cache: std::sync::Mutex::new(None),
+            cache: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -48,7 +48,7 @@ impl CamPlusPlusIdentifier {
         Self {
             embedding_dim: 192,
             model_path: Some(path.as_ref().to_path_buf()),
-            cache: std::sync::Mutex::new(None),
+            cache: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -103,22 +103,33 @@ impl SpeakerIdentifier for CamPlusPlusIdentifier {
                 "CamPlusPlusIdentifier: chunk vide — embedding RÉEL impossible".to_string(),
             ));
         }
-        // Session mise en cache (ouverture paresseuse, réutilisée).
-        // `CampplusOnnx::open` est bloquant : on l'appelle hors verrou long.
         let path = self.resolve_path()?;
-        let mut guard = self.cache.lock().map_err(|e| {
-            HakilleError::InferenceError(format!("CamPlusPlusIdentifier: mutex empoisonné : {e}"))
-        })?;
-        if guard.is_none() {
-            let sess = CampplusOnnx::open(&path)?;
-            *guard = Some(sess);
-        }
-        let vector = guard
-            .as_ref()
-            .expect("session CAM++ initialisée")
-            .embed(&pcm_16k)?;
+        let cache = Arc::clone(&self.cache);
+        let embedding_dim = self.embedding_dim;
+        // Déport sur spawn_blocking pour ne pas bloquer le runtime Tokio pendant
+        // le chargement ONNX et le forward TDNN-CAM.
+        let vector = tokio::task::spawn_blocking(move || -> Result<Vec<f32>> {
+            let mut guard = cache.lock().map_err(|e| {
+                HakilleError::InferenceError(format!(
+                    "CamPlusPlusIdentifier: mutex empoisonné : {e}"
+                ))
+            })?;
+            if guard.is_none() {
+                let sess = CampplusOnnx::open(&path)?;
+                *guard = Some(sess);
+            }
+            guard
+                .as_ref()
+                .ok_or_else(|| HakilleError::InferenceError("session CAM++ absente".into()))?
+                .embed(&pcm_16k)
+        })
+        .await
+        .map_err(|e| {
+            HakilleError::InferenceError(format!("CamPlusPlusIdentifier interrompu : {e}"))
+        })??;
+
         Ok(VoiceBiometricEmbedding {
-            dimension: self.embedding_dim,
+            dimension: embedding_dim,
             vector,
         })
     }

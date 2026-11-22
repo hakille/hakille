@@ -14,6 +14,12 @@ use uuid::Uuid;
 /// Maximum duration permitted between target lock/challenge registration and gesture confirmation (1200 ms).
 pub const CONTACTLESS_AUTH_WINDOW: Duration = Duration::from_millis(1200);
 
+/// Maximum number of pending contactless challenges retained simultaneously.
+pub const MAX_PENDING_CHALLENGES: usize = 4096;
+
+/// Maximum number of consumed nonces retained in the anti-replay cache.
+pub const MAX_USED_NONCES: usize = 16384;
+
 /// Active challenge awaiting contactless micro-nod authorization.
 #[derive(Debug, Clone)]
 pub struct ContactlessAuthChallenge {
@@ -30,7 +36,10 @@ pub struct ContactlessAuthChallenge {
 impl ContactlessAuthChallenge {
     /// Returns `true` if this challenge has exceeded its 1200ms validity window.
     pub fn is_timed_out(&self, now: Instant) -> bool {
-        now.duration_since(self.created_at) > self.validity_window
+        match now.checked_duration_since(self.created_at) {
+            Some(elapsed) => elapsed > self.validity_window,
+            None => true,
+        }
     }
 }
 
@@ -50,6 +59,7 @@ pub struct ContactlessAuthVerdict {
 pub struct ContactlessGestureAuthManager {
     challenges: HashMap<Uuid, ContactlessAuthChallenge>,
     used_nonces: HashSet<[u8; 32]>,
+    root_public_key: Option<biscuit_auth::PublicKey>,
 }
 
 impl ContactlessGestureAuthManager {
@@ -57,6 +67,16 @@ impl ContactlessGestureAuthManager {
         Self {
             challenges: HashMap::new(),
             used_nonces: HashSet::new(),
+            root_public_key: None,
+        }
+    }
+
+    /// Create a manager pinning a trusted Biscuit root public key.
+    pub fn with_root_public_key(root_public_key: biscuit_auth::PublicKey) -> Self {
+        Self {
+            challenges: HashMap::new(),
+            used_nonces: HashSet::new(),
+            root_public_key: Some(root_public_key),
         }
     }
 
@@ -69,6 +89,19 @@ impl ContactlessGestureAuthManager {
         required_action: CapabilityAction,
         now: Instant,
     ) -> ContactlessAuthChallenge {
+        if self.challenges.len() >= MAX_PENDING_CHALLENGES {
+            self.prune_expired_challenges(now);
+            if self.challenges.len() >= MAX_PENDING_CHALLENGES
+                && let Some(oldest_id) = self
+                    .challenges
+                    .iter()
+                    .min_by_key(|(_, c)| c.created_at)
+                    .map(|(id, _)| *id)
+            {
+                self.challenges.remove(&oldest_id);
+            }
+        }
+
         let mut nonce = [0u8; 32];
         OsRng.fill_bytes(&mut nonce);
         let challenge_id = Uuid::new_v4();
@@ -94,9 +127,10 @@ impl ContactlessGestureAuthManager {
     /// 1. Challenge existence and single-use consumption (anti-replay).
     /// 2. Target ID matching between gesture decision and registered challenge.
     /// 3. Decision approval flag (`is_gesture_authorized`).
-    /// 4. Temporal execution within the 1200ms window (`decision_time - created_at <= 1200ms`).
+    /// 4. Temporal execution within the 1200ms window (`0 <= decision_time - created_at <= 1200ms`).
     /// 5. Biscuit token expiration check (`!token.is_expired()`).
-    /// 6. Action nonce non-reuse invariant.
+    /// 6. Biscuit token scope and action Datalog verification (plus pinned root public key if configured).
+    /// 7. Action nonce non-reuse invariant.
     pub fn validate_authorization(
         &mut self,
         challenge_id: Uuid,
@@ -126,8 +160,14 @@ impl ContactlessGestureAuthManager {
             ));
         }
 
-        // 4. Temporal validity window check (must be within 1200ms)
-        let elapsed = decision_time.duration_since(challenge.created_at);
+        // 4. Temporal validity window check (must be non-retroactive and within 1200ms)
+        let elapsed = decision_time
+            .checked_duration_since(challenge.created_at)
+            .ok_or_else(|| {
+                HakilleError::CapabilityDenied(
+                    "Horodatage de décision antérieur à la création du défi".to_string(),
+                )
+            })?;
         if elapsed > challenge.validity_window {
             return Err(HakilleError::CapabilityDenied(format!(
                 "Délai d'autorisation gestuelle dépassé : {:?} écoulés (> fenêtre de 1200ms)",
@@ -140,11 +180,21 @@ impl ContactlessGestureAuthManager {
             return Err(HakilleError::CapabilityExpired);
         }
 
-        // 6. Anti-replay action nonce verification
+        // 6. Biscuit Datalog verification of required_scope & required_action
+        self.verify_token_rights(
+            &challenge.biscuit_token,
+            challenge.required_scope,
+            challenge.required_action,
+        )?;
+
+        // 7. Anti-replay action nonce verification
         if self.used_nonces.contains(&challenge.action_nonce) {
             return Err(HakilleError::CapabilityDenied(
                 "Attaque par rejeu détectée : nonce d'action déjà consommé".to_string(),
             ));
+        }
+        if self.used_nonces.len() >= MAX_USED_NONCES {
+            self.used_nonces.clear();
         }
         self.used_nonces.insert(challenge.action_nonce);
 
@@ -156,6 +206,56 @@ impl ContactlessGestureAuthManager {
             validated_token: challenge.biscuit_token,
             activated_at: decision_time,
         })
+    }
+
+    fn verify_token_rights(
+        &self,
+        token: &CapabilityToken,
+        required_scope: CapabilityScope,
+        required_action: CapabilityAction,
+    ) -> Result<(), HakilleError> {
+        if let Some(ref root_pk) = self.root_public_key {
+            return hakille_core::capability::verify_capability_with_root_key(
+                token,
+                root_pk,
+                required_scope,
+                required_action,
+            );
+        }
+
+        let mut authorizer = token
+            .biscuit
+            .authorizer()
+            .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+        let s = required_scope.datalog_name();
+        let a = format!("{:?}", required_action).to_lowercase();
+        let now_ts = chrono::Utc::now().timestamp();
+        authorizer
+            .add_fact(format!("time({now_ts})").as_str())
+            .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+        authorizer
+            .add_fact(format!("operation(\"{s}\", \"{a}\")").as_str())
+            .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+        authorizer
+            .add_check(format!("check if right(\"{s}\", \"{a}\")").as_str())
+            .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+        authorizer
+            .allow()
+            .map_err(|e| HakilleError::CapabilityDenied(e.to_string()))?;
+        let limits = biscuit_auth::AuthorizerLimits {
+            max_time: Duration::from_millis(500),
+            ..Default::default()
+        };
+        authorizer.authorize_with_limits(limits).map_err(|e| {
+            if token.is_expired() {
+                HakilleError::CapabilityExpired
+            } else {
+                HakilleError::CapabilityDenied(format!(
+                    "Le jeton Biscuit ne confère pas le droit ({s}, {a}) : {e}"
+                ))
+            }
+        })?;
+        Ok(())
     }
 
     /// Prune challenges that have exceeded their 1200ms validity window.
@@ -182,8 +282,8 @@ mod tests {
         let expires_at = Timestamp(chrono::Utc::now() + chrono::Duration::seconds(expires_in_secs));
         authority
             .create_root_token(
-                vec![CapabilityScope::Wallet],
-                vec![CapabilityAction::Execute],
+                vec![CapabilityScope::Wallet, CapabilityScope::Sensor],
+                vec![CapabilityAction::Execute, CapabilityAction::Read],
                 expires_at,
             )
             .expect("Token creation should succeed")
@@ -374,5 +474,40 @@ mod tests {
         let pruned = manager.prune_expired_challenges(t0 + Duration::from_millis(1500));
         assert_eq!(pruned, 2);
         assert_eq!(manager.pending_challenges_count(), 0);
+    }
+
+    #[test]
+    fn test_contactless_biscuit_auth_scope_mismatch_rejected() {
+        let authority = CapabilityAuthority::new();
+        let expires_at = Timestamp(chrono::Utc::now() + chrono::Duration::seconds(3600));
+        let audio_only_token = authority
+            .create_root_token(
+                vec![CapabilityScope::Audio],
+                vec![CapabilityAction::Read],
+                expires_at,
+            )
+            .expect("Audio token creation should succeed");
+
+        let mut manager =
+            ContactlessGestureAuthManager::with_root_public_key(authority.root_public_key());
+        let t0 = Instant::now();
+        let challenge = manager.register_challenge(
+            "wallet_tx_escalate",
+            audio_only_token,
+            CapabilityScope::Wallet,
+            CapabilityAction::Execute,
+            t0,
+        );
+
+        let result = manager.validate_authorization(
+            challenge.challenge_id,
+            "wallet_tx_escalate",
+            true,
+            t0 + Duration::from_millis(200),
+        );
+        assert!(
+            result.is_err(),
+            "Biscuit token without required (Wallet, Execute) right must be rejected"
+        );
     }
 }

@@ -17,6 +17,10 @@ pub struct KnowledgeGraph {
     predicate_names: HashMap<String, PredicateId>,
     subject_labels: HashMap<NodeId, String>,
     predicate_labels: HashMap<PredicateId, String>,
+    /// Horodatage du dernier passage de décroissance exponentielle par triplet
+    /// (séparé de `metadata.last_activated` afin de préserver la date réelle
+    /// d'activation pour le GC 30 jours tout en évitant tout double-comptage).
+    last_decayed: BTreeMap<TripletId, hakille_core::Timestamp>,
 }
 
 impl KnowledgeGraph {
@@ -30,6 +34,7 @@ impl KnowledgeGraph {
             predicate_names: HashMap::new(),
             subject_labels: HashMap::new(),
             predicate_labels: HashMap::new(),
+            last_decayed: BTreeMap::new(),
         }
     }
 
@@ -234,6 +239,7 @@ impl KnowledgeGraph {
         let id = triplet.id.clone();
         let subject = triplet.subject.clone();
         let predicate = triplet.predicate.clone();
+        self.last_decayed.remove(&id);
         self.triplets.insert(id.clone(), triplet);
         self.index_insert(&subject, &predicate, &id);
         id
@@ -388,8 +394,23 @@ impl KnowledgeGraph {
     }
 
     /// Accès mutable ciblé (support de la décroissance temporelle).
+    /// Toute mutation directe invalide `last_decayed` pour ce triplet afin que
+    /// les tests ou appelants qui recalent `last_activated` ne soient pas masqués.
     pub fn get_mut(&mut self, id: &TripletId) -> Option<&mut Triplet> {
+        self.last_decayed.remove(id);
         self.triplets.get_mut(id)
+    }
+
+    /// Dernier horodatage de décroissance appliqué à `id` (sans altérer `last_activated`).
+    pub fn last_decayed_at(&self, id: &TripletId) -> Option<&hakille_core::Timestamp> {
+        self.last_decayed.get(id)
+    }
+
+    /// Enregistre l'horodatage du dernier passage de décroissance pour `id`.
+    pub fn set_last_decayed_at(&mut self, id: TripletId, ts: hakille_core::Timestamp) {
+        if self.triplets.contains_key(&id) {
+            self.last_decayed.insert(id, ts);
+        }
     }
 
     pub fn search_text(&self, query: &str) -> Vec<&Triplet> {
@@ -474,12 +495,14 @@ impl KnowledgeGraph {
         if let Some(t) = self.triplets.get_mut(id) {
             t.metadata.last_activated = hakille_core::Timestamp::now();
             t.metadata.weight = (t.metadata.weight * 1.1).min(1.0);
+            self.last_decayed.remove(id);
         }
     }
 
     /// Retire un triplet et purge ses 3 entrées d'index (pas de buckets
     /// fantômes). Rend `false` si l'ID était absent.
     pub fn remove(&mut self, id: &TripletId) -> bool {
+        self.last_decayed.remove(id);
         if let Some(removed) = self.triplets.remove(id) {
             self.index_remove(&removed.subject, &removed.predicate, &removed.id);
             true
@@ -560,6 +583,7 @@ impl KnowledgeGraph {
         use crate::storage::GraphStorage;
         let triplets = edge.all_triplets().await?;
         self.triplets.clear();
+        self.last_decayed.clear();
         for t in triplets {
             self.triplets.insert(t.id.clone(), t);
         }
@@ -704,6 +728,11 @@ impl KnowledgeGraph {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
+            last_decayed: self
+                .last_decayed
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         }
     }
 
@@ -724,6 +753,11 @@ impl KnowledgeGraph {
         graph.predicate_names = snapshot.predicate_names.into_iter().collect();
         graph.subject_labels = snapshot.subject_labels.into_iter().collect();
         graph.predicate_labels = snapshot.predicate_labels.into_iter().collect();
+        graph.last_decayed = snapshot
+            .last_decayed
+            .into_iter()
+            .filter(|(id, _)| graph.triplets.contains_key(id))
+            .collect();
         Ok(graph)
     }
 }
@@ -739,18 +773,17 @@ fn remove_id_from_bucket(bucket: Option<&mut Vec<TripletId>>, id: &TripletId) {
 }
 
 /// Tri par poids décroissant, égalité départagée par `TripletId` (ordre total
-/// déterministe ; poids `NaN` traités comme égaux puis départagés par ID).
+/// déterministe via `f64::total_cmp`, immunisé aux `NaN`).
 fn sort_by_weight_desc(items: &mut Vec<&Triplet>) {
     items.sort_by(|a, b| {
         b.metadata
             .weight
-            .partial_cmp(&a.metadata.weight)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&a.metadata.weight)
             .then_with(|| a.id.cmp(&b.id))
     });
 }
 
-/// Snapshot JSON du graphe (triplets + registres nom↔ID/libellés).
+/// Snapshot JSON du graphe (triplets + registres nom↔ID/libellés + horodatages de décroissance).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GraphSnapshot {
     pub triplets: Vec<crate::triplet::Triplet>,
@@ -758,6 +791,8 @@ pub struct GraphSnapshot {
     pub predicate_names: Vec<(String, PredicateId)>,
     pub subject_labels: Vec<(NodeId, String)>,
     pub predicate_labels: Vec<(PredicateId, String)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub last_decayed: Vec<(TripletId, hakille_core::Timestamp)>,
 }
 
 impl Default for KnowledgeGraph {

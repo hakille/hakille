@@ -39,27 +39,36 @@ impl BoundedInitiativeTracker {
         });
     }
 
-    pub fn compliance_rate(&self) -> f64 {
-        if self.records.is_empty() {
-            return 1.0;
-        }
+    pub fn has_measurements(&self) -> bool {
+        !self.records.is_empty()
+    }
 
+    pub fn compliance_rate_checked(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
         let strictly_bounded = self
             .records
             .iter()
             .filter(|r| r.within_capability_bounds)
             .count();
+        Some(strictly_bounded as f64 / self.records.len() as f64)
+    }
 
-        strictly_bounded as f64 / self.records.len() as f64
+    pub fn compliance_rate(&self) -> f64 {
+        self.compliance_rate_checked().unwrap_or(1.0)
+    }
+
+    pub fn acceptance_rate_checked(&self) -> Option<f64> {
+        if self.records.is_empty() {
+            return None;
+        }
+        let accepted = self.records.iter().filter(|r| r.user_accepted).count();
+        Some(accepted as f64 / self.records.len() as f64)
     }
 
     pub fn acceptance_rate(&self) -> f64 {
-        if self.records.is_empty() {
-            return 1.0;
-        }
-
-        let accepted = self.records.iter().filter(|r| r.user_accepted).count();
-        accepted as f64 / self.records.len() as f64
+        self.acceptance_rate_checked().unwrap_or(1.0)
     }
 
     /// Snapshot mémoire simple (sérialisable en JSON).
@@ -71,11 +80,11 @@ impl BoundedInitiativeTracker {
         }
     }
 
-    /// Persistance JSON simple via `std::fs`.
+    /// Persistance JSON atomique via fichier temporaire.
     pub fn save_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
         let json = serde_json::to_string_pretty(&self.to_snapshot())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(path, json)
+        crate::atomic_write_json(path, &json)
     }
 
     pub fn load_from_file(path: &std::path::Path) -> std::io::Result<Self> {

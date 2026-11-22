@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
 mod agent_runtime;
+mod home_cli;
 mod host;
 mod identity;
 mod ipc;
@@ -67,8 +68,35 @@ fn make_cli_progress_callback() -> hakille_inference::ProgressCallback {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Sous Windows MSVC, la pile du thread principal est limitée à 1 Mio par
+    // défaut (contre 8 Mio sous Linux/macOS) : les machines à états async du
+    // démon (REPL + IPC + noyau cognitif + média + domotique) dépassent 1 Mio
+    // en profil debug non optimisé. On exécute donc `async_main` et les workers
+    // Tokio avec une pile uniforme de 8 Mio sur toutes les plateformes.
+    const STACK_BYTES: usize = 8 * 1024 * 1024;
+    let handle = std::thread::Builder::new()
+        .name("hakille-main".to_string())
+        .stack_size(STACK_BYTES)
+        .spawn(|| -> Result<(), String> {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(STACK_BYTES)
+                .build()
+                .map_err(|e| format!("initialisation runtime Tokio : {e}"))?;
+            rt.block_on(Box::pin(async_main()))
+                .map_err(|e| e.to_string())
+        })
+        .map_err(|e| format!("lancement thread principal hakille-daemon : {e}"))?;
+    match handle.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(msg)) => Err(msg.into()),
+        Err(_) => Err("thread principal hakille-daemon interrompu par une panique".into()),
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     tracing_subscriber::fmt()
         .with_max_level(
@@ -90,7 +118,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut provider_arg: Option<String> = None;
     let mut serve_mode = false;
     let mut speak_enabled = false;
-    let mut listen_mode = false;
     let mut substrate_override: Option<String> = None;
     let mut voice_options = voice_cli::VoiceOptions::default();
 
@@ -211,9 +238,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 arg_idx += 1;
             }
             "--budget" if arg_idx + 1 < args.len() => {
-                if let Ok(b) = args[arg_idx + 1].parse::<u64>() {
-                    daily_budget_cents = b;
-                }
+                daily_budget_cents = args[arg_idx + 1].parse::<u64>().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "--budget attend un entier >= 0 en centimes, reçu : '{}'",
+                            args[arg_idx + 1]
+                        ),
+                    )
+                })?;
                 arg_idx += 1;
             }
             "--models-dir" if arg_idx + 1 < args.len() => {
@@ -234,14 +267,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--speak" => {
                 speak_enabled = true;
             }
-            "--listen" => {
-                listen_mode = true;
-            }
             "--substrate" if arg_idx + 1 < args.len() => {
                 substrate_override = Some(args[arg_idx + 1].clone());
                 arg_idx += 1;
             }
-            _ => {}
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "option ou commande CLI inconnue ou incomplète : '{other}' (voir --help)"
+                    ),
+                )
+                .into());
+            }
         }
         arg_idx += 1;
     }
@@ -464,20 +502,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let camera_cap = authority.create_root_token(
         vec![CapabilityScope::Camera, CapabilityScope::Sensor],
-        vec![hakille_core::CapabilityAction::Read],
-        Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
-    )?;
-    #[cfg(target_os = "windows")]
-    let gui_input_cap = authority.create_root_token(
-        vec![CapabilityScope::GuiInput],
-        vec![
-            hakille_core::CapabilityAction::Execute,
-            hakille_core::CapabilityAction::Write,
-        ],
-        Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
-    )?;
-    let screen_cap = authority.create_root_token(
-        vec![CapabilityScope::Sensor],
         vec![hakille_core::CapabilityAction::Read],
         Timestamp(chrono::Utc::now() + chrono::Duration::hours(1)),
     )?;
@@ -749,6 +773,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("  Presence State: {:?} (Ready)", presence.state());
 
+    let home_db_path = data_dir.join("home.redb");
+    let home_hub = Arc::new(
+        hakille_home::SovereignHomeHub::open(&home_db_path)
+            .await
+            .map_err(|e| {
+                format!(
+                    "SovereignHomeHub indisponible ({}): {e}",
+                    home_db_path.display()
+                )
+            })?,
+    );
+    println!(
+        "  Sovereign Home Hub: {} ({} appareil(s), {} protocole(s) LAN, 0 appareil fictif)",
+        home_db_path.display(),
+        home_hub.list_devices().await.len(),
+        home_hub.protocol_catalog().len()
+    );
+
     if let Some(prompt) = eval_prompt {
         println!("\n[Headless Evaluation Mode]");
         println!("Evaluating Prompt: '{}'", prompt);
@@ -815,6 +857,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             agent_runtime_shared,
             &agent_registry,
             Some(Arc::clone(&media_manager)),
+            Some(Arc::clone(&home_hub)),
         )
         .await;
     }
@@ -1155,6 +1198,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 println!(
                     "  :win-tray         Test Windows system tray presence states & global hotkey (Ctrl+Alt+Space, alias Alt+Space)"
+                );
+                println!("  :home             Lister les appareils et pièces du hub domotique");
+                println!("  :home-protocols   Catalogue complet des 19 protocoles domotiques LAN");
+                println!(
+                    "  :home-discover [proto]  Découverte réseau locale réelle (mDNS/SSDP/ONVIF)"
+                );
+                println!(
+                    "  :home-room <id> <nom> [étage]  Enregistrer une pièce dans le jumeau 3D"
+                );
+                println!(
+                    "  :home-pair <id> <nom> <pièce> <proto> <cat> <endpoint>  Appairer un appareil LAN"
+                );
+                println!(
+                    "  :home-cmd <id> <action> [json] [--hold-600ms]  Exécuter une commande LAN"
+                );
+                println!("  :home-energy      Bilan énergétique réel et arbitrage dialectique");
+                println!(
+                    "  :home-twin        Projeter le jumeau 3D vers KnowledgeGraph et PalaceLayout"
+                );
+                println!("  :home-scenes      Lister les scènes domotiques persistées");
+                println!(
+                    "  :home-ask <phrase> [--exec]  Résoudre une intention FR/EN hors-ligne (aperçu ou exécution Tier 0-2)"
+                );
+                println!(
+                    "  :home-rules       Lister les automatisations réactives (Tier 3 toujours escaladé)"
+                );
+                println!(
+                    "  :home-rules-eval  Évaluer les automatisations contre les sondes réelles"
+                );
+                println!(
+                    "  :home-tariffs [bleu|blanc|rouge]  Consulter/basculer le tarif EDF Tempo & coût kWh"
+                );
+                println!(
+                    "  :home-anomalies   Détecter les anomalies réelles (surcharge, gel, batterie faible)"
+                );
+                println!(
+                    "  :home-mesh-sync   Exporter le résumé du delta P2P chiffré (hakille-mesh Air-Gap)"
                 );
                 println!("  :help             Show this command list");
                 println!("  :exit             Shutdown Hakille daemon");
@@ -1915,7 +1995,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // intention n'est produite et rien n'est exécuté — le REPL,
                 // lui, reste vivant.
                 'gui_action: {
-                    let capture = match substrate.capture_screen(&screen_cap).await {
+                    let screen_cap_token = match authority.create_root_token(
+                        vec![CapabilityScope::Sensor],
+                        vec![hakille_core::CapabilityAction::Read],
+                        Timestamp(chrono::Utc::now() + chrono::Duration::minutes(5)),
+                    ) {
+                        Ok(token) => token,
+                        Err(e) => {
+                            eprintln!("  Jeton Sensor impossible : {e} — aucune action exécutée.");
+                            break 'gui_action;
+                        }
+                    };
+                    let gui_input_token = match authority.create_root_token(
+                        vec![CapabilityScope::GuiInput],
+                        vec![
+                            hakille_core::CapabilityAction::Execute,
+                            hakille_core::CapabilityAction::Write,
+                        ],
+                        Timestamp(chrono::Utc::now() + chrono::Duration::minutes(5)),
+                    ) {
+                        Ok(token) => token,
+                        Err(e) => {
+                            eprintln!(
+                                "  Jeton GuiInput impossible : {e} — aucune action exécutée."
+                            );
+                            break 'gui_action;
+                        }
+                    };
+                    let capture = match substrate.capture_screen(&screen_cap_token).await {
                         Ok(c) => c,
                         Err(e) => {
                             eprintln!(
@@ -1944,7 +2051,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .execute_intention(
                                 &substrate,
                                 intent,
-                                &gui_input_cap,
+                                &gui_input_token,
                                 screen_w,
                                 screen_h,
                             )
@@ -2064,17 +2171,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             ":status" => {
+                let data_badge = provider_registry.data_exit(0).badge();
+                let llm_state = if orchestrator.system1.has_inference_engine() {
+                    "prêt sur disque"
+                } else {
+                    "artefact absent (voir models download)"
+                };
                 println!("Status:");
                 println!("  Presence: {:?}", presence.state());
                 println!("  Tier: {:?}", manifest.tier);
-                println!(
-                    "  Données: Local (pastille §8 — aucun appel réseau hors fournisseur choisi)"
-                );
+                println!("  Données: {data_badge}");
                 println!("  File d'envoi: {} en attente (voir :outbox)", outbox.len());
                 println!("  Memory Triplets: {}", orchestrator.memory_graph.len());
                 println!("  Cost Spent: {}", cost_counter.formatted_total());
                 println!(
-                    "  LLM: Qwen 0.5B Q4_K_M (timeout {} ms — override HAKILLE_QWEN_TIMEOUT_MS)",
+                    "  LLM: Qwen 0.5B Q4_K_M [{llm_state}] (timeout {} ms — override HAKILLE_QWEN_TIMEOUT_MS)",
                     orchestrator.system1.llm_timeout_ms()
                 );
             }
@@ -2095,22 +2206,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  Nombre de dilemmes éthiques : {}", dilemmes);
             }
             ":metrics" => {
+                let continuity_rate = continuity_tracker.continuity_rate();
+                let initiative_rate = bounded_initiative.compliance_rate();
+                let generality_score = generality_tracker.generality_score();
+                let confidence_rate = orchestrator.self_model.rolling_confidence.clamp(0.0, 1.0);
+                let live_vector = [
+                    continuity_rate,
+                    initiative_rate,
+                    generality_score.clamp(0.0, 1.0),
+                    confidence_rate,
+                    1.0,
+                ];
                 println!("North-Star Metrics:");
-                println!(
-                    "  Continuity Rate: {:.2}%",
-                    continuity_tracker.continuity_rate() * 100.0
-                );
+                println!("  Continuity Rate: {:.2}%", continuity_rate * 100.0);
                 println!(
                     "  Bounded Initiative Compliance: {:.2}%",
-                    bounded_initiative.compliance_rate() * 100.0
+                    initiative_rate * 100.0
                 );
-                println!(
-                    "  Practical Generality Score: {:.4}",
-                    generality_tracker.generality_score()
-                );
-                if let Some(drift) =
-                    drift_detector.evaluate_current_vector(&[1.0, 1.0, 1.0, 1.0, 1.0])
-                {
+                println!("  Practical Generality Score: {:.4}", generality_score);
+                if let Some(drift) = drift_detector.evaluate_current_vector(&live_vector) {
                     println!("  Ethics Drift Alert: {}", drift.description);
                 } else {
                     println!("  Ethics Drift Status: Nominal (No drift detected)");
@@ -2242,16 +2356,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("Usage : :agent-install <chemin_vers_paquet.hap>");
                 } else if let Some(runtime) = agent_runtime.as_mut() {
                     let path = PathBuf::from(path_str);
-                    match hakille_agents::HakilleAgentPackage::from_file(&path) {
+                    let trusted_keys = [signing_keypair.verifying_key];
+                    match hakille_agents::HakilleAgentPackage::from_file(&path, &trusted_keys) {
                         Err(e) => {
-                            eprintln!("Paquet .hap invalide ou corrompu ({path_str}) : {e}");
+                            eprintln!(
+                                "Paquet .hap invalide, non approuvé ou corrompu ({path_str}) : {e}"
+                            );
                         }
-                        Ok(pkg) => match runtime.install_package(&pkg) {
+                        Ok(pkg) => match runtime.install_package(&pkg, &trusted_keys) {
                             Err(e) => {
                                 eprintln!("Échec de l'installation du paquet : {e}");
                             }
                             Ok(verified) => {
-                                let _ = agent_registry.register(verified.manifest.clone());
+                                if let Err(reg_err) = agent_registry.register_verified(
+                                    verified.manifest.clone(),
+                                    None,
+                                    true,
+                                ) {
+                                    eprintln!(
+                                        "Avertissement : enregistrement dans le registre refusé : {reg_err}"
+                                    );
+                                }
                                 println!(
                                     "Agent '{}' ({}) installé et vérifié avec succès.",
                                     verified.manifest.id, verified.manifest.name
@@ -2260,7 +2385,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 println!("  Description : {}", verified.manifest.description);
                                 println!("  SHA-256 WASM : {}", verified.wasm_sha256_hex);
                                 println!(
-                                    "  Signature développeur Ed25519 : vérifiée mathématiquement"
+                                    "  Signature développeur Ed25519 : vérifiée contre clé épinglée"
                                 );
                                 println!("  Auto-test bac à sable : passé avec succès");
                                 println!(
@@ -3042,6 +3167,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Aucun job média actif avec l'identifiant '{job_id}'.");
                 }
             }
+            s if s == ":home" || s.starts_with(":home-") => {
+                if !home_cli::handle_home_repl_command(
+                    s,
+                    &home_hub,
+                    &authority,
+                    &audit_journal,
+                    &mut orchestrator.memory_graph,
+                )
+                .await
+                {
+                    println!("✗ Commande domotique inconnue : {s}");
+                    if let Some(suggestion) = suggest_command(s) {
+                        println!("  → Commande proche : {suggestion}");
+                    }
+                    println!("  Tape :help pour la liste.");
+                }
+            }
 
             s if bare_command_usage(s).is_some() => {
                 if let Some(usage) = bare_command_usage(s) {
@@ -3690,10 +3832,24 @@ const KNOWN_COMMANDS: &[&str] = &[
     ":screen",
     ":tray",
     ":win-ram",
-    ":power",
     ":win-power",
     ":win-screen",
     ":win-tray",
+    ":home",
+    ":home-protocols",
+    ":home-discover",
+    ":home-room",
+    ":home-pair",
+    ":home-cmd",
+    ":home-energy",
+    ":home-twin",
+    ":home-scenes",
+    ":home-ask",
+    ":home-rules",
+    ":home-rules-eval",
+    ":home-tariffs",
+    ":home-anomalies",
+    ":home-mesh-sync",
 ];
 
 /// Distance de Levenshtein (insertion/suppression/substitution = 1) —
