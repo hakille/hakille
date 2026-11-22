@@ -727,18 +727,19 @@ fn test_guest_pass_pin_monotonic_tick_and_owner_data_isolation() {
         assert_eq!(res["ok"], false, "{action} doit être refusé en mode invité");
     }
 
-    // Temps monotone : impossible de reculer le compteur.
-    let tick: Value = serde_json::from_str(
-        &bridge
-            .dispatch_json(json!({ "type": "tick_guest_pass", "elapsed_secs": 600 }).to_string()),
-    )
-    .unwrap();
-    assert_eq!(tick["ok"], true);
-    let rollback: Value = serde_json::from_str(
-        &bridge.dispatch_json(json!({ "type": "tick_guest_pass", "elapsed_secs": 10 }).to_string()),
-    )
-    .unwrap();
-    assert_eq!(rollback["ok"], false);
+    // Pass protégé par PIN : impossible de falsifier l'avance temporelle pour
+    // forcer l'expiration ou contourner le PIN propriétaire.
+    for spoof_secs in [600, 1800] {
+        let spoof: Value = serde_json::from_str(&bridge.dispatch_json(
+            json!({ "type": "tick_guest_pass", "elapsed_secs": spoof_secs }).to_string(),
+        ))
+        .unwrap();
+        assert_eq!(
+            spoof["ok"], false,
+            "avance temporelle falsifiée ({spoof_secs}s) doit être refusée"
+        );
+        assert_eq!(spoof["snapshot"]["guest_pass"]["expired"], false);
+    }
 
     // Révocation : sans PIN ou mauvais PIN → refus ; bon PIN → accepté.
     for bad in [
@@ -756,4 +757,30 @@ fn test_guest_pass_pin_monotonic_tick_and_owner_data_isolation() {
     .unwrap();
     assert_eq!(ok["ok"], true);
     assert!(ok["snapshot"]["guest_pass"].is_null());
+
+    // Temps monotone : sur un pass sans PIN, impossible de reculer le compteur.
+    let start_nopin: Value = serde_json::from_str(
+        &bridge.dispatch_json(
+            json!({
+                "type": "start_guest_pass",
+                "name": "InvitéSansPin",
+                "power": "salon.lumieres",
+                "duration_secs": 1800
+            })
+            .to_string(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(start_nopin["ok"], true);
+    let tick: Value = serde_json::from_str(
+        &bridge
+            .dispatch_json(json!({ "type": "tick_guest_pass", "elapsed_secs": 600 }).to_string()),
+    )
+    .unwrap();
+    assert_eq!(tick["ok"], true);
+    let rollback: Value = serde_json::from_str(
+        &bridge.dispatch_json(json!({ "type": "tick_guest_pass", "elapsed_secs": 10 }).to_string()),
+    )
+    .unwrap();
+    assert_eq!(rollback["ok"], false);
 }

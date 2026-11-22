@@ -645,6 +645,11 @@ pub enum UiToKernel {
         action: String,
         params_json: String,
     },
+    /// Signale le début du maintien continu de 600 ms pour l'approbation d'une
+    /// carte d'action (additif v1 — horodatage monotone côté démon).
+    BeginApprovalHold {
+        card_id: u64,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

@@ -22,7 +22,8 @@ use crate::storage::GraphStorage;
 use crate::triplet::{TriplePattern, Triplet};
 use async_trait::async_trait;
 use hakille_core::{
-    AadBinding, HakilleError, MasterKey, TripletId, XChaChaBlob, XChaChaCipher, derive_subkeys,
+    AadBinding, EncryptedBlob, HakilleError, MasterKey, TripletId, XChaChaBlob, XChaChaCipher,
+    decrypt_at_rest, derive_subkeys,
 };
 use redb::{Database, ReadableTable, ReadableTableMetadata, TableDefinition};
 use std::sync::Arc;
@@ -62,6 +63,9 @@ pub struct EdgeStore {
     /// Sous-clé HKDF d'indexation aveugle (`K_bindex`, HMAC-SHA256), dérivée
     /// indépendamment de `K_mem` (ADR-012 §3) et zéroisée à la destruction.
     blind_key: Option<crate::blind_index::BlindIndexKey>,
+    /// Clé brute historique (ChaCha20-Poly1305 sans HKDF) conservée uniquement
+    /// pour déchiffrer/migrer les bases chiffrées v1 existantes.
+    legacy_raw_key: Option<Zeroizing<[u8; 32]>>,
 }
 
 /// Vérifie (et initialise si absente) la version du schéma dans `META_TABLE`.
@@ -170,6 +174,7 @@ impl EdgeStore {
             db,
             encryption_key: None,
             blind_key: None,
+            legacy_raw_key: None,
         }
     }
 
@@ -181,15 +186,17 @@ impl EdgeStore {
             db,
             encryption_key: None,
             blind_key: None,
+            legacy_raw_key: None,
         })
     }
 
     /// Construit avec chiffrement au repos (XChaCha20-Poly1305 + AAD) et indexation
     /// aveugle (HMAC-SHA256) sur deux sous-clés HKDF distinctes (ADR-012).
+    /// Si la base existante contient des enregistrements chiffrés v1 (`EncryptedBlob`
+    /// ChaCha20-Poly1305 sans `KEY_CHECK_KEY`), ceux-ci sont migrés atomiquement
+    /// vers XChaCha20-Poly1305 + index aveugle.
     pub fn with_encryption_key(mut self, key: [u8; 32]) -> Self {
-        let (k_mem, k_blind) = derive_edge_keys(key);
-        self.encryption_key = Some(k_mem);
-        self.blind_key = Some(k_blind);
+        self.set_encryption_key(Some(key));
         self
     }
 
@@ -199,12 +206,192 @@ impl EdgeStore {
                 let (k_mem, k_blind) = derive_edge_keys(raw);
                 self.encryption_key = Some(k_mem);
                 self.blind_key = Some(k_blind);
+                self.legacy_raw_key = Some(Zeroizing::new(raw));
+                if let Err(e) = self.migrate_legacy_encrypted_records() {
+                    tracing::warn!(
+                        "EdgeStore: migration automatique des enregistrements chiffrés v1 impossible ({e})"
+                    );
+                }
             }
             None => {
                 self.encryption_key = None;
                 self.blind_key = None;
+                self.legacy_raw_key = None;
             }
         }
+    }
+
+    /// Migre atomiquement les enregistrements chiffrés historiques v1
+    /// (`EncryptedBlob` ChaCha20-Poly1305 + clé brute) vers le format v2
+    /// (`XChaChaBlob` + sous-clé HKDF `K_mem` + AAD + index aveugle `K_bindex`),
+    /// purge les éventuels index `SPO`/`POS`/`OSP` en clair correspondants,
+    /// et scelle `KEY_CHECK_KEY`.
+    ///
+    /// - Base vide ou déjà v2 (`KEY_CHECK_KEY` présent) : no-op (`Ok(0)`).
+    /// - Mauvaise clé sur une base v1 : échoue avant commit (aucune écriture partielle).
+    pub fn migrate_legacy_encrypted_records(&self) -> hakille_core::Result<usize> {
+        let (Some(key), Some(bkey), Some(raw_key)) = (
+            self.encryption_key.as_ref(),
+            self.blind_key.as_ref(),
+            self.legacy_raw_key.as_ref(),
+        ) else {
+            return Ok(0);
+        };
+
+        // Chemin rapide en lecture seule : si `KEY_CHECK_KEY` existe déjà ou si
+        // `ID_TABLE` est absente/vide, aucune migration n'est nécessaire.
+        {
+            let read_txn = self.db.begin_read().map_err(|e| {
+                HakilleError::StorageError(format!("EdgeStore::migrate: begin_read: {e}"))
+            })?;
+            if let Ok(meta) = read_txn.open_table(META_TABLE)
+                && meta
+                    .get(KEY_CHECK_KEY)
+                    .map_err(|e| {
+                        HakilleError::StorageError(format!("EdgeStore::migrate: key_check: {e}"))
+                    })?
+                    .is_some()
+            {
+                return Ok(0);
+            }
+            let has_rows = match read_txn.open_table(ID_TABLE) {
+                Ok(t) => {
+                    t.len().map_err(|e| {
+                        HakilleError::StorageError(format!("EdgeStore::migrate: id len: {e}"))
+                    })? > 0
+                }
+                Err(redb::TableError::TableDoesNotExist(_)) => false,
+                Err(e) => {
+                    return Err(HakilleError::StorageError(format!(
+                        "EdgeStore::migrate: open id: {e}"
+                    )));
+                }
+            };
+            if !has_rows {
+                return Ok(0);
+            }
+        }
+
+        let write_txn = self.db.begin_write().map_err(|e| {
+            HakilleError::StorageError(format!("EdgeStore::migrate: begin_write: {e}"))
+        })?;
+        let mut migrated = 0usize;
+        {
+            let mut meta = write_txn.open_table(META_TABLE).map_err(|e| {
+                HakilleError::StorageError(format!("EdgeStore::migrate: open meta: {e}"))
+            })?;
+            if meta
+                .get(KEY_CHECK_KEY)
+                .map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::migrate: get key_check: {e}"))
+                })?
+                .is_some()
+            {
+                return Ok(0);
+            }
+
+            let mut id_table = write_txn.open_table(ID_TABLE).map_err(|e| {
+                HakilleError::StorageError(format!("EdgeStore::migrate: open id: {e}"))
+            })?;
+            let entries: Vec<(Vec<u8>, Vec<u8>)> = {
+                let mut collected = Vec::new();
+                for item in id_table.iter().map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::migrate: iter id: {e}"))
+                })? {
+                    let (k, v) = item.map_err(|e| {
+                        HakilleError::StorageError(format!("EdgeStore::migrate: read item: {e}"))
+                    })?;
+                    collected.push((k.value().to_vec(), v.value().to_vec()));
+                }
+                collected
+            };
+
+            let mut exact_table = write_txn.open_table(BLIND_EXACT_TABLE).map_err(|e| {
+                HakilleError::StorageError(format!("EdgeStore::migrate: open blind_exact: {e}"))
+            })?;
+            let mut prefix_table = write_txn.open_table(BLIND_PREFIX_TABLE).map_err(|e| {
+                HakilleError::StorageError(format!("EdgeStore::migrate: open blind_prefix: {e}"))
+            })?;
+            let mut spo_table = write_txn.open_table(SPO_TABLE).ok();
+            let mut pos_table = write_txn.open_table(POS_TABLE).ok();
+            let mut osp_table = write_txn.open_table(OSP_TABLE).ok();
+
+            for (id_bytes, val_bytes) in entries {
+                let id: TripletId = bincode::deserialize(&id_bytes).map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::migrate: id: {e}"))
+                })?;
+                let aad = triplet_aad(&id);
+                // Déjà au format v2 ?
+                if let Ok(blob_v2) = bincode::deserialize::<XChaChaBlob>(&val_bytes)
+                    && XChaChaCipher::decrypt(&blob_v2, key, &aad).is_ok()
+                {
+                    continue;
+                }
+                // Format historique v1 (`EncryptedBlob` ChaCha20-Poly1305 avec clé brute) :
+                let legacy_blob: EncryptedBlob = bincode::deserialize(&val_bytes).map_err(|e| {
+                    HakilleError::StorageError(format!(
+                        "EdgeStore::migrate: enregistrement ni v2 ni v1 valide: {e}"
+                    ))
+                })?;
+                let plain = decrypt_at_rest(&legacy_blob, raw_key.as_slice()).map_err(|_| {
+                    HakilleError::StorageError(
+                        "EdgeStore::migrate: échec de déchiffrement v1 (clé invalide ?)"
+                            .to_string(),
+                    )
+                })?;
+                let triplet: Triplet = bincode::deserialize(&plain).map_err(|e| {
+                    HakilleError::StorageError(format!(
+                        "EdgeStore::migrate: triplet v1 corrompu: {e}"
+                    ))
+                })?;
+                if triplet.id != id {
+                    return Err(HakilleError::StorageError(
+                        "EdgeStore::migrate: incohérence d'identifiant sur triplet v1".to_string(),
+                    ));
+                }
+
+                // Rechiffrement v2 + réindexation aveugle.
+                let new_val = self.encode_value(&triplet)?;
+                id_table
+                    .insert(id_bytes.as_slice(), new_val.as_slice())
+                    .map_err(|e| {
+                        HakilleError::StorageError(format!("EdgeStore::migrate: rewrite id: {e}"))
+                    })?;
+                index_triplet_blind(&mut exact_table, &mut prefix_table, bkey, &triplet)?;
+
+                // Purge les éventuels index en clair résiduels de la v1.
+                if let Some(ref mut t) = spo_table
+                    && let Ok(k) = spo_key(&triplet)
+                {
+                    let _ = t.remove(k.as_slice());
+                }
+                if let Some(ref mut t) = pos_table
+                    && let Ok(k) = pos_key(&triplet)
+                {
+                    let _ = t.remove(k.as_slice());
+                }
+                if let Some(ref mut t) = osp_table
+                    && let Ok(k) = osp_key(&triplet)
+                {
+                    let _ = t.remove(k.as_slice());
+                }
+                migrated += 1;
+            }
+
+            // Scelle le témoin v2 dans la même transaction atomique.
+            let check_blob = XChaChaCipher::encrypt(KEY_CHECK_PLAINTEXT, key, KEY_CHECK_AAD)
+                .map_err(|e| HakilleError::Internal(e.to_string()))?;
+            let check_bytes = bincode::serialize(&check_blob)
+                .map_err(|e| HakilleError::Internal(e.to_string()))?;
+            meta.insert(KEY_CHECK_KEY, check_bytes.as_slice())
+                .map_err(|e| {
+                    HakilleError::StorageError(format!("EdgeStore::migrate: key_check: {e}"))
+                })?;
+        }
+        write_txn
+            .commit()
+            .map_err(|e| HakilleError::StorageError(format!("EdgeStore::migrate: commit: {e}")))?;
+        Ok(migrated)
     }
 
     pub fn has_encryption(&self) -> bool {
@@ -579,11 +766,22 @@ impl EdgeStore {
     fn decode_value_for_id(&self, id: &TripletId, bytes: &[u8]) -> hakille_core::Result<Triplet> {
         match self.encryption_key {
             Some(ref key) => {
-                let blob: XChaChaBlob = bincode::deserialize(bytes)
-                    .map_err(|e| HakilleError::Internal(e.to_string()))?;
                 let aad = triplet_aad(id);
-                let plain = XChaChaCipher::decrypt(&blob, key, &aad)
-                    .map_err(|e| HakilleError::Internal(e.to_string()))?;
+                let plain = if let Ok(blob) = bincode::deserialize::<XChaChaBlob>(bytes)
+                    && let Ok(p) = XChaChaCipher::decrypt(&blob, key, &aad)
+                {
+                    p
+                } else if let Some(ref raw_key) = self.legacy_raw_key
+                    && let Ok(legacy_blob) = bincode::deserialize::<EncryptedBlob>(bytes)
+                {
+                    decrypt_at_rest(&legacy_blob, raw_key.as_slice())
+                        .map_err(|e| HakilleError::Internal(e.to_string()))?
+                } else {
+                    return Err(HakilleError::StorageError(
+                        "EdgeStore: échec de déchiffrement du triplet (format ou clé invalide)"
+                            .to_string(),
+                    ));
+                };
                 let triplet: Triplet = bincode::deserialize(&plain)
                     .map_err(|e| HakilleError::Internal(e.to_string()))?;
                 if &triplet.id != id {
@@ -1838,6 +2036,139 @@ mod tests {
                 String::from_utf8_lossy(secret)
             );
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_legacy_encrypted_edge_store_migrates_to_xchacha_and_blind_index() {
+        let dir =
+            std::env::temp_dir().join(format!("hakille_edge_legacy_mig_{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("legacy.redb");
+        let raw_key = [0x5Au8; 32];
+        let triplet = sample_triplet_with(0xA1A, 0xADA1, "analytical_engine");
+
+        // 1. Crée une base chiffrée historique v1 : `SCHEMA_VERSION = 1`, sans
+        // `KEY_CHECK_KEY`, avec `EncryptedBlob` (ChaCha20-Poly1305 clé brute)
+        // et des tables SPO/POS/OSP en clair résiduelles.
+        {
+            let db = Arc::new(Database::create(&db_path).unwrap());
+            let _ = EdgeStore::try_new(Arc::clone(&db)).unwrap();
+            let id_bytes = bincode::serialize(&triplet.id).unwrap();
+            let plain = bincode::serialize(&triplet).unwrap();
+            let legacy_blob = hakille_core::encrypt_at_rest(&plain, &raw_key).unwrap();
+            let legacy_bytes = bincode::serialize(&legacy_blob).unwrap();
+
+            let write_txn = db.begin_write().unwrap();
+            {
+                let mut id_table = write_txn.open_table(ID_TABLE).unwrap();
+                id_table
+                    .insert(id_bytes.as_slice(), legacy_bytes.as_slice())
+                    .unwrap();
+                let mut spo = write_txn.open_table(SPO_TABLE).unwrap();
+                spo.insert(spo_key(&triplet).unwrap().as_slice(), id_bytes.as_slice())
+                    .unwrap();
+            }
+            write_txn.commit().unwrap();
+        }
+
+        // 2. Ouvre avec la nouvelle API : la migration v1 -> v2 s'exécute atomiquement.
+        let db = Arc::new(Database::open(&db_path).unwrap());
+        let store = EdgeStore::try_new(Arc::clone(&db))
+            .unwrap()
+            .with_encryption_key(raw_key);
+
+        let loaded = block_on(store.load(&triplet.id))
+            .expect("load après migration")
+            .expect("triplet présent");
+        assert_eq!(loaded.id, triplet.id);
+        assert_eq!(
+            loaded.object,
+            crate::triplet::NodeValue::Text("analytical_engine".into())
+        );
+
+        // L'index aveugle a été construit automatiquement lors de la migration.
+        let blind_hits =
+            block_on(store.query_blind_exact("analytical_engine")).expect("query_blind_exact");
+        assert_eq!(blind_hits.len(), 1);
+        assert_eq!(blind_hits[0].id, triplet.id);
+
+        // Sur disque : la ligne ID_TABLE est maintenant un XChaChaBlob valide,
+        // `KEY_CHECK_KEY` est scellé, et l'ancien index SPO en clair a été purgé.
+        let read_txn = db.begin_read().unwrap();
+        let meta = read_txn.open_table(META_TABLE).unwrap();
+        assert!(meta.get(KEY_CHECK_KEY).unwrap().is_some());
+        let spo = read_txn.open_table(SPO_TABLE).unwrap();
+        assert_eq!(spo.len().unwrap(), 0);
+        let id_table = read_txn.open_table(ID_TABLE).unwrap();
+        let id_bytes = bincode::serialize(&triplet.id).unwrap();
+        let stored = id_table.get(id_bytes.as_slice()).unwrap().unwrap();
+        let v2_blob: XChaChaBlob =
+            bincode::deserialize(stored.value()).expect("ligne migrée en XChaChaBlob");
+        assert_eq!(v2_blob.nonce.len(), 24);
+        drop(read_txn);
+
+        // 3. Une mauvaise clé échoue fail-closed.
+        let wrong_store = EdgeStore::try_new(Arc::clone(&db))
+            .unwrap()
+            .with_encryption_key([0xFFu8; 32]);
+        assert!(block_on(wrong_store.load(&triplet.id)).is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_legacy_encrypted_edge_store_rejects_wrong_key_without_corrupting() {
+        let dir = std::env::temp_dir().join(format!(
+            "hakille_edge_legacy_wrong_{}",
+            uuid::Uuid::now_v7()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("legacy.redb");
+        let raw_key = [0x11u8; 32];
+        let wrong_key = [0x22u8; 32];
+        let triplet = sample_triplet_with(0xB2B, 0xC0B0, "COBOL");
+
+        {
+            let db = Arc::new(Database::create(&db_path).unwrap());
+            let _ = EdgeStore::try_new(Arc::clone(&db)).unwrap();
+            let id_bytes = bincode::serialize(&triplet.id).unwrap();
+            let plain = bincode::serialize(&triplet).unwrap();
+            let legacy_blob = hakille_core::encrypt_at_rest(&plain, &raw_key).unwrap();
+            let legacy_bytes = bincode::serialize(&legacy_blob).unwrap();
+            let write_txn = db.begin_write().unwrap();
+            {
+                let mut id_table = write_txn.open_table(ID_TABLE).unwrap();
+                id_table
+                    .insert(id_bytes.as_slice(), legacy_bytes.as_slice())
+                    .unwrap();
+            }
+            write_txn.commit().unwrap();
+        }
+
+        // Ouverture avec mauvaise clé : la migration échoue sans sceller KEY_CHECK_KEY,
+        // et la lecture échoue fail-closed.
+        {
+            let db = Arc::new(Database::open(&db_path).unwrap());
+            let bad_store = EdgeStore::try_new(Arc::clone(&db))
+                .unwrap()
+                .with_encryption_key(wrong_key);
+            assert!(block_on(bad_store.load(&triplet.id)).is_err());
+            let read_txn = db.begin_read().unwrap();
+            let meta = read_txn.open_table(META_TABLE).unwrap();
+            assert!(meta.get(KEY_CHECK_KEY).unwrap().is_none());
+        }
+
+        // Réouverture avec la bonne clé : la base intacte migre et se lit proprement.
+        let db = Arc::new(Database::open(&db_path).unwrap());
+        let good_store = EdgeStore::try_new(Arc::clone(&db))
+            .unwrap()
+            .with_encryption_key(raw_key);
+        let loaded = block_on(good_store.load(&triplet.id))
+            .expect("load avec bonne clé")
+            .expect("triplet présent");
+        assert_eq!(loaded.id, triplet.id);
+
         std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -29,8 +29,7 @@ use hakille_ui::{
 };
 use hakille_ui_protocol::{
     ActionCard, AgentDto, DataExit, JournalEntryDto, KernelToUi, MemoryRowDto, Money,
-    PresenceState as ProtoPresenceState, PrivacyGuardEvent, PrivacyGuardTrigger, Provenance,
-    StatusDto, UiToKernel,
+    PresenceState as ProtoPresenceState, Provenance, StatusDto, UiToKernel,
 };
 use tokio::io::{BufReader, BufWriter};
 use tokio::sync::{broadcast, mpsc};
@@ -202,9 +201,11 @@ fn card_from_preview(id: u64, preview: ActionCardPreview) -> ActionCard {
     }
 }
 
-/// Durée minimale obligatoire entre la proposition d'une carte et son approbation
-/// (maintien 600 ms imposé par le contrat `hakille-ui-protocol`).
+/// Durée minimale obligatoire de maintien continu entre `BeginApprovalHold` et
+/// `Approve` (maintien 600 ms imposé par le contrat `hakille-ui-protocol`).
 pub const MIN_APPROVAL_HOLD: std::time::Duration = std::time::Duration::from_millis(600);
+/// Fenêtre maximale après `BeginApprovalHold` avant d'exiger un nouveau maintien.
+pub const MAX_APPROVAL_HOLD_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
 /// Durée de vie maximale d'une carte en attente (15 minutes).
 pub const PENDING_CARD_TTL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 /// Nombre maximal de cartes en attente simultanées.
@@ -220,6 +221,8 @@ pub struct PendingCard {
     pub card: ActionCard,
     pub plan: hakille_kernel::planner::ExecutionPlan,
     pub proposed_at: Instant,
+    /// Début du maintien d'approbation horodaté côté démon : `(session_id, started_at)`.
+    pub hold_started_at: Option<(u64, Instant)>,
 }
 
 /// Gestionnaire centralisé et partagé des cartes d'action multi-clients.
@@ -279,6 +282,7 @@ impl ActionCardManager {
                 card,
                 plan,
                 proposed_at: Instant::now(),
+                hold_started_at: None,
             },
         );
         if id >= self.next_id {
@@ -286,11 +290,25 @@ impl ActionCardManager {
         }
     }
 
+    /// Enregistre le début du maintien continu de 600 ms côté démon pour une
+    /// carte en attente et une session IPC donnée.
+    pub fn begin_approval_hold(&mut self, session_id: u64, card_id: u64) -> KernelToUi {
+        self.purge_expired();
+        let Some(pending) = self.pending.get_mut(&card_id) else {
+            return KernelToUi::Toast {
+                text: format!("carte #{card_id} inconnue ou expirée — maintien ignoré"),
+            };
+        };
+        pending.hold_started_at = Some((session_id, Instant::now()));
+        KernelToUi::Presence(ProtoPresenceState::DecisionRequired)
+    }
+
     pub fn decide(
         &mut self,
         audit_journal: &AuditJournal,
         outbox: &mut Outbox,
         data_dir: &std::path::Path,
+        session_id: u64,
         card_id: u64,
         approved: bool,
     ) -> KernelToUi {
@@ -300,6 +318,7 @@ impl ActionCardManager {
             audit_journal,
             outbox,
             data_dir,
+            session_id,
             card_id,
             approved,
         )
@@ -333,6 +352,7 @@ fn decide_card(
     audit_journal: &AuditJournal,
     outbox: &mut Outbox,
     data_dir: &std::path::Path,
+    session_id: u64,
     card_id: u64,
     approved: bool,
 ) -> KernelToUi {
@@ -347,13 +367,40 @@ fn decide_card(
             text: format!("carte #{card_id} expirée (> 15 min) — veuillez relancer la demande"),
         };
     }
-    if approved && pending.proposed_at.elapsed() < MIN_APPROVAL_HOLD {
-        let elapsed_ms = pending.proposed_at.elapsed().as_millis();
-        return KernelToUi::Toast {
-            text: format!(
-                "approbation de la carte #{card_id} refusée : maintien minimal de 600 ms requis ({elapsed_ms} ms écoulés)"
-            ),
+    if approved {
+        let Some((hold_session, started_at)) = pending.hold_started_at else {
+            return KernelToUi::Toast {
+                text: format!(
+                    "approbation de la carte #{card_id} refusée : maintien serveur non amorcé (BeginApprovalHold requis)"
+                ),
+            };
         };
+        if hold_session != session_id {
+            return KernelToUi::Toast {
+                text: format!(
+                    "approbation de la carte #{card_id} refusée : maintien amorcé sur une autre session"
+                ),
+            };
+        }
+        let elapsed = started_at.elapsed();
+        if elapsed < MIN_APPROVAL_HOLD {
+            let elapsed_ms = elapsed.as_millis();
+            return KernelToUi::Toast {
+                text: format!(
+                    "approbation de la carte #{card_id} refusée : maintien minimal de 600 ms requis ({elapsed_ms} ms écoulés depuis BeginApprovalHold)"
+                ),
+            };
+        }
+        if elapsed > MAX_APPROVAL_HOLD_WINDOW {
+            if let Some(entry) = pending_cards.get_mut(&card_id) {
+                entry.hold_started_at = None;
+            }
+            return KernelToUi::Toast {
+                text: format!(
+                    "approbation de la carte #{card_id} refusée : maintien expiré (> 30 s) — veuillez maintenir à nouveau"
+                ),
+            };
+        }
     }
     let card = pending.card;
     let plan = pending.plan;
@@ -902,9 +949,16 @@ async fn handle_client_request(
             }
         }
         FrameBody::Request {
+            message: UiToKernel::BeginApprovalHold { card_id },
+        } => {
+            let reply = card_manager.begin_approval_hold(session_id, card_id);
+            let _ = reply_tx.send(Frame::reply(id, reply)).await;
+        }
+        FrameBody::Request {
             message: UiToKernel::Approve { card_id },
         } => {
-            let reply = card_manager.decide(audit_journal, outbox, data_dir, card_id, true);
+            let reply =
+                card_manager.decide(audit_journal, outbox, data_dir, session_id, card_id, true);
             match &reply {
                 KernelToUi::CardDecisionAck {
                     audit_id, effect, ..
@@ -947,7 +1001,8 @@ async fn handle_client_request(
         FrameBody::Request {
             message: UiToKernel::Reject { card_id },
         } => {
-            let reply = card_manager.decide(audit_journal, outbox, data_dir, card_id, false);
+            let reply =
+                card_manager.decide(audit_journal, outbox, data_dir, session_id, card_id, false);
             match &reply {
                 KernelToUi::CardDecisionAck { audit_id, .. } => {
                     if card_manager.is_empty() {
@@ -1335,11 +1390,12 @@ async fn handle_client_request(
                     active_channels_mask,
                 },
         } => {
+            let sensor_cutoff_requested = !hardware_camera_enabled || !hardware_mic_enabled;
             let audit_id = match audit_action_with_id(
                 audit_journal,
                 "PerceptionControlUpdated",
                 format!(
-                    "Contrôle perception : caméra={}, micro={}, inférence={}, masque={:#010b}",
+                    "Contrôle perception : caméra={} (non câblée), micro={} (non câblé), inférence={}, masque={:#010b}",
                     hardware_camera_enabled,
                     hardware_mic_enabled,
                     cognitive_inference_enabled,
@@ -1350,6 +1406,8 @@ async fn handle_client_request(
                     "hardware_mic_enabled": hardware_mic_enabled,
                     "cognitive_inference_enabled": cognitive_inference_enabled,
                     "active_channels_mask": active_channels_mask,
+                    "hardware_sensor_cutoff_supported": false,
+                    "enforced_controls": ["cognitive_inference_enabled"],
                 }),
                 false,
             ) {
@@ -1383,42 +1441,29 @@ async fn handle_client_request(
                 .active_channels_mask
                 .store(active_channels_mask, std::sync::atomic::Ordering::SeqCst);
 
-            // Si coupure logicielle des flux de perception, diffusion de l'événement PrivacyGuardAlert
-            if !hardware_camera_enabled || !hardware_mic_enabled {
-                let device = match (!hardware_camera_enabled, !hardware_mic_enabled) {
-                    (true, true) => "camera_and_microphone".to_string(),
-                    (true, false) => "camera".to_string(),
-                    (false, true) => "microphone".to_string(),
-                    _ => "none".to_string(),
-                };
-                let guard_event = PrivacyGuardEvent {
-                    trigger: PrivacyGuardTrigger::HardwareKillSwitchActivated {
-                        device: device.clone(),
-                    },
-                    description: format!("Coupure des flux de perception activée pour : {device}"),
-                    recommended_action:
-                        "Flux de capteurs bloqués par le noyau (Règle 8 souveraineté)".to_string(),
-                    timestamp_ms: chrono::Utc::now().timestamp_millis() as u64,
-                };
-                let _ = broadcast_tx.send(BroadcastEnvelope::all(KernelToUi::PrivacyGuardAlert(
-                    guard_event,
-                )));
-            }
-
+            // Contrat d'honnêteté : aucun pilote matériel de capture caméra/micro
+            // n'est câblé dans le démon — on ne diffuse JAMAIS d'alerte
+            // `HardwareKillSwitchActivated` prétendant que les capteurs ont été coupés.
             println!(
-                "IPC [session {session_id}]: PerceptionControl (id={id}, cam={hardware_camera_enabled}, mic={hardware_mic_enabled}) — audit [{audit_id}]"
+                "IPC [session {session_id}]: PerceptionControl (id={id}, inférence={cognitive_inference_enabled}, sensor_cutoff_supported=false) — audit [{audit_id}]"
             );
-            let reply = KernelToUi::Toast {
-                text: format!(
-                    "Contrôle de perception mis à jour (caméra: {}, micro: {}, inférence: {})",
-                    if hardware_camera_enabled { "on" } else { "off" },
-                    if hardware_mic_enabled { "on" } else { "off" },
-                    if cognitive_inference_enabled {
-                        "on"
-                    } else {
-                        "off"
-                    }
-                ),
+            let inf_label = if cognitive_inference_enabled {
+                "on"
+            } else {
+                "off"
+            };
+            let reply = if sensor_cutoff_requested {
+                KernelToUi::Toast {
+                    text: format!(
+                        "Coupure matérielle caméra/micro non supportée par le démon (aucun flux de capture capteur câblé) ; inférence cognitive : {inf_label}"
+                    ),
+                }
+            } else {
+                KernelToUi::Toast {
+                    text: format!(
+                        "Contrôle de perception mis à jour (inférence cognitive : {inf_label} ; coupure matérielle capteurs non câblée)"
+                    ),
+                }
             };
             let _ = reply_tx.send(Frame::reply(id, reply)).await;
         }
@@ -2386,6 +2431,7 @@ mod tests {
                 },
                 plan: test_plan(),
                 proposed_at: Instant::now() - std::time::Duration::from_secs(1),
+                hold_started_at: Some((1, Instant::now() - std::time::Duration::from_secs(1))),
             },
         );
         let mut outbox = Outbox::new();
@@ -2395,7 +2441,7 @@ mod tests {
         // indépendamment des droits root du runner.
         let blocked_path = dir.join("outbox.json");
         std::fs::create_dir(&blocked_path).unwrap();
-        let denied = decide_card(&mut cards, &journal, &mut outbox, &dir, 42, true);
+        let denied = decide_card(&mut cards, &journal, &mut outbox, &dir, 1, 42, true);
         assert!(matches!(denied, KernelToUi::Toast { .. }));
         assert!(cards.contains_key(&42), "la décision reste réessayable");
         assert!(outbox.is_empty(), "aucun ajout RAM non persisté");
@@ -2405,7 +2451,7 @@ mod tests {
         );
         std::fs::remove_dir(blocked_path).unwrap();
 
-        let reply = decide_card(&mut cards, &journal, &mut outbox, &dir, 42, true);
+        let reply = decide_card(&mut cards, &journal, &mut outbox, &dir, 1, 42, true);
         let KernelToUi::CardDecisionAck {
             approved,
             audit_id,
@@ -2483,9 +2529,10 @@ mod tests {
                 },
                 plan: test_plan(),
                 proposed_at: Instant::now(),
+                hold_started_at: None,
             },
         );
-        let reply = decide_card(&mut cards, &journal, &mut outbox, &dir, 43, false);
+        let reply = decide_card(&mut cards, &journal, &mut outbox, &dir, 1, 43, false);
         let KernelToUi::CardDecisionAck { effect, .. } = reply else {
             panic!("un accusé de refus est attendu");
         };
@@ -2598,14 +2645,31 @@ mod tests {
         .unwrap();
         let mut outbox = Outbox::new();
 
-        // Approbation immédiate (< 600 ms) : refusée par le démon et la carte reste en attente.
-        let premature = mgr.decide(&journal, &mut outbox, &dir, 1, true);
+        // Approbation sans BeginApprovalHold (même après 610 ms de présence de la carte) : refusée.
+        tokio::time::sleep(std::time::Duration::from_millis(610)).await;
+        let missing_hold = mgr.decide(&journal, &mut outbox, &dir, 10, 1, true);
+        assert!(matches!(missing_hold, KernelToUi::Toast { .. }));
+        assert_eq!(mgr.pending_count(), 2);
+
+        // Début du maintien côté serveur sur la session 10, puis approbation immédiate (< 600 ms) : refusée.
+        let armed = mgr.begin_approval_hold(10, 1);
+        assert!(matches!(
+            armed,
+            KernelToUi::Presence(ProtoPresenceState::DecisionRequired)
+        ));
+        let premature = mgr.decide(&journal, &mut outbox, &dir, 10, 1, true);
         assert!(matches!(premature, KernelToUi::Toast { .. }));
         assert_eq!(mgr.pending_count(), 2);
 
         tokio::time::sleep(std::time::Duration::from_millis(610)).await;
 
-        let ack1 = mgr.decide(&journal, &mut outbox, &dir, 1, true);
+        // Une autre session (20) ne peut pas profiter du maintien amorcé par la session 10.
+        let wrong_session = mgr.decide(&journal, &mut outbox, &dir, 20, 1, true);
+        assert!(matches!(wrong_session, KernelToUi::Toast { .. }));
+        assert_eq!(mgr.pending_count(), 2);
+
+        // La session 10 valide après >= 600 ms depuis son BeginApprovalHold.
+        let ack1 = mgr.decide(&journal, &mut outbox, &dir, 10, 1, true);
         assert!(matches!(
             ack1,
             KernelToUi::CardDecisionAck {
@@ -2614,7 +2678,7 @@ mod tests {
                 ..
             }
         ));
-        let ack2 = mgr.decide(&journal, &mut outbox, &dir, 2, false);
+        let ack2 = mgr.decide(&journal, &mut outbox, &dir, 10, 2, false);
         assert!(matches!(
             ack2,
             KernelToUi::CardDecisionAck {
@@ -2872,7 +2936,23 @@ mod tests {
             other => panic!("ShowCard attendu, reçu : {other:?}"),
         };
 
-        // VÉRIFICATION 3 : Mobile respecte le maintien 600 ms puis approuve la carte -> Mobile reçoit Unicast avec son id 202, Desktop reçoit broadcast avec id 0
+        // VÉRIFICATION 3 : Mobile amorce BeginApprovalHold, respecte le maintien 600 ms puis approuve la carte -> Mobile reçoit Unicast avec son id 202, Desktop reçoit broadcast avec id 0
+        let hold_req = Frame::request(201, UiToKernel::BeginApprovalHold { card_id });
+        transport::write_frame(&mut mobile_writer, &hold_req)
+            .await
+            .unwrap();
+        let hold_ack = transport::read_frame(&mut mobile_reader)
+            .await
+            .unwrap()
+            .expect("mobile hold ack");
+        assert_eq!(hold_ack.id, 201);
+        assert!(matches!(
+            hold_ack.body,
+            FrameBody::Reply {
+                message: KernelToUi::Presence(ProtoPresenceState::DecisionRequired)
+            }
+        ));
+
         tokio::time::sleep(Duration::from_millis(610)).await;
         let approve_req = Frame::request(202, UiToKernel::Approve { card_id });
         transport::write_frame(&mut mobile_writer, &approve_req)
@@ -2929,6 +3009,47 @@ mod tests {
                 message: KernelToUi::Presence(ProtoPresenceState::Idle)
             }
         ));
+
+        // VÉRIFICATION 4 (honnêteté capteurs) : demander la coupure caméra/micro
+        // retourne un Toast explicite « non supportée » et ne diffuse AUCUNE
+        // alerte `HardwareKillSwitchActivated` trompeuse.
+        let sensor_req = Frame::request(
+            203,
+            UiToKernel::PerceptionControl {
+                hardware_camera_enabled: false,
+                hardware_mic_enabled: false,
+                cognitive_inference_enabled: true,
+                active_channels_mask: 0,
+            },
+        );
+        transport::write_frame(&mut mobile_writer, &sensor_req)
+            .await
+            .unwrap();
+        let sensor_reply = transport::read_frame(&mut mobile_reader)
+            .await
+            .unwrap()
+            .expect("sensor reply");
+        assert_eq!(sensor_reply.id, 203);
+        match sensor_reply.body {
+            FrameBody::Reply {
+                message: KernelToUi::Toast { text },
+            } => {
+                assert!(
+                    text.contains("non supportée"),
+                    "le Toast doit signaler honnêtement l'absence de coupure matérielle : {text}"
+                );
+            }
+            other => panic!("Toast attendu pour PerceptionControl, reçu : {other:?}"),
+        }
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(120),
+                transport::read_frame(&mut desktop_reader)
+            )
+            .await
+            .is_err(),
+            "aucune alerte HardwareKillSwitchActivated trompeuse ne doit être diffusée"
+        );
 
         // VÉRIFICATION 4 : Résilience à la déconnexion abrupte
         drop(mobile_reader);

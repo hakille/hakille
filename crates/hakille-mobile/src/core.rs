@@ -23,6 +23,9 @@ pub(crate) struct Core {
     /// Condensat SHA-256 du PIN propriétaire du pass invité actif. Jamais
     /// placé dans le snapshot ni dans le checkpoint (contrat `SavedDraftV2`).
     guest_pin_hash: Option<[u8; 32]>,
+    /// Horloge monotone de démarrage du pass invité (source de vérité pour
+    /// l'expiration d'un pass protégé par PIN, insensible au spoofing client).
+    guest_started_at: Option<Instant>,
 }
 impl Default for Core {
     fn default() -> Self {
@@ -34,6 +37,7 @@ impl Default for Core {
             voice_started_at: None,
             saved_owner_cranks: None,
             guest_pin_hash: None,
+            guest_started_at: None,
         }
     }
 }
@@ -293,6 +297,7 @@ impl Core {
                     self.restore_owner_cranks();
                 }
                 self.guest_pin_hash = if dto.expired { None } else { pin_hash };
+                self.guest_started_at = if dto.expired { None } else { Some(now) };
                 self.snapshot.guest_pass = Some(dto);
                 return Ok(None);
             }
@@ -305,11 +310,35 @@ impl Core {
                 if elapsed_secs < pass.elapsed_secs {
                     return Err("Temps écoulé du pass invité non monotone : refusé".into());
                 }
-                pass.tick(elapsed_secs);
+                let effective_elapsed = if self.guest_pin_hash.is_some() {
+                    // Lorsqu'un PIN propriétaire protège le pass invité, seul
+                    // l'écoulement monotone de l'horloge interne (`now`) fait
+                    // foi : un compteur fourni par l'appelant ne peut jamais
+                    // anticiper l'expiration ni effacer le PIN.
+                    let trusted_elapsed = self
+                        .guest_started_at
+                        .map(|started| {
+                            now.saturating_duration_since(started)
+                                .as_secs()
+                                .min(u32::MAX as u64) as u32
+                        })
+                        .unwrap_or(0);
+                    if elapsed_secs > trusted_elapsed.saturating_add(2) {
+                        return Err(
+                            "Avance temporelle non autorisée sur un pass invité protégé par PIN"
+                                .into(),
+                        );
+                    }
+                    elapsed_secs.min(trusted_elapsed)
+                } else {
+                    elapsed_secs
+                };
+                pass.tick(effective_elapsed);
                 let expired = pass.expired;
                 if expired {
                     self.restore_owner_cranks();
                     self.guest_pin_hash = None;
+                    self.guest_started_at = None;
                 }
                 return Ok(None);
             }
@@ -329,6 +358,7 @@ impl Core {
                 }
                 self.restore_owner_cranks();
                 self.guest_pin_hash = None;
+                self.guest_started_at = None;
                 self.snapshot.guest_pass = None;
                 return Ok(None);
             }
@@ -1944,6 +1974,77 @@ mod boundary_tests {
                 .last_home_receipt
                 .as_deref()
                 .is_some_and(|r| r.contains("abc123def456"))
+        );
+    }
+
+    #[test]
+    fn guest_pass_pin_cannot_be_bypassed_by_spoofed_tick() {
+        let mut core = Core::default();
+        let t0 = Instant::now();
+        core.dispatch(
+            MobileAction::SetAutonomyCrank {
+                domain: "Mail".into(),
+                crank: 3,
+                max_cost_cents: Some(2000),
+                max_actions: None,
+                days_valid: None,
+            },
+            t0,
+        )
+        .unwrap();
+        core.dispatch(
+            MobileAction::StartGuestPass {
+                name: "Invité".into(),
+                power: "salon.lumieres".into(),
+                duration_secs: Some(600),
+                owner_pin: Some(OwnerPin("4242".into())),
+            },
+            t0,
+        )
+        .unwrap();
+
+        // Un invité tente de falsifier l'expiration 1 seconde après l'ouverture.
+        let spoof = core.dispatch(
+            MobileAction::TickGuestPass { elapsed_secs: 600 },
+            t0 + Duration::from_secs(1),
+        );
+        assert!(spoof.is_err(), "le spoofing temporel doit être refusé");
+        assert!(core.is_guest_active());
+        assert_eq!(
+            core.snapshot
+                .domain_autonomies
+                .iter()
+                .find(|d| d.domain == "Mail")
+                .unwrap()
+                .crank,
+            0,
+            "les autonomies doivent rester plafonnées à 0"
+        );
+        // La révocation sans PIN reste impossible.
+        assert!(
+            core.dispatch(
+                MobileAction::RevokeGuestPass { owner_pin: None },
+                t0 + Duration::from_secs(2),
+            )
+            .is_err()
+        );
+
+        // Après expiration réelle sur l'horloge monotone interne, le pass expire
+        // et les autonomies du propriétaire sont restaurées.
+        core.dispatch(
+            MobileAction::TickGuestPass { elapsed_secs: 600 },
+            t0 + Duration::from_secs(600),
+        )
+        .unwrap();
+        assert!(!core.is_guest_active());
+        assert_eq!(
+            core.snapshot
+                .domain_autonomies
+                .iter()
+                .find(|d| d.domain == "Mail")
+                .unwrap()
+                .crank,
+            3
         );
     }
 }

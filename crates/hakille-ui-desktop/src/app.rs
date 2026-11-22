@@ -1586,6 +1586,10 @@ impl HudApp {
     /// Consultation demandée alors que l'IPC n'est pas disponible : refus
     /// honnête, le panneau reste ouvert avec son contenu éventuellement vide.
     pub fn on_ipc_unavailable(&mut self, what: &str) -> Vec<HudAction> {
+        if self.card_decision_in_flight.take().is_some() && self.pending_card.is_some() {
+            self.presence
+                .set_state(hakille_ui::PresenceState::DecisionRequired);
+        }
         self.notice = Some(format!("démon non connecté — {what} impossible"));
         if self.visible {
             vec![HudAction::Redraw]
@@ -1911,6 +1915,10 @@ impl HudApp {
             KernelToUi::Toast { text }
                 if self.pending_card.is_some() && self.pending_query.is_none() =>
             {
+                if self.card_decision_in_flight.take().is_some() {
+                    self.presence
+                        .set_state(hakille_ui::PresenceState::DecisionRequired);
+                }
                 self.notice_actions(text)
             }
             KernelToUi::HomeDevicesReply {
@@ -3199,6 +3207,37 @@ mod tests {
             "l'effet réel est affiché tel quel : {}",
             notice.text
         );
+    }
+
+    #[test]
+    fn card_decision_toast_failure_clears_in_flight_lock_for_retry() {
+        let mut app = shown(false);
+        app.on_kernel_reply(KernelToUi::ShowCard(test_card(10)));
+        let actions = app.on_card_decision_sent(10, true);
+        assert!(actions.contains(&HudAction::Redraw));
+        assert_eq!(app.card_decision_in_flight(), Some(10));
+
+        // Le démon refuse (ex. maintien trop court ou audit indisponible) via Toast.
+        let retry_actions = app.on_kernel_reply(KernelToUi::Toast {
+            text: "approbation de la carte #10 refusée : maintien minimal de 600 ms requis".into(),
+        });
+        assert!(retry_actions.contains(&HudAction::Redraw));
+        assert_eq!(
+            app.card_decision_in_flight(),
+            None,
+            "le verrou en vol doit être libéré après un refus Toast"
+        );
+        assert_eq!(app.pending_card().map(|c| c.id), Some(10));
+        assert_eq!(
+            app.snapshot().presence_state,
+            4,
+            "retour en DecisionRequired pour permettre une nouvelle tentative"
+        );
+
+        // Une nouvelle tentative doit être acceptée.
+        let second = app.on_card_decision_sent(10, true);
+        assert!(second.contains(&HudAction::Redraw));
+        assert_eq!(app.card_decision_in_flight(), Some(10));
     }
 
     #[test]

@@ -603,6 +603,22 @@ impl DesktopApp {
         }
     }
 
+    /// Amorce le maintien local 600 ms ET notifie le démon (`BeginApprovalHold`)
+    /// pour démarrer le chronomètre serveur sur la même session IPC.
+    fn arm_card_hold(&mut self, card_id: u64, mouse: bool) {
+        let now = Instant::now();
+        if mouse {
+            self.card_mouse_hold_start = Some((card_id, now));
+        } else {
+            self.card_hold_start = Some((card_id, now));
+        }
+        if let Some(ipc) = self.ipc.as_ref()
+            && ipc.connected()
+        {
+            let _ = ipc.begin_approval_hold(card_id);
+        }
+    }
+
     /// Applique les effets de la machine à états.
     fn apply(&mut self, actions: Vec<HudAction>, event_loop: &ActiveEventLoop) {
         self.sync_card_hold_state();
@@ -900,14 +916,12 @@ impl DesktopApp {
                 self.apply(actions, event_loop);
             }
             PointerTarget::CardValidate => {
-                let Some((id, reversible)) = card else { return };
-                if reversible {
-                    // Carte annulable : validation immédiate (comme Entrée).
-                    self.apply(vec![HudAction::ApproveCard { card_id: id }], event_loop);
-                } else {
-                    // Carte définitive : le maintien 600 ms reste obligatoire et lié à l'ID de carte.
-                    self.card_mouse_hold_start = Some((id, Instant::now()));
-                }
+                let Some((id, _reversible)) = card else {
+                    return;
+                };
+                // Le démon exige un signal `BeginApprovalHold` suivi d'un maintien
+                // continu de 600 ms sur la même session avant `Approve`.
+                self.arm_card_hold(id, true);
             }
             PointerTarget::CardEdit => {
                 let Some((id, _)) = card else { return };
@@ -1056,21 +1070,16 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                         }
                         return;
                     }
-                    if let Some((card_id, reversible)) =
+                    if let Some((card_id, _reversible)) =
                         self.core.pending_card().map(|c| (c.id, c.reversible))
                     {
-                        // Focus seul = pas de décision. Pour une carte irréversible,
-                        // AccessKit ne contourne jamais la barrière temporelle de 600 ms :
-                        // une 1re activation arme le délai, une 2e activation après ≥ 600 ms
-                        // (et ≤ 5 s) valide la décision.
+                        // Focus seul = pas de décision. AccessKit ne contourne
+                        // jamais la barrière temporelle serveur de 600 ms :
+                        // une 1re activation amorce `BeginApprovalHold`, une 2e
+                        // activation après ≥ 600 ms (et ≤ 5 s) valide la décision.
                         if request.action == accesskit::Action::Click {
                             if request.target_node == A11Y_CARD_APPROVE {
-                                if reversible {
-                                    self.apply(
-                                        vec![HudAction::ApproveCard { card_id }],
-                                        event_loop,
-                                    );
-                                } else if let Some((held_id, started)) = self.card_hold_start.take()
+                                if let Some((held_id, started)) = self.card_hold_start.take()
                                     && held_id == card_id
                                     && started.elapsed() >= CARD_HOLD
                                     && started.elapsed() <= Duration::from_secs(5)
@@ -1080,7 +1089,7 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                                         event_loop,
                                     );
                                 } else {
-                                    self.card_hold_start = Some((card_id, Instant::now()));
+                                    self.arm_card_hold(card_id, false);
                                     let actions = self.core.on_card_hold_too_short();
                                     self.apply(actions, event_loop);
                                 }
@@ -1188,11 +1197,7 @@ impl ApplicationHandler<AppEvent> for DesktopApp {
                                 inputs.push(HudInput::Escape);
                             }
                             Key::Named(NamedKey::Enter) if !repeat => {
-                                if card.1 {
-                                    direct_actions.push(HudAction::ApproveCard { card_id: card.0 });
-                                } else {
-                                    self.card_hold_start = Some((card.0, Instant::now()));
-                                }
+                                self.arm_card_hold(card.0, false);
                             }
                             Key::Character(s) if s.eq_ignore_ascii_case("r") && !repeat => {
                                 self.card_hold_start = None;

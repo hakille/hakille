@@ -86,7 +86,8 @@ impl KernelStub for RealDaemonBridge {
                 UiToKernel::Undo { .. } | UiToKernel::RevokeAll => {
                     self.require_daemon("journal d'audit signé du démon requis")
                 }
-                UiToKernel::Approve { .. }
+                UiToKernel::BeginApprovalHold { .. }
+                | UiToKernel::Approve { .. }
                 | UiToKernel::Edit { .. }
                 | UiToKernel::Reject { .. } => self.require_daemon("carte en attente"),
                 UiToKernel::HudSubmit { .. } => self.require_daemon("requête HUD en attente"),
@@ -131,6 +132,9 @@ impl KernelStub for RealDaemonBridge {
         }
         // LocalAuthorized : le noyau (simulé ici) revérifie puis journalise.
         match &msg.inner {
+            UiToKernel::BeginApprovalHold { .. } => Ok(KernelToUi::Presence(
+                hakille_ui_protocol::PresenceState::DecisionRequired,
+            )),
             UiToKernel::Approve { card_id } => {
                 let label = self.pending_cards.remove(card_id);
                 let id = self.commit(format!("approuvé carte #{card_id}"));

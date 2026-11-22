@@ -266,7 +266,10 @@ impl Gateway {
         };
         let card_decision = matches!(
             message,
-            UiToKernel::Approve { .. } | UiToKernel::Edit { .. } | UiToKernel::Reject { .. }
+            UiToKernel::BeginApprovalHold { .. }
+                | UiToKernel::Approve { .. }
+                | UiToKernel::Edit { .. }
+                | UiToKernel::Reject { .. }
         );
         // Sérialisation vérifiée avant d'ouvrir la session ou de marquer l'issue
         // inconnue ; aucune erreur locale de taille ne doit envoyer de requête.
@@ -575,7 +578,8 @@ fn allowed(message: &UiToKernel) -> bool {
         UiToKernel::AgentRunRequest { name, input_json } => {
             !name.is_empty() && name.len() <= 128 && input_json.len() <= 64 * 1024
         }
-        UiToKernel::Approve { .. }
+        UiToKernel::BeginApprovalHold { .. }
+        | UiToKernel::Approve { .. }
         | UiToKernel::Reject { .. }
         | UiToKernel::Edit { .. }
         | UiToKernel::StatusRequest

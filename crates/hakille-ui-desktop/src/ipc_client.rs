@@ -150,7 +150,10 @@ impl IpcClient {
         })
     }
 
-    /// Décision de carte : le démon audite avant d'accuser réception.
+    /// Décision de carte : amorce le maintien serveur 600 ms puis audite avant accusé.
+    pub fn begin_approval_hold(&self, card_id: u64) -> bool {
+        self.submit(UiToKernel::BeginApprovalHold { card_id })
+    }
     pub fn approve_card(&self, card_id: u64) -> bool {
         self.submit(UiToKernel::Approve { card_id })
     }

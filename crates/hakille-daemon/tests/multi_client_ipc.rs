@@ -300,7 +300,23 @@ async fn test_concurrent_clients_and_mutual_card_resolution() {
         other => panic!("ShowCard attendu sur Mobile, reçu : {other:?}"),
     }
 
-    // 5. RÉSOLUTION MUTUELLE : Mobile respecte le maintien 600 ms puis approuve la carte (id=202)
+    // 5. RÉSOLUTION MUTUELLE : Mobile amorce BeginApprovalHold, respecte le maintien 600 ms puis approuve la carte (id=202)
+    let hold_req = Frame::request(201, UiToKernel::BeginApprovalHold { card_id });
+    transport::write_frame(&mut mobile_writer, &hold_req)
+        .await
+        .unwrap();
+    let hold_ack = transport::read_frame(&mut mobile_reader)
+        .await
+        .unwrap()
+        .expect("mobile hold ack frame");
+    assert_eq!(hold_ack.id, 201);
+    assert!(matches!(
+        hold_ack.body,
+        FrameBody::Reply {
+            message: KernelToUi::Presence(_)
+        }
+    ));
+
     tokio::time::sleep(Duration::from_millis(610)).await;
     let approve_req = Frame::request(202, UiToKernel::Approve { card_id });
     transport::write_frame(&mut mobile_writer, &approve_req)

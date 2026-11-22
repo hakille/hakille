@@ -75,7 +75,8 @@ impl MockKernel {
 
         if self.policy == MockAuthorityPolicy::Detached {
             match &msg.inner {
-                UiToKernel::Approve { .. }
+                UiToKernel::BeginApprovalHold { .. }
+                | UiToKernel::Approve { .. }
                 | UiToKernel::Edit { .. }
                 | UiToKernel::Reject { .. }
                 | UiToKernel::HudSubmit { .. }
@@ -299,6 +300,9 @@ impl MockKernel {
                     receipt_sha256: None,
                 }))
             }
+            UiToKernel::BeginApprovalHold { .. } => Ok(Some(KernelToUi::Presence(
+                hakille_ui_protocol::PresenceState::DecisionRequired,
+            ))),
         }
     }
 
